@@ -1,9 +1,37 @@
 #!/usr/bin/env bash
-# Run ON host. Installs Supercalm as a launchd user agent: auto-start at login + restart on crash.
+# Installs Supercalm as a user service: auto-start at login + restart on crash.
+# macOS -> launchd agent; Linux -> systemd user unit. Uses THIS checkout's directory (run it from the
+# clone you want the service to run — no hardcoded paths).
 set -euo pipefail
 
-DIR="$HOME/aios"
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
 NODE="$(command -v node || echo /opt/homebrew/bin/node)"
+
+if [ "$(uname)" != "Darwin" ]; then
+  # ---- Linux: systemd user unit ----
+  UNIT_DIR="$HOME/.config/systemd/user"
+  mkdir -p "$UNIT_DIR" "$DIR/data/logs"
+  cat > "$UNIT_DIR/supercalm.service" <<UNIT
+[Unit]
+Description=Supercalm — agent supervision console
+After=network.target
+
+[Service]
+ExecStart=$NODE $DIR/src/server.js
+WorkingDirectory=$DIR
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.local/bin
+
+[Install]
+WantedBy=default.target
+UNIT
+  systemctl --user daemon-reload
+  systemctl --user enable --now supercalm.service
+  echo "✓ systemd user service 'supercalm' installed + started (journalctl --user -u supercalm -f)"
+  echo "  (survive logout: sudo loginctl enable-linger \$USER)"
+  exit 0
+fi
 LABEL="ai.aios.server"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 UID_NUM="$(id -u)"
@@ -26,7 +54,7 @@ cat > "$PLIST" <<PL
   <key>StandardOutPath</key><string>$DIR/data/aios.log</string>
   <key>StandardErrorPath</key><string>$DIR/data/aios.log</string>
   <key>EnvironmentVariables</key><dict>
-    <key>PATH</key><string>/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key><string>$HOME</string>
   </dict>
 </dict></plist>

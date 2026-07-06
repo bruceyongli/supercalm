@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Update a local Supercalm install to the latest release: fast-forward pull -> npm install -> restart.
+# Safe by design: refuses on local edits (never clobbers your changes) and only fast-forwards (never
+# rewrites your history). Run from anywhere:  bin/update
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+ver() { node -p "require('./package.json').version" 2>/dev/null || echo unknown; }
+OLD="$(ver)"
+
+git remote get-url origin >/dev/null 2>&1 || { echo "bin/update: no git remote 'origin' — is this a git clone?" >&2; exit 1; }
+if [ -n "$(git status --porcelain)" ]; then
+  echo "bin/update: you have local changes — commit or stash them first (git status)." >&2
+  exit 1
+fi
+
+BR="$(git rev-parse --abbrev-ref HEAD)"
+echo "==> fetching origin/$BR"
+git fetch origin
+BEFORE="$(git rev-parse HEAD)"
+git pull --ff-only origin "$BR"
+AFTER="$(git rev-parse HEAD)"
+
+if [ "$BEFORE" = "$AFTER" ]; then
+  echo "==> already up to date (v$OLD)"
+  exit 0
+fi
+
+echo "==> installing dependencies"
+npm install --no-audit --no-fund >/dev/null
+
+NEW="$(ver)"
+echo "==> updated v$OLD -> v$NEW"
+echo "==> changes:"
+git log --oneline "$BEFORE..$AFTER" | sed 's/^/    /'
+
+# Restart whichever service manager runs Supercalm; otherwise remind the operator.
+if [ "$(uname)" = "Darwin" ] && [ -f "$HOME/Library/LaunchAgents/ai.aios.server.plist" ]; then
+  launchctl kickstart -k "gui/$(id -u)/ai.aios.server" && echo "==> restarted launchd service"
+elif command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files supercalm.service >/dev/null 2>&1 && systemctl --user is-enabled supercalm.service >/dev/null 2>&1; then
+  systemctl --user restart supercalm.service && echo "==> restarted systemd service"
+else
+  echo "==> restart Supercalm to finish (re-run npm start, or bin/install-service to run it as a service)"
+fi

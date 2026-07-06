@@ -133,6 +133,21 @@ confirm the live terminal streams and the session shows as *working*. ✅ instal
 
 ---
 
+## 8. Updating later
+
+When the dashboard shows the **"Update available"** toast (or on request):
+
+```bash
+bin/update
+```
+
+It fast-forward pulls, reinstalls deps, and restarts the service; it refuses if the operator has local
+edits (report that instead of forcing).
+
+**Verify:** `curl -sS http://127.0.0.1:8793/healthz` shows the new `version`.
+
+---
+
 ## Troubleshooting
 
 - **`/healthz` not responding** → check the log: `tail -50 data/aios.log` (or `bin/logs`). A dangling

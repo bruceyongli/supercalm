@@ -21,7 +21,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node test/static_path.test.js && node test/project_graph.test.js && node test/knowledge_assets.test.js && node test/supervisor_spec_files.test.js && node test/supervisor_progressive_scope.test.js && node test/supervisor_doc_lifecycle.test.js && node test/supervisor_awareness_guards.test.js && node test/product_audit.test.js && node test/external_recovery.test.js && node test/operator_requirements.test.js && node test/model_catalog_key.test.js && npm run test:supervisor-architecture && npm run test:supervisor-replay && npm run test:supervisor-doctrine && npm run test:supervisor-send-policy && node test/session_title.test.js && node test/browser_identity.test.js && node test/preview_profiles.test.js && npm run test:council && npm run test:agui",
+    "test": "node test/static_path.test.js && node test/project_graph.test.js && node test/knowledge_assets.test.js && node test/supervisor_spec_files.test.js && node test/supervisor_progressive_scope.test.js && node test/supervisor_doc_lifecycle.test.js && node test/supervisor_awareness_guards.test.js && node test/product_audit.test.js && node test/external_recovery.test.js && node test/operator_requirements.test.js && node test/model_catalog_key.test.js && npm run test:supervisor-architecture && npm run test:supervisor-replay && npm run test:supervisor-doctrine && npm run test:supervisor-send-policy && npm run test:update-core && node test/session_title.test.js && node test/browser_identity.test.js && node test/preview_profiles.test.js && npm run test:council && npm run test:agui",
     "test:static-path": "node test/static_path.test.js",
     "test:project-graph": "node test/project_graph.test.js",
     "test:knowledge-assets": "node test/knowledge_assets.test.js",
@@ -41,7 +41,8 @@
     "test:browser-identity": "node test/browser_identity.test.js",
     "test:preview-profiles": "node test/preview_profiles.test.js",
     "test:council": "node test/council_context.test.js",
-    "test:agui": "node test/agui_session.test.js"
+    "test:agui": "node test/agui_session.test.js",
+    "test:update-core": "node test/update_core.test.js"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.56",

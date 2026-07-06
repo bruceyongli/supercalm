@@ -67,6 +67,31 @@ your devices over Tailscale Serve or an authenticated reverse proxy (never the p
 - **Configuring for your setup?** See **[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)** — external model
   proxy (+ token), voice STT/TTS, binaries, and agent auth.
 
+## Updating
+
+```bash
+bin/update        # fast-forward pull → npm install → restart the service
+```
+
+Safe by design: it refuses if you have local edits and only ever fast-forwards. When a new release is
+out, every open Supercalm page also shows a small **"Update available vX.Y.Z"** toast linking to the
+GitHub release (the server checks GitHub ~every 12 h — disable with `AIOS_UPDATE_CHECK=0`, point forks
+elsewhere with `AIOS_UPDATE_REPO=owner/repo`).
+
+## Versioning & releases
+
+- **`package.json` is the single source of truth**; the server reads it at boot and serves it at
+  `/api/version` + `/healthz`. Nothing else hardcodes the version — never edit it by hand.
+- **`bin/version [patch|minor|major|X.Y.Z]`** is the only thing that bumps it (commit `release: vX.Y.Z`
+  + annotated tag `vX.Y.Z`). Semver-ish while 0.x: **patch** = routine release (default), **minor** =
+  notable feature sets, **major** = breaking config/API changes.
+- **`bin/release`** (maintainers) = secret-scan → version bump → push with tags → GitHub Release with
+  generated notes (needs `GITHUB_TOKEN`; without it the tag still ships and installs discover the new
+  version via the `package.json` fallback).
+- Distribution is **git-based** — no build step, vendored front-end deps, tiny npm footprint — so
+  `bin/update` is the whole upgrade story. (Prebuilt binaries may come later; they'd still need `tmux` +
+  the agent CLIs, so they add little today.)
+
 ## Run / deploy (reference deployment)
 
 ```bash

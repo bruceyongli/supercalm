@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Cut a Supercalm release (maintainer tool): bump the version (bin/version: package.json -> commit ->
+# annotated tag) -> push with tags -> create the GitHub Release (needs GITHUB_TOKEN; skipped without it,
+# and installs still learn about the release via the package.json fallback in src/update_check.js).
+#
+# Usage:  bin/release [patch|minor|major|X.Y.Z]
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+[ -z "$(git status --porcelain)" ] || { echo "bin/release: commit or stash local changes first." >&2; exit 1; }
+node scripts/scan-secrets.mjs >/dev/null   # belt-and-suspenders before anything is tagged for the public
+
+NEW="$(bin/version "${1:-patch}")"
+BR="$(git rev-parse --abbrev-ref HEAD)"
+echo "==> pushing $BR + tags"
+git push origin "$BR" --follow-tags
+
+ORIGIN="$(git remote get-url origin)"
+REPO="$(echo "$ORIGIN" | sed -E 's#(git@github.com:|https://github.com/)##; s#\.git$##')"
+if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "$REPO" ]; then
+  echo "==> creating GitHub release v$NEW on $REPO"
+  curl -sS -X POST "https://api.github.com/repos/$REPO/releases" \
+    -H "authorization: Bearer $GITHUB_TOKEN" -H "accept: application/vnd.github+json" \
+    -d "{\"tag_name\":\"v$NEW\",\"name\":\"v$NEW\",\"generate_release_notes\":true}" \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log(j.html_url?('==> release: '+j.html_url):('release API: '+(j.message||s.slice(0,200))))})"
+else
+  echo "==> no GITHUB_TOKEN — tag pushed; create the GitHub Release from the tags page if wanted."
+fi
+echo "==> released v$NEW"

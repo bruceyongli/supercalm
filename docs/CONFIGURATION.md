@@ -92,7 +92,18 @@ AG_CLIENT_ID=...
 AG_CLIENT_SECRET=...
 ```
 
-## 7. Session defaults & misc
+## 7. Update check
+
+The server polls GitHub for the latest release (default: every 12 h, one anonymous request) and the UI
+shows an **"Update available"** toast linking to the release page; update with `bin/update`.
+
+| Var | Default | Notes |
+|---|---|---|
+| `AIOS_UPDATE_CHECK` | `1` | `0` disables the check (fully offline installs). |
+| `AIOS_UPDATE_REPO` | `bruceyongli/supercalm` | Forks point this at their own `owner/repo`. |
+| `AIOS_UPDATE_CHECK_MS` | `43200000` | Interval; floor 15 min. |
+
+## 8. Session defaults & misc
 
 | Var | Default |
 |---|---|
