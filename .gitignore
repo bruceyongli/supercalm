@@ -1,0 +1,10 @@
+node_modules/
+data/
+.aios/
+*.log
+.DS_Store
+.dev.vars
+.env
+.vapid.json
+aios.sqlite
+test-results/

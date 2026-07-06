@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Tail the Supercalm log on host.
+exec ssh "${AIOS_HOST:-host}" 'tail -n 80 -f ~/aios/data/aios.log'

@@ -1,0 +1,29 @@
+#!/bin/sh
+payload="$(cat)"
+ts="$(date +%s)"
+sid="${AIOS_SESSION_ID:-}"
+log="${AIOS_AGY_STATUSLINE_LOG:-$HOME/aios/data/agy-statusline.jsonl}"
+url="${AIOS_URL:-http://127.0.0.1:8793}/api/hook/agy/statusline"
+
+mkdir -p "$(dirname "$log")" 2>/dev/null || true
+if [ -n "$payload" ]; then
+  printf '{"ts":%s,"session_id":"%s","payload":%s}\n' "$ts" "$sid" "$payload" >> "$log" 2>/dev/null || true
+  if command -v curl >/dev/null 2>&1; then
+    (printf '{"ts":%s,"session_id":"%s","payload":%s}' "$ts" "$sid" "$payload" | curl -fsS --max-time 0.35 -H 'content-type: application/json' --data-binary @- "$url" >/dev/null 2>&1) &
+  fi
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  line="$(printf '%s' "$payload" | jq -r '
+    def clean: tostring | gsub("[\\r\\n]+"; " ") | .[0:36];
+    def pct: (((.context_window.used_percentage // 0) * 10 | round) / 10 | tostring) + "%";
+    [
+      (.plan_tier // empty | clean),
+      (.model.display_name // .model.id // "model" | clean),
+      ("ctx " + pct),
+      (.agent_state // "idle" | clean)
+    ] | join(" · ")
+  ' 2>/dev/null)"
+fi
+
+printf '%s\n' "${line:-Supercalm AGY}"

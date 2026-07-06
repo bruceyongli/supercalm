@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Run ON host. Installs Supercalm as a launchd user agent: auto-start at login + restart on crash.
+set -euo pipefail
+
+DIR="$HOME/aios"
+NODE="$(command -v node || echo /opt/homebrew/bin/node)"
+LABEL="ai.aios.server"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+UID_NUM="$(id -u)"
+
+mkdir -p "$HOME/Library/LaunchAgents" "$DIR/data/logs"
+
+cat > "$PLIST" <<PL
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>$LABEL</string>
+  <key>ProgramArguments</key><array>
+    <string>$NODE</string>
+    <string>$DIR/src/server.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>$DIR</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>StandardOutPath</key><string>$DIR/data/aios.log</string>
+  <key>StandardErrorPath</key><string>$DIR/data/aios.log</string>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>/opt/homebrew/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>$HOME</string>
+  </dict>
+</dict></plist>
+PL
+
+# stop any manual instance, then (re)load the agent
+pkill -f 'node src/server.js' 2>/dev/null || true
+launchctl bootout   "gui/$UID_NUM/$LABEL" 2>/dev/null || true
+launchctl bootstrap "gui/$UID_NUM" "$PLIST"
+launchctl enable    "gui/$UID_NUM/$LABEL"
+launchctl kickstart -k "gui/$UID_NUM/$LABEL"
+echo "installed $LABEL -> $PLIST"
+echo "logs: $DIR/data/aios.log"

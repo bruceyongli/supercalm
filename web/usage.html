@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/aios/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Supercalm · usage</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      :root { --u-bg: #0d1117; --u-panel: #0f141b; --u-panel2: #121923; --u-line: #26313d; --u-soft: #8b949e; --u-text: #d4dbe4; --u-blue: #58a6ff; --u-green: #3fb950; --u-yellow: #d29922; --u-red: #f85149; }
+      html, body { max-width: 100%; overflow-x: hidden; }
+      * { box-sizing: border-box; }
+      .usage-wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 14px 12px 40px; }
+      header .count { max-width: 48vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      a.rlink { color: var(--u-blue); text-decoration: none; }
+      .control-panel, .panel, .metric, .sub { border: 1px solid var(--u-line); border-radius: 8px; background: var(--u-panel); }
+      .control-panel { padding: 10px; margin-bottom: 12px; }
+      .filters { display: grid; grid-template-columns: 0.75fr 0.9fr 1fr 1fr 1fr 1fr; gap: 8px; align-items: end; }
+      .filters label { display: flex; flex-direction: column; min-width: 0; font-size: 11px; color: var(--u-soft); gap: 4px; }
+      .filters select, .filters input { width: 100%; box-sizing: border-box; background: var(--u-bg); color: var(--u-text); border: 1px solid #30363d; border-radius: 6px; padding: 7px; font: inherit; font-size: 13px; min-width: 0; }
+      .usage-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 9px; }
+      .hint { color: var(--u-soft); font-size: 12px; line-height: 1.45; }
+      .overview { display: grid; grid-template-columns: 1.2fr 0.9fr 0.9fr; gap: 10px; margin-bottom: 12px; }
+      .metric { padding: 12px; min-width: 0; overflow: hidden; }
+      .metric.primary { background: linear-gradient(180deg, #142033, #101720); }
+      .metric .k, .section-title { color: var(--u-soft); font-size: 11px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 700; }
+      .section-title { white-space: nowrap; }
+      .metric .v { color: var(--u-text); font-size: 30px; line-height: 1.05; font-weight: 800; margin: 7px 0 4px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+      .metric .subtext { color: var(--u-soft); font-size: 12px; line-height: 1.35; max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+      .metric-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 8px 0 12px; }
+      .mini .v { font-size: 20px; }
+      .panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+      .rank-panels { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(280px, 0.85fr); align-items: start; }
+      .panel { padding: 12px; min-width: 0; }
+      .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; min-width: 0; }
+      .panel-head .hint { text-align: right; }
+      .rank-list { display: grid; gap: 8px; }
+      .rank { min-width: 0; }
+      .rank-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; }
+      .rank-name { color: var(--u-text); font-weight: 700; min-width: 0; overflow-wrap: anywhere; }
+      .rank-cost { color: var(--u-text); font-weight: 800; font-variant-numeric: tabular-nums; }
+      .rank-meta { color: var(--u-soft); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+      .bar { height: 7px; background: #222b35; border-radius: 999px; overflow: hidden; margin-top: 5px; }
+      .bar i { display: block; height: 100%; width: 0%; background: var(--u-blue); }
+      .bar.warn i { background: var(--u-yellow); }
+      .bar.bad i { background: var(--u-red); }
+      .bar.good i { background: var(--u-green); }
+      .native-box { display: grid; gap: 8px; margin-bottom: 10px; }
+      .native-card { border: 1px solid #233041; border-radius: 8px; background: var(--u-panel2); padding: 10px; min-width: 0; }
+      .native-top { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+      .native-title { color: var(--u-text); font-weight: 800; overflow-wrap: anywhere; }
+      .native-chip { color: var(--u-soft); font-size: 11px; border: 1px solid var(--u-line); border-radius: 999px; padding: 1px 7px; white-space: nowrap; }
+      .native-meta { color: var(--u-soft); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+      .sub-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+      .sub { padding: 10px; min-width: 0; }
+      .sub .head { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: baseline; margin-bottom: 8px; }
+      .sub .title { font-weight: 800; overflow-wrap: anywhere; }
+      .sub .plan { color: var(--u-soft); font-size: 11px; text-align: right; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .meter { margin-top: 8px; }
+      .meter .mh { display: flex; justify-content: space-between; gap: 8px; color: var(--u-soft); font-size: 11px; min-width: 0; }
+      .meter .mh span { overflow-wrap: anywhere; }
+      .table-wrap { overflow-x: auto; border: 1px solid var(--u-line); border-radius: 8px; background: var(--u-panel); }
+      table.ut { width: 100%; min-width: 620px; border-collapse: collapse; }
+      .ut th, .ut td { padding: 8px 9px; border-bottom: 1px solid #202a35; text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .ut th:first-child, .ut td:first-child { text-align: left; white-space: normal; min-width: 130px; }
+      .ut th { color: var(--u-soft); font-size: 11px; font-weight: 700; }
+      .ut tr:last-child td { border-bottom: 0; }
+      .recent { display: grid; gap: 6px; }
+      .event { border: 1px solid var(--u-line); border-radius: 8px; background: var(--u-panel); padding: 8px 10px; }
+      .event .eh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--u-soft); font-size: 11px; margin-bottom: 3px; }
+      .event.limit { border-left: 3px solid var(--u-red); }
+      .event.summary { border-left: 3px solid var(--u-yellow); }
+      .event .msg { color: var(--u-text); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+      .empty { color: var(--u-soft); font-size: 12px; border: 1px dashed var(--u-line); border-radius: 8px; padding: 12px; }
+      @media (max-width: 900px) {
+        .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .overview, .panels, .rank-panels { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 560px) {
+        .usage-wrap { padding: 10px 8px 30px; }
+        header .count { max-width: 34vw; font-size: 11px; }
+        .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .filters label:last-child { grid-column: 1 / -1; }
+        .overview, .metric-row { grid-template-columns: 1fr; }
+        .metric .v { font-size: 24px; }
+        .mini .v { font-size: 18px; }
+        .panel { padding: 10px; }
+        .panel-head { align-items: flex-start; flex-direction: column; }
+        .panel-head .hint { text-align: left; }
+        .rank-top { grid-template-columns: 1fr; gap: 2px; }
+        .sub-grid { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><a href="." class="rlink">←</a> <h1>Usage</h1></div>
+      <div class="spacer"></div>
+      <span class="count" id="summary"></span>
+    </header>
+    <main class="usage-wrap">
+      <section class="control-panel">
+        <div class="filters">
+          <label>Range <select id="f-range"><option value="24h">24h</option><option value="7d" selected>7d</option><option value="30d">30d</option><option value="all">all</option></select></label>
+          <label>Tool <select id="f-tool"><option value="">all</option></select></label>
+          <label>Source <select id="f-source"><option value="">all</option></select></label>
+          <label>Model <select id="f-model"><option value="">all</option></select></label>
+          <label>Project <select id="f-project"><option value="">all</option></select></label>
+          <label>Search <input type="search" id="f-q" placeholder="project / model / message" /></label>
+        </div>
+        <div class="usage-actions">
+          <button class="btn ghost sm" id="refresh">Refresh</button>
+          <button class="btn ghost sm" id="rescan">Rescan logs</button>
+          <span class="hint" id="scan-msg"></span>
+        </div>
+      </section>
+
+      <section class="overview">
+        <div class="metric primary" id="cost-card"></div>
+        <div class="metric" id="quota-card"></div>
+        <div class="metric" id="burn-card"></div>
+      </section>
+
+      <div class="metric-row" id="cards"></div>
+
+      <section class="panels rank-panels">
+        <div class="panel"><div class="panel-head"><div class="section-title">Top Projects</div><span class="hint">ranked by estimated cost</span></div><div id="top-projects" class="rank-list"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">Top Models</div><span class="hint">API-equivalent tokens, not subscription quota</span></div><div id="top-models" class="rank-list"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">Quota Impact</div><span class="hint">agent calls and limit hits</span></div><div id="quota-impact" class="rank-list"></div></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div class="section-title">Subscription Windows</div><span class="hint" id="subs-msg">loading quota windows...</span></div>
+        <div id="agy-native" class="native-box"></div>
+        <div class="sub-grid" id="subs"></div>
+      </section>
+
+      <section class="panels">
+        <div class="panel"><div class="panel-head"><div class="section-title">Top Sessions</div><span class="hint">model session attribution</span></div><div id="by-session"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">By Tool</div><span class="hint">exact usage rows</span></div><div id="by-tool"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">By Source</div><span class="hint">where data came from</span></div><div id="by-source"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">By Model</div><span class="hint">token and cost rate</span></div><div id="by-model"></div></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div class="section-title">Session Summaries</div><span class="hint">terminal totals, not double-counted</span></div>
+        <div id="summaries" class="recent"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><div class="section-title">Recent Events</div><span class="hint" id="price-note"></span></div>
+        <div id="recent" class="recent"></div>
+      </section>
+    </main>
+    <script type="module" src="usage.js"></script>
+    <script type="module" src="version-badge.js"></script>
+  </body>
+</html>

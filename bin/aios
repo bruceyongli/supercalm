@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Start Supercalm in the foreground (local/dev run).
+cd "$(dirname "$0")/.."
+exec node src/server.js

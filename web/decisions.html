@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/aios/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Supercalm · decisions</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .rec-wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
+      .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+      .filters label { display: flex; flex-direction: column; font-size: 11px; color: #8b949e; gap: 3px; }
+      .filters select, .filters input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px; font: inherit; font-size: 13px; min-width: 0; }
+      .filterbar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+      .dec { border: 1px solid #21262d; border-left-width: 3px; border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; background: #0f141b; }
+      .dec .rh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: #8b949e; margin-bottom: 6px; }
+      .dec.cat-action { border-left-color: #f85149; }
+      .dec.cat-decision { border-left-color: #d29922; }
+      .dec.cat-review { border-left-color: #3fb950; }
+      .cat { border-radius: 4px; padding: 0 6px; font-weight: 600; text-transform: uppercase; font-size: 10px; }
+      .cat-action .cat, .b-action { background: #f8514922; color: #f85149; }
+      .cat-decision .cat, .b-decision { background: #d2992222; color: #d29922; }
+      .cat-review .cat, .b-review { background: #3fb95022; color: #3fb950; }
+      .st { border: 1px solid #30363d; border-radius: 4px; padding: 0 5px; font-size: 10px; }
+      .st-answered { color: #3fb950; border-color: #3fb95055; }
+      .st-pending { color: #d29922; border-color: #d2992255; }
+      .st-superseded { color: #6e7681; }
+      .src-tag { border: 1px solid #30363d; border-radius: 4px; padding: 0 5px; }
+      .summary { font-size: 14px; color: #e6edf3; font-weight: 600; margin-bottom: 6px; word-break: break-word; }
+      .ask { white-space: pre-wrap; word-break: break-word; font-size: 13px; color: #adbac7; background: #0b0f14; border: 1px solid #1c2230; border-radius: 6px; padding: 7px 9px; margin-bottom: 6px; max-height: 4.6em; overflow: hidden; cursor: pointer; }
+      .ask.open { max-height: none; }
+      .ask::before { content: "ask ▸ "; color: #6e7681; font-size: 11px; }
+      .resp { font-size: 13px; word-break: break-word; padding: 6px 9px; border-radius: 6px; background: #122119; border: 1px solid #1f3a2a; color: #c9d1d9; }
+      .resp.none { background: #1a1410; border-color: #3a2a1f; color: #8b949e; }
+      .resp .who { color: #3fb950; font-weight: 600; }
+      .resp.none .who { color: #d29922; }
+      .resp .rmeta { color: #6e7681; font-size: 11px; }
+      .pager { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 14px 0 28px; }
+      .count { color: #8b949e; font-size: 12px; }
+      a.rlink { color: #58a6ff; text-decoration: none; }
+      .tabs { display: flex; gap: 6px; }
+      .tabs a { font-size: 12px; padding: 3px 10px; border: 1px solid #30363d; border-radius: 6px; color: #8b949e; text-decoration: none; }
+      .tabs a.on { background: #1f6feb22; color: #58a6ff; border-color: #1f6feb55; }
+      /* Supervisor doctrine (approval queue) */
+      #doctrine { margin-bottom: 18px; }
+      .doct-h { font-size: 15px; margin: 0 0 2px; display: flex; align-items: center; gap: 8px; }
+      .doct-badge { background: #d2992222; color: #d29922; border: 1px solid #d2992255; border-radius: 10px; padding: 0 8px; font-size: 11px; font-weight: 600; }
+      .doct { border: 1px solid #21262d; border-left: 3px solid #d29922; border-radius: 8px; padding: 9px 11px; margin-bottom: 8px; background: #0f141b; }
+      .doct.st-active { border-left-color: #3fb950; }
+      .doct.st-rejected { border-left-color: #6e7681; opacity: .75; }
+      .doct-when { font-size: 11px; color: #d29922; text-transform: uppercase; letter-spacing: .3px; margin-bottom: 4px; }
+      .doct.st-active .doct-when { color: #3fb950; }
+      .doct-rule { font-size: 13.5px; color: #e6edf3; margin-bottom: 4px; word-break: break-word; }
+      .doct-apply { font-size: 12px; color: #8b949e; margin-bottom: 4px; }
+      .doct-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+      .doct-ev { font-size: 12px; color: #8b949e; margin-top: 4px; }
+      .doct-ev summary { cursor: pointer; }
+      .doct-ask, .doct-resp, .doct-div { white-space: pre-wrap; word-break: break-word; border: 1px solid #1c2230; border-radius: 6px; padding: 5px 8px; margin-top: 5px; background: #0b0f14; }
+      .doct-resp { background: #122119; border-color: #1f3a2a; color: #c9d1d9; }
+      .doct-div { color: #d29922; }
+      .doct-edit label { display: flex; flex-direction: column; font-size: 11px; color: #8b949e; gap: 3px; margin: 5px 0; }
+      .doct-edit input, .doct-edit textarea { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px; font: inherit; font-size: 13px; }
+      .doct-group { margin-top: 10px; }
+      .doct-group summary { cursor: pointer; font-size: 12px; color: #8b949e; margin-bottom: 6px; }
+      .doct-err { color: #f85149; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><a href="." class="rlink">←</a> <h1>Decisions</h1></div>
+      <div class="tabs"><a href="decisions" class="on">Decisions</a><a href="records">Messages</a></div>
+      <div class="spacer"></div>
+      <span class="count" id="summary"></span>
+    </header>
+    <main class="rec-wrap">
+      <section id="doctrine"></section>
+      <p class="count" style="margin:-2px 0 10px">Every time an agent paused for you: the model-distilled <b>ask</b> (its reasoning + the choice) → your <b>response</b>. For quick history + decision-model training.</p>
+      <div class="filters">
+        <label>Project <select id="f-project"><option value="">all</option></select></label>
+        <label>Session <select id="f-session"><option value="">all</option></select></label>
+        <label>Tool <select id="f-tool"><option value="">all</option></select></label>
+        <label>Model <select id="f-model"><option value="">all</option></select></label>
+        <label>Category <select id="f-category"><option value="">all</option><option value="decision">decision</option><option value="action">action</option><option value="review">review</option></select></label>
+        <label>Status <select id="f-status"><option value="">all</option><option value="answered">answered</option><option value="pending">pending</option><option value="superseded">superseded</option></select></label>
+        <label>From <input type="datetime-local" id="f-since" /></label>
+        <label>To <input type="datetime-local" id="f-until" /></label>
+        <label style="grid-column: 1 / -1">Search text <input type="search" id="f-q" placeholder="substring of ask / summary / your response…" /></label>
+      </div>
+      <div class="filterbar-actions">
+        <button class="btn ghost sm" id="clear">Clear filters</button>
+        <button class="btn ghost sm" id="export">Export JSON (training)</button>
+      </div>
+      <div id="results"></div>
+      <div class="pager">
+        <button class="btn ghost sm" id="prev">← prev</button>
+        <span class="count" id="pageinfo"></span>
+        <button class="btn ghost sm" id="next">next →</button>
+      </div>
+    </main>
+    <script type="module" src="decisions.js"></script>
+    <script type="module" src="doctrine-panel.js"></script>
+    <script type="module" src="version-badge.js"></script>
+  </body>
+</html>

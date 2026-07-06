@@ -1,0 +1,375 @@
+[
+  {
+    "name": "stance answer_only: a completion review is not verified/gated, supervisor observes",
+    "snapshot": {
+      "stance": "answer_only",
+      "session": { "status": "waiting", "category": "review", "summary": "done", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "operator.answer_only",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "answer-only",
+      "intentType": "none",
+      "triggerType": "operator_answer_only"
+    }
+  },
+  {
+    "name": "stance hold: operator asked the supervisor to stand down, stays silent",
+    "snapshot": {
+      "stance": "hold",
+      "operator": { "lastMessageText": "hold on, do nothing for now" },
+      "session": { "status": "working", "category": "working", "summary": "running tests", "updatedAt": 1782400011000 }
+    },
+    "expect": {
+      "ruleId": "operator.hold",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "operator-hold",
+      "intentType": "none",
+      "triggerType": "operator_hold"
+    }
+  },
+  {
+    "name": "normal idle wait without idle-nudge authorization is suppressed (no send)",
+    "snapshot": {
+      "stance": "normal",
+      "session": { "status": "waiting", "category": "idle", "summary": "waiting", "updatedAt": 1782400021000 },
+      "agent": { "reportedCompletion": false, "terminalSignals": [] }
+    },
+    "expect": {
+      "ruleId": "agent.waiting.idle",
+      "actionType": "nudge",
+      "allowedSend": false,
+      "suppressionReason": "idle-nudge-not-authorized-by-policy-config",
+      "intentType": "none",
+      "triggerType": "idle_waiting"
+    }
+  },
+  {
+    "name": "normal review with a fresh completion claim (no prior gate) is verified",
+    "snapshot": {
+      "stance": "normal",
+      "session": { "status": "waiting", "category": "review", "summary": "implemented and done", "updatedAt": 1782400026000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] }
+    },
+    "expect": {
+      "ruleId": "agent.waiting.review",
+      "actionType": "verify",
+      "allowedSend": false,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "completion_claim"
+    }
+  },
+  {
+    "name": "repeated completion gate with no new evidence waits (normal stance)",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "review", "summary": "done", "updatedAt": 1782400030000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "supervisionDoc": { "gateScopeKey": "goal-1" },
+      "supervisorState": {
+        "lastGate": { "key": "goal-1", "fp": "work-a", "at": 1782400000000 },
+        "lastDecision": { "id": "sd_prior_gate" }
+      }
+    },
+    "expect": {
+      "ruleId": "completion.no_new_signal",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "repeated-gate-no-new-signal",
+      "intentType": "none",
+      "triggerType": "completion_claim"
+    }
+  },
+  {
+    "name": "autopilot + phase already verified (gate sent) advances to the next phase — THE fix",
+    "snapshot": {
+      "stance": "autopilot",
+      "operator": { "lastMessageText": "Goal 1 is done, keep going and finish all the phases" },
+      "session": { "status": "waiting", "category": "review", "stage": "review", "summary": "P3 done", "updatedAt": 1782400041000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "supervisionDoc": { "gateScopeKey": "goal-1" },
+      "supervisorState": {
+        "lastGate": { "key": "goal-1", "fp": "work-a", "at": 1782400000000 },
+        "lastDecision": { "id": "sd_prior_gate" }
+      }
+    },
+    "expect": {
+      "ruleId": "stance.autopilot_advance",
+      "actionType": "nudge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "advance_phase"
+    }
+  },
+  {
+    "name": "autopilot still VERIFIES a fresh phase once before advancing (no prior gate)",
+    "snapshot": {
+      "stance": "autopilot",
+      "session": { "status": "waiting", "category": "review", "stage": "review", "summary": "P3 just finished", "updatedAt": 1782400042000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "supervisionDoc": { "gateScopeKey": "goal-1" }
+    },
+    "expect": {
+      "ruleId": "agent.waiting.review",
+      "actionType": "verify",
+      "allowedSend": false,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "completion_claim"
+    }
+  },
+  {
+    "name": "autopilot + idle wait keeps the builder moving (advance nudge, not suppressed)",
+    "snapshot": {
+      "stance": "autopilot",
+      "session": { "status": "waiting", "category": "", "summary": "idle after finishing a step", "updatedAt": 1782400043000 }
+    },
+    "expect": {
+      "ruleId": "stance.autopilot_advance",
+      "actionType": "nudge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "idle_waiting"
+    }
+  },
+  {
+    "name": "durable stance persists across a >1h gap: autopilot with NO recent operator message still advances",
+    "snapshot": {
+      "stance": "autopilot",
+      "operator": { "lastMessageText": "", "lastMessageTs": 1782390000000 },
+      "session": { "status": "waiting", "category": "review", "stage": "review", "summary": "P4 done", "updatedAt": 1782400000000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "supervisionDoc": { "gateScopeKey": "goal-1" },
+      "supervisorState": { "lastGate": { "key": "goal-1", "fp": "w", "at": 1782390000000 } }
+    },
+    "expect": {
+      "ruleId": "stance.autopilot_advance",
+      "actionType": "nudge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "advance_phase"
+    }
+  },
+  {
+    "name": "completion claim without tests becomes a missing-evidence challenge",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "review", "summary": "implemented and done", "updatedAt": 1782400050000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "verification": { "verdict": "needs_evidence", "missingEvidence": ["test command output"], "unmetCriteria": ["tests pass"] }
+    },
+    "expect": {
+      "ruleId": "verification.needs_evidence",
+      "actionType": "challenge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "verification_gap"
+    }
+  },
+  {
+    "name": "visual work without screenshot requires render evidence",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "review", "summary": "UI is finished", "updatedAt": 1782400060000 },
+      "agent": { "reportedCompletion": true, "terminalSignals": ["completion_claim"] },
+      "verification": { "verdict": "needs_evidence", "missingEvidence": ["render screenshot"], "unmetCriteria": ["visual proof"] }
+    },
+    "expect": {
+      "ruleId": "verification.needs_evidence",
+      "actionType": "challenge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "verification_gap"
+    }
+  },
+  {
+    "name": "stance answer_only suppresses an auth-error false positive from hijacking the turn",
+    "snapshot": {
+      "stance": "answer_only",
+      "operator": { "lastMessageText": "answer my question only, do not fix anything" },
+      "session": { "status": "working", "category": "working", "summary": "auth error visible", "updatedAt": 1782400071000 },
+      "agent": { "apiErrorSignals": ["auth_error"], "terminalSignals": ["blocked"] }
+    },
+    "expect": {
+      "ruleId": "operator.answer_only",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "answer-only",
+      "intentType": "none",
+      "triggerType": "operator_answer_only"
+    }
+  },
+  {
+    "name": "context window wedge escalates unless recovery is enabled",
+    "snapshot": {
+      "session": { "status": "working", "category": "working", "summary": "context limit reached", "updatedAt": 1782400080000 },
+      "agent": { "contextWindowSignals": ["context_window_full"], "terminalSignals": [] }
+    },
+    "config": { "allowContextRecovery": false },
+    "expect": {
+      "ruleId": "recover.context_window",
+      "actionType": "escalate",
+      "allowedSend": false,
+      "suppressionReason": "context-recovery-needs-operator-or-config",
+      "intentType": "none",
+      "triggerType": "context_window_full"
+    }
+  },
+  {
+    "name": "unexpected exited supervised session recovers instead of going idle",
+    "snapshot": {
+      "session": { "status": "exited", "category": "working", "summary": "process ended", "updatedAt": 1782400085000, "endedAt": 1782400085000, "exitCode": 0 },
+      "supervisionDoc": { "raw": "# Goal\nShip LangGraph\n\n## Acceptance criteria\n- [ ] integrated and tested", "goal": "Ship LangGraph", "gateScopeKey": "goal-langgraph" },
+      "supervisorState": { "signedOff": false, "recoveryState": { "exit": { "attempt": 0, "resolved": false } } }
+    },
+    "config": { "allowExitRecovery": true },
+    "expect": {
+      "ruleId": "recover.unexpected_exit",
+      "actionType": "recover",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "unexpected_exit"
+    }
+  },
+  {
+    "name": "active goal-conflict hold suppresses agent sends",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "review", "summary": "done", "updatedAt": 1782400090000 },
+      "supervisorState": { "activeHold": { "reason": "goal_conflict", "scope": "daemon-start", "clearCondition": "operator-resolve-or-new-evidence" } }
+    },
+    "expect": {
+      "ruleId": "supervisor.hold",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "active-hold",
+      "intentType": "none",
+      "triggerType": "active_hold"
+    }
+  },
+  {
+    "name": "waiting agent question can be answered",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "action", "question": "Can I proceed?", "summary": "needs confirmation", "updatedAt": 1782400100000 }
+    },
+    "expect": {
+      "ruleId": "agent.waiting.question",
+      "actionType": "answer",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "agent_question"
+    }
+  },
+  {
+    "name": "planning: agent awaiting plan approval stands down instead of answering",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "decision", "stage": "awaiting_approval", "summary": "Here is the plan -- say go and P0 ships today. Which Scribe model?", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "stage.stand_down",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "stage-awaiting_approval",
+      "intentType": "none",
+      "triggerType": "planning_stage"
+    }
+  },
+  {
+    "name": "planning: idle pause during planning is not a keep-working nudge",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "", "stage": "planning", "summary": "proposed plan; will start P0 on your word", "updatedAt": 1782400001000 }
+    },
+    "config": { "allowIdleNudge": true },
+    "expect": {
+      "ruleId": "stage.stand_down",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "stage-planning",
+      "intentType": "none",
+      "triggerType": "planning_stage"
+    }
+  },
+  {
+    "name": "autopilot does NOT override RAW planning (no plan formed yet) — still stands down",
+    "snapshot": {
+      "stance": "autopilot",
+      "operator": { "lastMessageText": "Go finish the remaining phases" },
+      "session": { "status": "waiting", "category": "", "stage": "planning", "summary": "outlining the approach", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "stage.stand_down",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "stage-planning",
+      "intentType": "none",
+      "triggerType": "planning_stage"
+    }
+  },
+  {
+    "name": "planning: no completion challenge for work not yet begun (stand-down beats verification)",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "decision", "stage": "awaiting_approval", "summary": "plan presented; awaiting go", "updatedAt": 1782400001000 },
+      "verification": { "verdict": "needs_evidence", "missingEvidence": ["no live proof yet"] }
+    },
+    "expect": {
+      "ruleId": "stage.stand_down",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "stage-awaiting_approval",
+      "intentType": "none",
+      "triggerType": "planning_stage"
+    }
+  },
+  {
+    "name": "executing: a genuine blocking question is still answered (gate is stage-specific)",
+    "snapshot": {
+      "session": { "status": "waiting", "category": "decision", "stage": "executing", "summary": "which output dir should the build write to?", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "agent.waiting.question",
+      "actionType": "answer",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "agent_question"
+    }
+  },
+  {
+    "name": "autopilot + inter-phase approval pause (awaiting_approval, plan formed) proceeds to the next phase",
+    "snapshot": {
+      "stance": "autopilot",
+      "operator": { "lastMessageText": "Go finish the remaining phases nonstop" },
+      "session": { "status": "waiting", "category": "decision", "stage": "awaiting_approval", "summary": "P2 done. Shall I proceed to P3?", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "stance.autopilot_proceed",
+      "actionType": "nudge",
+      "allowedSend": true,
+      "suppressionReason": "",
+      "intentType": "none",
+      "triggerType": "proceed_directive"
+    }
+  },
+  {
+    "name": "normal stance at an inter-phase approval pause stands down (operator owns the gate)",
+    "snapshot": {
+      "stance": "normal",
+      "operator": { "lastMessageText": "take the last round of feedback, then we can start coding" },
+      "session": { "status": "waiting", "category": "decision", "stage": "awaiting_approval", "summary": "say go and P0 ships", "updatedAt": 1782400001000 }
+    },
+    "expect": {
+      "ruleId": "stage.stand_down",
+      "actionType": "wait",
+      "allowedSend": false,
+      "suppressionReason": "stage-awaiting_approval",
+      "intentType": "none",
+      "triggerType": "planning_stage"
+    }
+  }
+]

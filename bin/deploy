@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Deploy Supercalm: bump the release version, push to gitlab, pull on host, restart the service.
+# Git ONLY — no rsync. host's ~/aios is a real git checkout tracking origin/main
+# (host's SSH key is registered with the gitlab project), so updates apply via pull.
+#
+# EVERY deploy increments the release version (the must-follow workflow — see CLAUDE.md "Release
+# versioning"). The single source of truth is package.json; bin/version bumps it + package-lock.json,
+# commits "release: vX.Y.Z", and tags. After restart the server serves the new version and open
+# browsers get the bottom-left new-version toast on their next poll.
+#
+# Usage:  bin/deploy [patch|minor|major|X.Y.Z]   (default: patch)
+set -euo pipefail
+HOST="${AIOS_HOST:-host}"
+LEVEL="${1:-patch}"
+cd "$(dirname "$0")/.."
+
+if ! git remote 2>/dev/null | grep -qx origin; then
+  echo "error: no git 'origin' remote. Add it first:" >&2
+  echo "  git remote add origin git@github.com:YOUR-ORG/aios.git   # your fork/remote" >&2
+  exit 1
+fi
+BR="$(git branch --show-current)"
+
+# Are we running ON the deploy target itself? (Dogfooding: an agent on host edits this very repo, which
+# IS ~/aios and runs the launchd service — and host can't ssh to itself.) If so, the local checkout is
+# the one we update, so skip the ssh hop and restart locally.
+ON_HOST=0
+if [ "$(pwd -P)" = "$(cd "$HOME/aios" 2>/dev/null && pwd -P || echo /nonexistent)" ] \
+   && launchctl print "gui/$(id -u)/ai.aios.server" >/dev/null 2>&1; then
+  ON_HOST=1
+fi
+
+# Clean tree required: the auto-bump always creates a pushable "release:" commit, and only COMMITTED
+# work reaches host. Without this guard a deploy could look successful while uncommitted edits are
+# silently left behind. Commit (or stash) your work first.
+if [ -n "$(git status --porcelain)" ]; then
+  echo "error: working tree is not clean — commit or stash your changes first." >&2
+  echo "       bin/deploy adds only the version bump, and pushes only committed work." >&2
+  exit 1
+fi
+
+# Deploy boundary (multi-agent safety): the live service ships origin/main from the canonical checkout.
+# A parallel agent working in a linked git worktree on a feature branch must NOT deploy. These guards
+# block that without affecting a normal main-checkout deploy on any machine.
+if [ "${AIOS_NO_DEPLOY:-}" = "1" ]; then
+  echo "error: AIOS_NO_DEPLOY=1 — deploys are disabled in this session." >&2
+  exit 1
+fi
+if [ "$(git rev-parse --git-dir 2>/dev/null)" != "$(git rev-parse --git-common-dir 2>/dev/null)" ]; then
+  echo "error: refusing to deploy from a linked git worktree." >&2
+  echo "       Deploy only from the canonical main checkout (e.g. ~/aios), not a worktree." >&2
+  exit 1
+fi
+if [ "$BR" != "main" ] && [ "${AIOS_ALLOW_BRANCH_DEPLOY:-}" != "1" ]; then
+  echo "error: refusing to deploy from branch '$BR' (expected 'main')." >&2
+  echo "       Deploys ship origin/main to the live service — merge to main first," >&2
+  echo "       or set AIOS_ALLOW_BRANCH_DEPLOY=1 to override intentionally." >&2
+  exit 1
+fi
+
+# Fast-forward to origin before bumping. Every deploy adds a release commit, so deploying from two
+# checkouts of the same branch would otherwise diverge and fail --ff-only. Deploy from ONE machine.
+echo "==> sync $BR with origin (fast-forward only)"
+git fetch origin --quiet
+if git rev-parse --verify --quiet "origin/$BR" >/dev/null; then
+  git merge --ff-only "origin/$BR" || {
+    echo "error: local '$BR' has diverged from origin/$BR." >&2
+    echo "       Every deploy adds a 'release:' commit — deploy from ONE machine, or reconcile" >&2
+    echo "       (git pull --rebase) before retrying." >&2
+    exit 1
+  }
+fi
+
+OLD="$(node -p "require('./package.json').version")"
+
+echo "==> bump release version ($LEVEL)"
+NEW="$(bin/version "$LEVEL")"
+if [ "$NEW" = "$OLD" ]; then
+  echo "error: deploy did not change the release version (still v$NEW)." >&2
+  echo "       Use patch/minor/major or a new explicit X.Y.Z; every deploy must move the served version." >&2
+  exit 1
+fi
+echo "    -> v$NEW"
+
+echo "==> git push origin $BR (with tags)"
+git push origin "$BR" --follow-tags
+
+if [ "$ON_HOST" = 1 ]; then
+  # On host itself: the local checkout already has the pushed commit; just refresh deps + restart.
+  echo "==> on-host (host): npm install + restart locally"
+  npm install --omit=dev
+  launchctl kickstart -k "gui/$(id -u)/ai.aios.server" \
+    && echo restarted \
+    || echo "service not installed — run bin/install-service"
+else
+  echo "==> host: fetch + fast-forward $BR + npm install"
+  ssh "$HOST" "bash -lc 'set -e; cd ~/aios && git fetch origin --quiet && git checkout --quiet \"$BR\" && git merge --ff-only \"origin/$BR\" && npm install --omit=dev'"
+
+  echo "==> restart service"
+  ssh "$HOST" 'launchctl kickstart -k "gui/$(id -u)/ai.aios.server" 2>/dev/null \
+    && echo restarted \
+    || echo "service not installed — run ~/aios/bin/install-service on host"'
+fi
+
+echo "==> deployed v$NEW"

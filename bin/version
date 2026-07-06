@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Bump the Supercalm release version — the SINGLE source of truth is package.json (package-lock.json
+# mirrors it; npm keeps both in sync). Nothing else in the repo hardcodes the version: the server
+# reads package.json at boot (src/config.js VERSION) and everything else (UI toast, /api/version,
+# /healthz, /api/state) derives from it at runtime. This script is the ONLY thing that edits it.
+#
+# Normally invoked by bin/deploy (every deploy bumps). Run standalone to bump without deploying.
+#
+# Usage:  bin/version [patch|minor|major|X.Y.Z] [--no-commit]
+#   level     semver bump (default: patch) or an explicit version like 1.2.3
+#   --no-commit   bump the files only (no git add/commit/tag) — for local testing
+#
+# Output: progress on stderr; the bare new version (e.g. 0.2.0) on stdout, so callers can capture it.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+LEVEL="patch"
+COMMIT=1
+for a in "$@"; do
+  case "$a" in
+    --no-commit) COMMIT=0 ;;
+    patch|minor|major) LEVEL="$a" ;;
+    [0-9]*.[0-9]*.[0-9]*) LEVEL="$a" ;;
+    *) echo "bin/version: unknown argument '$a'" >&2; exit 2 ;;
+  esac
+done
+
+# `npm version --no-git-tag-version` rewrites package.json + package-lock.json (root + packages[""])
+# without committing, tagging, or requiring a clean tree (that check only guards npm's own git path,
+# which the flag disables). It prints the new version as `vX.Y.Z`; take the last line and strip the v.
+NEW="$(npm version "$LEVEL" --no-git-tag-version | tail -n1)"
+NEW="${NEW#v}"
+echo "bin/version: package.json -> v$NEW" >&2
+
+if [ "$COMMIT" = "1" ]; then
+  git add package.json package-lock.json
+  # Only commit if the bump actually changed something (re-running with the same explicit version is a no-op).
+  if git diff --cached --quiet; then
+    echo "bin/version: nothing to commit (already at v$NEW)" >&2
+  else
+    git commit -q -m "release: v$NEW"
+    echo "bin/version: committed release: v$NEW" >&2
+  fi
+  # Annotated tag for traceability of what shipped. Non-fatal if it already exists.
+  if git tag -a "v$NEW" -m "Supercalm v$NEW" 2>/dev/null; then
+    echo "bin/version: tagged v$NEW" >&2
+  else
+    echo "bin/version: tag v$NEW already exists (skipped)" >&2
+  fi
+fi
+
+echo "$NEW"

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/aios/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Supercalm · records</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .rec-wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
+      .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
+      .filters label { display: flex; flex-direction: column; font-size: 11px; color: #8b949e; gap: 3px; }
+      .filters select, .filters input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d; border-radius: 6px; padding: 6px; font: inherit; font-size: 13px; min-width: 0; }
+      .filterbar-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+      .rec { border: 1px solid #21262d; border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; background: #0f141b; }
+      .rec .rh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11px; color: #8b949e; margin-bottom: 4px; }
+      .rec .rtext { white-space: pre-wrap; word-break: break-word; font-size: 13px; color: #c9d1d9; max-height: 4.6em; overflow: hidden; cursor: pointer; }
+      .rec .rtext.open { max-height: none; }
+      .dir-in { color: #58a6ff; }
+      .dir-out { color: #d29922; }
+      .src-tag { border: 1px solid #30363d; border-radius: 4px; padding: 0 5px; }
+      .pager { display: flex; gap: 8px; align-items: center; justify-content: center; margin: 14px 0 28px; }
+      .count { color: #8b949e; font-size: 12px; }
+      a.rlink { color: #58a6ff; text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><a href="." class="rlink">←</a> <h1>Records</h1></div>
+      <div class="spacer"></div>
+      <span class="count" id="summary"></span>
+    </header>
+    <main class="rec-wrap">
+      <div class="filters">
+        <label>Project <select id="f-project"><option value="">all</option></select></label>
+        <label>Session <select id="f-session"><option value="">all</option></select></label>
+        <label>Tool <select id="f-tool"><option value="">all</option></select></label>
+        <label>Model <select id="f-model"><option value="">all</option></select></label>
+        <label>Source <select id="f-source"><option value="">all</option><option value="text">text</option><option value="voice">voice</option><option value="task">task</option><option value="detect">detect</option><option value="auto">auto</option></select></label>
+        <label>Direction <select id="f-direction"><option value="">all</option><option value="in">you → session</option><option value="out">extracted question</option></select></label>
+        <label>From <input type="datetime-local" id="f-since" /></label>
+        <label>To <input type="datetime-local" id="f-until" /></label>
+        <label style="grid-column: 1 / -1">Search text <input type="search" id="f-q" placeholder="substring of any message…" /></label>
+      </div>
+      <div class="filterbar-actions">
+        <button class="btn ghost sm" id="clear">Clear filters</button>
+        <button class="btn ghost sm" id="export">Export JSON</button>
+      </div>
+      <div id="results"></div>
+      <div class="pager">
+        <button class="btn ghost sm" id="prev">← prev</button>
+        <span class="count" id="pageinfo"></span>
+        <button class="btn ghost sm" id="next">next →</button>
+      </div>
+    </main>
+    <script type="module" src="records.js"></script>
+    <script type="module" src="version-badge.js"></script>
+  </body>
+</html>

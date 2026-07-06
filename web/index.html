@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- Served under /aios on 443 (and direct on :8793). base + relative URLs keep every
+         asset/API request under the same prefix; the server strips /aios either way. -->
+    <base href="/aios/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Supercalm</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">
+        <h1>Supercalm</h1>
+        <span class="muted">agent OS</span>
+      </div>
+      <div class="pills" id="counts"></div>
+      <div class="spacer"></div>
+      <button class="btn" id="btn-new">+ Session</button>
+      <button class="btn ghost" id="btn-project">+ Project</button>
+      <a class="btn ghost" href="health" title="Supercalm product health snapshot">Health</a>
+      <a class="btn ghost" href="usage" title="Token usage attribution and subscription windows">Usage</a>
+      <a class="btn ghost" href="decisions" title="Decision history (ask → your response) + training export">Decisions</a>
+      <a class="btn ghost" href="records" title="Browse all stored messages">Records</a>
+      <button class="btn ghost" id="btn-reauth" title="Re-launch sessions stuck on expired login (after you log in anywhere)">↻ Re-auth</button>
+      <a class="btn ghost" href="auth" id="lnk-auth" title="Claude auth: which login path sessions use + Supercalm-managed login">Auth <span id="auth-badge" class="auth-badge">·</span></a>
+      <button class="btn ghost" id="btn-notify" title="Enable push notifications">🔔</button>
+      <span class="muted clock" id="clock"></span>
+    </header>
+
+    <main>
+      <section id="needs" class="panel">
+        <h2>Needs you <span class="count" id="needs-count">0</span>
+          <button class="btn voice-btn" id="btn-voice" title="Hands-free voice mode">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 18 0"/><path d="M3 12v3a2 2 0 0 0 2 2h1v-5H5a2 2 0 0 0-2 2z"/><path d="M21 12v3a2 2 0 0 1-2 2h-1v-5h1a2 2 0 0 1 2 2z"/></svg>
+            Voice
+          </button>
+        </h2>
+        <div id="queue" class="queue"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Sessions</h2>
+        <div id="sessions" class="sessions"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Projects</h2>
+        <div id="projects" class="projects"></div>
+      </section>
+    </main>
+
+    <!-- New session modal -->
+    <div class="modal" id="modal-new" hidden>
+      <div class="box">
+        <h3>New session</h3>
+        <label>Project</label>
+        <select id="ns-project"></select>
+        <label>…or new project path<span class="muted"> (absolute path on the server)</span></label>
+        <input id="ns-path" placeholder="/home/you/code/myproject" />
+        <label>Tool</label>
+        <div class="seg" id="ns-tool"></div>
+        <label>Model <button type="button" id="ns-rescan" title="Rescan models from the proxy fleet / CLIs">↻</button></label>
+        <select id="ns-model"></select>
+        <button class="checkline ns-fast-toggle" id="ns-fast" type="button" aria-pressed="false" hidden>
+          <span>Fast</span>
+          <span class="muted">higher usage</span>
+        </button>
+        <label>Autonomy</label>
+        <div class="seg" id="ns-autonomy"></div>
+        <label>Effort <span class="muted" id="ns-effort-note"></span></label>
+        <div class="seg" id="ns-effort"></div>
+        <label id="ns-orch-label">Orchestration <span class="muted">· claude only</span></label>
+        <div class="seg" id="ns-orch"></div>
+        <label>Initial task</label>
+        <textarea id="ns-task" rows="4" placeholder="What should it work on?"></textarea>
+        <div class="row">
+          <button class="btn" id="ns-go">Launch</button>
+          <button class="btn ghost" data-close>Cancel</button>
+          <span class="msg" id="ns-msg"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Add project modal -->
+    <div class="modal" id="modal-project" hidden>
+      <div class="box">
+        <h3>Add project</h3>
+        <label>Name</label>
+        <input id="pr-name" placeholder="my-project" />
+        <label>Absolute path on the server</label>
+        <input id="pr-path" placeholder="/home/you/code/my-project" />
+        <div class="row">
+          <button class="btn" id="pr-go">Add</button>
+          <button class="btn ghost" data-close>Cancel</button>
+          <span class="msg" id="pr-msg"></span>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+    <script type="module" src="version-badge.js"></script>
+  </body>
+</html>

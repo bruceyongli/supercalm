@@ -1,0 +1,51 @@
+{
+  "name": "supercalm",
+  "version": "0.1.216",
+  "type": "module",
+  "description": "Supercalm \u2014 a remote operating system to drive CLI coding agents (claude/codex/agy) on a Tailscale node, with a voice/text web console",
+  "license": "MIT",
+  "keywords": [
+    "coding-agents",
+    "claude",
+    "codex",
+    "tmux",
+    "tailscale",
+    "voice",
+    "supervisor",
+    "agent-orchestration",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node test/static_path.test.js && node test/project_graph.test.js && node test/knowledge_assets.test.js && node test/supervisor_spec_files.test.js && node test/supervisor_progressive_scope.test.js && node test/supervisor_doc_lifecycle.test.js && node test/supervisor_awareness_guards.test.js && node test/product_audit.test.js && node test/external_recovery.test.js && node test/operator_requirements.test.js && node test/model_catalog_key.test.js && npm run test:supervisor-architecture && npm run test:supervisor-replay && npm run test:supervisor-doctrine && npm run test:supervisor-send-policy && node test/session_title.test.js && node test/browser_identity.test.js && node test/preview_profiles.test.js && npm run test:council && npm run test:agui",
+    "test:static-path": "node test/static_path.test.js",
+    "test:project-graph": "node test/project_graph.test.js",
+    "test:knowledge-assets": "node test/knowledge_assets.test.js",
+    "test:supervisor-spec-files": "node test/supervisor_spec_files.test.js",
+    "test:supervisor-progressive-scope": "node test/supervisor_progressive_scope.test.js",
+    "test:supervisor-doc-lifecycle": "node test/supervisor_doc_lifecycle.test.js",
+    "test:supervisor-awareness-guards": "node test/supervisor_awareness_guards.test.js",
+    "test:product-audit": "node test/product_audit.test.js",
+    "test:external-recovery": "node test/external_recovery.test.js",
+    "test:operator-requirements": "node test/operator_requirements.test.js",
+    "test:model-catalog-key": "node test/model_catalog_key.test.js",
+    "test:supervisor-architecture": "node test/supervisor_architecture_contract.test.js",
+    "test:supervisor-replay": "node test/supervisor_replay.test.js",
+    "test:supervisor-doctrine": "node test/supervisor_doctrine.test.js",
+    "test:supervisor-send-policy": "node test/supervisor_send_policy.test.js",
+    "test:session-title": "node test/session_title.test.js",
+    "test:browser-identity": "node test/browser_identity.test.js",
+    "test:preview-profiles": "node test/preview_profiles.test.js",
+    "test:council": "node test/council_context.test.js",
+    "test:agui": "node test/agui_session.test.js"
+  },
+  "dependencies": {
+    "@ag-ui/client": "^0.0.56",
+    "@ag-ui/core": "^0.0.56",
+    "web-push": "^3.6.7"
+  }
+}

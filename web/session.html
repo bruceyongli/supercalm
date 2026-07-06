@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <base href="/aios/" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Supercalm · session</title>
+    <link rel="icon" href="icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="session-page">
+    <header>
+      <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
+      <span class="title" id="s-title"></span>
+      <span class="status-txt" id="s-status"></span>
+      <div class="spacer"></div>
+      <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
+      <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
+      <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
+    </header>
+
+    <div class="session-shell" id="session-shell">
+      <aside class="session-rail" id="session-rail">
+        <div class="session-rail-inner">
+          <div class="rail-head">
+            <span class="rail-title">Sessions</span>
+            <button class="btn ghost sm" id="rail-pin" type="button">Pin</button>
+          </div>
+          <div class="rail-list" id="session-rail-list"></div>
+        </div>
+      </aside>
+
+      <main class="session-main">
+        <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
+        <section id="scrollback" class="scrollback-view main-view-panel" data-main-panel="scrollback" hidden aria-live="polite">
+          <div class="scrollback-head">
+            <span>Transcript</span>
+            <span id="scrollback-meta"></span>
+            <button class="btn ghost sm" id="scrollback-refresh" type="button">Refresh</button>
+            <button class="btn sm" id="scrollback-latest" type="button">Latest</button>
+          </div>
+          <pre id="scrollback-text" class="scrollback-text">Open Transcript to load the plain scrollback.</pre>
+        </section>
+        <section id="conversation" class="conversation-view main-view-panel" data-main-panel="conversation" hidden aria-live="polite">
+          <div class="timeline-empty">Open Conversation to load the rich session timeline.</div>
+        </section>
+        <section id="agent-view" class="agent-view main-view-panel" data-main-panel="agent" hidden aria-live="polite">
+          <div class="timeline-empty">Open Agent View to load request-level artifacts and events.</div>
+        </section>
+        <div class="session-tools">
+          <div class="keys" id="keys"></div>
+          <div class="main-tabs" role="tablist" aria-label="Session view">
+            <button class="on" data-main-view="terminal" role="tab" aria-selected="true" aria-label="Terminal view" title="Terminal view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5.5h16v13H4z"></path>
+                <path d="m7 9 3 3-3 3"></path>
+                <path d="M12 15h5"></path>
+              </svg>
+            </button>
+            <button data-main-view="scrollback" role="tab" aria-selected="false" aria-label="Transcript view" title="Plain transcript">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 4.5h12v15H6z"></path>
+                <path d="M9 8h6"></path>
+                <path d="M9 11.5h6"></path>
+                <path d="M9 15h4"></path>
+              </svg>
+            </button>
+            <button data-main-view="conversation" role="tab" aria-selected="false" aria-label="Conversation view" title="Conversation view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 6.5h14v9H9l-4 3z"></path>
+                <path d="M8 10h8"></path>
+                <path d="M8 13h5"></path>
+              </svg>
+            </button>
+            <button data-main-view="agent" role="tab" aria-selected="false" aria-label="Agent view" title="Agent view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 4.5h14v4H5z"></path>
+                <path d="M7 13h10"></path>
+                <path d="M7 17h7"></path>
+                <path d="M8 8.5v8.5"></path>
+                <path d="M16 8.5v4.5"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="message-box footer-composer" id="message-box" aria-label="Message composer">
+          <div class="attachment-list" id="attachments" hidden></div>
+          <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
+          <div class="composer-bottom">
+            <div class="composer-options">
+              <div class="settings composer-settings" id="s-settings"></div>
+              <button class="btn ghost icon-btn attach-btn attach-desktop" id="attach-desktop" type="button" aria-label="Attach files/images">+</button>
+              <input id="file-input" type="file" multiple hidden />
+            </div>
+            <button class="composer-hint" id="composer-hint" type="button" title="How Enter behaves — click to switch" hidden></button>
+            <div class="composer-actions">
+              <button class="btn ghost icon-btn attach-btn attach-mobile" id="attach" type="button" aria-label="Attach files/images">+</button>
+              <span class="composer-action-spacer"></span>
+              <span class="mic-status" id="mic-status"></span>
+              <button class="btn ghost mic" id="mic" type="button" aria-label="Dictate"></button>
+              <button class="btn send-btn" id="send" type="button" aria-label="Send">↑</button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize usage panel"></div>
+      <aside class="session-usage-panel" id="session-usage-panel">
+        <div class="side-tabs" id="side-tabs" role="tablist" aria-label="Session agents"></div>
+        <div id="side-panels">
+          <section class="side-tab-panel" id="s-map" aria-live="polite" hidden></section>
+          <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
+        </div>
+      </aside>
+    </div>
+
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/xterm-fit.js"></script>
+    <script type="module" src="session.js"></script>
+    <script type="module" src="version-badge.js"></script>
+  </body>
+</html>

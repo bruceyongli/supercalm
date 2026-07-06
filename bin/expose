@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Run ON the server node. Publish Supercalm on your tailnet via Tailscale Serve (idempotent).
+#   - Primary URL:  https://<node>.<your-tailnet>.ts.net/aios   (no port; --set-path=/aios on 443)
+#   - Fallback:     https://<node>.<your-tailnet>.ts.net:8793   (direct port)
+# The /aios mapping is ADDITIVE — if you share the 443 root "/" for something else, this must not
+# disturb it. The app is path-aware (<base href="/aios/"> + a
+# server-side /aios prefix-strip), so both URLs work.
+set -euo pipefail
+PORT="${AIOS_PORT:-8793}"
+tailscale serve --bg --https="$PORT" "http://127.0.0.1:$PORT"
+tailscale serve --bg --https=443 --set-path=/aios "http://127.0.0.1:$PORT"
+echo "--- serve status ---"
+tailscale serve status
