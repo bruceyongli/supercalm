@@ -64,6 +64,7 @@ const BLIND_LIMIT = Number(process.env.AIOS_SUPERVISOR_BLIND_LIMIT || 2); // bli
 const WEDGE_STUCK_MS = Number(process.env.AIOS_SUPERVISOR_WEDGE_STUCK_MS || 120000); // a real overflow error must persist with a FROZEN screen this long before we act (vs a still-working agent)
 const WEDGE_AUTO_COMPACT = process.env.AIOS_SUPERVISOR_WEDGE_COMPACT === '1'; // default ESCALATE-ONLY: never auto-/compact into the agent's flow (Claude auto-compacts itself); opt in with =1
 const MAX_ANSWER_TRIES = Number(process.env.AIOS_SUPERVISOR_MAX_ANSWER_TRIES || 5); // re-grills on the SAME stalled ask before escalating (resets on progress)
+const KEEPWORKING_MAX_PER_FOCUS = Number(process.env.AIOS_SUPERVISOR_KEEPWORKING_MAX || 2); // idle keep-working pushes per distinct ## Now focus, then escalate once
 const KEEPWORKING_IDLE_MS = Number(process.env.AIOS_SUPERVISOR_KEEPWORKING_IDLE_MS || 40000); // idle grace before pushing a paused (waiting+working/idle) agent to resume
 const DOC_DEBOUNCE_MS = Number(process.env.AIOS_SUPERVISOR_DOC_DEBOUNCE_MS || 45000); // min gap between doc reconciles (don't hammer on rapid agent/operator changes)
 const DOC_AUTOGEN_RETRY_MS = Number(process.env.AIOS_SUPERVISOR_DOC_AUTOGEN_RETRY_MS || 10 * 60 * 1000); // if doc generation fails, don't retry every tick
@@ -1425,10 +1426,10 @@ function unexpectedExitReason(session, ev) {
 }
 
 function buildExitRecoveryMessage(ctx, cfg, reason) {
-  const goal = goalLine(cfg.doc);
+  const goal = focusLine(cfg.doc);
   const title = ctx.session()?.title || 'this task';
   return clampLine(
-    `This supervised session exited before the work was verified: ${reason}. Recover ${title} now. Continue the unresolved goal${goal ? ': ' + goal : ''}. First inspect the latest log/git state and protect your work from concurrent same-repo changes: use a named branch or worktree if needed, then merge deliberately after tests pass. Do not kill, pkill, stop, or clean up other Supercalm/codex/claude sessions or same-repo agent processes. If another live session is conflicting, report the exact session/PID and wait for operator approval before terminating anything. Keep working until the acceptance criteria are met with concrete evidence.`,
+    `This supervised session exited before the work was verified: ${reason}. Recover ${title} now. Continue the CURRENT focus${goal ? ': ' + goal : ''}. First inspect the latest log/git state and protect your work from concurrent same-repo changes: use a named branch or worktree if needed, then merge deliberately after tests pass. Do not kill, pkill, stop, or clean up other Supercalm/codex/claude sessions or same-repo agent processes. If another live session is conflicting, report the exact session/PID and wait for operator approval before terminating anything. Keep working until the acceptance criteria are met with concrete evidence.`,
     1500
   );
 }
@@ -1790,8 +1791,23 @@ export async function onTick(ctx) {
       if (!cfg.doc || !cfg.doc.trim()) return;
       if (t - (s.last_activity || t) < KEEPWORKING_IDLE_MS) return;
       if (st.keepWorkingFp === fp.live) return;
+      // Per-FOCUS cap: the live-fp dedup re-arms on every screen change (the agent replying to our own
+      // nudge re-arms it), which looped 6 identical pushes/hour at a focus the AGENT could not advance
+      // (an operator-owned authorization). Two nudges per distinct ## Now focus; then tell the operator
+      // once and stay quiet until the doc maintainer advances the focus (or the operator engages).
+      const kwFocusKey = h32('kw|' + focusLine(cfg.doc));
+      const kwCount = st.keepWorkingFocusKey === kwFocusKey ? Number(st.keepWorkingFocusCount || 0) : 0;
+      if (kwCount >= KEEPWORKING_MAX_PER_FOCUS) {
+        if (st.keepWorkingEscalatedKey !== kwFocusKey) {
+          applySupervisorState(ctx, { keepWorkingEscalatedKey: kwFocusKey });
+          logIntervention(ctx, { kind: 'escalate', trigger: 'idle', model: cfg.model, verdict: 'escalated', assessment: `Nudged the agent ${kwCount}× on the same focus with no progress — it likely cannot advance this itself (an approval, credential, or decision that is yours). Focus: ${clampLine(focusLine(cfg.doc), 200)}`, message: '', sent: 0 });
+          ctx.notifyOperator('Agent idle — the current step may need you', clampLine((ctx.session()?.title || 'Session') + ': ' + focusLine(cfg.doc), 130));
+        }
+        return;
+      }
       applySupervisorState(ctx, { keepWorkingFp: fp.live, lastActionAt: now() });
-      await runKeepWorking(ctx, cfg, snapshot);
+      const kwSent = await runKeepWorking(ctx, cfg, snapshot);
+      if (kwSent) applySupervisorState(ctx, { keepWorkingFocusKey: kwFocusKey, keepWorkingFocusCount: kwCount + 1 });
       return;
     }
 
@@ -2069,6 +2085,15 @@ function goalLine(doc) {
   return m ? clampLine(m[1], 200) : '';
 }
 
+// The doc's CURRENT focus — what the work is about NOW. The self-maintaining doc advances `## Now`
+// (v0.1.115) while `## Goal` stays the original mandate by design, so any agent-facing message that
+// names "the goal" MUST quote the focus, not the fossil (live incident: keep-working pushed the day-one
+// "OpenHand UI redesign" goal at a session that had moved through a dozen phases since).
+function focusLine(doc) {
+  const now = sectionBodyForKey(doc, 'now').split('\n').map((l) => l.replace(/^[-*]\s*/, '').trim()).find(Boolean);
+  return now ? clampLine(now, 220) : goalLine(doc);
+}
+
 function compactLines(label, items, maxItems = 6, maxChars = 900) {
   const rows = (items || []).map((x) => clampLine(x, 220)).filter(Boolean).slice(0, maxItems);
   if (!rows.length) return '';
@@ -2105,8 +2130,8 @@ function buildCodexContextHandoff(ctx, cfg, ev = {}) {
 // resume the next concrete step toward the goal so the session keeps working. Templated (no model call) and
 // reliable; the "real evidence, not prose" framing also pushes back on agents that drift toward fake-done.
 async function runKeepWorking(ctx, cfg, snapshot = null) {
-  const goal = goalLine(cfg.doc);
-  const msg = `You stopped mid-task but the work is not finished. Resume now — take the next concrete step toward the goal${goal ? ': ' + goal : ''}. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing.`;
+  const focus = focusLine(cfg.doc);
+  const msg = `You stopped mid-task but the work is not finished. Resume now — take the next concrete step on the current focus${focus ? ': ' + focus : ''}. If that step is genuinely the operator's (an approval, a credential, access), say so explicitly and ask them — do not idle silently. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing.`;
   let sent = 0;
   let sent_text = '';
   const allowed = canSend(ctx, cfg, 'nudge');
@@ -2123,8 +2148,9 @@ async function runKeepWorking(ctx, cfg, snapshot = null) {
   });
   sent = r.sent ? 1 : 0;
   sent_text = r.message || '';
-  logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: cfg.model, verdict: 'nudged', assessment: 'Agent went idle mid-task (no question, no done-claim); pushed it to resume the next concrete step toward the goal.', message: msg, sent, sent_text });
+  logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: cfg.model, verdict: 'nudged', assessment: 'Agent went idle mid-task (no question, no done-claim); pushed it to resume the next concrete step on the current focus.', message: msg, sent, sent_text });
   ctx.emit('review', { verdict: 'nudged', summary: 'idle mid-task — pushed to keep working' });
+  return !!sent; // the caller's per-focus cap counts DELIVERED pushes only
 }
 
 // Transient/rate-limit API-error recovery for the SESSION: wait out an escalating backoff, then nudge
