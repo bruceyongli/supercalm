@@ -34,11 +34,15 @@ echo "==> updated v$OLD -> v$NEW"
 echo "==> changes:"
 git log --oneline "$BEFORE..$AFTER" | sed 's/^/    /'
 
-# Restart whichever service manager runs Supercalm; otherwise remind the operator.
-if [ "$(uname)" = "Darwin" ] && [ -f "$HOME/Library/LaunchAgents/ai.aios.server.plist" ]; then
+# Restart the service ONLY if it runs THIS checkout (the plist/unit could belong to a different clone
+# on the same machine — restarting someone else's live instance from a scratch checkout is not ok).
+DIR="$(pwd)"
+PLIST="$HOME/Library/LaunchAgents/ai.aios.server.plist"
+UNIT="$HOME/.config/systemd/user/supercalm.service"
+if [ "$(uname)" = "Darwin" ] && [ -f "$PLIST" ] && grep -q "<string>$DIR/src/server.js</string>" "$PLIST"; then
   launchctl kickstart -k "gui/$(id -u)/ai.aios.server" && echo "==> restarted launchd service"
-elif command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files supercalm.service >/dev/null 2>&1 && systemctl --user is-enabled supercalm.service >/dev/null 2>&1; then
+elif [ -f "$UNIT" ] && grep -q "WorkingDirectory=$DIR" "$UNIT" && command -v systemctl >/dev/null 2>&1; then
   systemctl --user restart supercalm.service && echo "==> restarted systemd service"
 else
-  echo "==> restart Supercalm to finish (re-run npm start, or bin/install-service to run it as a service)"
+  echo "==> restart Supercalm to finish (re-run npm start, or bin/install-service to run THIS checkout as the service)"
 fi
