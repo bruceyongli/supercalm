@@ -1,0 +1,5 @@
+#!/bin/sh
+# Supercalm — last line of defense: block any PUSH that would carry secrets / private data to a remote
+# (this is what stops a public leak). Scans the whole tracked tree. See scripts/scan-secrets.mjs.
+# Installed by bin/install-hooks (git config core.hooksPath scripts/hooks).
+SUPERCALM_SCAN_PHASE=push exec node scripts/scan-secrets.mjs

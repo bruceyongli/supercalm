@@ -1,0 +1,8 @@
+#!/bin/sh
+# Point git at Supercalm's committed hooks so the secret-scan runs on every commit + push.
+# Idempotent. Run once after cloning:  bin/install-hooks
+set -e
+cd "$(dirname "$0")/.."
+git config core.hooksPath scripts/hooks
+echo "✓ Supercalm git hooks installed — secret-scan will run on commit + push."
+echo "  (verify now: node scripts/scan-secrets.mjs)"

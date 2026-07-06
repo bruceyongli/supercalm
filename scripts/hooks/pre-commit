@@ -1,0 +1,4 @@
+#!/bin/sh
+# Supercalm — block commits that contain secrets / private data (see scripts/scan-secrets.mjs).
+# Installed by bin/install-hooks (git config core.hooksPath scripts/hooks).
+SUPERCALM_SCAN_PHASE=commit exec node scripts/scan-secrets.mjs

@@ -1,10 +1,10 @@
 # Supercalm
 
-A remote "operating system" for driving CLI coding agents (`claude`, `codex`, `agy`) on the
-Tailscale node **host**. Supercalm launches each agent in a persistent tmux session, streams the raw
-terminal to a web dashboard, detects when a session is **waiting for your input**, and lets you
-answer by **voice** or text from any device on the tailnet — so your projects keep moving while
-you're away from the keyboard.
+A self-hosted "operating system" for driving CLI coding agents (`claude`, `codex`, `agy`) on your own
+machine. Supercalm launches each agent in a persistent tmux session, streams the raw terminal to a web
+dashboard, detects when a session is **waiting for your input**, and lets you answer by **voice** or text
+from any device — so your projects keep moving while you're away from the keyboard. A **supervisor** agent
+can run sessions on your behalf (Observe → Co-pilot → Autopilot) and learns to respond the way you do.
 
 > Runs at `https://<your-node>.<your-tailnet>.ts.net/aios` (tailnet-only); direct `:8793` is a fallback.
 
@@ -20,8 +20,8 @@ you're away from the keyboard.
 - **See everything** — live raw terminal (xterm.js over SSE), full saved transcripts, and the
   status of every session (working / waiting / exited).
 - **Needs-you queue** — a dashboard list of sessions blocked on you, with the extracted question.
-- **Answer by voice** — record on any device → [Spark](https://spark.your-tailnet.ts.net) Whisper
-  dictation → text → routed straight into the waiting session.
+- **Answer by voice** — record on any device → a Whisper dictation device (optional) → text → routed
+  straight into the waiting session.
 - **Push notifications** — your devices get a web-push alert the moment a session needs input
   (installable PWA, so iPhone/iPad work too).
 
@@ -52,16 +52,22 @@ browser (laptop/phone/iPad, tailnet)
 ## Setup
 
 ```bash
-git clone <this-repo> aios && cd aios
+git clone https://github.com/bruceyongli/supercalm.git && cd supercalm
 npm install
-cp .env.example data/aios.env   # optional — set device IPs / tailnet host / keys (all optional; gitignored)
+bin/install-hooks               # secret-scan on every commit + push (keeps private data out of git)
+cp .env.example data/aios.env   # optional — set device IPs / keys (all optional; gitignored)
 npm start                        # http://127.0.0.1:8793   (npm run dev for --watch)
 ```
 
 Requires **Node 22+** plus system `tmux` (and `ffmpeg` for voice). It binds to loopback — expose it to
 your devices over Tailscale Serve or an authenticated reverse proxy (never the public internet).
 
-## Run / deploy (reference — the author runs it on a node named `host`)
+- **Installing via a coding agent?** Point Claude Code / Codex at **[`docs/INSTALL.md`](docs/INSTALL.md)** —
+  a step-by-step, self-verifying guide written for an agent to execute.
+- **Configuring for your setup?** See **[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)** — external model
+  proxy (+ token), voice STT/TTS, binaries, and agent auth.
+
+## Run / deploy (reference deployment)
 
 ```bash
 # one-time: install as a launchd/systemd service (auto-start + restart on crash)
@@ -110,12 +116,20 @@ Defaults: `AIOS_AUTONOMY=full`, `AIOS_EFFORT=xhigh`.
 ## Config (env)
 
 Everything has a working default in `src/config.js`; set only what differs for your setup. Machine-specific
-values (device IPs, tailnet host, keys) go in a gitignored `data/aios.env` (loaded at boot) so they stay
-out of the repo — see **`.env.example`**. Common knobs: `AIOS_PORT` (8793) · `AIOS_DATA` ·
-`SPARK_IP`/`SPARK_HOST` (your optional voice device) · `AIOS_IDLE_WAIT` (4500ms) ·
-`AIOS_SUBMIT_DELAY` (320ms) · `AIOS_PUSH_SUBJECT`.
+values (device IPs, keys) go in a gitignored `data/aios.env` (loaded at boot) so they stay out of the repo
+— see **[`.env.example`](.env.example)** and the full **[configuration reference](docs/CONFIGURATION.md)**.
+Common knobs: `AIOS_PORT` · `AIOS_DATA` · `AIOS_PROXY_KEY` (if your model proxy needs a token) ·
+`SPARK_IP`/`SPARK_HOST` (optional voice device) · `AIOS_PUSH_SUBJECT`.
+
+## Keeping secrets out of git
+
+Machine-specific secrets live only in gitignored `data/aios.env`. A zero-dependency **secret-scanner**
+([`scripts/scan-secrets.mjs`](scripts/scan-secrets.mjs)) runs as a **pre-commit + pre-push git hook**
+(`bin/install-hooks`) and in **CI**, blocking private keys, OAuth secrets, API tokens, Tailscale IPs, MACs,
+and personal emails from ever reaching a remote. Run it anytime: `node scripts/scan-secrets.mjs`.
 
 ## License
 
-[MIT](LICENSE). See `CONTRIBUTING.md` to hack on it, `SECURITY.md` for the threat model, and `CLAUDE.md`
-+ `docs/` for implementation notes, gotchas, and architecture.
+[MIT](LICENSE). See `CONTRIBUTING.md` to hack on it, `SECURITY.md` for the threat model,
+**[`docs/INSTALL.md`](docs/INSTALL.md)** to install via an agent, **[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)**
+to configure, and `CLAUDE.md` + `docs/` for implementation notes and architecture.

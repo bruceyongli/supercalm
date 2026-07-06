@@ -13,6 +13,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Defense-in-depth: block secrets/private data reaching the repo, alongside the local git hooks
+      # (bin/install-hooks) and GitHub's own push protection. Runs before install so it fails fast.
+      - name: Secret & private-data scan
+        run: node scripts/scan-secrets.mjs
       - run: npm ci || npm install
       - run: npm test
         env:

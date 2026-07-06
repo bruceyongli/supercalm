@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { codexProviderArgs, isNativeModel, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,13 +42,23 @@ export const LOG_DIR = join(DATA_DIR, 'logs');
 export const DB_PATH = join(DATA_DIR, 'aios.db');
 export const WEB_DIR = join(ROOT, 'web');
 
-// Absolute tmux path (Supercalm may run under launchd with a minimal PATH).
-export const TMUX = process.env.AIOS_TMUX || '/opt/homebrew/bin/tmux';
+// Resolve a system binary to an ABSOLUTE path (Supercalm may run under launchd/systemd with a minimal
+// PATH where a bare name won't resolve). Checks the common install locations across macOS-ARM (homebrew),
+// macOS-Intel/Linux (/usr/local, /usr/bin), then falls back to the bare name for a PATH lookup at exec
+// time. AIOS_TMUX / AIOS_FFMPEG override this for anything unusual — see docs/CONFIGURATION.md.
+function resolveBin(name, extra = []) {
+  for (const p of [...extra, `/opt/homebrew/bin/${name}`, `/usr/local/bin/${name}`, `/usr/bin/${name}`, `/bin/${name}`]) {
+    try { if (existsSync(p)) return p; } catch { /* keep looking */ }
+  }
+  return name; // let the shell resolve it on PATH
+}
+export const TMUX = process.env.AIOS_TMUX || resolveBin('tmux');
 // ffmpeg normalizes browser audio (webm/mp4) into WAV that Spark's libsndfile accepts.
-export const FFMPEG = process.env.AIOS_FFMPEG || '/opt/homebrew/bin/ffmpeg';
-// Prepended to the tool launch line inside tmux so claude/codex/agy resolve
-// regardless of the login shell's rc. $HOME is expanded by the pane shell.
-export const TOOL_PATH = process.env.AIOS_TOOL_PATH || '/opt/homebrew/bin:$HOME/.local/bin';
+export const FFMPEG = process.env.AIOS_FFMPEG || resolveBin('ffmpeg');
+// Prepended to the tool launch line inside tmux so claude/codex/agy resolve regardless of the login
+// shell's rc. Covers homebrew (ARM/Intel) + system dirs + the common per-user bin. $HOME is expanded by
+// the pane shell.
+export const TOOL_PATH = process.env.AIOS_TOOL_PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:$HOME/.local/bin';
 
 // URL the CLI hooks use to reach Supercalm (loopback on host).
 export const SELF_URL = process.env.AIOS_SELF_URL || `http://127.0.0.1:${PORT}`;
