@@ -32,12 +32,16 @@ Evidence of weakness lives here (query, don't guess):
 
 Fresh research sweep (when the ledger's last sweep is >2 weeks old): 2 parallel subagents — product
 landscape + papers — each ending with a ranked TOP-5 for Supercalm specifically. Store digests under
-`docs/improve/research/YYYY-MM-<topic>.md`.
+`docs/improve/research/YYYY-MM-<topic>.md`. **Don't block on the sweep**: harvest internal signals and
+run the panel as soon as they're ready; fold research when it lands and re-panel only if it CONTRADICTS
+the chosen bet (amendment, run 1).
 
 ## Step 2 — RANK: form bets
 
 Write 3–6 candidate bets as: *problem (with signal citations) → proposed change → expected effect →
 how it will be MEASURED → effort (S/M/L) → risk*. A bet without a measurement plan is not a bet.
+Also list **quick wins** (≤1h, from research/signals); at most ONE rides along with the main bet per
+run, the rest go to the ledger backlog (amendment, run 1).
 
 ## Step 3 — PANEL: adversarial multi-model review
 
@@ -65,6 +69,8 @@ Match the measurement to the bet (declared in step 2):
 - Product features → a scripted end-to-end on a scratch session (`~/aios-scratch`) + screenshots via
   `bin/shot.mjs`.
 A bet that can't demonstrate its effect gets shipped dark + instrumented, not celebrated.
+Measurement harnesses are **repo artifacts** (`scripts/measure/`) so the same script runs pre-merge
+(estimate) and post-merge (actual) — never /tmp throwaways (amendment, run 1).
 
 ## Step 6 — SHIP
 

@@ -28,6 +28,7 @@ import { filterHardRulesForCurrentTask } from './supervisor/challenge.js';
 import { readSupervisorState, statePatchForStance } from './supervisor/state.js';
 import { STANCE_SYS, buildStanceUserText, classifyStanceFromText, resolveStance, isStance } from './supervisor/stance.js';
 import { modeOf, copilotThreshold, sendPolicy } from './supervisor/send_policy.js';
+import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
 import {
   VERIFY_EVIDENCE_VERSION,
   VERIFY_PROMPT_VERSION,
@@ -222,6 +223,28 @@ const _deleteTemplate = db.prepare('DELETE FROM supervisor_templates WHERE id = 
     if (healed) console.log(`[aios] supervisor: granted send-input to ${healed} auto-pilot session(s) that could only draft`);
   } catch (e) {
     console.error('[aios] supervisor autopilot reconcile failed:', e.message);
+  }
+})();
+
+// Attention governor hygiene: an ENABLED supervisor on an EXITED session the operator hasn't touched
+// beyond the stale threshold is pure zombie state (7 such grants existed when this shipped). They no
+// longer tick (past the exit-recovery window), so the tick path can't clean them — do it at boot.
+(function reconcileZombieSupervisors() {
+  try {
+    let off = 0;
+    for (const g of listEnabledGrants()) {
+      if (g.agent_id !== 'supervisor') continue;
+      const s = getSession(g.session_id);
+      if (!s || s.status !== 'exited') continue;
+      let lastMsg = 0;
+      try { lastMsg = Number(lastOperatorMsgTs(db, g.session_id) || 0); } catch {}
+      if (tierOf({ lastTouch: Math.max(lastMsg, Number(s.started_at || 0)) }) !== 'stale') continue;
+      upsertGrant(g.session_id, 'supervisor', { enabled: false });
+      off++;
+    }
+    if (off) console.log(`[aios] supervisor: auto-disabled ${off} zombie supervisor grant(s) on exited, operator-stale sessions`);
+  } catch (e) {
+    console.error('[aios] supervisor zombie reconcile failed:', e.message);
   }
 })();
 
@@ -430,6 +453,16 @@ function latestOperatorAck(sessionId) {
   const t = now();
   return (sig.messages || []).find((m) => t - Number(m.ts || 0) < 20 * 60 * 1000 && OPERATOR_ACK_RX.test(m.text || '')) || null;
 }
+// ENGAGEMENT TIER (attention governor): supervision effort follows the OPERATOR, not agent activity.
+// lastTouch = newest operator act — message (text/voice), or the launch/resume itself (started_at).
+// A fresh operator message instantly re-heats the session on the same tick (tierOf reads it live).
+function engagementTierFor(ctx, s, t = now()) {
+  let lastMsg = 0;
+  try { lastMsg = Number(lastOperatorMsgTs(db, ctx.sessionId) || 0); } catch {}
+  const lastTouch = Math.max(lastMsg, Number(s?.started_at || 0));
+  return tierOf({ lastTouch, now: t });
+}
+
 function latestOperatorIntent(sessionId, t = now()) {
   const sig = recentOperatorSignals({ db, sessionId, maxMsgs: 8, scan: 40 });
   return latestOperatorIntentFromSignals(sig, t, QUESTION_ONLY_WINDOW_MS);
@@ -1540,13 +1573,37 @@ export async function onTick(ctx) {
   const cfg = ctx.getConfig();
   const t = now();
   if (!s || s.status === 'starting') return;
+  // ATTENTION GOVERNOR — supervision effort follows operator engagement (docs/improve/LEDGER.md run 1:
+  // a month-old abandoned session burned ~345 verify calls/day because sibling commits to the same repo
+  // kept re-arming its gate; 7 exited sessions still had enabled supervisors).
+  const tier = engagementTierFor(ctx, s, t);
   if (s.status === 'exited') {
+    if (tier === 'stale') {
+      // Nobody has touched this exited session in days — supervision is pure waste. Turn it off once.
+      logIntervention(ctx, { kind: 'recover', trigger: 'engagement', model: null, verdict: 'stood_down', assessment: 'Session exited and the operator has not touched it beyond the stale threshold — supervisor auto-disabled (re-enable from the panel to resume).', message: '', sent: 0 });
+      try { upsertGrant(ctx.sessionId, 'supervisor', { enabled: false }); } catch {}
+      return;
+    }
     await maybeRecoverUnexpectedExit(ctx, cfg, t);
+    return;
+  }
+  if (tier === 'stale') {
+    // Detection-only: waiting/blocked classification (the sessions poll loop) still surfaces this
+    // session in the queue's stale tier, but the supervisor spends no model calls and applies no
+    // pressure until the operator touches it again (any reply/launch re-heats instantly).
+    const st0 = ctx.getState();
+    if (st0.tierStaleNotedAt === undefined) {
+      applySupervisorState(ctx, { tierStaleNotedAt: t });
+      logIntervention(ctx, { kind: 'recover', trigger: 'engagement', model: null, verdict: 'stood_down', assessment: 'No operator touch beyond the stale threshold — supervision paused (detection only). Reply to the session to re-heat it.', message: '', sent: 0 });
+    }
     return;
   }
 
   // capture the baseline HEAD once so reviews can see work committed since supervision started.
   let st = ctx.getState();
+  if (st.tierStaleNotedAt !== undefined || st.tierAutoDisabled !== undefined) {
+    st = applySupervisorState(ctx, { tierStaleNotedAt: undefined, tierAutoDisabled: undefined }); // re-heated
+  }
   if (st.baseRef === undefined) {
     const baseRef = await ctx.gitHead().catch(() => null);
     st = applySupervisorState(ctx, { baseRef });
@@ -1790,6 +1847,7 @@ export async function onTick(ctx) {
     if (s.category !== 'review') {
       if (!cfg.doc || !cfg.doc.trim()) return;
       if (t - (s.last_activity || t) < KEEPWORKING_IDLE_MS) return;
+      if (!allowedWhenTier(tier, 'nudge')) return; // warm/stale: no idle pressure when the operator is away
       if (st.keepWorkingFp === fp.live) return;
       // Per-FOCUS cap: the live-fp dedup re-arms on every screen change (the agent replying to our own
       // nudge re-arms it), which looped 6 identical pushes/hour at a focus the AGENT could not advance
@@ -1854,7 +1912,11 @@ export async function onTick(ctx) {
     // real progress (workFp change) resets the counters upstream and re-engages the gate.
     if (st.gateEscalatedFp === fp.work) return;
     if (st.blindEscalatedFp === fp.work) return; // already told the operator the evidence channel is blocked for this work-state
-    applySupervisorState(ctx, { challengedWorkFp: fp.work, lastActionAt: now() });
+    // Warm tier: the expensive completion gate runs ONCE per work-state. Sibling sessions committing to
+    // the same repo churn fp.work; without the operator around, each churn must not buy a fresh
+    // challenge+verify cycle (the 345-calls/day burner pattern).
+    if (!allowedWhenTier(tier, 'verify', { newWork: st.tierVerifiedFp !== fp.work })) return;
+    applySupervisorState(ctx, { challengedWorkFp: fp.work, tierVerifiedFp: fp.work, lastActionAt: now() });
     const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'completion', fp.work);
     // If this verify is the re-check AFTER a re-open, turn it into a ground-truth verify-LABEL — did the
     // "done" hold up? false_complete{fake_done|untested|excuse|partial} vs correct_new_issue. The classifier
@@ -1976,13 +2038,13 @@ export async function onTick(ctx) {
     const stuckTimeout = (cfg.stuck_timeout_sec || 300) * 1000;
     const stuckMs = t - (st.liveSince || t);
     const oldEnough = t - s.started_at > stuckTimeout;
-    if (oldEnough && stuckMs >= stuckTimeout && st.unstuckLiveFp !== fp.live && nudges < MAX_NUDGES && !throttled) {
+    if (allowedWhenTier(tier, 'nudge') && oldEnough && stuckMs >= stuckTimeout && st.unstuckLiveFp !== fp.live && nudges < MAX_NUDGES && !throttled) {
       applySupervisorState(ctx, { unstuckLiveFp: fp.live, lastActionAt: now() });
       const sent = await runUnstick(ctx, cfg, ev, stuckMs, snapshot);
       if (sent) applySupervisorState(ctx, { nudges: nudges + 1 });
       return;
     }
-    if (cfg.checkpoint && cfg.checkpoint_interval_sec && t - (st.lastCheckpointAt || 0) >= cfg.checkpoint_interval_sec * 1000 && !throttled) {
+    if (allowedWhenTier(tier, 'nudge') && cfg.checkpoint && cfg.checkpoint_interval_sec && t - (st.lastCheckpointAt || 0) >= cfg.checkpoint_interval_sec * 1000 && !throttled) {
       applySupervisorState(ctx, { lastCheckpointAt: now(), lastActionAt: now() });
       const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'checkpoint');
       const shouldPush = ['needs_attention', 'off_track'].includes(parsed.verdict);

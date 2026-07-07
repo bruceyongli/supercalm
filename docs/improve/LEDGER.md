@@ -51,4 +51,36 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
 - **Measurement plan:** offline replay of the last 24h of supervisor activity against the tier policy
   (estimated call reduction); before/after queue depth + leaked-ask count on live data; regression
   locks: engagement unit matrix + replay fixtures for tier-gated decisions.
-- **Loop amendments:** *(step 7)*
+- **Built (this branch):** `src/agents/supervisor/engagement.js` (pure tier core: hot ≤6h / warm ≤48h /
+  stale, env-tunable; permission matrix incl. warm verify = new-work-only; ask TTL; queue tiers) wired
+  into onTick (stale ⇒ detection-only + one stood_down record; exited+stale ⇒ supervisor auto-off;
+  keepworking/unstick/checkpoint tier-gated; warm verify once per work-state), boot reconcile for
+  zombie grants, ask-TTL sweep (store.expireStaleAsks, hourly), buildState session.tier + tier-sorted
+  queue + stale count, dashboard stale-collapsed group ("N stale sessions — tap to review; replying
+  re-heats") + dimmed stale cards + /decisions expired filter. Tests: engagement matrix + source-level
+  integration locks (suite: 22 groups green).
+- **Measured (offline replay of the live db, last 48h, conservative):** **50% of supervisor model-call
+  interventions would be gated (1,384 / 2,792)** — all from the verify class (the burner); queue 7 →
+  5 live + 2 stale-collapsed; 54 leaked asks expire; 7 zombie grants auto-disabled. Hot sessions: zero
+  behavior change. Harness kept at `scripts/measure/attention-governor.mjs` for the post-merge
+  before/after.
+- **Research digests:** `research/2026-07-papers-supervision-verification.md` (16 papers; TRACE
+  2606.13174 contradicts doctrine-as-prompt — compile rules to runtime gates; SpecBench says GOAL.md
+  leaks the rubric — split agent-visible vs private probes; escalation inverted-U validates the
+  governor) + `research/2026-07-product-landscape.md` (remote-viewing commoditizing; nobody ships a
+  learning skeptical supervisor — build there; top steals: worktree isolation, diff-review→agent, ACP
+  sidecar, doctrine v2 scope/staleness/audit, heartbeat digest; quick win: loop detection).
+- **Run-2 backlog (ranked):** 1) doctrine→runtime enforcement (TRACE × Sculptor audit × Devin hygiene);
+  2) private held-out acceptance probes + behavioral verify (SpecBench/PatchDiff); 3) worktree-per-
+  session isolation; 4) loop-detection category (S — do alongside); 5) heartbeat digest w/ OK-suppression;
+  6) escalation-budget instrumentation + per-model threshold calibration.
+- **Outcome:** shipped on branch `explore/self-improve-1`, presented to operator for merge (operator-
+  facing behavior change ⇒ approval-gated per LOOP ground rules).
+- **Loop amendments (applied this run):**
+  1. Panel may run on INTERNAL signals as soon as they're harvested; fold research when it lands —
+     re-panel only if research CONTRADICTS the choice (it complemented it here). Blocking the build on
+     slow sweeps wastes the window.
+  2. Step 2 gains a QUICK-WINS list (≤1h items from research); at most one rides along per run, rest
+     queue to the backlog. (This run: none ridden — governor filled the window.)
+  3. Measurement harnesses are repo artifacts (`scripts/measure/`), not throwaways — the same script
+     must run pre-merge (estimate) and post-merge (actual).

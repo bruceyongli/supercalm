@@ -1687,6 +1687,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .sup-hist-msg { background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 7px 8px; margin: 0 0 8px 4px; font-size: 12px; white-space: pre-wrap; color: var(--ink); overflow-wrap: anywhere; }
 .sup-sent { font-size: 10px; color: var(--purple); border: 1px solid #bc8cff55; border-radius: 4px; padding: 1px 5px; }
 
+.qcard.stale { opacity: 0.62; }
+.stale-toggle { color: var(--muted); font-size: 12px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; cursor: pointer; margin-top: 2px; }
+.stale-toggle:hover { color: var(--ink); border-color: var(--line2); }
+
 /* Supervisor mode segments (Off · Observe · Co-pilot · Autopilot) */
 .sup-mode-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-left: auto; }
 .sup-seg { background: var(--panel); color: var(--muted); border: 0; border-right: 1px solid var(--line); padding: 4px 10px; font: inherit; font-size: 11.5px; cursor: pointer; }
