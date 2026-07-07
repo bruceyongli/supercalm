@@ -1729,6 +1729,18 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .sup-learn-err { color: var(--red); font-size: 11px; }
 .sup-learn-group summary { cursor: pointer; font-size: 11px; color: var(--muted); }
 .sup-learn-group { display: grid; gap: 6px; }
+/* Collapsible card shell: the <summary> is the header row (title + count badges + caret); the body
+   only exists expanded. Keep display defaults on <details> itself — grid on it breaks open/close. */
+.sup-learn-wrap > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.sup-learn-wrap > summary::-webkit-details-marker { display: none; }
+.sup-learn-wrap > summary h2 { margin: 0; }
+.sup-learn-wrap > summary::after { content: '▸'; margin-left: auto; color: var(--muted); font-size: 12px; transition: transform 0.15s; }
+.sup-learn-wrap[open] > summary::after { transform: rotate(90deg); }
+.sup-learn-body { display: grid; gap: 8px; margin-top: 10px; }
+.sup-learn-triage { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sup-badge.to-review { color: var(--yellow); border-color: #d2992255; }
+.sup-badge.rec-ok { color: var(--green); border-color: #3fb95055; }
+.sup-badge.rec-no { color: var(--red); border-color: #f8514955; }
 
 @media (max-width: 720px) {
   .sup-policy-grid, .sup-policy-detail { grid-template-columns: 1fr; }

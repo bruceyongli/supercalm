@@ -186,7 +186,12 @@ function renderAll() {
 let doctrineRules = null; // null = not loaded yet
 let doctrineAt = 0;
 let learnErr = '';
+let learnMsg = ''; // last triage/apply outcome (non-error)
+let triaging = false; // ✨ model review in flight
 let learnInteractingUntil = 0;
+// The whole card collapses (a long review queue would otherwise dominate the panel); the count
+// badges stay visible in the summary. Preference persists per browser, collapsed by default.
+let learnOpen = localStorage.aios_sup_learn_open === '1';
 
 async function loadDoctrine(force = false) {
   if (!force && Date.now() - doctrineAt < 25000) return;
@@ -203,7 +208,13 @@ async function loadDoctrine(force = false) {
 }
 
 function learnCard(r, mine) {
-  const tag = (mine ? '<span class="sup-badge sm">this session</span>' : '')
+  // Triage recommendation chip (from the one-click model review) — reason rides in the tooltip.
+  const rec = r.status === 'candidate' && r.triage_verdict
+    ? (r.triage_verdict === 'approve'
+      ? `<span class="sup-badge sm rec-ok" title="${esc(r.triage_reason || '')}">#${r.triage_rank || '?'} ✓ suggested</span> `
+      : `<span class="sup-badge sm rec-no" title="${esc(r.triage_reason || '')}">${r.triage_verdict === 'duplicate' ? '⇄ dup' : '✕ suggested reject'}</span> `)
+    : '';
+  const tag = rec + (mine ? '<span class="sup-badge sm">this session</span>' : '')
     + (r.enforcement === 'audit' ? ' <span class="sup-badge sm" title="checked against work evidence on completion reviews">audit</span>' : '')
     + (r.scope === 'global' ? ' <span class="sup-badge sm">global</span>' : '')
     + (Number(r.violation_count) ? ` <span class="sup-badge sm" title="violations caught">⚠ ${r.violation_count}×</span>` : '');
@@ -231,26 +242,72 @@ function learnCard(r, mine) {
 function renderLearn(force = false) {
   const hostEl = host.querySelector('#sup-learn');
   if (!hostEl) return;
-  if (!force && (Date.now() < learnInteractingUntil || hostEl.querySelector('.sup-learn details[open]'))) return; // don't clobber reading/taps
+  // Clobber guard: while the section is EXPANDED the operator is reading/tapping — never re-render
+  // under them (actions force through). Collapsed, refresh freely so the count badges stay live.
+  if (!force && (Date.now() < learnInteractingUntil || hostEl.querySelector('.sup-learn-wrap[open]'))) return;
   const rules = doctrineRules;
   const enabled = !!view().grant?.enabled;
   if (rules === null) { hostEl.innerHTML = ''; return; }
-  const cand = rules.filter((r) => r.status === 'candidate');
+  // Triage-recommended order (mirrors /decisions): ranked approvals, then untriaged, dups, rejects.
+  const recW = (r) => (r.triage_verdict === 'approve' ? (r.triage_rank || 99) : r.triage_verdict === 'duplicate' ? 200 : r.triage_verdict === 'reject' ? 300 : 150);
+  const cand = rules.filter((r) => r.status === 'candidate').sort((a, b) => recW(a) - recW(b));
   const act = rules.filter((r) => r.status === 'active');
   const used = act.reduce((a, r) => a + (r.reuse_count || 0), 0);
   const mine = (r) => r.session_id === P.sessionId;
+  const recCount = cand.filter((r) => r.triage_verdict).length;
   const summary = `${act.length} rule${act.length === 1 ? '' : 's'} live${used ? ` · applied ${used}×` : ''}${cand.length ? '' : ' · learning from your replies automatically'}`;
+  const triageBar = cand.length >= 2 ? `<div class="sup-learn-triage">
+      <button class="btn ghost sm" type="button" id="sup-triage" ${triaging ? 'disabled' : ''}>${triaging ? 'Reviewing…' : '✨ Have the supervisor review these'}</button>
+      ${recCount && !triaging ? `<button class="btn sm" type="button" id="sup-triage-apply" title="approve the ✓-suggested, reject the ✕/dup-suggested — per-card buttons still work">Apply ${recCount} suggestions</button>` : ''}
+    </div>` : '';
   const html = `<section class="su-card sup-learn">
-    <h2>Learning ${cand.length ? `<span class="sup-badge">${cand.length} to review</span>` : ''}</h2>
-    <div class="sup-hint">${esc(summary)}${enabled ? '' : ' — supervisor is off; it learns only in supervised sessions'}</div>
-    ${learnErr ? `<div class="sup-learn-err">⚠ ${esc(learnErr)}</div>` : ''}
-    ${cand.map((r) => learnCard(r, mine(r))).join('')}
-    ${act.length ? `<details class="sup-learn-group"${cand.length ? '' : ' open'}><summary>Active doctrine (${act.length})</summary>${act.map((r) => learnCard(r, mine(r))).join('')}</details>` : ''}
-    <div class="sup-hint"><a href="decisions" target="_blank" rel="noopener">Manage all learnings ▸</a></div>
+    <details class="sup-learn-wrap"${learnOpen ? ' open' : ''}>
+      <summary><h2>Learning</h2>${cand.length ? `<span class="sup-badge to-review">${cand.length} to review</span>` : ''}<span class="sup-badge sm">${act.length} live</span></summary>
+      <div class="sup-learn-body">
+        <div class="sup-hint">${esc(summary)}${enabled ? '' : ' — supervisor is off; it learns only in supervised sessions'}</div>
+        ${learnErr ? `<div class="sup-learn-err">⚠ ${esc(learnErr)}</div>` : ''}
+        ${learnMsg ? `<div class="sup-hint">${esc(learnMsg)}</div>` : ''}
+        ${triageBar}
+        ${cand.map((r) => learnCard(r, mine(r))).join('')}
+        ${act.length ? `<details class="sup-learn-group"${cand.length ? '' : ' open'}><summary>Active doctrine (${act.length})</summary>${act.map((r) => learnCard(r, mine(r))).join('')}</details>` : ''}
+        <div class="sup-hint"><a href="decisions" target="_blank" rel="noopener">Manage all learnings ▸</a></div>
+      </div>
+    </details>
   </section>`;
   if (hostEl.__lastHtml === html) return;
   hostEl.__lastHtml = html;
   hostEl.innerHTML = html;
+  const wrap = hostEl.querySelector('.sup-learn-wrap');
+  if (wrap) wrap.addEventListener('toggle', () => {
+    learnOpen = wrap.open;
+    try { localStorage.aios_sup_learn_open = learnOpen ? '1' : '0'; } catch {}
+  });
+  const tBtn = hostEl.querySelector('#sup-triage');
+  if (tBtn) tBtn.onclick = async () => {
+    triaging = true; learnMsg = ''; hostEl.__lastHtml = ''; renderLearn(true);
+    try {
+      const r = await P.api('api/doctrine/triage', { method: 'POST' }); // model call — can take a minute
+      if (r?.rules) doctrineRules = r.rules;
+      learnErr = '';
+      learnMsg = `reviewed ${r?.triaged ?? 0} of ${r?.of ?? 0} — suggestion on each card; Apply executes them all`;
+    } catch (e) {
+      learnErr = 'review failed: ' + (e.message || e) + ' — retry';
+    }
+    triaging = false; learnInteractingUntil = 0; hostEl.__lastHtml = ''; renderLearn(true);
+  };
+  const aBtn = hostEl.querySelector('#sup-triage-apply');
+  if (aBtn) aBtn.onclick = async () => {
+    aBtn.disabled = true;
+    try {
+      const r = await P.api('api/doctrine/triage/apply', { method: 'POST' });
+      if (r?.rules) doctrineRules = r.rules;
+      learnErr = '';
+      learnMsg = `applied: ${r?.approved || 0} approved · ${(r?.rejected || 0) + (r?.duplicates || 0)} removed`;
+    } catch (e) {
+      learnErr = 'apply failed: ' + (e.message || e) + ' — retry';
+    }
+    learnInteractingUntil = 0; hostEl.__lastHtml = ''; renderLearn(true);
+  };
   for (const btn of hostEl.querySelectorAll('button[data-doct]')) {
     btn.onclick = async () => {
       const id = btn.closest('[data-did]')?.dataset.did;
