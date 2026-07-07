@@ -343,6 +343,13 @@ const ctx = {
   assert.doesNotMatch(ui, /id="sup-fallbacks"/, 'the raw comma-separated chain input is gone (the chain editor replaced it)');
   assert.match(ui, /id="sup-chain-add"/, 'chain editor add-select exists');
   assert.match(ui, /optgroup/, 'chain add-select groups models by provider');
+  // Learning card: collapsible shell with count badges in the summary, and the one-click triage
+  // (review + apply) available in the panel, not only on /decisions.
+  assert.match(ui, /sup-learn-wrap/, 'Learning card is collapsible');
+  assert.match(ui, /aios_sup_learn_open/, 'collapse preference persists');
+  assert.match(ui, /api\/doctrine\/triage/, 'panel exposes the one-click model triage');
+  assert.match(ui, /id="sup-triage-apply"/, 'panel exposes apply-suggestions');
+  assert.match(ui, /triage_verdict/, 'candidate cards carry the recommendation chip + ranked order');
   assert.match(ui, /Policy Decision/);
   assert.match(ui, /Supervisor State/);
   assert.match(ui, /latestDecision/);
