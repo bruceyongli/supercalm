@@ -4,6 +4,32 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
 
 ---
 
+## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
+
+- **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
+  model to review those for us, rank the list, remove the bad ones." (Was run-1 backlog item
+  "doctrine triage"; pulled forward by direct request — no panel needed, scope was given.)
+- **Built:** `POST /api/doctrine/triage` — the supervisor's primary model judges the candidate
+  backlog against the operator's demonstrated taste (active rules = positive signal, rejected =
+  negative), returning per-candidate `approve|reject|duplicate` + rank + reason + enforcement/scope
+  classification. Stored as RECOMMENDATIONS only (columns `triage_*`); nothing changes status until
+  the operator clicks per-card or `POST /api/doctrine/triage/apply` (approve→active,
+  duplicate→rejected + evidence-bump on the survivor, reject→rejected). Decisions-page UI: ✨ review
+  button, rank-sorted queue, verdict chips with reasons, one-click "Apply N suggestions".
+  Fail-safe: model chain gemini-pro-agent → gpt-5.5 → opus → kimi; validateTriage clamps + drops
+  unknown ids + exactly-once. Tests: triage group in supervisor_doctrine.test (suite 23 groups green).
+- **Shipped:** v0.3.1; hotfix v0.3.2 (route-order bug: `/api/doctrine/:id` registered before
+  `/api/doctrine/triage` swallowed 'triage' as an id → 404. Lesson locked as a source comment: the
+  router matches in REGISTRATION ORDER — specific routes go above `:id` patterns).
+- **Measured (live, first run on the real backlog):** 19/19 candidates triaged in one call —
+  13 ranked approvals, 5 duplicates correctly mapped to existing active rules, and 1 reject whose
+  reasoning matched operator taste exactly ("remove approval gates for verified deployments" →
+  "conflicts with operator taste: they never remove approval gates"). That reject is the feature
+  working: a rule that would have inverted the product's philosophy, caught by taste-matching.
+- **Outcome:** live on bb1; operator ratifies via the queue (apply is theirs to click).
+
+---
+
 ## Run 2 — 2026-07-07 · branch `improve/doctrine-enforcement`
 
 - **Bet (from run-1 backlog #1):** doctrine → runtime ENFORCEMENT, audit-surface only (TRACE 2606.13174:
@@ -24,7 +50,9 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   bar to what the operator repeatedly demanded, with demote-to-advisory as the safety valve.
 - **Deferred:** hook-compiled deny rules (run 2.5 — needs approval UX for compiled patterns);
   loop-detector quick win (next run — kept this one finished rather than two rushed).
-- **Outcome:** pushed on `improve/doctrine-enforcement`, presented for merge.
+- **Outcome:** merged + shipped as v0.3.0; live doctrine audit verified positive (synthetic
+  claims-only bundle → violation caught) and negative (real evidence bundle → no false violation);
+  self-test violation counters reset after.
 - **Loop amendments:** none new (run-1 amendments held up: internal-signals-first panel wasn't needed —
   the bet came pre-ranked from run-1's backlog; measurement harness saved as a repo artifact per rule).
 
