@@ -9,6 +9,7 @@ const {
   distillFromDecision, validateCandidate, isTrivialReply, findSimilar,
   listDoctrine, updateDoctrine, deleteDoctrine, retrieveDoctrine, formatDoctrine, noteDoctrineReuse,
   buildDoctrineUserText, SYS_DOCTRINE,
+  auditRules, auditEvidence, parseAuditResult, buildDoctrineAuditUserText, SYS_DOCTRINE_AUDIT, sweepStaleDoctrine,
 } = await import('../src/agents/doctrine.js');
 const { buildAnswerUserText } = await import('../src/agents/answer_prompt.js');
 
@@ -141,6 +142,64 @@ const dec = (id, over = {}) => ({ id, session_id: 's_test', project_id: 'p_test'
   assert.ok(src.split('retrieveDoctrine(').length >= 3, 'doctrine reaches BOTH the answer and verify paths');
   assert.match(src, /operator_doctrine/, 'verify evidence carries the doctrine block');
   assert.match(src, /noteDoctrineReuse/, 'injection bumps reuse counters');
+}
+
+// ---- run 2: enforcement classification, audit surface, staleness ----
+{
+  // classification clamped + persisted
+  const okc = validateCandidate({ worth_learning: true, kind: 'doctrine-fix', situation: 's', rule: 'Never accept a passing report without the actual command output pasted as evidence.', apply_how: '', divergence: '', enforcement: 'audit', scope: 'global' });
+  assert.equal(okc.enforcement, 'audit');
+  assert.equal(okc.scope, 'global');
+  assert.equal(validateCandidate({ worth_learning: true, kind: 'doctrine-fix', rule: 'A sufficiently long standing instruction for clamping.', enforcement: 'bogus', scope: 'bogus' }).enforcement, 'advisory');
+
+  const rA = await distillFromDecision({ id: 900, session_id: 's_a', project_id: 'p_one', asked_at: Date.now() - 1000, responded_at: Date.now(), category: 'review', ask: 'done?', response: 'Always paste the failing command output before claiming a fix works, never a summary.' },
+    { call: async () => JSON.stringify({ worth_learning: true, kind: 'doctrine-fix', situation: 'builder claims a fix works', rule: 'Always paste the failing command output before claiming a fix works, never accept a summary.', apply_how: '', divergence: '', enforcement: 'audit', scope: 'global' }) });
+  updateDoctrine(rA.id, { status: 'active' });
+  const rB = await distillFromDecision({ id: 901, session_id: 's_b', project_id: 'p_two', asked_at: Date.now() - 1000, responded_at: Date.now(), category: 'review', ask: 'style?', response: 'Prefer smaller diffs in this repo, split refactors from features here.' },
+    { call: async () => JSON.stringify({ worth_learning: true, kind: 'doctrine-fix', situation: 'large mixed diff in this repo', rule: 'Prefer smaller diffs in this specific repository; split refactors from feature changes.', apply_how: '', divergence: '', enforcement: 'audit', scope: 'project' }) });
+  updateDoctrine(rB.id, { status: 'active' });
+
+  // scoping: global reaches every project; project-scoped only its own
+  const forOne = auditRules({ projectId: 'p_one' });
+  assert.ok(forOne.some((r) => r.id === rA.id), 'global audit rule applies everywhere');
+  assert.ok(!forOne.some((r) => r.id === rB.id), 'p_two project rule does not leak into p_one');
+  assert.ok(auditRules({ projectId: 'p_two' }).some((r) => r.id === rB.id));
+  // advisory rules never audit
+  const adv = listDoctrine().find((r) => r.enforcement !== 'audit' && r.status === 'active');
+  if (adv) assert.ok(!forOne.some((r) => r.id === adv.id));
+
+  // parseAuditResult: unknown ids dropped, evidence clamped
+  const rules = auditRules({ projectId: 'p_one' });
+  const pr = parseAuditResult({ violations: [{ id: rules[0].id, evidence: 'x'.repeat(999) }, { id: 'doc_nope', evidence: 'y' }] }, rules);
+  assert.equal(pr.length, 1);
+  assert.ok(pr[0].evidence.length <= 240);
+  assert.match(buildDoctrineAuditUserText(rules, { git_stat: 'M a.js' }), /STANDING RULES:/);
+  assert.match(SYS_DOCTRINE_AUDIT, /violations/);
+
+  // auditEvidence: injectable call, counters bump, fail-open on error
+  const before = listDoctrine().find((r) => r.id === rA.id).violation_count || 0;
+  const v = await auditEvidence({ projectId: 'p_one', evidence: { terminal_tail: 'fixed it! (no output shown)' }, call: async () => JSON.stringify({ violations: [{ id: rA.id, evidence: 'claim with no command output' }] }) });
+  assert.equal(v.length, 1);
+  assert.equal(listDoctrine().find((r) => r.id === rA.id).violation_count, before + 1, 'violation counter bumps');
+  assert.deepEqual(await auditEvidence({ projectId: 'p_one', evidence: {}, call: async () => { throw new Error('model down'); } }), [], 'fail-open');
+
+  // staleness sweep: idle active -> candidate/stale-recheck; fresh untouched
+  const { DatabaseSync } = await import('node:sqlite');
+  noteDoctrineReuse([rB.id]); // fresh
+  const dbp = (await import('../src/store.js')).db;
+  dbp.prepare('UPDATE supervisor_doctrine SET last_used_at = ?, updated_at = ?, created_at = ? WHERE id = ?').run(Date.now() - 40 * 864e5, Date.now() - 40 * 864e5, Date.now() - 40 * 864e5, rA.id);
+  const n = sweepStaleDoctrine({ maxIdleMs: 21 * 864e5 });
+  assert.ok(n >= 1, 'stale rule demoted');
+  const rowA = listDoctrine().find((r) => r.id === rA.id);
+  assert.equal(rowA.status, 'candidate');
+  assert.equal(rowA.source, 'stale-recheck');
+  assert.equal(listDoctrine().find((r) => r.id === rB.id).status, 'active', 'fresh rule untouched');
+
+  // integration lock: verify path runs the audit + downgrades complete on violations
+  const { readFileSync } = await import('node:fs');
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /auditEvidence\(\{/, 'runVerify calls the doctrine audit');
+  assert.match(sup, /parsed\.verdict = 'needs_attention'; \/\/ your standing rules outrank/, 'violations block complete');
 }
 
 console.log('supervisor_doctrine.test ok');

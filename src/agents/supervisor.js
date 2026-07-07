@@ -10,7 +10,7 @@ import { recordVerification, recentVerifications, formatLedger } from './verify_
 import { recordVerifySnapshot } from './verify_snapshots.js';
 import { dodMtime, findDoD } from './spec_files.js';
 import { retrievePrecedents, formatPrecedents } from './decision_memory.js';
-import { retrieveDoctrine, formatDoctrine, noteDoctrineReuse } from './doctrine.js';
+import { retrieveDoctrine, formatDoctrine, noteDoctrineReuse, auditEvidence } from './doctrine.js';
 import { recentOperatorSignals, formatLiveContext, hasOperatorMessageSince, lastOperatorMsgTs } from './live_context.js';
 import { maintainDoc, appendDecisionLine } from './doc_maintainer.js';
 import { typingActive } from '../operator_presence.js';
@@ -1252,6 +1252,29 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
   const sys = verifyPrompt.systemPrompt;
   const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);
   const parsed = normalizeVerificationResult(rawParsed || null, { error: error || 'no output' });
+  // DOCTRINE AUDIT (run 2 — doctrine as enforcement): the operator's audit-type rules are CHECKED
+  // against the evidence, not just injected as prose (TRACE 2606.13174: prompt-only rules leak ~57%).
+  // Violations become unmet criteria — which blocks a 'complete' sign-off mechanically — and feed the
+  // per-rule violation counters. One cheap model call, completion-trigger only, fail-open.
+  if (trigger === 'completion') {
+    try {
+      const g2 = ctxData.git || {};
+      const violations = await auditEvidence({
+        projectId: ctxData.project?.id || sess?.project_id || null,
+        evidence: {
+          agent_claims: clampLine([sess?.summary, sess?.question].filter(Boolean).join(' | '), 400),
+          git_stat: tailStr(g2.stat || g2.committed_stat || '', 1500),
+          git_diff_excerpt: tailStr(g2.diff || g2.committed_diff || '', 6000),
+          terminal_tail: tailStr(ctxData.terminal_tail, 3000),
+        },
+      });
+      if (violations.length) {
+        parsed.unmet = [...(parsed.unmet || []), ...violations.map((v) => `[doctrine] ${clampLine(v.rule?.rule || '', 140)} — ${v.evidence}`)];
+        if (parsed.verdict === 'complete') parsed.verdict = 'needs_attention'; // your standing rules outrank the model's sign-off
+        ctx.log(`doctrine audit: ${violations.length} violation(s)`);
+      }
+    } catch (e) { ctx.log('doctrine audit failed (ignored):', e.message); }
+  }
   const screenshot = images.find((i) => i.kind === 'preview')?.rel || null;
   // #2: when the model judges it COMPLETE, append a ledger entry (what's proven, the SHA, evidence, scope)
   // so future verifies can trust still-valid work instead of re-checking it. Best-effort.

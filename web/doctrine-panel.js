@@ -34,7 +34,11 @@ function evidenceHtml(r) {
 }
 
 function card(r) {
-  const counts = `<span class="count">×${r.evidence_count} seen${r.reuse_count ? ` · used ${r.reuse_count}×` : ''}</span>`;
+  const enfChip = `<span class="doct-chip ${r.enforcement === 'audit' ? 'audit' : ''}" title="${r.enforcement === 'audit' ? 'Checked against work evidence on every completion review' : 'Shapes the supervisor\u2019s judgment (prompt-injected)'}">${esc(r.enforcement || 'advisory')}</span>`;
+  const scopeChip = `<span class="doct-chip">${esc(r.scope || 'project')}</span>`;
+  const viol = Number(r.violation_count) ? `<span class="doct-chip viol" title="times the audit caught this rule violated">⚠ ${r.violation_count}×</span>` : '';
+  const stale = r.source === 'stale-recheck' ? '<span class="doct-chip viol">stale — re-approve?</span>' : '';
+  const counts = `${enfChip}${scopeChip}${viol}${stale}<span class="count">×${r.evidence_count} seen${r.reuse_count ? ` · used ${r.reuse_count}×` : ''}</span>`;
   const body = `
     <div class="doct-when">WHEN ${esc(String(r.situation || 'applicable').replace(/^\s*when(ever)?[\s,:]+/i, ''))}</div>
     <div class="doct-rule" data-view>${esc(r.rule)}</div>
@@ -43,6 +47,8 @@ function card(r) {
       <label>When (situation)<input data-f="situation" value="${esc(r.situation || '')}" /></label>
       <label>Rule<textarea data-f="rule" rows="3">${esc(r.rule)}</textarea></label>
       <label>How to apply<input data-f="apply_how" value="${esc(r.apply_how || '')}" /></label>
+      <label>Enforcement<select data-f="enforcement"><option value="advisory" ${r.enforcement !== 'audit' ? 'selected' : ''}>advisory — shapes judgment</option><option value="audit" ${r.enforcement === 'audit' ? 'selected' : ''}>audit — checked against evidence</option></select></label>
+      <label>Scope<select data-f="scope"><option value="project" ${r.scope !== 'global' ? 'selected' : ''}>this project</option><option value="global" ${r.scope === 'global' ? 'selected' : ''}>everywhere</option></select></label>
     </div>
     ${evidenceHtml(r)}`;
   const actions = r.status === 'candidate'
@@ -113,7 +119,7 @@ box.addEventListener('click', async (e) => {
   if (act === 'save') {
     const f = (k) => cardEl.querySelector(`[data-f="${k}"]`)?.value || '';
     const isCandidate = rules.find((r) => r.id === id)?.status === 'candidate';
-    return post(id, { situation: f('situation'), rule: f('rule'), apply_how: f('apply_how'), ...(isCandidate ? { status: 'active' } : {}) });
+    return post(id, { situation: f('situation'), rule: f('rule'), apply_how: f('apply_how'), enforcement: f('enforcement'), scope: f('scope'), ...(isCandidate ? { status: 'active' } : {}) });
   }
   if (act === 'approve') return post(id, { status: 'active' });
   if (act === 'reject') return post(id, { status: 'rejected' });
