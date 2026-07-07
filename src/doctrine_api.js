@@ -19,6 +19,21 @@ route('GET', '/api/doctrine', (req, res) => {
   });
 });
 
+// TRIAGE (registered BEFORE the :id route — the router matches in registration order, so
+// /api/doctrine/triage must not be swallowed as :id='triage'): the supervisor model reviews + ranks the candidate backlog (stored as recommendations;
+// nothing changes status until the operator applies or acts per-card).
+route('POST', '/api/doctrine/triage', async (req, res) => {
+  try {
+    const r = await triageDoctrine();
+    json(res, 200, { ok: true, ...r, rules: listDoctrine() });
+  } catch (e) {
+    json(res, 502, { ok: false, error: String(e.message || e).slice(0, 200) });
+  }
+});
+route('POST', '/api/doctrine/triage/apply', (req, res) => {
+  json(res, 200, { ok: true, ...applyTriage(), rules: listDoctrine() });
+});
+
 // Approve / reject / edit (edit + approve in one call: pass status + revised text).
 route('POST', '/api/doctrine/:id', async (req, res, { id }) => {
   if (!getDoctrine(id)) return json(res, 404, { error: 'no such doctrine rule' });
@@ -36,20 +51,6 @@ route('POST', '/api/doctrine/:id', async (req, res, { id }) => {
 route('DELETE', '/api/doctrine/:id', (req, res, { id }) => {
   deleteDoctrine(id);
   json(res, 200, { ok: true, deleted: id });
-});
-
-// TRIAGE: the supervisor model reviews + ranks the candidate backlog (stored as recommendations;
-// nothing changes status until the operator applies or acts per-card).
-route('POST', '/api/doctrine/triage', async (req, res) => {
-  try {
-    const r = await triageDoctrine();
-    json(res, 200, { ok: true, ...r, rules: listDoctrine() });
-  } catch (e) {
-    json(res, 502, { ok: false, error: String(e.message || e).slice(0, 200) });
-  }
-});
-route('POST', '/api/doctrine/triage/apply', (req, res) => {
-  json(res, 200, { ok: true, ...applyTriage(), rules: listDoctrine() });
 });
 
 // Manual distill of the session's latest answered decision (testing / backfill an interesting reply).
