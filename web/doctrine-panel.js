@@ -12,6 +12,7 @@ const ago = (ts) => {
 };
 
 let rules = [];
+let triaging = false;
 
 async function load() {
   try {
@@ -33,12 +34,19 @@ function evidenceHtml(r) {
   </details>`;
 }
 
+function triageChip(r) {
+  if (r.status !== 'candidate' || !r.triage_verdict) return '';
+  if (r.triage_verdict === 'approve') return `<span class="doct-chip rec-ok" title="${esc(r.triage_reason || '')}">#${r.triage_rank || '?'} ✓ suggested</span>`;
+  if (r.triage_verdict === 'duplicate') return `<span class="doct-chip rec-no" title="${esc(r.triage_reason || '')}">⇄ dup of ${esc((r.triage_dup_of || '').slice(0, 12))}</span>`;
+  return `<span class="doct-chip rec-no" title="${esc(r.triage_reason || '')}">✕ suggested reject</span>`;
+}
+
 function card(r) {
   const enfChip = `<span class="doct-chip ${r.enforcement === 'audit' ? 'audit' : ''}" title="${r.enforcement === 'audit' ? 'Checked against work evidence on every completion review' : 'Shapes the supervisor\u2019s judgment (prompt-injected)'}">${esc(r.enforcement || 'advisory')}</span>`;
   const scopeChip = `<span class="doct-chip">${esc(r.scope || 'project')}</span>`;
   const viol = Number(r.violation_count) ? `<span class="doct-chip viol" title="times the audit caught this rule violated">⚠ ${r.violation_count}×</span>` : '';
   const stale = r.source === 'stale-recheck' ? '<span class="doct-chip viol">stale — re-approve?</span>' : '';
-  const counts = `${enfChip}${scopeChip}${viol}${stale}<span class="count">×${r.evidence_count} seen${r.reuse_count ? ` · used ${r.reuse_count}×` : ''}</span>`;
+  const counts = `${triageChip(r)}${enfChip}${scopeChip}${viol}${stale}<span class="count">×${r.evidence_count} seen${r.reuse_count ? ` · used ${r.reuse_count}×` : ''}</span>`;
   const body = `
     <div class="doct-when">WHEN ${esc(String(r.situation || 'applicable').replace(/^\s*when(ever)?[\s,:]+/i, ''))}</div>
     <div class="doct-rule" data-view>${esc(r.rule)}</div>
@@ -67,12 +75,21 @@ function card(r) {
 }
 
 function render() {
-  const cand = rules.filter((r) => r.status === 'candidate');
+  const cand = rules.filter((r) => r.status === 'candidate').sort((a, b) => {
+    // triaged first, by verdict (approve>dup>reject) then rank; untriaged keep recency order
+    const w = (r) => (r.triage_verdict === 'approve' ? (r.triage_rank || 99) : r.triage_verdict === 'duplicate' ? 200 : r.triage_verdict === 'reject' ? 300 : 150);
+    return w(a) - w(b);
+  });
   const act = rules.filter((r) => r.status === 'active');
   const rej = rules.filter((r) => r.status === 'rejected');
   box.innerHTML = `
     <h2 class="doct-h">Supervisor doctrine ${cand.length ? `<span class="doct-badge">${cand.length} to review</span>` : ''}</h2>
     <p class="count" style="margin:2px 0 8px">What the supervisor learned from your replies to builders. <b>Approve</b> puts a rule into its live answer prompt; reject teaches it not to propose that again.</p>
+    ${cand.length >= 2 ? `<div class="doct-triage-bar">
+      <button class="btn ghost sm" id="doct-triage" ${triaging ? 'disabled' : ''}>${triaging ? 'Reviewing…' : '✨ Have the supervisor review these'}</button>
+      ${cand.some((r) => r.triage_verdict) ? `<button class="btn sm" id="doct-triage-apply" title="approve the ✓-suggested, reject the ✕/dup-suggested — per-card buttons still work">Apply ${cand.filter((r) => r.triage_verdict).length} suggestions</button>` : ''}
+      <span class="count" id="doct-triage-msg"></span>
+    </div>` : ''}
     ${cand.length ? cand.map(card).join('') : '<p class="count">No new learnings to review — candidates appear when you reply to builders in supervised sessions.</p>'}
     ${act.length ? `<details class="doct-group" open><summary>Active doctrine (${act.length}) — live in the supervisor's prompt</summary>${act.map(card).join('')}</details>` : ''}
     ${rej.length ? `<details class="doct-group"><summary>Rejected (${rej.length})</summary>${rej.map(card).join('')}</details>` : ''}`;
@@ -103,6 +120,29 @@ async function post(id, body) {
 }
 
 box.addEventListener('click', async (e) => {
+  if (e.target?.id === 'doct-triage') {
+    triaging = true; render();
+    try {
+      const r = await fetch('api/doctrine/triage', { method: 'POST' });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+      rules = j.rules || rules;
+    } catch (err) {
+      triaging = false; render();
+      const m = document.getElementById('doct-triage-msg'); if (m) m.textContent = '⚠ ' + (err.message || err);
+      return;
+    }
+    triaging = false; render();
+    return;
+  }
+  if (e.target?.id === 'doct-triage-apply') {
+    const r = await fetch('api/doctrine/triage/apply', { method: 'POST' });
+    const j = await r.json().catch(() => ({}));
+    rules = j.rules || rules; render();
+    const m = document.getElementById('doct-triage-msg');
+    if (m) m.textContent = `applied: ${j.approved || 0} approved · ${(j.rejected || 0) + (j.duplicates || 0)} removed`;
+    return;
+  }
   const btn = e.target.closest('button[data-act]');
   if (!btn) return;
   const cardEl = btn.closest('.doct');

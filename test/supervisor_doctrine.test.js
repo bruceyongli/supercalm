@@ -10,6 +10,7 @@ const {
   listDoctrine, updateDoctrine, deleteDoctrine, retrieveDoctrine, formatDoctrine, noteDoctrineReuse,
   buildDoctrineUserText, SYS_DOCTRINE,
   auditRules, auditEvidence, parseAuditResult, buildDoctrineAuditUserText, SYS_DOCTRINE_AUDIT, sweepStaleDoctrine,
+  triageDoctrine, applyTriage, validateTriage, buildTriageUserText, SYS_DOCTRINE_TRIAGE,
 } = await import('../src/agents/doctrine.js');
 const { buildAnswerUserText } = await import('../src/agents/answer_prompt.js');
 
@@ -200,6 +201,54 @@ const dec = (id, over = {}) => ({ id, session_id: 's_test', project_id: 'p_test'
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(sup, /auditEvidence\(\{/, 'runVerify calls the doctrine audit');
   assert.match(sup, /parsed\.verdict = 'needs_attention'; \/\/ your standing rules outrank/, 'violations block complete');
+}
+
+// ---- triage: model ranks the backlog, operator ratifies in one click ----
+{
+  // seed three candidates with distinct content
+  const mk = (id, rule, sit) => distillFromDecision({ id, session_id: 's_t', project_id: 'p_t', asked_at: Date.now() - 1000, responded_at: Date.now(), category: 'review', ask: 'q', response: rule },
+    { call: async () => JSON.stringify({ worth_learning: true, kind: 'doctrine-fix', situation: sit, rule, apply_how: '', divergence: '', enforcement: 'advisory', scope: 'project' }) });
+  const c1 = await mk(950, 'Run an accessibility contrast pass whenever color tokens change in shared theme files.', 'theme color tokens changed');
+  const c2 = await mk(951, 'Ask the builder which API version header consumers pin before renaming any public endpoint field.', 'public endpoint field rename');
+  const c3 = await mk(952, 'Feature flags removed from config must also have their dead code branches deleted within the same change.', 'feature flag removal');
+  assert.ok(c1.id && c2.id && c3.id, 'three candidates seeded');
+
+  // validateTriage: clamps, unknown ids dropped, exactly-once
+  const cands = listDoctrine().filter((r) => r.status === 'candidate');
+  const v = validateTriage({ triage: [
+    { id: c1.id, verdict: 'approve', rank: 1, reason: 'concrete + matches taste', enforcement: 'audit', scope: 'global' },
+    { id: c2.id, verdict: 'approve', rank: 2, reason: 'good', enforcement: 'advisory', scope: 'project' },
+    { id: c3.id, verdict: 'duplicate', dup_of: c1.id, reason: 'same as first' },
+    { id: 'doc_nope', verdict: 'approve', rank: 1 },
+    { id: c1.id, verdict: 'reject' },
+  ] }, cands);
+  assert.equal(v.size, 3, 'unknown id dropped, duplicate id kept-first');
+  assert.equal(v.get(c1.id).verdict, 'approve');
+  assert.equal(v.get(c3.id).dup_of, c1.id);
+  assert.match(buildTriageUserText({ candidates: cands, active: [], rejected: [] }), /CANDIDATES TO TRIAGE:/);
+  assert.match(SYS_DOCTRINE_TRIAGE, /approve\|reject\|duplicate/);
+
+  // triageDoctrine with injected call persists recommendations WITHOUT changing status
+  const r = await triageDoctrine({ call: async () => JSON.stringify({ triage: [
+    { id: c1.id, verdict: 'approve', rank: 1, reason: 'top', enforcement: 'audit', scope: 'global' },
+    { id: c2.id, verdict: 'reject', reason: 'too narrow' },
+    { id: c3.id, verdict: 'duplicate', dup_of: c1.id, reason: 'dup' },
+  ] }) });
+  assert.equal(r.triaged, 3);
+  const after = listDoctrine();
+  assert.equal(after.find((x) => x.id === c1.id).status, 'candidate', 'recommendation does NOT change status');
+  assert.equal(after.find((x) => x.id === c1.id).triage_verdict, 'approve');
+  assert.equal(after.find((x) => x.id === c1.id).enforcement, 'audit', 'triage classification stored');
+
+  // applyTriage executes the stored verdicts in one operator click
+  const evBefore = after.find((x) => x.id === c1.id).evidence_count;
+  const applied = applyTriage();
+  assert.deepEqual({ a: applied.approved, r: applied.rejected, d: applied.duplicates }, { a: 1, r: 1, d: 1 });
+  const fin = listDoctrine();
+  assert.equal(fin.find((x) => x.id === c1.id).status, 'active');
+  assert.equal(fin.find((x) => x.id === c2.id).status, 'rejected');
+  assert.equal(fin.find((x) => x.id === c3.id).status, 'rejected');
+  assert.equal(fin.find((x) => x.id === c1.id).evidence_count, evBefore + 1, 'duplicate bumps the survivor');
 }
 
 console.log('supervisor_doctrine.test ok');
