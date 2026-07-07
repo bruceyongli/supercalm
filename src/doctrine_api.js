@@ -4,7 +4,7 @@
 // prompt on the next tick.
 
 import { route, json } from './server.js';
-import { listDoctrine, getDoctrine, updateDoctrine, deleteDoctrine, distillFromReply } from './agents/doctrine.js';
+import { listDoctrine, getDoctrine, updateDoctrine, deleteDoctrine, distillFromReply, triageDoctrine, applyTriage } from './agents/doctrine.js';
 
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
@@ -36,6 +36,20 @@ route('POST', '/api/doctrine/:id', async (req, res, { id }) => {
 route('DELETE', '/api/doctrine/:id', (req, res, { id }) => {
   deleteDoctrine(id);
   json(res, 200, { ok: true, deleted: id });
+});
+
+// TRIAGE: the supervisor model reviews + ranks the candidate backlog (stored as recommendations;
+// nothing changes status until the operator applies or acts per-card).
+route('POST', '/api/doctrine/triage', async (req, res) => {
+  try {
+    const r = await triageDoctrine();
+    json(res, 200, { ok: true, ...r, rules: listDoctrine() });
+  } catch (e) {
+    json(res, 502, { ok: false, error: String(e.message || e).slice(0, 200) });
+  }
+});
+route('POST', '/api/doctrine/triage/apply', (req, res) => {
+  json(res, 200, { ok: true, ...applyTriage(), rules: listDoctrine() });
 });
 
 // Manual distill of the session's latest answered decision (testing / backfill an interesting reply).

@@ -50,7 +50,7 @@ db.exec(`
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_doctrine_status ON supervisor_doctrine(status, updated_at)');
 // Run-2 columns (doctrine -> enforcement): additive, guarded for existing installs.
-for (const col of ["enforcement TEXT NOT NULL DEFAULT 'advisory'", "scope TEXT NOT NULL DEFAULT 'project'", 'violation_count INTEGER NOT NULL DEFAULT 0', 'last_violation_at INTEGER', 'last_used_at INTEGER']) {
+for (const col of ["enforcement TEXT NOT NULL DEFAULT 'advisory'", "scope TEXT NOT NULL DEFAULT 'project'", 'violation_count INTEGER NOT NULL DEFAULT 0', 'last_violation_at INTEGER', 'last_used_at INTEGER', 'triage_verdict TEXT', 'triage_rank INTEGER', 'triage_reason TEXT', 'triage_dup_of TEXT', 'triaged_at INTEGER']) {
   try { db.exec(`ALTER TABLE supervisor_doctrine ADD COLUMN ${col}`); } catch { /* already migrated */ }
 }
 
@@ -339,6 +339,121 @@ export async function auditEvidence({ projectId = null, evidence = {}, call = de
     console.error('[doctrine] audit failed (fail-open):', e.message);
     return [];
   }
+}
+
+// ---- TRIAGE: the supervisor model reviews the learning backlog for the operator -------------------
+// One button-press: rank every pending candidate, recommend approve/reject/duplicate with a one-line
+// reason, so the operator ratifies a sorted list instead of reading 16 raw cards. Verdicts are STORED
+// as recommendations — nothing changes status until the operator clicks apply (or acts per-card).
+export const SYS_DOCTRINE_TRIAGE = `You are reviewing CANDIDATE rules that a supervisor system distilled from a human operator's replies to coding agents. Your job: triage the backlog the way the OPERATOR would — their demonstrated taste is given by the ACTIVE rules they approved and the REJECTED pile they discarded.
+
+Judge each candidate:
+- "approve": durable, generalizable, non-obvious, actionable; consistent with the operator's taste; not covered by an active rule. Assign rank 1..N across all approvals (1 = most valuable).
+- "duplicate": substantially covered by an ACTIVE rule (set dup_of to that rule's id) or by a BETTER candidate in this same list (set dup_of to it).
+- "reject": vague, one-off/context-bound, obvious best practice, conflicts with the operator's taste or an active rule.
+
+Also classify enforcement ("audit" = objectively checkable against work evidence, else "advisory") and scope ("global" = how the operator works everywhere, else "project").
+
+Return STRICT minified JSON only:
+{"triage":[{"id":"<candidate id>","verdict":"approve|reject|duplicate","rank":<int, approvals only>,"reason":"<one short line>","dup_of":"<id when duplicate>","enforcement":"audit|advisory","scope":"project|global"}]}
+Every candidate id must appear exactly once.`;
+
+export function buildTriageUserText({ candidates = [], active = [], rejected = [] } = {}) {
+  const fmt = (r) => `[${r.id}] (${r.enforcement || 'advisory'}/${r.scope || 'project'}, seen ${r.evidence_count || 1}x) WHEN ${clip(r.situation, 140)}: ${clip(r.rule, 300)}`;
+  return [
+    'ACTIVE RULES (the operator approved these — their taste):',
+    active.map(fmt).join('\n') || '(none)',
+    '',
+    'REJECTED RULES (the operator discarded these — negative taste):',
+    rejected.slice(0, 12).map((r) => `- ${clip(r.rule, 200)}`).join('\n') || '(none)',
+    '',
+    'CANDIDATES TO TRIAGE:',
+    candidates.map(fmt).join('\n'),
+  ].join('\n');
+}
+
+// Validate/normalize the model's triage into per-id verdicts (pure; exported for tests).
+export function validateTriage(parsed, candidates = []) {
+  const known = new Map(candidates.map((c) => [c.id, c]));
+  const out = new Map();
+  if (!parsed || !Array.isArray(parsed.triage)) return out;
+  for (const t of parsed.triage) {
+    if (!t || !known.has(t.id) || out.has(t.id)) continue;
+    const verdict = ['approve', 'reject', 'duplicate'].includes(t.verdict) ? t.verdict : 'reject';
+    out.set(t.id, {
+      verdict,
+      rank: verdict === 'approve' ? Math.max(1, Math.min(99, Number(t.rank) || 99)) : null,
+      reason: clip(t.reason, 200),
+      dup_of: verdict === 'duplicate' ? String(t.dup_of || '').slice(0, 40) : null,
+      enforcement: t.enforcement === 'audit' ? 'audit' : 'advisory',
+      scope: t.scope === 'global' ? 'global' : 'project',
+    });
+  }
+  return out;
+}
+
+// Triage model chain: the supervisor's primary model first (quality matters here), then strong fallbacks.
+function triageChain() {
+  return [...new Set([
+    process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'gemini-pro-agent',
+    ...(process.env.AIOS_DOCTRINE_TRIAGE_MODELS || 'gpt-5.5,claude-opus-4-8,kimi-k2.6').split(','),
+  ].map((s) => s.trim()).filter(Boolean))];
+}
+async function triageCall(sys, user) {
+  const key = await fleetKey();
+  for (const model of triageChain()) {
+    const route = routeForModel(model);
+    if (!route?.port) continue;
+    try {
+      return await chat(route.port, key, { model: route.model || model, temperature: 0.1, max_tokens: 2200, messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] });
+    } catch { /* next model */ }
+  }
+  throw new Error('no triage model reachable');
+}
+
+export async function triageDoctrine({ call = triageCall } = {}) {
+  const rows = listDoctrine();
+  const candidates = rows.filter((r) => r.status === 'candidate').slice(0, 30);
+  if (candidates.length < 1) return { triaged: 0 };
+  const active = rows.filter((r) => r.status === 'active');
+  const rejected = rows.filter((r) => r.status === 'rejected');
+  const raw = await call(SYS_DOCTRINE_TRIAGE, buildTriageUserText({ candidates, active, rejected }));
+  const verdicts = validateTriage(parseJsonObject(raw), candidates);
+  const t = now();
+  for (const [id, v] of verdicts) {
+    try {
+      db.prepare('UPDATE supervisor_doctrine SET triage_verdict = ?, triage_rank = ?, triage_reason = ?, triage_dup_of = ?, triaged_at = ?, enforcement = ?, scope = ? WHERE id = ?')
+        .run(v.verdict, v.rank, v.reason, v.dup_of, t, v.enforcement, v.scope, id);
+    } catch {}
+  }
+  bus.emit('changed');
+  return { triaged: verdicts.size, of: candidates.length };
+}
+
+// Apply the STORED recommendations in one operator-confirmed click. approve→active (rank order),
+// duplicate→rejected + evidence bump on the surviving rule, reject→rejected. Only touches candidates
+// that HAVE a recommendation; per-card manual actions always remain available.
+export function applyTriage() {
+  const rows = listDoctrine().filter((r) => r.status === 'candidate' && r.triage_verdict);
+  const t = now();
+  const res = { approved: 0, rejected: 0, duplicates: 0 };
+  for (const r of rows) {
+    try {
+      if (r.triage_verdict === 'approve') {
+        db.prepare("UPDATE supervisor_doctrine SET status = 'active', updated_at = ? WHERE id = ?").run(t, r.id);
+        res.approved++;
+      } else if (r.triage_verdict === 'duplicate') {
+        db.prepare("UPDATE supervisor_doctrine SET status = 'rejected', updated_at = ? WHERE id = ?").run(t, r.id);
+        if (r.triage_dup_of) _bumpEvidence.run(t, r.triage_dup_of);
+        res.duplicates++;
+      } else {
+        db.prepare("UPDATE supervisor_doctrine SET status = 'rejected', updated_at = ? WHERE id = ?").run(t, r.id);
+        res.rejected++;
+      }
+    } catch {}
+  }
+  bus.emit('changed');
+  return res;
 }
 
 // Staleness hygiene (Devin pattern): an ACTIVE rule that hasn't been retrieved into any prompt for
