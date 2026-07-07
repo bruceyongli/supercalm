@@ -34,4 +34,21 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
      priority. Effort S. Measure: backlog ≤5, review-time/rule.
   5. **Triggers/automations** — cron/webhook/CI-fail → supervised session (Open-Inspect's strongest
      idea, made safer by our supervisor). Effort L. Measure: e2e demo + first real automation.
+- **Panel (gpt-5.5, kimi-k2.6, opus-4.8 — adversarial):** UNANIMOUS for reshaped Bet 1. Shared
+  findings: (i) the burn is a LIFECYCLE failure, not a verifier problem — "unbounded supervision of
+  work no human is willing to own"; (ii) Bet 3 is the trap (27 labels = overfit + hill-climbing while
+  the mountain burns); (iii) Bet 5 is hostile right now (manufactures more asks into a queue leaking
+  83%); (iv) missing primitives: session ownership/TTL, stop conditions, ask garbage-collection,
+  WIP/attention budget; (v) any bet that does not reduce asks-per-day leaves the operator bankrupt.
+  Root cause confirmed during review: fp.work is REPO-scoped, so sibling sessions committing to a
+  shared repo re-trigger an abandoned session's completion gate forever (the 345-call/day burner).
+- **Choice:** THE ATTENTION GOVERNOR — (1) liveness gate: exited session ⇒ supervisor auto-off;
+  (2) engagement tier per session (hot/warm/stale from last operator touch; pure module, env-tunable
+  thresholds) gating supervision cadence — stale ⇒ detection-only (no verify/gate/keepworking/unstick/
+  answer model calls); warm ⇒ verify only on genuinely new work; (3) needs-you queue tiers
+  (blocking > fresh > stale-collapsed) + leaked-ask TTL expiry; (4) tier chip + one-tap wake in UI.
+  Deferred per panel: digest formatting, WIP caps, doctrine triage, rubric optimizer, triggers.
+- **Measurement plan:** offline replay of the last 24h of supervisor activity against the tier policy
+  (estimated call reduction); before/after queue depth + leaked-ask count on live data; regression
+  locks: engagement unit matrix + replay fixtures for tier-gated decisions.
 - **Loop amendments:** *(step 7)*
