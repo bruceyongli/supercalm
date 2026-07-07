@@ -203,7 +203,10 @@ async function loadDoctrine(force = false) {
 }
 
 function learnCard(r, mine) {
-  const tag = mine ? '<span class="sup-badge sm">this session</span>' : '';
+  const tag = (mine ? '<span class="sup-badge sm">this session</span>' : '')
+    + (r.enforcement === 'audit' ? ' <span class="sup-badge sm" title="checked against work evidence on completion reviews">audit</span>' : '')
+    + (r.scope === 'global' ? ' <span class="sup-badge sm">global</span>' : '')
+    + (Number(r.violation_count) ? ` <span class="sup-badge sm" title="violations caught">⚠ ${r.violation_count}×</span>` : '');
   const ev = (r.ask || r.response)
     ? `<details class="sup-learn-ev"><summary>evidence</summary><div class="sup-learn-ask">ask ▸ ${esc(r.ask || '')}</div><div class="sup-learn-you">you ▸ ${esc(r.response || '')}</div>${r.divergence ? `<div class="sup-learn-div">divergence ▸ ${esc(r.divergence)}</div>` : ''}</details>`
     : '';

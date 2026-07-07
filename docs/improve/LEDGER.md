@@ -4,6 +4,32 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
 
 ---
 
+## Run 2 — 2026-07-07 · branch `improve/doctrine-enforcement`
+
+- **Bet (from run-1 backlog #1):** doctrine → runtime ENFORCEMENT, audit-surface only (TRACE 2606.13174:
+  prompt-resident rules leak ~57%; checked rules → 2% OOD. Constrained to the verify path per the
+  cleanliness tradeoff — no freeform compiled code).
+- **Built:** enforcement classification (audit|advisory) + scope (project|global) distilled with each
+  candidate and editable at approval; `auditRules`/`auditEvidence` (one cheap fail-open model call);
+  runVerify completion-trigger audit — violations become unmet criteria and DOWNGRADE a `complete`
+  verdict (your standing rules outrank the model's sign-off); per-rule violation counters; staleness
+  sweep (active rules unused 21d → demoted for re-approval, source 'stale-recheck'); chips + edit
+  selects on both surfaces. Tests: classification clamps, scoping, counters, fail-open, staleness,
+  source-locks (23 groups green).
+- **Measured** (`scripts/measure/doctrine-audit.mjs`, read-only replay of the live db): classifier
+  marked 2/5 active rules audit-type; auditing the 12 most recent signed-COMPLETE verify snapshots
+  found **11/12 in violation of standing rules** (dominant: "demand raw implementation context, not
+  checklist prose" — 11 hits; "probe root causes vs symptom patches" — 4). Caveat recorded: snapshots
+  predate the rules and the dominant rule is strict; interpretation = the audit raises the completion
+  bar to what the operator repeatedly demanded, with demote-to-advisory as the safety valve.
+- **Deferred:** hook-compiled deny rules (run 2.5 — needs approval UX for compiled patterns);
+  loop-detector quick win (next run — kept this one finished rather than two rushed).
+- **Outcome:** pushed on `improve/doctrine-enforcement`, presented for merge.
+- **Loop amendments:** none new (run-1 amendments held up: internal-signals-first panel wasn't needed —
+  the bet came pre-ranked from run-1's backlog; measurement harness saved as a repo artifact per rule).
+
+---
+
 ## Run 1 — 2026-07-06 · branch `explore/self-improve-1`
 
 - **Trigger:** operator mandate — open exploration, "substantial improvement, any level".
