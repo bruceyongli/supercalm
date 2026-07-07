@@ -26,4 +26,14 @@ if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "$REPO" ]; then
 else
   echo "==> no GITHUB_TOKEN — tag pushed; create the GitHub Release from the tags page if wanted."
 fi
+# If THIS checkout is what the local service runs, restart it so the release goes live here too
+# (same scoped check as bin/update — never restart a service that runs a different clone).
+DIR="$(pwd)"
+PLIST="$HOME/Library/LaunchAgents/ai.aios.server.plist"
+UNIT="$HOME/.config/systemd/user/supercalm.service"
+if [ "$(uname)" = "Darwin" ] && [ -f "$PLIST" ] && grep -q "<string>$DIR/src/server.js</string>" "$PLIST"; then
+  launchctl kickstart -k "gui/$(id -u)/ai.aios.server" && echo "==> restarted local service on v$NEW"
+elif [ -f "$UNIT" ] && grep -q "WorkingDirectory=$DIR" "$UNIT" && command -v systemctl >/dev/null 2>&1; then
+  systemctl --user restart supercalm.service && echo "==> restarted local service on v$NEW"
+fi
 echo "==> released v$NEW"

@@ -8,8 +8,11 @@
 // your IP, same as `git fetch`. Disable entirely with AIOS_UPDATE_CHECK=0; point forks at their own repo
 // with AIOS_UPDATE_REPO=owner/name. Fail-open: network errors just mean "no update info".
 
-import { VERSION } from './config.js';
+import { VERSION, ROOT, DATA_DIR } from './config.js';
 import { route, json } from './server.js';
+import { execFile, spawn } from 'node:child_process';
+import { openSync } from 'node:fs';
+import { join } from 'node:path';
 
 const REPO = (process.env.AIOS_UPDATE_REPO || 'bruceyongli/supercalm').replace(/[^A-Za-z0-9_.\/-]/g, '');
 const ENABLED = process.env.AIOS_UPDATE_CHECK !== '0';
@@ -44,18 +47,65 @@ export async function checkNow() {
   return state;
 }
 
-function payload() {
-  const upd = state.latest && cmpVersion(state.latest.version, VERSION) > 0 ? state.latest : null;
-  return { ok: true, current: VERSION, enabled: ENABLED, repo: REPO, checkedAt: state.checkedAt, update: upd };
+// ---- one-click apply --------------------------------------------------------
+// POST /api/update/apply runs bin/update (ff-only pull + npm install + restart THIS checkout's service)
+// as a detached child logging to data/update.log. On success the service restarts itself, the badge's
+// /api/version poll sees the new build, and the existing reload toast finishes the flow — so the whole
+// upgrade is one click in the UI. canApply gates the button server-side (must be a clean git clone).
+const apply = { running: false, lastRun: null }; // lastRun: {at, ok, error, from}
+
+function git(args) {
+  return new Promise((resolve) => {
+    execFile('git', args, { cwd: ROOT, timeout: 8000 }, (err, stdout) => resolve(err ? null : String(stdout)));
+  });
+}
+async function canApply() {
+  if (await git(['rev-parse', '--is-inside-work-tree']) === null) return { ok: false, reason: 'not a git clone' };
+  if (await git(['remote', 'get-url', 'origin']) === null) return { ok: false, reason: 'no origin remote' };
+  const dirty = await git(['status', '--porcelain']);
+  if (dirty === null) return { ok: false, reason: 'git unavailable' };
+  if (dirty.trim()) return { ok: false, reason: 'local changes present — run bin/update manually' };
+  return { ok: true, reason: '' };
 }
 
-route('GET', '/api/update', (req, res) => {
+function startApply() {
+  const log = openSync(join(DATA_DIR, 'update.log'), 'a');
+  const child = spawn('bash', [join(ROOT, 'bin', 'update')], { cwd: ROOT, detached: true, stdio: ['ignore', log, log] });
+  apply.running = true;
+  child.on('exit', (code) => {
+    // Only reached when the updater did NOT restart us (already up to date, or it failed).
+    apply.running = false;
+    apply.lastRun = { at: Date.now(), ok: code === 0, error: code === 0 ? '' : `bin/update exited ${code} — see data/update.log`, from: VERSION };
+  });
+  child.on('error', (e) => {
+    apply.running = false;
+    apply.lastRun = { at: Date.now(), ok: false, error: String(e.message || e), from: VERSION };
+  });
+  child.unref();
+}
+
+async function payload() {
+  const upd = state.latest && cmpVersion(state.latest.version, VERSION) > 0 ? state.latest : null;
+  const can = upd ? await canApply() : { ok: false, reason: '' };
+  return { ok: true, current: VERSION, enabled: ENABLED, repo: REPO, checkedAt: state.checkedAt, update: upd, canApply: can.ok, canApplyReason: can.reason, applying: apply.running, lastRun: apply.lastRun };
+}
+
+route('GET', '/api/update', async (req, res) => {
   res.setHeader('cache-control', 'no-store');
-  json(res, 200, payload());
+  json(res, 200, await payload());
 });
 route('POST', '/api/update/check', async (req, res) => {
   await checkNow();
-  json(res, 200, payload());
+  json(res, 200, await payload());
+});
+route('POST', '/api/update/apply', async (req, res) => {
+  if (apply.running) return json(res, 409, { ok: false, error: 'update already running' });
+  const upd = state.latest && cmpVersion(state.latest.version, VERSION) > 0 ? state.latest : null;
+  if (!upd) return json(res, 400, { ok: false, error: 'no newer release known — POST /api/update/check first' });
+  const can = await canApply();
+  if (!can.ok) return json(res, 400, { ok: false, error: can.reason });
+  startApply();
+  json(res, 200, { ok: true, started: true, to: upd.version });
 });
 
 if (ENABLED) {

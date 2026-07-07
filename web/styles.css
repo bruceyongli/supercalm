@@ -1776,6 +1776,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .version-toast:hover { background: rgba(33, 40, 51, 0.62); border-color: rgba(120, 170, 255, 0.5); }
 .version-toast .vt-up { color: var(--blue); font-weight: 700; }
 .version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; }
+.version-toast .vt-gh { color: var(--blue); text-decoration: underline; cursor: pointer; }
 .version-toast .vt-x:hover { color: var(--ink); }
 .version-toast .vt-text { display: flex; flex-direction: column; line-height: 1.25; }
 .version-toast .vt-line b { color: var(--blue); font-weight: 600; }

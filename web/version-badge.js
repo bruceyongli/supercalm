@@ -66,26 +66,65 @@
     requestAnimationFrame(() => el.classList.add('in'));
   }
 
-  // Upstream: GitHub has a newer release than this server — link the release, name the update command.
+  // Upstream: GitHub has a newer release than this server. When the server says it can self-update
+  // (clean git clone), the toast IS the update button: click → POST /api/update/apply → the server
+  // pulls + restarts itself → the fast /api/version poll sees the new build → the reload toast takes
+  // over. Otherwise it links the release and names the manual command.
   function showUpstreamToast(u) {
     shown = 'upstream:' + u.version;
     const el = toastEl();
-    el.title = 'Open the release on GitHub — update with bin/update';
-    el.onclick = (e) => {
+    el.title = u.canApply ? 'Update this server now (pull + restart)' : 'Open the release on GitHub — update with bin/update';
+    el.onclick = async (e) => {
       if (e.target?.dataset?.dismiss) {
         try { localStorage.setItem(DISMISS_KEY, u.version); } catch {}
         el.classList.remove('in');
         shown = null;
         return;
       }
-      window.open(u.url, '_blank', 'noopener');
+      if (e.target?.dataset?.gh) { window.open(u.url, '_blank', 'noopener'); return; }
+      if (!u.canApply) { window.open(u.url, '_blank', 'noopener'); return; }
+      try {
+        const r = await fetch('api/update/apply', { method: 'POST' });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({})))?.error || 'HTTP ' + r.status);
+        showApplyingToast(u);
+      } catch (err) {
+        el.querySelector('.vt-sub').textContent = 'could not start: ' + (err.message || err);
+      }
     };
     el.innerHTML =
       `<span class="vt-up">⇡</span>` +
       `<span class="vt-text"><span class="vt-line">Update available <b>v${u.version}</b></span>` +
-      `<span class="vt-sub">View on GitHub · run bin/update</span></span>` +
+      `<span class="vt-sub">${u.canApply ? 'Click to update now' : 'run bin/update'} · <span data-gh="1" class="vt-gh">GitHub ↗</span></span></span>` +
       `<span class="vt-x" data-dismiss="1" title="Dismiss this version">×</span>`;
     requestAnimationFrame(() => el.classList.add('in'));
+  }
+
+  // Updating in progress: the server is pulling + restarting. Poll /api/update for a failure verdict;
+  // success needs no handling here — the version poll notices the new build and shows the reload toast.
+  function showApplyingToast(u) {
+    shown = 'applying:' + u.version;
+    const el = toastEl();
+    el.title = 'Updating — the server restarts itself; you will be offered a reload';
+    el.onclick = null;
+    el.innerHTML =
+      `<span class="vt-up">⇡</span>` +
+      `<span class="vt-text"><span class="vt-line">Updating to <b>v${u.version}</b>…</span>` +
+      `<span class="vt-sub">pull · install · restart — hold on</span></span>` +
+      `<span class="vt-icon">⟳</span>`;
+    requestAnimationFrame(() => el.classList.add('in'));
+    const t0 = Date.now();
+    const watch = setInterval(async () => {
+      if (shown !== 'applying:' + u.version) { clearInterval(watch); return; }
+      const r = await getJson('api/update');
+      if (r?.lastRun && !r.lastRun.ok && r.lastRun.at > t0 - 5000) {
+        clearInterval(watch);
+        shown = null;
+        upstream = { ...u, canApply: false };
+        showUpstreamToast(upstream);
+        toastEl().querySelector('.vt-sub').textContent = 'update failed — see data/update.log';
+      }
+      if (Date.now() - t0 > 4 * 60_000) clearInterval(watch); // give up watching; version poll still runs
+    }, 5000);
   }
 
   async function check() {
@@ -106,7 +145,10 @@
 
   async function checkUpstream() {
     const r = await getJson('api/update');
-    upstream = r?.update && r.update.version && r.update.url ? { version: r.update.version, url: r.update.url } : null;
+    upstream = r?.update && r.update.version && r.update.url
+      ? { version: r.update.version, url: r.update.url, canApply: !!r.canApply }
+      : null;
+    if (r?.applying && upstream) { showApplyingToast(upstream); return; }
     check();
   }
 

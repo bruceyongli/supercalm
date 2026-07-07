@@ -69,14 +69,19 @@ your devices over Tailscale Serve or an authenticated reverse proxy (never the p
 
 ## Updating
 
+**One click:** when a new release is out, every open Supercalm page shows an **"Update available
+vX.Y.Z — click to update now"** toast. Clicking it makes the server pull, reinstall, and restart itself;
+the page then offers a reload. (The server checks GitHub ~every 12 h with one anonymous request —
+disable with `AIOS_UPDATE_CHECK=0`, point forks elsewhere with `AIOS_UPDATE_REPO=owner/repo`.)
+
+**Or from a terminal:**
+
 ```bash
 bin/update        # fast-forward pull → npm install → restart the service
 ```
 
-Safe by design: it refuses if you have local edits and only ever fast-forwards. When a new release is
-out, every open Supercalm page also shows a small **"Update available vX.Y.Z"** toast linking to the
-GitHub release (the server checks GitHub ~every 12 h — disable with `AIOS_UPDATE_CHECK=0`, point forks
-elsewhere with `AIOS_UPDATE_REPO=owner/repo`).
+Safe by design: both paths refuse if you have local edits and only ever fast-forward. The one-click
+button appears only when the server confirms it can self-update (a clean git clone).
 
 ## Versioning & releases
 

@@ -95,7 +95,7 @@ AG_CLIENT_SECRET=...
 ## 7. Update check
 
 The server polls GitHub for the latest release (default: every 12 h, one anonymous request) and the UI
-shows an **"Update available"** toast linking to the release page; update with `bin/update`.
+shows an **"Update available"** toast. On a clean git clone the toast is one-click: it POSTs `/api/update/apply` and the server pulls + reinstalls + restarts itself. Otherwise it links the release; update with `bin/update`.
 
 | Var | Default | Notes |
 |---|---|---|
