@@ -47,29 +47,55 @@ const catOf = (s) => (CAT_PRIO[s.category] != null ? s.category : 'pending');
 // Reconciling render: update existing cards in place so the composer (textarea text,
 // focus, mic state) is NEVER destroyed by a live refresh. Only add/remove/reorder.
 const qcards = new Map();
+let staleOpen = false; // stale group expanded?
 function renderQueue() {
   if (isInteracting($('#queue'))) return; // don't wipe a reply you're typing / a card you're reading
-  const q = (STATE.queue || []).slice().sort((a, b) => (CAT_PRIO[a.category] ?? 1.5) - (CAT_PRIO[b.category] ?? 1.5));
-  $('#needs-count').textContent = q.length;
-  $('#needs').classList.toggle('has', q.length > 0);
+  // Attention tiers (server-computed): live asks first (blocking > fresh, then category priority);
+  // STALE sessions — no operator touch in days — collapse into one quiet group so abandoned work
+  // can't crowd out what you're actually doing. Replying to a stale session re-heats it instantly.
+  const all = (STATE.queue || []).slice();
+  const live = all.filter((s) => s.queueTier !== 'stale').sort((a, b) =>
+    ((a.queueTier === 'blocking' ? 0 : 1) - (b.queueTier === 'blocking' ? 0 : 1)) ||
+    ((CAT_PRIO[a.category] ?? 1.5) - (CAT_PRIO[b.category] ?? 1.5)));
+  const stale = all.filter((s) => s.queueTier === 'stale');
+  $('#needs-count').textContent = live.length;
+  $('#needs').classList.toggle('has', live.length > 0);
   const box = $('#queue');
-  const ids = new Set(q.map((s) => s.id));
+  const shown = live.concat(staleOpen ? stale : []);
+  const ids = new Set(shown.map((s) => s.id));
   for (const [id, e] of qcards) if (!ids.has(id)) { e.card.remove(); qcards.delete(id); }
   let emptyEl = $('#queue-empty');
-  if (!q.length) {
+  if (!shown.length && !stale.length) {
     if (!emptyEl) box.innerHTML = '<div class="empty" id="queue-empty">Nothing needs you. Sessions are working or idle.</div>';
     return;
   }
   if (emptyEl) emptyEl.remove();
-  q.forEach((s, i) => {
+  shown.forEach((s, i) => {
     let e = qcards.get(s.id);
     if (!e) {
       e = createCard(s);
       qcards.set(s.id, e);
     }
     updateCard(e, s);
+    e.card.classList.toggle('stale', s.queueTier === 'stale');
     if (box.children[i] !== e.card) box.insertBefore(e.card, box.children[i] || null);
   });
+  // the stale-group toggle row sits after the live cards (before expanded stale cards' natural slot)
+  let grp = $('#queue-stale-toggle');
+  if (stale.length) {
+    if (!grp) {
+      grp = document.createElement('div');
+      grp.id = 'queue-stale-toggle';
+      grp.className = 'stale-toggle';
+      grp.onclick = () => { staleOpen = !staleOpen; renderQueue(); };
+      box.appendChild(grp);
+    }
+    grp.textContent = `${staleOpen ? '▾' : '▸'} ${stale.length} stale session${stale.length === 1 ? '' : 's'} waiting — no touch from you in days (tap to ${staleOpen ? 'collapse' : 'review'}; replying re-heats)`;
+    box.insertBefore(grp, box.children[live.length] || null);
+  } else if (grp) {
+    grp.remove();
+    staleOpen = false;
+  }
 }
 
 function createCard(s) {

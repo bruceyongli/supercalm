@@ -153,6 +153,25 @@ export function addEvent(session_id, type, payload) {
 }
 export const eventsFor = (id, limit = 100) => _eventsFor.all(id, limit);
 
+// ---- attention governor helpers ---------------------------------------------
+// Newest OPERATOR act per session (messages from text/voice sources) in ONE grouped query — buildState
+// computes an engagement tier for every session each poll, so per-session queries would be O(n) hot-path.
+const _lastTouchBySession = db.prepare(
+  "SELECT session_id, MAX(ts) t FROM messages WHERE direction = 'in' AND source IN ('text','voice','text+attachments') GROUP BY session_id"
+);
+export function lastOperatorTouchBySession() {
+  const out = new Map();
+  try { for (const r of _lastTouchBySession.all()) out.set(r.session_id, Number(r.t) || 0); } catch {}
+  return out;
+}
+
+// Ask garbage-collection: pending asks past the TTL become 'expired' (archived out of any queue math)
+// instead of rotting as false workload (64 leaked rows, oldest 33 days, before this existed).
+const _expireAsks = db.prepare("UPDATE decisions SET status = 'expired' WHERE status = 'pending' AND asked_at < ?");
+export function expireStaleAsks(ttlMs) {
+  try { return _expireAsks.run(Date.now() - ttlMs).changes || 0; } catch { return 0; }
+}
+
 // ---- messages ---------------------------------------------------------------
 const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text) VALUES (?,?,?,?,?)');
 const _messagesFor = db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC LIMIT ?');

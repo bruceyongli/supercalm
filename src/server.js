@@ -10,6 +10,7 @@ import { now, id } from './util.js';
 import { modelDisplayLabel, modelSupportsFast } from './model_catalog.js';
 import { flags, setFlags, flagLocks, FLAG_KEYS, FLAG_DEFS } from './flags.js';
 import { confinedPath } from './static_path.js';
+import { tierOf, queueTier, QUEUE_TIER_ORDER } from './agents/supervisor/engagement.js';
 
 // Resilience: an "OS" daemon must not die from one stray error. Log and keep running.
 process.on('unhandledRejection', (e) => console.error('[aios] unhandledRejection:', e?.stack || e));
@@ -121,14 +122,21 @@ bus.on('session-status', (e) => broadcast('session-status', e));
 // ---------------------------------------------------------------------------
 // state snapshot
 // ---------------------------------------------------------------------------
+let _touchCache = { at: 0, map: new Map() };
 export function buildState() {
   const projects = store.listProjects();
   const sessions = store.listSessions();
   const byId = new Map(projects.map((p) => [p.id, p]));
+  // Engagement tier per session (attention governor): newest operator touch (message or launch),
+  // grouped query cached ~10s — buildState runs per poll tick.
+  if (Date.now() - _touchCache.at > 10_000) _touchCache = { at: Date.now(), map: store.lastOperatorTouchBySession() };
+  const touch = _touchCache.map;
   const decorate = (s) => {
     const fastCapable = s.tool === 'codex' && modelSupportsFast(s.model || TOOLS[s.tool]?.model);
+    const tier = tierOf({ lastTouch: Math.max(touch.get(s.id) || 0, Number(s.started_at) || 0) });
     return {
       ...s,
+      tier,
       fastMode: fastCapable && !!s.fast_mode,
       fastCapable,
       project: s.project_id ? byId.get(s.project_id) || null : null,
@@ -138,8 +146,12 @@ export function buildState() {
     };
   };
   const all = sessions.map(decorate);
-  // the "needs you" queue: waiting AND not LLM-judged as still-working
-  const queue = all.filter((s) => s.status === 'waiting' && s.category !== 'working');
+  // the "needs you" queue: waiting AND not LLM-judged as still-working. Tiered by engagement
+  // (blocking > fresh > stale) so an abandoned session's asks can't crowd out live work.
+  const queue = all
+    .filter((s) => s.status === 'waiting' && s.category !== 'working')
+    .map((s) => ({ ...s, queueTier: queueTier({ tier: s.tier, category: s.category }) }))
+    .sort((a, b) => (QUEUE_TIER_ORDER[a.queueTier] ?? 1) - (QUEUE_TIER_ORDER[b.queueTier] ?? 1));
   return {
     ok: true,
     time: now(),
@@ -164,7 +176,8 @@ export function buildState() {
     sessions: all,
     queue,
     counts: {
-      waiting: queue.length,
+      waiting: queue.filter((s) => s.queueTier !== 'stale').length,
+      stale: queue.filter((s) => s.queueTier === 'stale').length,
       working: all.filter((s) => s.status === 'working').length,
       live: all.filter((s) => s.status !== 'exited').length,
     },

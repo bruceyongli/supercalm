@@ -2039,6 +2039,16 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   json(res, 200, { ok: true });
 });
 
+// Ask TTL sweep (attention governor): archive pending asks nobody answered within the TTL. Runs at
+// boot + hourly; 'expired' status keeps them queryable on /decisions without polluting live queues.
+import { askTtlMs } from './agents/supervisor/engagement.js';
+function sweepStaleAsks() {
+  const n = store.expireStaleAsks(askTtlMs());
+  if (n) console.log(`[aios] expired ${n} stale pending ask(s) past the TTL`);
+}
+setTimeout(sweepStaleAsks, 30_000);
+setInterval(sweepStaleAsks, 3600_000).unref?.();
+
 // Per-project CONTEXT.md (shared vocabulary). Injected into launches only when the contextInject flag
 // AND the per-project `enabled` toggle are on (see startPane). Generation uses a cheap non-claude model.
 route('GET', '/api/project/:id/context', (req, res, { id: pid }) => {
