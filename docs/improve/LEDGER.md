@@ -128,8 +128,21 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   2) private held-out acceptance probes + behavioral verify (SpecBench/PatchDiff); 3) worktree-per-
   session isolation; 4) loop-detection category (S — do alongside); 5) heartbeat digest w/ OK-suppression;
   6) escalation-budget instrumentation + per-model threshold calibration.
-- **Outcome:** shipped on branch `explore/self-improve-1`, presented to operator for merge (operator-
-  facing behavior change ⇒ approval-gated per LOOP ground rules).
+- **Outcome:** merged + shipped as v0.2.0 (live 2026-07-06 23:31 PDT). Boot proof: 6 zombie grants
+  auto-disabled, 54 leaked asks expired, tiers live.
+- **Post-merge measurement (2026-07-07 07:23, first 7.9h live — all overnight, the burner-class
+  window):** ACTUAL beat the −50% prediction. All-hours: 1,117 est-calls/day (72h pre-baseline;
+  verify 924/day) → 273/day pace (verify 22/day) = **−76% total, −98% verify**. Night-vs-night
+  controlled (same 23:31→07:23 clock window; the zombie burners ran 24/7 so this is the fair cut):
+  prior 3 nights avg 415 total / 336 verify → governor night **90 / 7** = −78% / −98%. Why better
+  than predicted: the offline replay was conservative (warm first-verify counted as allowed) and
+  didn't model zombie auto-off removing sessions outright; overnight everything decays stale.
+  Residual spend audited row-by-row: 52 on a hot session the operator was actively working,
+  33 on a 5.7h-hot session (11 escalate events with repeats — evidence FOR backlog item
+  "escalation-budget instrumentation", not a governor gap), 1 legit warm new-work verify, and
+  2 zero-model-call `stood_down` bookkeeping markers. No stale burner survived. Caveat: 7.9h
+  overnight-only sample; daytime absolute numbers will be higher because hot sessions are
+  ungated BY DESIGN — the target class (stale verify, 648/night at peak) is what collapsed to 7.
 - **Loop amendments (applied this run):**
   1. Panel may run on INTERNAL signals as soon as they're harvested; fold research when it lands —
      re-panel only if research CONTRADICTS the choice (it complemented it here). Blocking the build on
