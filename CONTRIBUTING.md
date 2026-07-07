@@ -41,3 +41,9 @@ npm run dev               # node --watch src/server.js  (http://127.0.0.1:8793)
 lifecycle), `src/detect.js` (working/waiting classifier), `src/store.js` (sqlite), and
 `src/agents/supervisor/` (the stage-aware decision engine). The `docs/` directory has deeper design and
 architecture notes.
+
+## Releasing (maintainers)
+
+`bin/release [patch|minor|major]` — secret-scan, version bump + tag, push, GitHub Release with
+generated notes; restarts the local service when the released checkout is the one it runs.
+Installs self-update from the in-app toast (one click) or `bin/update`.
