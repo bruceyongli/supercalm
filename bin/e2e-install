@@ -43,6 +43,7 @@ if npm install --no-audit --no-fund --loglevel=error > "$TMP/npm.log" 2>&1; then
 mkdir -p "$TMP/data"
 AIOS_DATA="$TMP/data" AIOS_PORT="$PORT" AIOS_UPDATE_CHECK=0 node src/server.js > "$TMP/server.log" 2>&1 &
 SRV_PID=$!
+disown "$SRV_PID" 2>/dev/null || true
 for i in $(seq 1 40); do
   curl -sS -m 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
   kill -0 "$SRV_PID" 2>/dev/null || { bad "server crashed on boot (see $TMP/server.log)"; exit 1; }
@@ -54,6 +55,7 @@ case "$H" in *'"ok":true'*) ok "boot + healthz ($(node -e "console.log(JSON.pars
 # 3) mock provider + register it through the public API
 node scripts/e2e/mock-provider.mjs "$MOCK" > "$TMP/mock.log" 2>&1 &
 MOCK_PID=$!
+disown "$MOCK_PID" 2>/dev/null || true
 sleep 0.5
 ADD="$(curl -sS -m 12 -XPOST "http://127.0.0.1:$PORT/api/models/providers" -H 'content-type: application/json' \
   -d "{\"kind\":\"openai\",\"name\":\"E2E Mock\",\"base_url\":\"http://127.0.0.1:$MOCK\",\"api_key\":\"sk-e2e-test\"}")"

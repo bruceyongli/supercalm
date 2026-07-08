@@ -160,3 +160,17 @@ edits (report that instead of forcing).
   See [`docs/CONFIGURATION.md`](CONFIGURATION.md#keeping-secrets-out-of-git).
 
 Report the final dashboard URL and the list of authenticated tools to the operator.
+
+## Verify your install end-to-end
+
+```bash
+bin/e2e-install
+```
+
+Clones your checkout into a temp dir, installs, boots on its own port/data dir, adds a mock API
+model provider through the public API, proves models join the catalog and the internal transport
+routes to them, smokes the core API, and (if tmux + a coding CLI are present) launches and kills a
+real throwaway session. 0 failures = a stranger's laptop would work.
+
+To use real API models instead of a local proxy fleet: open **/auth → "API model providers"** and
+add your Anthropic or OpenAI-compatible endpoint + key (see docs/CONFIGURATION.md).
