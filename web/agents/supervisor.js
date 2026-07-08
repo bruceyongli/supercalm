@@ -692,6 +692,13 @@ function renderTaskCard() {
       <textarea id="pm-new-criteria" rows="3" placeholder="Acceptance criteria — one per line"></textarea>
       <div class="sup-actions"><button class="btn sm" id="pm-new-save" ${pmBusy ? 'disabled' : ''}>Create & switch</button><button class="btn ghost sm" id="pm-new-cancel">Cancel</button></div>
     </div>` : '';
+  const mig = !pmData?.active ? (pmData?.open || []).find((t) => t.legacy && t.status === 'proposed') : null;
+  const migBanner = mig ? `
+    <div class="pm-boundary">
+      <span>📦 Converted from this session's legacy doc: <b>${esc(mig.title || mig.id)}</b> — review it, then activate (the original doc is archived on the card).</span>
+      <button class="btn sm" data-pm-activate="${esc(mig.id)}">Review & activate</button>
+      <button class="btn ghost sm" data-pm-decline="${esc(mig.id)}">Keep legacy doc</button>
+    </div>` : '';
   const pb = pmData?.pendingBoundary;
   const boundary = pb ? `
     <div class="pm-boundary">
@@ -716,6 +723,7 @@ function renderTaskCard() {
       <h2><span>Task card</span><span class="count" title="Project Memory: the supervisor judges against this card, not a prose doc">the contract</span></h2>
       <div class="sup-doc-tools"><button class="btn sm" id="pm-new">${pmForm ? 'New task ▾' : '+ New task'}</button></div>
       ${form}
+      ${migBanner}
       ${boundary}
       ${card}
       ${openRows ? `<details class="sup-learn-group"><summary>Open / paused (${pmData.open.length})</summary>${openRows}</details>` : ''}
@@ -760,6 +768,9 @@ function wireTaskCard() {
   for (const btn of host.querySelectorAll('[data-pm-activate]')) {
     btn.onclick = () => post(`api/session/${P.sessionId}/tasks/activate`, { taskId: btn.dataset.pmActivate });
   }
+  for (const btn of host.querySelectorAll('[data-pm-decline]')) {
+    btn.onclick = () => post(`api/pm/task/${btn.dataset.pmDecline}`, { status: 'abandoned', outcome: 'migration declined — legacy doc kept' });
+  }
   const arch = host.querySelector('.sup-doc-card details:last-of-type');
   if (arch) arch.ontoggle = (e) => { pmArchOpen = e.target.open; };
 }
@@ -773,6 +784,13 @@ function renderDoc() {
     return;
   }
   const d = draft;
+  const migL = (pmData?.open || []).find((t) => t.legacy && t.status === 'proposed');
+  const migLegacyBanner = migL ? `
+    <div class="pm-boundary">
+      <span>📦 Converted from this session's legacy doc: <b>${esc(migL.title || migL.id)}</b> — review it, then activate (the original is archived on the card).</span>
+      <button class="btn sm" id="pm-mig-activate" data-task="${esc(migL.id)}">Review & activate</button>
+      <button class="btn ghost sm" id="pm-mig-decline" data-task="${esc(migL.id)}">Keep legacy doc</button>
+    </div>` : '';
   const body = editMode
     ? `<textarea id="sup-doc-edit" class="sup-doc-edit" rows="16">${esc(d.doc)}</textarea>
        <div class="sup-actions"><button class="btn" id="sup-doc-save" ${busy ? 'disabled' : ''}>Save doc</button><button class="btn ghost" id="sup-doc-cancel" ${busy ? 'disabled' : ''}>Cancel</button></div>`
@@ -785,6 +803,7 @@ function renderDoc() {
       <div class="sup-doc-tools">
         <button class="btn sm" id="sup-generate" ${busy ? 'disabled' : ''}>${busy === 'generate' ? 'Generating…' : 'Generate from session'}</button>
       </div>
+      ${migLegacyBanner}
       ${body}
       <div class="sup-revise">
         <input id="sup-revise-input" placeholder="Ask the supervisor to revise the doc" value="${esc(reviseText)}" />
@@ -798,6 +817,14 @@ function wireDoc() {
     const el = host.querySelector(sel);
     if (el) el[ev] = fn;
   };
+  on('#pm-mig-activate', 'onclick', async (e) => {
+    try { await P.api(`api/session/${P.sessionId}/tasks/activate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: e.target.dataset.task }) }); } catch (err) { alert('activate failed: ' + (err.message || err)); }
+    await loadTasks(true);
+  });
+  on('#pm-mig-decline', 'onclick', async (e) => {
+    try { await P.api(`api/pm/task/${e.target.dataset.task}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'abandoned', outcome: 'migration declined — legacy doc kept' }) }); } catch {}
+    await loadTasks(true);
+  });
   on('#sup-doc-mode', 'onclick', () => {
     editMode = !editMode;
     if (editMode) P.markDirty();

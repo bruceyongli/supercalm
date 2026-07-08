@@ -86,6 +86,17 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   held open, verdict still needs_attention(76). Per-criterion evidence-cited gating works live,
   conservative in the right direction; prior_failures fed from this card's own verify_fail events.
 
+- **Phase 6 built (lazy migration):** `doc_migration.js` — deterministic legacy-doc parsing (title/
+  Now/Goal/unchecked-criteria/hard-rules; ## Now outranks ## Goal per the round-3 trust order), one
+  capped fail-open model call classifies hard-rule lines into doctrine|constraint|fact|fossil|patch;
+  the converted card lands PROPOSED (never active) with the original doc archived VERBATIM
+  (pm_tasks.legacy_doc, full restore possible); ≤3 doctrine candidates per session (findSimilar
+  dedupe — rejected rules stay standing negatives; source 'doc-migration'); constraints ride the
+  card; facts surfaced in the event (the supervisor never writes the builder-owned wiki); fossils +
+  anti-staleness patches dropped. Trigger: HOT-tier sessions only, once per session ever
+  (state-keyed), flag-gated, fail-open (the legacy doc keeps working). Panel banners on BOTH views:
+  "Review & activate" / "Keep legacy doc" (decline abandons the proposal).
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor

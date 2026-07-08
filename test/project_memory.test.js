@@ -273,3 +273,81 @@ console.log('project_memory.test ok');
   const sess = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
   assert.match(sess, /aios:new-task/, '/task palette command wired');
 }
+
+// ---- phase 6: lazy migration -----------------------------------------------------------------------
+{
+  const dm = await import('../src/agents/supervisor/doc_migration.js');
+  const LEGACY = `# Fix the widget and prep release
+## Goal
+Original day-one goal: rebuild the widget pipeline end to end.
+## Now
+Ship the widget cache fix and verify reload behavior.
+## Hard rules
+- Evidence must be real: diffs, command output, passing tests; prose alone is not enough.
+- Do not treat ~/tmp/old_design_handoff as the current project goal.
+- Supervisor stage awareness must stand down during planning (shipped in stage.js).
+- Only inspect logs during this investigation; do not modify code.
+- The service runs on port 8793 behind the tailnet proxy.
+## Acceptance criteria
+- [x] Old finished thing nobody cares about
+- [ ] Widget cache survives reload
+- [ ] Cache hit rate is visible in the dashboard
+## Timeline
+- lots of history here
+`;
+  // deterministic parse: title, Now-first trust order, unchecked criteria only
+  const parsed = dm.parseLegacyDoc(LEGACY);
+  assert.equal(parsed.title, 'Fix the widget and prep release');
+  assert.match(parsed.now, /widget cache fix/);
+  assert.deepEqual(parsed.criteria, ['Widget cache survives reload', 'Cache hit rate is visible in the dashboard']);
+  assert.equal(parsed.hardRules.length, 5);
+
+  // classification validation: clamps, unknown buckets -> fossil, exactly-once
+  const v = dm.validateMigrateResult({ lines: [
+    { i: 0, bucket: 'doctrine', rewrite: 'Never accept completion claims without concrete evidence (diffs, command output, tests).' },
+    { i: 1, bucket: 'patch' }, { i: 2, bucket: 'fossil' }, { i: 3, bucket: 'constraint' }, { i: 4, bucket: 'fact' },
+    { i: 0, bucket: 'patch' }, { i: 99, bucket: 'doctrine' }, { i: 1, bucket: 'bogus' },
+  ] }, parsed.hardRules);
+  assert.equal(v.size, 5);
+  assert.equal(v.get(0).bucket, 'doctrine');
+  assert.equal(v.get(1).bucket, 'patch');
+
+  // full proposal: proposed status (never active), Now-seeded goal, verbatim archive, buckets routed
+  const call = async () => JSON.stringify({ lines: [
+    { i: 0, bucket: 'doctrine', rewrite: 'Never accept completion claims without concrete evidence (diffs, command output, tests).' },
+    { i: 1, bucket: 'patch' }, { i: 2, bucket: 'fossil' }, { i: 3, bucket: 'constraint' }, { i: 4, bucket: 'fact' },
+  ] });
+  const before = db.prepare("SELECT COUNT(*) c FROM supervisor_doctrine WHERE source = 'doc-migration'").get().c;
+  const r = await dm.proposeMigration({ sessionId: 's_mig', projectId: 'p_mig', doc: LEGACY, call });
+  assert.equal(r.card.task.status, 'proposed', 'migration proposes, never activates');
+  assert.match(r.card.task.goal, /^Ship the widget cache fix/, '## Now outranks ## Goal');
+  assert.match(r.card.task.goal, /Constraints: Only inspect logs/, 'live constraints ride the card');
+  assert.equal(r.card.criteria.length, 2, 'only unchecked criteria carried');
+  const row = db.prepare('SELECT legacy_doc FROM pm_tasks WHERE id = ?').get(r.card.task.id);
+  assert.equal(row.legacy_doc, LEGACY, 'original archived VERBATIM on the card');
+  assert.equal(r.counts.dropped, 2, 'fossil + anti-staleness patch dropped');
+  assert.equal(r.counts.facts, 1);
+  const after = db.prepare("SELECT COUNT(*) c FROM supervisor_doctrine WHERE source = 'doc-migration'").get().c;
+  assert.equal(after - before, 1, 'one doctrine candidate (evidence rule), deduped + capped');
+  const ev6 = listEvents({ projectId: 'p_mig', types: ['legacy_doc'] });
+  assert.equal(ev6.length, 1);
+  assert.match(ev6[0].summary, /archived verbatim/);
+  // re-proposing the same doctrine text dedupes (near-dup skip)
+  const r2 = await dm.proposeMigration({ sessionId: 's_mig2', projectId: 'p_mig', doc: LEGACY, call });
+  const after2 = db.prepare("SELECT COUNT(*) c FROM supervisor_doctrine WHERE source = 'doc-migration'").get().c;
+  assert.equal(after2, after, 'near-dup doctrine candidate skipped on second migration');
+  // fail-open: no call -> card still proposed, zero doctrine, everything archived
+  const r3 = await dm.proposeMigration({ sessionId: 's_mig3', projectId: 'p_mig3', doc: LEGACY, call: null });
+  assert.equal(r3.card.task.status, 'proposed');
+  assert.equal(r3.counts.doctrine, 0);
+
+  // source locks: onTick proposes once (hot only), panel banners + decline exist
+  const sup6 = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup6, /tier === 'hot' && cfg\.doc && cfg\.doc\.trim\(\) && !st\.migrationProposedAt/, 'lazy: hot-tier, once, doc present, no card');
+  assert.match(sup6, /migrationProposedAt: t/, 'once-per-session state mark');
+  const panel6 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(panel6, /Converted from this session's legacy doc/, 'migration banner');
+  assert.match(panel6, /Keep legacy doc/, 'decline path');
+  const api6 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api6, /legacy: !!t\.legacy_doc/, 'tasks route flags migrated cards');
+}

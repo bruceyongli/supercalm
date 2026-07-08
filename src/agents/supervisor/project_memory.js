@@ -105,6 +105,8 @@ CREATE TABLE IF NOT EXISTS pm_session_runtime (
 `);
 // phase 4: verify facts pinned at task-open (additive migration — phase-1 schema omitted it)
 try { db.exec('ALTER TABLE pm_tasks ADD COLUMN verify_facts_json TEXT'); } catch {}
+// phase 6: a migrated card carries its origin doc VERBATIM (full restore always possible)
+try { db.exec('ALTER TABLE pm_tasks ADD COLUMN legacy_doc TEXT'); } catch {}
 
 // ---- card + versioning ---------------------------------------------------------------------------
 export function getTask(taskId) {
@@ -136,11 +138,11 @@ function snapshotVersion(taskId, actor) {
   return card;
 }
 
-export function createTask({ projectId, title = '', goal = '', criteria = [], sessionId = null, actor = 'operator' }) {
+export function createTask({ projectId, title = '', goal = '', criteria = [], sessionId = null, actor = 'operator', legacyDoc = null }) {
   const tid = 'task_' + genId();
   const ts = now();
-  db.prepare('INSERT INTO pm_tasks (id, project_id, title, goal, status, driven_by_session, version, created_at, updated_at) VALUES (?,?,?,?,?,?,1,?,?)')
-    .run(tid, projectId, String(title).slice(0, 200), String(goal).slice(0, 4000), 'proposed', sessionId, ts, ts);
+  db.prepare('INSERT INTO pm_tasks (id, project_id, title, goal, status, driven_by_session, version, created_at, updated_at, legacy_doc) VALUES (?,?,?,?,?,?,1,?,?,?)')
+    .run(tid, projectId, String(title).slice(0, 200), String(goal).slice(0, 4000), 'proposed', sessionId, ts, ts, legacyDoc ? String(legacyDoc).slice(0, 60000) : null);
   for (const c of criteria) addCriterion(tid, c, { snapshot: false });
   appendEvent({ projectId, taskId: tid, sessionId, actor, type: 'opened', summary: `Task opened: ${title || goal.slice(0, 80)}` });
   return snapshotVersion(tid, actor);
