@@ -176,6 +176,7 @@ function renderAll() {
   renderLearn();
   renderResult();
   if (Date.now() - doctrineAt > 30000) loadDoctrine(); // piggyback on SSE updates, throttled
+  if (Date.now() - pmAt > 30000) loadTasks(); // task card (Project Memory), same throttle
 }
 
 // ---- Learning (operator doctrine) -------------------------------------------
@@ -647,9 +648,113 @@ function docSummaryHtml(doc) {
   // single ellipsis-truncating line (no overflow). Hidden when expanded (doc shows its own title).
   return `<span class="sup-doc-preview-line"><b>${esc(title)}</b>${snippet ? ' — ' + esc(snippet) : ''}</span>`;
 }
+// ---- Task card (Project Memory phase 3) ------------------------------------
+// When the projectMemory flag is on and this session drives a task card, the card IS the contract:
+// the doc section renders the card (status, goal, per-criterion state, archive drawer) and the
+// operator's EXPLICIT controls (new task / edit / close) are the boundary mechanism. The legacy doc
+// UI stays for flag-off sessions. Data via GET api/session/:id/tasks (loadTasks below).
+let pmData = null; // {active, open, archived} | null = flag off / no project / not loaded
+let pmAt = 0;
+let pmForm = false; // "new task" inline form open
+let pmBusy = false;
+let pmArchOpen = false;
+
+async function loadTasks(force = false) {
+  if (!force && Date.now() - pmAt < 20000) return;
+  pmAt = Date.now();
+  try {
+    const r = await P.api(`api/session/${P.sessionId}/tasks`);
+    pmData = r?.ok ? r : null;
+  } catch { pmData = null; }
+  renderDoc();
+}
+
+function pmStatusChip(st) {
+  const cls = st === 'active' ? 'on_track' : st === 'done' ? 'complete' : st === 'verify_pending' ? 'needs_attention' : '';
+  return `<span class="sup-badge sm ${cls ? 'sup-' + cls : ''}">${esc(st)}</span>`;
+}
+
+function renderTaskCard() {
+  const a = pmData.active;
+  const openRows = (pmData.open || []).map((t) => `<div class="pm-open-row"><span>${esc(t.title || t.goal?.slice(0, 60) || t.id)}</span> ${pmStatusChip(t.status)} <button class="btn ghost sm" data-pm-activate="${esc(t.id)}">Resume</button></div>`).join('');
+  const arch = (pmData.archived || []).map((t) => `<div class="pm-arch-row">${pmStatusChip(t.status)} <span>${esc(t.title || t.id)}</span> <span class="count">${esc(t.outcome || '')}</span></div>`).join('');
+  const form = pmForm ? `
+    <div class="pm-form">
+      <input id="pm-new-title" placeholder="Task title" />
+      <textarea id="pm-new-goal" rows="2" placeholder="Goal — what does done look like?"></textarea>
+      <textarea id="pm-new-criteria" rows="3" placeholder="Acceptance criteria — one per line"></textarea>
+      <div class="sup-actions"><button class="btn sm" id="pm-new-save" ${pmBusy ? 'disabled' : ''}>Create & switch</button><button class="btn ghost sm" id="pm-new-cancel">Cancel</button></div>
+    </div>` : '';
+  const card = a ? `
+    <div class="pm-card">
+      <div class="pm-card-head">${pmStatusChip(a.task.status)} <b>${esc(a.task.title || 'Current task')}</b> <span class="count">v${a.task.version}</span></div>
+      <div class="pm-goal">${esc(a.task.goal || '')}</div>
+      <div class="pm-criteria">${(a.criteria || []).map((c) => `<div class="pm-crit ${esc(c.status)}">${c.status === 'satisfied' ? '☑' : '☐'} ${esc(c.text)}</div>`).join('') || '<span class="count">no criteria yet</span>'}</div>
+      <div class="sup-actions">
+        <button class="btn ghost sm" id="pm-add-crit">+ criterion</button>
+        <button class="btn ghost sm" id="pm-edit-goal">Edit goal</button>
+        <button class="btn ghost sm" id="pm-close-done">✓ Done</button>
+        <button class="btn ghost sm" id="pm-close-abandon">Abandon</button>
+      </div>
+    </div>` : '<div class="sup-empty-doc">No active task card — create one to give the supervisor its contract.</div>';
+  return `
+    <section class="su-card sup-doc-card">
+      <h2><span>Task card</span><span class="count" title="Project Memory: the supervisor judges against this card, not a prose doc">the contract</span></h2>
+      <div class="sup-doc-tools"><button class="btn sm" id="pm-new">${pmForm ? 'New task ▾' : '+ New task'}</button></div>
+      ${form}
+      ${card}
+      ${openRows ? `<details class="sup-learn-group"><summary>Open / paused (${pmData.open.length})</summary>${openRows}</details>` : ''}
+      ${arch ? `<details class="sup-learn-group" ${pmArchOpen ? 'open' : ''}><summary>Archive (${pmData.archived.length})</summary>${arch}</details>` : ''}
+    </section>`;
+}
+
+function wireTaskCard() {
+  const on = (sel, ev, fn) => { const el = host.querySelector(sel); if (el) el[ev] = fn; };
+  const post = async (path, body) => {
+    pmBusy = true;
+    try { await P.api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }); }
+    catch (e) { alert('task update failed: ' + (e.message || e)); }
+    pmBusy = false; pmForm = false;
+    await loadTasks(true);
+  };
+  on('#pm-new', 'onclick', () => { pmForm = !pmForm; renderDoc(); });
+  on('#pm-new-cancel', 'onclick', () => { pmForm = false; renderDoc(); });
+  on('#pm-new-save', 'onclick', () => {
+    const v = (id) => host.querySelector(id)?.value || '';
+    const criteria = v('#pm-new-criteria').split('\n').map((x) => x.trim()).filter(Boolean);
+    if (!v('#pm-new-title').trim() && !v('#pm-new-goal').trim()) return;
+    post(`api/session/${P.sessionId}/tasks`, { title: v('#pm-new-title'), goal: v('#pm-new-goal'), criteria });
+  });
+  on('#pm-add-crit', 'onclick', () => {
+    const text = prompt('New acceptance criterion:');
+    if (text?.trim()) post(`api/pm/task/${pmData.active.task.id}`, { addCriteria: [text.trim()] });
+  });
+  on('#pm-edit-goal', 'onclick', () => {
+    const goal = prompt('Goal:', pmData.active.task.goal || '');
+    if (goal != null) post(`api/pm/task/${pmData.active.task.id}`, { goal });
+  });
+  on('#pm-close-done', 'onclick', () => {
+    const outcome = prompt('Outcome (one line):', '');
+    if (outcome != null) post(`api/pm/task/${pmData.active.task.id}`, { status: 'done', outcome });
+  });
+  on('#pm-close-abandon', 'onclick', () => {
+    if (confirm('Abandon this task card?')) post(`api/pm/task/${pmData.active.task.id}`, { status: 'abandoned' });
+  });
+  for (const btn of host.querySelectorAll('[data-pm-activate]')) {
+    btn.onclick = () => post(`api/session/${P.sessionId}/tasks/activate`, { taskId: btn.dataset.pmActivate });
+  }
+  const arch = host.querySelector('.sup-doc-card details:last-of-type');
+  if (arch) arch.ontoggle = (e) => { pmArchOpen = e.target.open; };
+}
+
 function renderDoc() {
   const hostEl = host.querySelector('#sup-doc');
   if (!hostEl) return;
+  if (pmData?.active) { // Project Memory: the card replaces the doc UI for this session
+    hostEl.innerHTML = renderTaskCard();
+    wireTaskCard();
+    return;
+  }
   const d = draft;
   const body = editMode
     ? `<textarea id="sup-doc-edit" class="sup-doc-edit" rows="16">${esc(d.doc)}</textarea>

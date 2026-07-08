@@ -43,6 +43,8 @@ import {
   triggeringSignal,
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
+import { flagOn } from '../flags.js';
+import { taskCard, renderCardMd, getRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection } from './supervisor/project_memory.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
 import { proxyAuthRecoveryMessage } from './external_recovery.js';
@@ -1304,6 +1306,18 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
       if (workFp) recordVerifySnapshot({ session_id: ctx.sessionId, work_fp: workFp, git_sha: sha, evidenceText: textPart, hadScreenshot: hasVisualProof, verdict: 'complete', score: parsed.score ?? null });
     } catch (e) { ctx.log('ledger/snapshot record failed:', e.message); }
   }
+  if (ctx.__activeCard) {
+    try {
+      const g3 = ctxData.git || {};
+      const files = [...new Set((String(g3.stat || g3.committed_stat || '').match(/^\s*([^\s|]+)\s+\|/gm) || []).map((l) => l.replace(/\s*\|\s*$/, '').trim()))].slice(0, 40);
+      pmAppendEvent({
+        projectId: ctx.__activeCard.task.project_id, taskId: ctx.__activeCard.task.id, sessionId: ctx.sessionId,
+        actor: 'supervisor', type: parsed.verdict === 'complete' ? 'verify_pass' : 'verify_fail',
+        summary: clampLine(`${parsed.verdict}${parsed.score != null ? ` (${parsed.score})` : ''}: ${parsed.assessment || ''}`, 300),
+        refs: { files, card_version: ctx.__activeCard.task.version },
+      });
+    } catch {}
+  }
   return { parsed, raw, error, screenshot, model };
 }
 
@@ -1602,6 +1616,41 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
   return true;
 }
 
+// PROJECT MEMORY phase 3 (flag `projectMemory`): with an active task card claimed for this session,
+// the CARD is the contract. cfg.doc derives from it ONCE per tick, so every downstream reader
+// (answer / verify / gate key / focus line) reads the card with zero call-site changes — the same
+// single-seam move as phase-2's state scoping. st.activeTask* keys stamp every decision/review with
+// the card version, and the repo projection self-heals (missing/stale/tampered -> rewrite; a
+// tampered write is also EVIDENCE, recorded as an event).
+function applyActiveCard(ctx, cfg) {
+  try {
+    if (!flagOn('projectMemory')) return null;
+    const tid = getRuntime(ctx.sessionId)?.active_task_id;
+    if (!tid) return null;
+    const card = taskCard(tid);
+    if (!card || ['done', 'abandoned', 'superseded'].includes(card.task.status)) return null;
+    cfg.doc = renderCardMd(card);
+    const st = ctx.getState();
+    if (st.activeTaskId !== card.task.id || st.activeCardVersion !== card.task.version || st.activeCardHash !== card.hash) {
+      applySupervisorState(ctx, { activeTaskId: card.task.id, activeCardVersion: card.task.version, activeCardHash: card.hash });
+    }
+    const projectPath = ctx.project()?.path;
+    if (projectPath) {
+      const proj = checkProjection(projectPath, card);
+      if (proj.state === 'tampered') {
+        pmAppendEvent({ projectId: card.task.project_id, taskId: card.task.id, sessionId: ctx.sessionId, actor: 'supervisor', type: 'incident', summary: 'Repo projection (GOAL.md) was edited outside Supercalm — treated as tampering evidence and rewritten from the authoritative card.' });
+        ctx.log('projection tampered — rewriting from the card');
+      }
+      if (proj.state !== 'ok' && proj.state !== 'foreign') writeProjection(projectPath, card, { force: proj.state !== 'missing' });
+      if (proj.state === 'foreign') ctx.log('GOAL.md exists but is not ours — leaving it untouched (no projection)');
+    }
+    return card;
+  } catch (e) {
+    ctx.log('applyActiveCard failed (falling back to the doc):', e.message);
+    return null;
+  }
+}
+
 export async function onTick(ctx) {
   const s = ctx.session();
   const cfg = ctx.getConfig();
@@ -1643,6 +1692,10 @@ export async function onTick(ctx) {
     st = applySupervisorState(ctx, { baseRef });
   }
   const baseRef = st.baseRef || null;
+
+  // Project Memory: card-as-contract (see applyActiveCard). Null with the flag off / no active task.
+  const activeCard = applyActiveCard(ctx, cfg);
+  ctx.__activeCard = activeCard;
 
   // light evidence (no heavy unified diff) for the fingerprint + answer/unstick brains.
   let ev;
@@ -1739,7 +1792,7 @@ export async function onTick(ctx) {
   // suppress re-reading the operator's latest words, or the supervisor keeps enforcing stale scope.
   let holdSends = false;
   const lastOp = lastOperatorMsgTs(db, ctx.sessionId);
-  if (cfg.doc && cfg.doc.trim()) {
+  if (cfg.doc && cfg.doc.trim() && !ctx.__activeCard) { // card mode: the maintainer stands down — the card is edited structurally via the task API
     const cutoff = st.docCutoffTs || st.lastDocMaintainAt || 0;
     const agentReport = s.status === 'waiting' && s.summary ? `${s.category || 'waiting'}: ${clampLine(s.summary, 200)}` : '';
     const { text: sigText, hasNew } = maintainSignals(ctx.sessionId, cutoff, agentReport);
@@ -2474,6 +2527,7 @@ export const actions = {
   // operator-initiated inspection: verify now, log it, don't auto-send (the feed offers Send).
   async run(ctx) {
     const cfg = ctx.getConfig();
+    ctx.__activeCard = applyActiveCard(ctx, cfg); // manual runs judge the card too, not the stale doc
     if (!cfg.doc || !cfg.doc.trim()) {
       const doc = await ensureSupervisionDoc(ctx, cfg, { trigger: 'manual' });
       if (!doc) throw new Error('No supervision doc yet — automatic generation failed.');
@@ -2528,6 +2582,7 @@ export const actions = {
     //    terminal, screenshot). Logged LAST so it is the latest review shown in the panel — superseding the
     //    stale escalate card with the actual current status.
     cfg = ctx.getConfig();
+    ctx.__activeCard = applyActiveCard(ctx, cfg);
     let verdict = null, assessment = '';
     try {
       const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'manual');

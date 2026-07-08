@@ -144,10 +144,23 @@ const card1 = createTask({
 
 // ---- phase-1 contract: data-only, no behavior wiring ----------------------------------------------
 {
+  // Phase 3: the card IS the contract — the supervisor must read it (flag-gated), the maintainer
+  // must stand down in card mode, and verify verdicts must become typed events on the card.
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
-  assert.ok(!sup.includes('project_memory'), 'phase 1 is data-only: the supervisor must not import project_memory yet (this lock is REMOVED in phase 3)');
+  assert.match(sup, /from '\.\/supervisor\/project_memory\.js'/, 'supervisor reads the card store');
+  assert.match(sup, /function applyActiveCard/, 'card-as-contract seam exists');
+  assert.match(sup, /flagOn\('projectMemory'\)/, 'card mode is flag-gated');
+  assert.match(sup, /cfg\.doc = renderCardMd\(card\)/, 'the card derives cfg.doc for every downstream reader');
+  assert.match(sup, /&& !ctx\.__activeCard\) \{ \/\/ card mode: the maintainer stands down/, 'doc-maintainer stands down in card mode');
+  assert.match(sup, /type: parsed\.verdict === 'complete' \? 'verify_pass' : 'verify_fail'/, 'verify verdicts become card events');
+  assert.match(sup, /ctx\.__activeCard = applyActiveCard\(ctx, cfg\)/, 'manual/sync runs judge the card too');
   const flags = readFileSync(new URL('../src/flags.js', import.meta.url), 'utf8');
   assert.match(flags, /projectMemory/, 'behavior phases gate on the projectMemory flag');
+  const api = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api, /api\/session\/:id\/tasks/, 'explicit task routes exist');
+  const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(panel, /renderTaskCard/, 'panel renders the card view');
+  assert.match(panel, /pmData\?\.active/, 'card view replaces the doc UI when a card is active');
 }
 
 console.log('project_memory.test ok');

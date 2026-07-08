@@ -305,7 +305,7 @@ const server = http.createServer(async (req, res) => {
 // Fire-and-forget (NOT top-level await) AFTER `routes` is initialized: this
 // avoids a hang in any one module's async boot from blocking server.listen,
 // and avoids "unsettled top-level await" tearing the process down.
-for (const mod of ['./sessions.js', './detect.js', './spark.js', './push.js', './hooks.js', './mcp.js', './project_graph.js', './lessons.js', './playbook_api.js', './doctrine_api.js', './update_check.js', './agents/supervisor/project_memory.js', './snippets.js', './tts.js', './voice.js', './records.js', './authapi.js', './usage.js', './model_proxy.js', './model_scan.js', './tool_updates.js', './product_health.js', './agents/host.js']) {
+for (const mod of ['./sessions.js', './detect.js', './spark.js', './push.js', './hooks.js', './mcp.js', './project_graph.js', './lessons.js', './playbook_api.js', './doctrine_api.js', './update_check.js', './agents/supervisor/project_memory.js', './pm_api.js', './snippets.js', './tts.js', './voice.js', './records.js', './authapi.js', './usage.js', './model_proxy.js', './model_scan.js', './tool_updates.js', './product_health.js', './agents/host.js']) {
   import(mod).catch((e) => console.error(`[aios] ${mod} not loaded:`, e.message));
 }
 

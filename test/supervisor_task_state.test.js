@@ -116,7 +116,7 @@ const { viewTaskState, routeTaskPatch, TASK_SCOPED_KEYS } = await import('../src
   assert.match(obsSrc, /task: st\.activeTaskId/, 'snapshot names the active card');
   const supSrc = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(supSrc, /taskRef/, 'logIntervention stamps the card');
-  assert.ok(!supSrc.includes('project_memory'), 'phase 2 still data-only: no project_memory import in the supervisor');
+  assert.match(supSrc, /applyActiveCard/, 'phase 3: the supervisor consumes the card through the single seam');
 }
 
 console.log('supervisor_task_state.test ok');

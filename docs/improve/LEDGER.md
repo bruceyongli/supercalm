@@ -28,6 +28,15 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   Records now name the contract they acted against: supervisor_decisions + supervisor_reviews gain
   nullable task_id/card_version columns; the decide snapshot carries task {id, version, hash}.
   Task-switch isolation test-locked both directions (no leak, no re-arm, pause/resume restores).
+- **Phase 3 built (the card goes live, flag-gated):** `applyActiveCard` — one seam derives cfg.doc
+  from the active card (renderCardMd) so answer/verify/gate/focus all read the CARD with zero
+  call-site changes; doc-maintainer stands down in card mode (structured edits via the task API);
+  verify verdicts append typed verify_pass/verify_fail events with files touched (seeds the phase-5
+  pre-action gate); projection self-heals per tick (missing/stale rewritten, TAMPERED recorded as an
+  incident event + rewritten, foreign never clobbered); manual + sync verify paths card-wired.
+  Explicit boundary controls per the panel verdict: pm_api.js (list/create+activate/switch/amend/
+  close/events) + the panel's Task-card view (status/goal/per-criterion state, new-task form,
+  open/paused resume rows, archive drawer) replacing the doc UI when a card is active.
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
