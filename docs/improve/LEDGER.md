@@ -37,6 +37,15 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   Explicit boundary controls per the panel verdict: pm_api.js (list/create+activate/switch/amend/
   close/events) + the panel's Task-card view (status/goal/per-criterion state, new-task form,
   open/paused resume rows, archive drawer) replacing the doc UI when a card is active.
+- **Phase 3 live test (v0.3.8 on the operator's own session s_087cf6e228, flag flipped ON):**
+  card task_90d2445017 created via the API with 4 self-referential criteria — all proved within
+  minutes: (1) decisions AND reviews stamped task_id+card_version=2; (2) GOAL.md projection written
+  read-only with the supercalm marker, registered in .git/info/exclude, `git status` stays clean;
+  (3) panel renders the Task-card view (screenshot); (4) manual verify judged THE CARD (assessment
+  quotes card evidence) and appended a typed verify_fail event with 40 file refs. Verdict was
+  needs_attention(82) — correctly skeptical: two criteria weren't yet demonstrable at judge time.
+  Doc-maintainer stood down (0 doc-update rows after activation). The supervisor that verified all
+  this is itself running on the card — the system supervised its own migration.
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
