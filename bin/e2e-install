@@ -77,6 +77,17 @@ if AIOS_DATA="$TMP/data" node --input-type=module -e "
   if (!out.content.startsWith('e2e-ok:')) throw new Error('bad reply: ' + out.content);
 " 2>"$TMP/transport.err"; then ok "internal model call routed through the provider"; else bad "transport: $(grep -m1 -E "Error|error" "$TMP/transport.err" || tail -1 "$TMP/transport.err")"; fi
 
+# 5b) speech provider (same mock): TTS bytes + STT roundtrip through the public endpoints
+SP="$(curl -sS -m 25 -XPOST "http://127.0.0.1:$PORT/api/models/speech" -H 'content-type: application/json' \
+  -d "{\"base_url\":\"http://127.0.0.1:$MOCK\",\"api_key\":\"sk-e2e\",\"stt_model\":\"whisper-1\",\"tts_model\":\"tts-1\",\"tts_voice\":\"alloy\"}")"
+case "$SP" in *'"ok":true'*) ok "speech provider added (TTS probe passed)";; *) bad "speech add: $SP";; esac
+TTS_BACKEND="$(curl -sS -m 20 -XPOST "http://127.0.0.1:$PORT/api/tts" -H 'content-type: application/json' \
+  -d '{"text":"end to end"}' -o "$TMP/tts.bin" -D - | tr -d '\r' | sed -n 's/^x-tts-backend: //p')"
+if [ -s "$TMP/tts.bin" ] && [ "$TTS_BACKEND" = "api" ]; then ok "/api/tts served audio via the provider"; else bad "/api/tts backend=$TTS_BACKEND size=$(wc -c < "$TMP/tts.bin" 2>/dev/null || echo 0)"; fi
+head -c 2000 /dev/urandom > "$TMP/fake.webm"
+STT="$(curl -sS -m 30 -XPOST "http://127.0.0.1:$PORT/api/transcribe" -H 'content-type: audio/webm' --data-binary @"$TMP/fake.webm")"
+case "$STT" in *'e2e transcript'*) ok "/api/transcribe routed through the provider";; *) bad "/api/transcribe: $(echo "$STT" | head -c 160)";; esac
+
 # 6) core API smoke
 S="$(curl -sS -m 5 "http://127.0.0.1:$PORT/api/state" || true)"
 case "$S" in *'"sessions"'*) ok "/api/state";; *) bad "/api/state";; esac

@@ -148,4 +148,57 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   await new Promise((ok) => mock2.close(ok));
 }
 
+// ---- speech provider: store, probe, and both audio paths against the mock ---------------------------
+{
+  const { getSpeech, setSpeech, clearSpeech, probeSpeech } = await import('../src/model_providers.js');
+  const audioSeen = [];
+  const mock3 = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      audioSeen.push({ path: req.url, auth: req.headers.authorization || '', ct: req.headers['content-type'] || '', len: body.length, body: body.toString('latin1').slice(0, 800) });
+      if (req.url === '/v1/audio/speech') { res.setHeader('content-type', 'audio/mpeg'); return res.end(Buffer.alloc(300, 7)); }
+      if (req.url === '/v1/audio/transcriptions') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ text: 'hello from mock stt' })); }
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  await new Promise((ok) => mock3.listen(9997, '127.0.0.1', ok));
+
+  // probe synthesizes a clip
+  const pr = await probeSpeech({ base_url: 'http://127.0.0.1:9997', api_key: 'sk-sp', tts_model: 'kokoro', tts_voice: 'af_heart' });
+  assert.equal(pr.ok, true);
+  assert.ok(pr.bytes >= 300);
+
+  // store: redaction + local-server keyless allowed
+  setSpeech({ base_url: 'http://127.0.0.1:9997/v1', api_key: 'sk-sp', stt_model: 'whisper-large-v3', tts_model: 'kokoro', tts_voice: 'af_heart' });
+  const sp = getSpeech();
+  assert.equal(sp.base_url, 'http://127.0.0.1:9997', 'trailing /v1 normalized off');
+  assert.equal(sp.api_key, undefined);
+  assert.equal(sp.key_set, true);
+  setSpeech({ base_url: 'http://127.0.0.1:9997' }); // partial update keeps fields
+  assert.equal(getSpeech().stt_model, 'whisper-large-v3');
+
+  // TTS route body shape (via the raw speak path in tts.js would need the server; assert protocol here)
+  const r = await fetch('http://127.0.0.1:9997/v1/audio/speech', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer sk-sp' }, body: JSON.stringify({ model: 'kokoro', input: 'x', voice: 'af_heart', response_format: 'mp3' }) });
+  assert.equal(r.status, 200);
+  const speechCall = audioSeen.find((x) => x.path === '/v1/audio/speech');
+  assert.match(speechCall.auth, /Bearer/);
+
+  // STT multipart shape through the real spark.js helper is exercised by the e2e; here lock the seams
+  clearSpeech();
+  assert.equal(getSpeech(), null);
+  const sparkSrc = readFileSync(new URL('../src/spark.js', import.meta.url), 'utf8');
+  assert.match(sparkSrc, /transcribeWithProvider/, 'STT provider path exists');
+  assert.match(sparkSrc, /no speech-to-text configured/, 'helpful 502 when nothing is configured');
+  assert.match(sparkSrc, /import \{ getSpeech \} from '\.\/model_providers\.js'/, 'spark imports the store (a use-without-import once shipped)');
+  const ttsSrc = readFileSync(new URL('../src/tts.js', import.meta.url), 'utf8');
+  assert.match(ttsSrc, /speakProvider/, 'TTS provider path exists');
+  assert.match(ttsSrc, /import \{ getSpeech \} from '\.\/model_providers\.js'/, 'tts imports the store');
+  assert.match(ttsSrc, /wantSpark && SPARK\.ip/, 'spark only attempted when configured');
+  const mapi = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
+  assert.match(mapi, /api\/models\/speech/, 'speech config routes exist');
+  await new Promise((ok) => mock3.close(ok));
+}
+
 console.log('model_providers.test ok');

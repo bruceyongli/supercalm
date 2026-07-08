@@ -3,7 +3,7 @@
 // registered before any :id patterns (router matches in registration order).
 
 import { route, json } from './server.js';
-import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS } from './model_providers.js';
+import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech } from './model_providers.js';
 import { bus } from './bus.js';
 
 function readBody(req) {
@@ -14,7 +14,34 @@ async function bodyJson(req) {
 }
 
 route('GET', '/api/models/providers', (req, res) => {
-  json(res, 200, { ok: true, kinds: PROVIDER_KINDS, providers: listProviders() });
+  json(res, 200, { ok: true, kinds: PROVIDER_KINDS, providers: listProviders(), speech: getSpeech() });
+});
+
+// Speech (STT/TTS) provider — one OpenAI-compatible audio endpoint, local or remote.
+route('POST', '/api/models/speech', async (req, res) => {
+  const b = await bodyJson(req);
+  try {
+    if (b.probe !== false) {
+      const cur = getSpeech({ redact: false });
+      const probe = await probeSpeech({
+        base_url: b.base_url ?? cur?.base_url,
+        api_key: (b.api_key !== undefined && b.api_key !== '') ? b.api_key : cur?.api_key,
+        tts_model: b.tts_model ?? cur?.tts_model,
+        tts_voice: b.tts_voice ?? cur?.tts_voice,
+      });
+      if (!probe.ok) return json(res, 400, { ok: false, error: `speech check failed: ${probe.error}` });
+    }
+    const row = setSpeech(b);
+    bus.emit('changed');
+    return json(res, 200, { ok: true, speech: row });
+  } catch (e) {
+    return json(res, 400, { ok: false, error: String(e.message || e).slice(0, 200) });
+  }
+});
+route('DELETE', '/api/models/speech', (req, res) => {
+  clearSpeech();
+  bus.emit('changed');
+  return json(res, 200, { ok: true });
 });
 
 // Add / update. With probe:true (default) the provider is verified first and its live model list

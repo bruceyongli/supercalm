@@ -61,6 +61,12 @@
         model picker and power the supervisor/agents; an <b>Anthropic</b> provider also serves claude sessions
         directly (auth mode <b>API</b>).</p>
         <div id="apiProviders"><p class="muted">loading…</p></div>
+        <h2 style="margin-top:14px">Voice — speech-to-text &amp; text-to-speech</h2>
+        <p class="muted">One OpenAI-compatible audio endpoint powers dictation (STT) and read-outs (TTS) — remote
+        (OpenAI, Groq) or a local model server (<a href="https://github.com/remsky/Kokoro-FastAPI" target="_blank" rel="noopener">Kokoro-FastAPI</a>,
+        <a href="https://github.com/speaches-ai/speaches" target="_blank" rel="noopener">speaches</a>, whisper.cpp server, openedai-speech).
+        A Spark device (SPARK_IP) stays primary when configured; this is the fallback/everyone-else path.</p>
+        <div id="speechProvider"><p class="muted">loading…</p></div>
       </div>
       <div class="card" id="toolsCard">
         <h2>CLI tools &amp; models</h2>

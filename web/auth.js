@@ -242,7 +242,57 @@ async function loadApiProviders() {
       const j = await api('api/models/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!j.ok) throw new Error(j.error || 'failed');
       msg.textContent = '✓ added';
-      loadApiProviders();
+      async function loadSpeech() {
+  const box = $('speechProvider');
+  if (!box) return;
+  let r;
+  try { r = await api('api/models/providers'); } catch { box.innerHTML = '<p class="muted">unavailable</p>'; return; }
+  const sp = r.speech;
+  const cur = sp ? `
+    <div class="prov-row">
+      <b>Speech</b>
+      <span class="muted">${esc(sp.base_url)} · STT ${esc(sp.stt_model)} · TTS ${esc(sp.tts_model)}/${esc(sp.tts_voice)}${sp.key_set ? '' : ' · no key (local server)'}</span>
+      <button class="btn sm ghost" id="sp-test">Test</button>
+      <button class="btn sm ghost" id="sp-del">Remove</button>
+      <span class="muted" id="sp-row-msg"></span>
+    </div>` : '<p class="muted">Not configured — voice falls back to the browser\'s built-in speech (and STT is unavailable) until you add one or set SPARK_IP.</p>';
+  box.innerHTML = cur + `
+    <div class="prov-add">
+      <input id="sp-base" placeholder="Base URL (e.g. https://api.openai.com, http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
+      <input id="sp-key" type="password" placeholder="API key (blank for local servers)" autocomplete="off" />
+      <input id="sp-stt" placeholder="STT model (whisper-1; Groq: whisper-large-v3)" value="${esc(sp?.stt_model || 'whisper-1')}" />
+      <input id="sp-tts" placeholder="TTS model (tts-1; Kokoro-FastAPI: kokoro)" value="${esc(sp?.tts_model || 'tts-1')}" />
+      <input id="sp-voice" placeholder="TTS voice (alloy; Kokoro: af_heart)" value="${esc(sp?.tts_voice || 'alloy')}" />
+      <button class="btn sm" id="sp-save">Test & save</button>
+      <span class="muted" id="sp-msg"></span>
+    </div>`;
+  $('sp-save').onclick = async () => {
+    const msg = $('sp-msg');
+    msg.textContent = 'testing tts…';
+    try {
+      const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        base_url: $('sp-base').value.trim(), api_key: $('sp-key').value,
+        stt_model: $('sp-stt').value.trim(), tts_model: $('sp-tts').value.trim(), tts_voice: $('sp-voice').value.trim(),
+      }) });
+      if (!j.ok) throw new Error(j.error || 'failed');
+      msg.textContent = '✓ saved';
+      loadSpeech();
+    } catch (e) { msg.textContent = '⚠ ' + e.message; }
+  };
+  if (sp) {
+    $('sp-del').onclick = async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadSpeech(); };
+    $('sp-test').onclick = async () => {
+      const m = $('sp-row-msg');
+      m.textContent = 'synthesizing…';
+      try {
+        const r2 = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Speech provider check.' }) });
+        m.textContent = r2.ok ? `✓ audio via ${r2.headers.get('x-tts-backend') || '?'}` : '⚠ HTTP ' + r2.status;
+      } catch (e) { m.textContent = '⚠ ' + e.message; }
+    };
+  }
+}
+loadApiProviders();
+loadSpeech();
     } catch (e) { msg.textContent = '⚠ ' + e.message; }
   };
   for (const row of box.querySelectorAll('.prov-row')) {

@@ -34,6 +34,22 @@ Most users don't run a localhost model-proxy fleet. Add your own API endpoints o
 - **OpenAI-compatible API** (OpenAI, OpenRouter, together.ai, a local llama.cpp/ollama server — any
   `/v1/chat/completions` endpoint): models join the pickers and power the supervisor/agents.
 
+### Voice: speech-to-text & text-to-speech
+
+The same page configures one OpenAI-compatible **speech provider** for dictation (STT,
+`/v1/audio/transcriptions`) and read-outs (TTS, `/v1/audio/speech`) — remote or local:
+
+| Provider | Base URL | STT model | TTS model / voice |
+|---|---|---|---|
+| OpenAI | `https://api.openai.com` | `whisper-1` | `tts-1` / `alloy` |
+| Groq (STT only) | `https://api.groq.com/openai` | `whisper-large-v3` | — |
+| Kokoro-FastAPI (local TTS) | `http://127.0.0.1:8880` | — | `kokoro` / `af_heart` |
+| speaches / whisper.cpp server (local) | your server | its whisper model | its TTS model |
+
+Local servers usually need no API key (leave it blank). Fallback order: a Spark device
+(`SPARK_IP`/`SPARK_HOST`) when configured → the speech provider → local macOS `say` (TTS only) →
+the browser's built-in speech (client-side). "Test & save" synthesizes a clip before storing.
+
 Providers are stored in `data/model_providers.json` (chmod 600; keys never leave the server — list
 APIs redact them). "Test & add" verifies the key and auto-discovers the model list. Model ids collide?
 Address a provider's model explicitly as `<provider-name>/<model>`.
