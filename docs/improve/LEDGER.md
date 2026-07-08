@@ -57,6 +57,13 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   knowledge bootstrap on first card sync (missing overview/components pages → debounced wiki
   rebuild) + verify facts derived from manifests and PINNED at task open (first pin wins —
   goalposts cannot move mid-task).
+- **Phase 4 live test (v0.3.9, thrash-incident replay on the live box):** a standby probe session
+  (ask-autonomy, do-nothing task) was launched on the SAME project with its own card; one shared
+  uncommitted edit later, BOTH supervisors fired within a tick — each `escalate/warned` review names
+  the other session + the exact overlapping file, incident events landed on BOTH cards, and the
+  probe card's single criterion ("an overlap incident is recorded on this card") was satisfied by
+  the test itself. Inheritance route lists both open cards for the project; the knowledge bootstrap
+  left 4 wiki pages in place. Cleanup: edit reverted, probe card closed done, probe killed.
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
