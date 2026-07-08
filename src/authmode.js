@@ -64,6 +64,8 @@ export async function probeProxy({ force = false, model = null } = {}) {
   return probeUrl(PROXY_URL + '/', { force });
 }
 
+import { listProviders as listApiProviders } from './model_providers.js';
+
 // Resolve the env to inject into a claude tmux launch + the mode label.
 export async function resolveClaudeEnv({ model = null } = {}) {
   if (PIN !== undefined) {
@@ -87,7 +89,22 @@ export async function resolveClaudeEnv({ model = null } = {}) {
     }
     return { env: await claudeGatewayEnv(url, { model, route }), mode: 'aios' };
   }
+// 4.5) a user-configured anthropic-kind API provider (Auth & Models page): serve claude sessions
+  // directly from it — the no-fleet, no-OAuth path most external users start with. api.anthropic.com
+  // needs only the key (the CLI's default base); custom bases get ANTHROPIC_BASE_URL too.
+  const prov = apiProviderForClaude();
+  if (prov) {
+    const env = { ANTHROPIC_API_KEY: prov.api_key };
+    if (!/api\.anthropic\.com$/.test(new URL(prov.base_url).hostname)) env.ANTHROPIC_BASE_URL = prov.base_url;
+    return { env, mode: 'api' };
+  }
   return { env: {}, mode: 'cli' };
+}
+
+function apiProviderForClaude() {
+  try {
+    return listApiProviders({ redact: false }).find((p) => p.enabled && p.kind === 'anthropic' && p.api_key) || null;
+  } catch { return null; }
 }
 
 // claude auth mode (for the status badge), without launching anything.
@@ -96,6 +113,7 @@ export async function claudeMode() {
   if (PIN !== undefined) return { mode: PIN === '' ? 'cli' : 'pinned', proxyUp };
   if (proxyUp) return { mode: 'proxy', proxyUp };
   if (await loggedIn('claude')) return { mode: 'aios', proxyUp };
+  if (apiProviderForClaude()) return { mode: 'api', proxyUp };
   return { mode: 'cli', proxyUp };
 }
 

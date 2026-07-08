@@ -2243,3 +2243,4 @@ body.map-expanded-open { overflow: hidden; }
 .pm-arch-row, .pm-open-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; min-width: 0; }
 .pm-arch-title { color: var(--ink); flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pm-arch-outcome { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.resume-bar { margin: 6px 0; }

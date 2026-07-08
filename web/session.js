@@ -2169,6 +2169,30 @@ function renderSettings(s, tmeta) {
 })();
 
 // ---- reply composer ---------------------------------------------------------
+// Stopped-session send: an inline bar over the composer offers Resume (no native confirm dialog).
+function showResumeBar() {
+  if (document.getElementById('resume-bar')) return;
+  const bar = document.createElement('div');
+  bar.id = 'resume-bar';
+  bar.className = 'pm-boundary resume-bar';
+  bar.innerHTML = `<span>This session has stopped — resume it, then send again once it reloads.</span>
+    <button class="btn sm" id="resume-bar-go">Resume</button>
+    <button class="btn ghost sm" id="resume-bar-x">Dismiss</button>`;
+  const anchorEl = reply.closest('form') || reply.parentElement;
+  anchorEl.parentElement.insertBefore(bar, anchorEl);
+  bar.querySelector('#resume-bar-x').onclick = () => bar.remove();
+  bar.querySelector('#resume-bar-go').onclick = async () => {
+    bar.querySelector('#resume-bar-go').disabled = true;
+    try {
+      await api(`api/session/${id}/resume`, { method: 'POST' });
+      bar.querySelector('span').textContent = 'Resuming — reloading…';
+      setTimeout(() => location.reload(), 900);
+    } catch (e) {
+      bar.querySelector('span').textContent = 'Resume failed: ' + (e.message || e);
+      bar.querySelector('#resume-bar-go').disabled = false;
+    }
+  };
+}
 const reply = $('#reply');
 const replyFullPlaceholder = reply.getAttribute('placeholder') || '';
 const sendBtn = $('#send');
@@ -2648,10 +2672,7 @@ async function sendInput() {
       body: JSON.stringify({ text, attachments: uploaded, source: uploaded.length ? 'text+attachments' : 'text' }),
     });
     if (r.status === 409) {
-      if (confirm('This session has stopped. Resume it now? (then Send again once it reloads)')) {
-        await api(`api/session/${id}/resume`, { method: 'POST' });
-        setTimeout(() => location.reload(), 900);
-      }
+      showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
     } else if (!r.ok) {
       const j = await r.json().catch(() => ({}));
       alert('Send failed: ' + (j.error || r.status));
