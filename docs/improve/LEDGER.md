@@ -169,6 +169,21 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   1400px). Pipeline lesson: v0.3.19 was first tagged on the feature branch and installs saw
   nothing — bin/release now refuses non-main (RELEASE_BRANCH_OK=1 escape).
 
+- **Phone v2 (operator feedback, v0.3.21–22):** (1) interaction bugs dead: interaction-aware soft
+  renders (background SSE/poll never clobbers scroll/sheets/composer; idle catch-up; identical-data
+  renders skipped). (2) Panels sheet mounts the REAL desktop agent host — every agent incl. Council,
+  zero phone re-implementations (styles.css layered under phone.css). (3) `voice_brief.js`:
+  gpt-5.5 spoken briefs — ear-first prompt (topic/kind/quick/standard/detail/options/needs across
+  decision|input|discussion|review|blocked|progress), hard sanitizer (URLs→'a link', paths→file
+  name, context-% and spinner junk stripped), word-boundary clamps, cache, sanitized-template
+  fail-open; POST /api/session/:id/brief; live sample: "Worker routing spec implementation blocked"
+  w/ supervisor's off-track note folded in. (4) Desktop concierge upgraded: present() speaks the
+  brief (4s budget, queue prefetch), brain context gains supervisor attention (holds/boundary/latest
+  review) + wiki RAG scoped to in-between questions. (5) Phone home Play = INTERACTIVE voice mode:
+  VAD auto-listen → STT → confirm-before-send → reply resumes the session → next; questions welcome
+  mid-stream. Release gate caught a broken commit mid-stream (pipe swallowed a test failure) and
+  refused to ship — the cadence tooling working as designed.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
