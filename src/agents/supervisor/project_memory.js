@@ -103,6 +103,8 @@ CREATE TABLE IF NOT EXISTS pm_session_runtime (
   updated_at INTEGER NOT NULL
 );
 `);
+// phase 4: verify facts pinned at task-open (additive migration — phase-1 schema omitted it)
+try { db.exec('ALTER TABLE pm_tasks ADD COLUMN verify_facts_json TEXT'); } catch {}
 
 // ---- card + versioning ---------------------------------------------------------------------------
 export function getTask(taskId) {
@@ -272,6 +274,9 @@ const MARKER_RX = /^<!-- supercalm:task=(\S+) v=(\d+) hash=([0-9a-f]+) -->$/m;
 
 export function renderCardMd(card) {
   const { task, criteria } = card;
+  let facts = null;
+  try { facts = task.verify_facts_json ? JSON.parse(task.verify_facts_json) : null; } catch {}
+  if (facts && !Object.keys(facts).filter((k) => k !== 'source').length) facts = null;
   const mark = (c) => (c.status === 'satisfied' ? 'x' : ' ');
   return [
     `# ${task.title || 'Current task'}`,
@@ -283,6 +288,7 @@ export function renderCardMd(card) {
     '',
     '## Acceptance criteria',
     ...(criteria.length ? criteria.map((c) => `- [${mark(c)}] ${c.text}`) : ['- (none yet)']),
+    ...(facts ? ['', '## Verify facts (pinned at task open)', ...Object.entries(facts).filter(([k]) => k !== 'source').map(([k, v]) => `- ${k}: \`${v}\``)] : []),
     '',
     `_status: ${task.status} · v${task.version}_`,
     '',
@@ -328,4 +334,48 @@ export function checkProjection(projectPath, card) {
   if (bodyHash(body) !== declared) return { state: 'tampered', taskId, version: Number(version) };
   if (card && (taskId !== card.task.id || Number(version) !== card.task.version)) return { state: 'stale', taskId, version: Number(version) };
   return { state: 'ok', taskId, version: Number(version) };
+}
+
+// ---- phase 4: project awareness ---------------------------------------------------------------------
+
+// Cross-session conflict detection — the 3-agent thrash killer. Two LIVE sessions on one project
+// touching intersecting files get warned (advisory; never a lock). Cheap: the runtimes are already
+// maintained per tick from evidence the supervisor collects anyway.
+export function liveOverlaps(sessionId, projectId, files, { freshMs = 15 * 60 * 1000 } = {}) {
+  if (!files?.length || !projectId) return [];
+  const mine = new Set(files);
+  const rows = db.prepare(`
+    SELECT r.session_id, r.active_task_id, r.files_touched_json, r.branch, s.status
+    FROM pm_session_runtime r JOIN sessions s ON s.id = r.session_id
+    WHERE r.project_id = ? AND r.session_id != ? AND r.updated_at > ?
+      AND s.status IN ('working','waiting')`).all(projectId, sessionId, now() - freshMs);
+  const out = [];
+  for (const r of rows) {
+    let theirs = [];
+    try { theirs = JSON.parse(r.files_touched_json || '[]'); } catch {}
+    const overlap = theirs.filter((f) => mine.has(f));
+    if (overlap.length) out.push({ sessionId: r.session_id, taskId: r.active_task_id, branch: r.branch, overlap: overlap.slice(0, 12) });
+  }
+  return out;
+}
+
+// Verify facts pinned at task start (phase-3 panel: copied with provenance, not live-read, so a
+// mid-task wiki/manifest edit can't move the goalposts). Derived from the repo's own manifests.
+export function deriveVerifyFacts(projectPath) {
+  const facts = {};
+  try {
+    const pkg = JSON.parse(readFileSync(join(projectPath, 'package.json'), 'utf8'));
+    if (pkg?.scripts?.test) facts.test_cmd = 'npm test';
+    if (pkg?.scripts?.build) facts.build_cmd = 'npm run build';
+  } catch {}
+  try { if (!facts.test_cmd && existsSync(join(projectPath, 'pytest.ini'))) facts.test_cmd = 'pytest'; } catch {}
+  try { if (!facts.test_cmd && existsSync(join(projectPath, 'go.mod'))) facts.test_cmd = 'go test ./...'; } catch {}
+  try { if (!facts.test_cmd && existsSync(join(projectPath, 'Cargo.toml'))) facts.test_cmd = 'cargo test'; } catch {}
+  if (Object.keys(facts).length) facts.source = 'manifests@task-open';
+  return facts;
+}
+export function pinVerifyFacts(taskId, facts) {
+  if (!facts || !Object.keys(facts).length) return;
+  db.prepare('UPDATE pm_tasks SET verify_facts_json = COALESCE(verify_facts_json, ?) WHERE id = ?')
+    .run(JSON.stringify(facts).slice(0, 1000), taskId);
 }

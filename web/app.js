@@ -425,8 +425,33 @@ $('#btn-new').onclick = () => {
   renderSeg('#ns-autonomy', (STATE.autonomyLevels || ['ask', 'auto', 'full']).map((a) => ({ value: a, label: AUTONOMY_LABELS[a] || a })), nsAutonomy, (v) => (nsAutonomy = v));
   updateToolDeps();
   $('#ns-msg').textContent = '';
+  loadOpenCards(); // inheritance-on-open: offer the project's open task cards (Project Memory)
+  $('#ns-project').addEventListener('change', loadOpenCards);
   openModal('#modal-new');
 };
+
+// Project Memory inheritance-on-open: a fresh session on a known project can adopt an open card —
+// standards/goals/history ride along server-side; here we only offer the choice (explicit, never auto).
+async function loadOpenCards() {
+  const pid = $('#ns-project').value;
+  const label = $('#ns-resume-label');
+  const sel = $('#ns-resume');
+  label.hidden = sel.hidden = true;
+  sel.innerHTML = '<option value="">Start fresh (no card)</option>';
+  if (!pid) return;
+  try {
+    const r = await api(`api/project/${pid}/tasks/open`);
+    const open = r?.open || [];
+    if (!open.length) return;
+    for (const t of open) {
+      const o = document.createElement('option');
+      o.value = t.id;
+      o.textContent = `${t.title || t.id} (${t.status})`;
+      sel.appendChild(o);
+    }
+    label.hidden = sel.hidden = false;
+  } catch {}
+}
 $('#ns-go').onclick = async () => {
   const body = {
     project_id: $('#ns-project').value || undefined,
@@ -444,6 +469,8 @@ $('#ns-go').onclick = async () => {
   msg.textContent = 'launching…';
   try {
     const s = await api('api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const resumeCard = $('#ns-resume')?.value;
+    if (resumeCard) { try { await api(`api/session/${s.id}/tasks/activate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ taskId: resumeCard }) }); } catch {} }
     closeModal('#modal-new');
     $('#ns-path').value = '';
     $('#ns-task').value = '';

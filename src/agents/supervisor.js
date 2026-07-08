@@ -44,7 +44,8 @@ import {
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
-import { taskCard, renderCardMd, getRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection } from './supervisor/project_memory.js';
+import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask } from './supervisor/project_memory.js';
+import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
 import { proxyAuthRecoveryMessage } from './external_recovery.js';
@@ -1069,6 +1070,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     precedents,
     doctrine,
     liveContext,
+    projectKnowledge: retrieveProjectKnowledge(ctx, [question, s?.summary].filter(Boolean).join('\n')),
     tries: sentTries, // the prompt's "you already directed the agent N×" must count DELIVERED sends only
     factCheck,
     definition_of_done: dod.text,
@@ -1143,6 +1145,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
 }
 
 async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
+  const projectKnowledge = retrieveProjectKnowledge(ctx, [sess?.summary, sess?.question, ctxData.summary].filter(Boolean).join('\n'));
   const evidence = {
     supervision_doc: cfg.doc || '',
     ...(reviewBehaviorTemplate(cfg) ? { review_behavior_template: reviewBehaviorTemplate(cfg) } : {}),
@@ -1238,6 +1241,7 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     ...(prior ? { prior_verifications: prior } : {}),
     ...(patterns ? { recent_failure_patterns: patterns } : {}),
     ...(verifyDoctrine ? { operator_doctrine: verifyDoctrine } : {}),
+    ...(projectKnowledge ? { project_knowledge: projectKnowledge } : {}),
     visual_work: visual,
     ...(opReq ? { current_operator_requirements: opReq } : {}),
     ...ctxData,
@@ -1622,6 +1626,20 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
 // single-seam move as phase-2's state scoping. st.activeTask* keys stamp every decision/review with
 // the card version, and the repo projection self-heals (missing/stale/tampered -> rewrite; a
 // tampered write is also EVIDENCE, recorded as an event).
+// Phase 4: the supervisor finally READS the project knowledge layer — retrieval-only, scoped to
+// the live question + card, capped hard, and provenance-marked as DESCRIPTIVE/UNTRUSTED (MemGate:
+// retrieved memory must never override the operator's words or the card contract).
+function retrieveProjectKnowledge(ctx, queryText) {
+  try {
+    if (!flagOn('projectMemory')) return '';
+    const project = ctx.project();
+    if (!project?.id) return '';
+    const hits = searchWiki(project.id, String(queryText || '').slice(0, 500), 3).slice(0, 2);
+    if (!hits.length) return '';
+    return hits.map((h) => `[wiki:${h.path} — descriptive reference, not policy] ${clampLine(h.snippet, 380)}`).join('\n');
+  } catch { return ''; }
+}
+
 function applyActiveCard(ctx, cfg) {
   try {
     if (!flagOn('projectMemory')) return null;
@@ -1633,6 +1651,20 @@ function applyActiveCard(ctx, cfg) {
     const st = ctx.getState();
     if (st.activeTaskId !== card.task.id || st.activeCardVersion !== card.task.version || st.activeCardHash !== card.hash) {
       applySupervisorState(ctx, { activeTaskId: card.task.id, activeCardVersion: card.task.version, activeCardHash: card.hash });
+      // Self-provisioning knowledge (plan 2b): on first sync of a card, make sure the required
+      // knowledge set exists — missing/stale wiki pages get a debounced rebuild (fire-and-forget,
+      // builder-visible side), and verify facts are pinned from manifests if the card lacks them.
+      if (st.activeTaskId !== card.task.id) {
+        try {
+          const project = ctx.project();
+          if (project) {
+            const pages = listWiki(project.id) || [];
+            const topics = new Set(pages.map((p) => String(p.path || '').replace(/\.md$/, '')));
+            if (!topics.has('overview') || !topics.has('components')) maybeRebuildWiki(project);
+            if (!card.task.verify_facts_json && project.path) pinVerifyFacts(card.task.id, deriveVerifyFacts(project.path));
+          }
+        } catch (e) { ctx.log('knowledge bootstrap skipped:', e.message); }
+      }
     }
     const projectPath = ctx.project()?.path;
     if (projectPath) {
@@ -1704,6 +1736,31 @@ export async function onTick(ctx) {
   } catch {
     return;
   }
+  // PROJECT AWARENESS (phase 4, card mode): keep this session's runtime current (files touched,
+  // from evidence already collected) and warn ONCE per overlap-set when another live session on the
+  // same project is touching the same files — the 3-agent-thrash defense. Advisory, never a lock.
+  if (ctx.__activeCard) {
+    try {
+      const files = [...new Set((String(ev.git?.stat || ev.git?.committed_stat || '').match(/^\s*([^\s|]+)\s+\|/gm) || []).map((l) => l.replace(/\s*\|\s*$/, '').trim()))].slice(0, 80);
+      const projectId = ctx.__activeCard.task.project_id;
+      upsertRuntime(ctx.sessionId, { project_id: projectId, active_task_id: ctx.__activeCard.task.id, files_touched_json: JSON.stringify(files) });
+      if (files.length) {
+        const overlaps = liveOverlaps(ctx.sessionId, projectId, files);
+        if (overlaps.length) {
+          const okey = h32('conflict|' + overlaps.map((o) => o.sessionId + ':' + o.overlap.join(',')).sort().join('|'));
+          if (st.conflictWarnKey !== okey) {
+            st = applySupervisorState(ctx, { conflictWarnKey: okey });
+            const desc = overlaps.map((o) => `${o.sessionId}${o.branch ? ` (${o.branch})` : ''}: ${o.overlap.slice(0, 6).join(', ')}`).join(' · ');
+            logIntervention(ctx, { kind: 'escalate', trigger: 'conflict', model: null, verdict: 'warned', assessment: `Another live session on this project is touching the same files — coordinate or isolate before both write. ${desc}`, message: '', sent: 0 });
+            pmAppendEvent({ projectId, taskId: ctx.__activeCard.task.id, sessionId: ctx.sessionId, actor: 'supervisor', type: 'incident', summary: `File overlap with live session(s): ${clampLine(desc, 200)}`, refs: { files: overlaps.flatMap((o) => o.overlap).slice(0, 20) } });
+            for (const o of overlaps) { if (o.taskId) pmAppendEvent({ projectId, taskId: o.taskId, sessionId: o.sessionId, actor: 'supervisor', type: 'incident', summary: `File overlap with live session ${ctx.sessionId}: ${clampLine(o.overlap.join(', '), 160)}`, refs: { files: o.overlap } }); }
+            ctx.emit('review', { verdict: 'warned', summary: 'cross-session file overlap detected' });
+          }
+        }
+      }
+    } catch (e) { ctx.log('conflict check skipped:', e.message); }
+  }
+
   const operatorIntent = latestOperatorIntent(ctx.sessionId, t);
   st = await updateOperatorStance(ctx, cfg, st, t); // durable stance from any new operator message → drives decide.js
   let fp = progressFp(ev);

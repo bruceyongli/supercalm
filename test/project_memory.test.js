@@ -164,3 +164,51 @@ const card1 = createTask({
 }
 
 console.log('project_memory.test ok');
+
+// ---- phase 4: project awareness ---------------------------------------------------------------------
+{
+  const { liveOverlaps, deriveVerifyFacts, pinVerifyFacts } = pm;
+  // two live sessions on one project touching intersecting files -> overlap named; fresh/live filters hold
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_pm_a','p_ov','codex','tmx_s_pm_a','working', 1, 1)").run();
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_pm_b','p_ov','codex','tmx_s_pm_b','waiting', 1, 1)").run();
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_pm_dead','p_ov','codex','tmx_s_pm_dead','exited', 1, 1)").run();
+  pm.upsertRuntime('s_pm_b', { project_id: 'p_ov', active_task_id: 'task_ovB', files_touched_json: JSON.stringify(['src/a.js', 'src/b.js']) });
+  pm.upsertRuntime('s_pm_dead', { project_id: 'p_ov', files_touched_json: JSON.stringify(['src/a.js']) });
+  const hits = liveOverlaps('s_pm_a', 'p_ov', ['src/a.js', 'web/x.css']);
+  assert.equal(hits.length, 1, 'live overlap found; exited session excluded');
+  assert.equal(hits[0].sessionId, 's_pm_b');
+  assert.deepEqual(hits[0].overlap, ['src/a.js']);
+  assert.equal(hits[0].taskId, 'task_ovB');
+  assert.equal(liveOverlaps('s_pm_a', 'p_ov', ['web/only.css']).length, 0, 'no shared files -> no conflict');
+  // stale runtimes don't fire
+  db.prepare('UPDATE pm_session_runtime SET updated_at = ? WHERE session_id = ?').run(Date.now() - 3600e3, 's_pm_b');
+  assert.equal(liveOverlaps('s_pm_a', 'p_ov', ['src/a.js']).length, 0, 'stale runtime ignored');
+
+  // verify facts from manifests, pinned once (COALESCE keeps the original pin)
+  const repo3 = await mkdtemp(join(tmpdir(), 'pm-facts-'));
+  await writeFile(join(repo3, 'package.json'), JSON.stringify({ scripts: { test: 'node t.js', build: 'x' } }));
+  const facts = deriveVerifyFacts(repo3);
+  assert.equal(facts.test_cmd, 'npm test');
+  assert.equal(facts.build_cmd, 'npm run build');
+  assert.match(facts.source, /manifests/);
+  const cardF = createTask({ projectId: 'p_ov', title: 'facts', goal: 'g' });
+  pinVerifyFacts(cardF.task.id, facts);
+  pinVerifyFacts(cardF.task.id, { test_cmd: 'OTHER' }); // must not overwrite the original pin
+  const t = pm.getTask(cardF.task.id);
+  assert.match(t.verify_facts_json, /npm test/, 'first pin wins (goalposts cannot move mid-task)');
+  assert.match(renderCardMd(taskCard(cardF.task.id)), /Verify facts \(pinned at task open\)/);
+
+  // supervisor integration locks (phase 4)
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /liveOverlaps\(ctx\.sessionId/, 'conflict check runs in the tick');
+  assert.match(sup, /conflictWarnKey/, 'one warning per overlap-set (state-keyed)');
+  assert.match(sup, /retrieveProjectKnowledge/, 'supervisor retrieves the knowledge layer');
+  assert.match(sup, /maybeRebuildWiki/, 'self-provisioning knowledge bootstrap on card sync');
+  assert.match(sup, /pinVerifyFacts/, 'verify facts backfilled at first card sync');
+  const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
+  assert.match(ap, /projectKnowledge/, 'answer prompt carries the knowledge block');
+  assert.match(ap, /never overrides the contract or operator/i, 'knowledge is provenance-marked untrusted');
+  const api = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api, /tasks\/open/, 'inheritance-on-open route exists');
+  assert.match(api, /coordinate or expect conflict warnings/, 'advisory claim warning on cross-session adoption');
+}
