@@ -659,6 +659,13 @@ let pmForm = false; // "new task" inline form open
 let pmBusy = false;
 let pmArchOpen = false;
 
+window.addEventListener('aios:new-task', () => {
+  try { document.querySelector('[data-tab=\"supervisor\"]')?.click(); } catch {}
+  pmForm = true;
+  renderDoc();
+  setTimeout(() => host.querySelector('#pm-new-title')?.focus(), 60);
+});
+
 async function loadTasks(force = false) {
   if (!force && Date.now() - pmAt < 20000) return;
   pmAt = Date.now();
@@ -685,6 +692,13 @@ function renderTaskCard() {
       <textarea id="pm-new-criteria" rows="3" placeholder="Acceptance criteria — one per line"></textarea>
       <div class="sup-actions"><button class="btn sm" id="pm-new-save" ${pmBusy ? 'disabled' : ''}>Create & switch</button><button class="btn ghost sm" id="pm-new-cancel">Cancel</button></div>
     </div>` : '';
+  const pb = pmData?.pendingBoundary;
+  const boundary = pb ? `
+    <div class="pm-boundary">
+      <span>✨ Looks like a new task: <b>${esc(pb.title || pb.goal || '')}</b>${pb.reason ? ` <span class="count" title="${esc(pb.reason)}">why?</span>` : ''}</span>
+      <button class="btn sm" id="pm-b-accept">Start card</button>
+      <button class="btn ghost sm" id="pm-b-dismiss">Dismiss</button>
+    </div>` : '';
   const card = a ? `
     <div class="pm-card">
       <div class="pm-card-head">${pmStatusChip(a.task.status)} <b>${esc(a.task.title || 'Current task')}</b> <span class="count">v${a.task.version}</span></div>
@@ -702,6 +716,7 @@ function renderTaskCard() {
       <h2><span>Task card</span><span class="count" title="Project Memory: the supervisor judges against this card, not a prose doc">the contract</span></h2>
       <div class="sup-doc-tools"><button class="btn sm" id="pm-new">${pmForm ? 'New task ▾' : '+ New task'}</button></div>
       ${form}
+      ${boundary}
       ${card}
       ${openRows ? `<details class="sup-learn-group"><summary>Open / paused (${pmData.open.length})</summary>${openRows}</details>` : ''}
       ${arch ? `<details class="sup-learn-group" ${pmArchOpen ? 'open' : ''}><summary>Archive (${pmData.archived.length})</summary>${arch}</details>` : ''}
@@ -718,6 +733,8 @@ function wireTaskCard() {
     await loadTasks(true);
   };
   on('#pm-new', 'onclick', () => { pmForm = !pmForm; renderDoc(); });
+  on('#pm-b-accept', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'accept' }));
+  on('#pm-b-dismiss', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'dismiss' }));
   on('#pm-new-cancel', 'onclick', () => { pmForm = false; renderDoc(); });
   on('#pm-new-save', 'onclick', () => {
     const v = (id) => host.querySelector(id)?.value || '';

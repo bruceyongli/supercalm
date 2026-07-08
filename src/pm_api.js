@@ -13,6 +13,7 @@ import {
   deriveVerifyFacts, pinVerifyFacts,
 } from './agents/supervisor/project_memory.js';
 import { bus } from './bus.js';
+import { getGrant, upsertGrant } from './store.js';
 
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
@@ -44,9 +45,11 @@ route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
   const rt = getRuntime(sid);
   const active = rt?.active_task_id ? taskCard(rt.active_task_id) : null;
   const all = projectId ? listTasks(projectId) : [];
+  const pendingBoundary = getGrant(sid, 'supervisor')?.state?.pendingBoundary || null;
   return json(res, 200, {
     ok: true,
     active,
+    pendingBoundary,
     open: all.filter((t) => ['proposed', 'active', 'paused', 'verify_pending'].includes(t.status) && t.id !== active?.task?.id),
     archived: all.filter((t) => ['done', 'abandoned', 'superseded'].includes(t.status)).slice(0, 20),
   });
@@ -108,6 +111,32 @@ route('POST', '/api/session/:id/tasks/activate', async (req, res, { id: sid }) =
   project(taskCard(t.id), projectPath);
   bus.emit('changed');
   return json(res, 200, { ok: true, card: taskCard(t.id), ...(warning ? { warning } : {}) });
+});
+
+// Boundary suggestion resolution: accept creates+activates the suggested card; dismiss clears it.
+// The suggestion lives in supervisor state (pendingBoundary) — SUGGESTION ONLY until this click.
+route('POST', '/api/session/:id/tasks/boundary', async (req, res, { id: sid }) => {
+  const { error, projectId, projectPath } = sessionProject(sid);
+  if (error) return json(res, 404, { error });
+  const b = await bodyJson(req);
+  const st = getGrant(sid, 'supervisor')?.state || {};
+  const pending = st.pendingBoundary;
+  if (!pending) return json(res, 404, { error: 'no pending boundary suggestion' });
+  upsertGrant(sid, 'supervisor', { state: { pendingBoundary: null } });
+  if (b.action !== 'accept') { bus.emit('changed'); return json(res, 200, { ok: true, dismissed: true }); }
+  const card = createTask({ projectId, sessionId: sid, actor: 'operator', title: pending.title || '', goal: pending.goal || '' });
+  const prev = getRuntime(sid)?.active_task_id || null;
+  setTaskStatus(card.task.id, 'active', { actor: 'operator', sessionId: sid });
+  upsertRuntime(sid, { project_id: projectId, active_task_id: card.task.id });
+  if (prev && prev !== card.task.id) {
+    const pt = getTask(prev);
+    if (pt && pt.status === 'active') setTaskStatus(prev, 'paused', { actor: 'operator', sessionId: sid });
+  }
+  appendEvent({ projectId, taskId: card.task.id, sessionId: sid, actor: 'operator', type: 'claimed', summary: `Task claimed by ${sid} (accepted boundary suggestion)` });
+  if (projectPath) { try { pinVerifyFacts(card.task.id, deriveVerifyFacts(projectPath)); } catch {} }
+  project(taskCard(card.task.id), projectPath);
+  bus.emit('changed');
+  return json(res, 200, { ok: true, card: taskCard(card.task.id) });
 });
 
 // Amend / close the card: goal & title edits, add/supersede criteria, status transitions.

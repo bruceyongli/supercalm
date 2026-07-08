@@ -2703,6 +2703,7 @@ function paletteCommands() {
   });
   const fast = $('#s-settings')?.querySelector('button[data-toggle="fastMode"]');
   if (fast) cmds.push({ name: 'fast', hint: fast.getAttribute('aria-pressed') === 'true' ? 'on' : 'off', run: () => fast.click() });
+  cmds.push({ name: 'task', hint: 'new task card', run: () => window.dispatchEvent(new CustomEvent('aios:new-task')) });
   cmds.push({ name: 'stop', hint: 'Ctrl-C', run: () => $('#b-stop').click() });
   cmds.push({ name: 'kill', hint: 'end session', run: () => $('#b-kill').click() });
   const resume = $('#b-resume');
