@@ -31,11 +31,12 @@ cleanup() {
 trap cleanup EXIT
 
 note "== e2e install test =="
-note "clone -> $TMP/app  ·  port $PORT  ·  mock provider $MOCK"
+note "tree -> $TMP/app  ·  port $PORT  ·  mock provider $MOCK"
 
 # 1) install like a stranger: clone from the local repo, npm install
-BRANCH="$(git -C "$DIR" rev-parse --abbrev-ref HEAD)"
-git clone -q --depth 1 --branch "$BRANCH" "file://$DIR" "$TMP/app"
+# committed tree only (git archive works in shallow CI checkouts too; uncommitted edits never ship)
+mkdir -p "$TMP/app"
+git -C "$DIR" archive HEAD | tar -x -C "$TMP/app"
 cd "$TMP/app"
 if npm install --no-audit --no-fund --loglevel=error > "$TMP/npm.log" 2>&1; then ok "npm install"; else bad "npm install (see $TMP/npm.log)"; exit 1; fi
 

@@ -22,3 +22,18 @@ jobs:
         env:
           # Keep the suite off any real data dir; everything it needs is created fresh.
           AIOS_DATA: ${{ runner.temp }}/aios-data
+
+  # The "stranger's laptop" gate: an isolated install/boot/provider/transport run on a machine with
+  # NO local proxy fleet — proves fresh installs work where localhost has nothing on 8787-8792.
+  # (Coding CLIs are absent here, so the real-session step reports skipped; that never fails the run.)
+  e2e-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install tmux (session plumbing expects it)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+      - name: End-to-end install test
+        run: bin/e2e-install
