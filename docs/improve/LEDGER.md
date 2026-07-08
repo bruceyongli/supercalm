@@ -97,6 +97,20 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   (state-keyed), flag-gated, fail-open (the legacy doc keeps working). Panel banners on BOTH views:
   "Review & activate" / "Keep legacy doc" (decline abandons the proposal).
 
+- **Phase 6 live test (v0.3.12, the REAL 36KB monolith):** a probe session was given the actual
+  legacy doc from the stale-goal-incident session (36,049 chars, 40+ decisions, OpenHand fossils).
+  One tick later: proposed card seeded from `## Now` ("Choose the execution path for Phase 3
+  unified runWorkflow…") NOT the day-one goal; 3 open criteria carried (checked ones dropped);
+  3 live constraints riding the card; exactly 3 doctrine candidates (cap held) — all genuinely
+  generalizable project rules; 6 facts surfaced; 2 fossil/anti-staleness lines dropped; the full
+  original archived verbatim on the card. Panel banner rendered with Review & activate / Keep
+  legacy doc. Nothing auto-activated. Probe killed; the proposed card remains for the real
+  session to adopt via inheritance-on-open.
+- **Run 3 outcome:** ALL SIX PHASES of docs/specs/project-memory-plan.md shipped v0.3.5→v0.3.12
+  in ~26 hours, each phase live-tested on the operator's own box (card-as-contract, conflict
+  warnings both-ways, evidence-cited auto-satisfy, lazy migration of a real monolith). The
+  supervisor now runs on project memory; the per-session doc monolith is retired by attrition.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
