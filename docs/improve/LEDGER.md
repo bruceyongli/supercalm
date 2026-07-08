@@ -123,6 +123,18 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   expand) and stops re-litigating recorded evidence. Proof: the same card that failed at
   needs_attention(86) then verified complete(86) and AUTO-CLOSED — zero clicks, outcome recorded.
 
+- **Models for everyone + e2e (operator-directed, v0.3.15):** user API PROVIDERS —
+  `model_providers.js` chmod-600 registry (anthropic|openai kinds); routes push into the catalog
+  (exact id or `<provider>/<model>`); one transport seam upgrade (agents/model.js base-URL routes:
+  bearer chat/completions for openai kind, native /v1/messages translation for anthropic) means
+  EVERY internal consumer (supervisor/doctrine/triage/migration/boundary) can run on user API keys
+  with zero further changes; claude sessions gain auth mode `api` (an enabled anthropic provider
+  serves them when no fleet/login exists); Auth-page card (test-first add, redacted listing).
+  Keys never leave the server. Native-dialog sweep completed (template naming + resume bar inline).
+  **`bin/e2e-install`**: isolated clone→install→boot→provider-add→catalog→transport→API smoke→real
+  session launch/kill — first run legitimately caught its own branch-vs-main gap, second run 9/9;
+  now the standing "stranger's laptop" gate for install/auth/models releases.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
