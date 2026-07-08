@@ -135,6 +135,15 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   session launch/kill — first run legitimately caught its own branch-vs-main gap, second run 9/9;
   now the standing "stranger's laptop" gate for install/auth/models releases.
 
+- **Cadence-ready (v0.3.16):** fleet-less BRAINS — the voice/summary chain accepts bare model ids
+  routed through user API providers and tails into them at call time; needs-you queue summaries
+  fall back to the first user provider when the fleet is unreachable; the supervisor's default
+  chain tails into user providers (resolved live). Release pipeline self-sufficient at 10+/day:
+  `bin/release` now gates on the FULL test suite (RELEASE_SKIP_TESTS=1 escape) and auto-reads the
+  GitHub token from ~/.dev.vars — one command = suite → tag → push → GitHub Release → local
+  restart. CI (free on the public repo, billable 0ms verified) runs test + fleet-less e2e-install
+  per push. e2e re-verified 9/9 on v0.3.16.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
