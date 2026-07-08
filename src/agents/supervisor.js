@@ -46,6 +46,7 @@ import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
 import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
+import { proposeMigration } from './supervisor/doc_migration.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
 import { proxyAuthRecoveryMessage } from './external_recovery.js';
@@ -1780,6 +1781,22 @@ export async function onTick(ctx) {
   // Project Memory: card-as-contract (see applyActiveCard). Null with the flag off / no active task.
   const activeCard = applyActiveCard(ctx, cfg);
   ctx.__activeCard = activeCard;
+
+  // LAZY MIGRATION (phase 6): a hot session still on a legacy doc gets ONE converted-card proposal —
+  // seeded ## Now-first, hard rules classified (≤3 doctrine candidates, fossils dropped), the
+  // original archived verbatim on the proposed card. Operator activates or declines in the panel.
+  if (!activeCard && flagOn('projectMemory') && tier === 'hot' && cfg.doc && cfg.doc.trim() && !st.migrationProposedAt) {
+    st = applySupervisorState(ctx, { migrationProposedAt: t }); // once per session, ever — even if it fails
+    proposeMigration({
+      sessionId: ctx.sessionId, projectId: ctx.project()?.id || s.project_id, doc: cfg.doc,
+      call: async (sys, user) => (await callJson(ctx, cfg, sys, user)).raw,
+    }).then((r) => {
+      if (r?.card) {
+        ctx.log(`legacy doc converted to proposed card ${r.card.task.id} (${JSON.stringify(r.counts)})`);
+        ctx.emit('review', { verdict: 'suggested', summary: 'legacy doc converted — review the proposed task card in the panel' });
+      }
+    }).catch((e) => ctx.log('doc migration failed (doc keeps working):', e.message));
+  }
 
   // light evidence (no heavy unified diff) for the fingerprint + answer/unstick brains.
   let ev;

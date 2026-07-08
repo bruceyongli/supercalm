@@ -50,7 +50,8 @@ route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
     ok: true,
     active,
     pendingBoundary,
-    open: all.filter((t) => ['proposed', 'active', 'paused', 'verify_pending'].includes(t.status) && t.id !== active?.task?.id),
+    open: all.filter((t) => ['proposed', 'active', 'paused', 'verify_pending'].includes(t.status) && t.id !== active?.task?.id)
+      .map((t) => ({ ...t, legacy: !!t.legacy_doc, legacy_doc: undefined })),
     archived: all.filter((t) => ['done', 'abandoned', 'superseded'].includes(t.status)).slice(0, 20),
   });
 });
