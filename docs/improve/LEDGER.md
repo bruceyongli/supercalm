@@ -155,6 +155,20 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   checks can't catch never-called), and an edit chained behind an exploratory grep silently skipped
   (third silent-anchor incident today → rule: edits never ride && behind greps; verify writes).
 
+- **Phone companion view (operator-directed design handoff, v0.3.19):** triage-first mobile layout
+  around one loop — triage → listen (TTS) to the key message → answer by voice/tap. Home (pills,
+  Play-N-unread, NEEDS-YOU cards w/ badge+agent chips + Listen/Reply, stale strip, session rows),
+  session view (status strip, play-unread, NEW divider anchor, bubbles/cards, per-message TTS,
+  report reader on renderMarkdown), voice reply (record→STT→editable review→explicit send),
+  quick-key chips via /type, panels sheet (live Usage: quota bars/stat grid/model history),
+  actions sheet (raw transcript, stop, two-tap kill). Composer never steals focus (fake-pill
+  pattern). Server: messages.read_at + POST /api/messages/read (read-state syncs desktop↔phone) +
+  lean GET /api/phone/home. Key-message semantics adapted to production: curated summarizer ask on
+  the unread card, detect-tail cleaning, one key message per waiting episode. PWA: safe-areas,
+  standalone metas, small-screen redirects with ?desktop=1 escape; desktop untouched (verified at
+  1400px). Pipeline lesson: v0.3.19 was first tagged on the feature branch and installs saw
+  nothing — bin/release now refuses non-main (RELEASE_BRANCH_OK=1 escape).
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
