@@ -44,7 +44,7 @@ import {
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
-import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet } from './supervisor/project_memory.js';
+import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, renderBetweenTasksMd } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
 import { proposeMigration } from './supervisor/doc_migration.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
@@ -1326,7 +1326,17 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     try {
       const met = applyCriteriaMet(ctx.__activeCard.task.id, rawParsed?.criteria_met);
       if (met) ctx.log(`card: ${met} criteria satisfied with cited evidence`);
-    } catch {}
+      if (parsed.verdict === 'complete' && (trigger === 'completion' || trigger === 'manual')) {
+        const tid2 = ctx.__activeCard.task.id;
+        if (allCriteriaSatisfied(tid2)) {
+          pmSetTaskStatus(tid2, 'done', { actor: 'supervisor', sessionId: ctx.sessionId, outcome: clampLine(parsed.assessment || 'gate-verified complete', 200) });
+          ctx.log('card auto-closed: gate-verified complete with all criteria satisfied');
+          ctx.emit('review', { verdict: 'complete', summary: 'task card closed — all criteria satisfied and gate-verified' });
+        } else if (ctx.__activeCard.task.status === 'active') {
+          pmSetTaskStatus(tid2, 'verify_pending', { actor: 'supervisor', sessionId: ctx.sessionId });
+        }
+      }
+    } catch (e) { ctx.log('card closure check failed:', e.message); }
     try {
       const g3 = ctxData.git || {};
       const files = [...new Set((String(g3.stat || g3.committed_stat || '').match(/^\s*([^\s|]+)\s+\|/gm) || []).map((l) => l.replace(/\s*\|\s*$/, '').trim()))].slice(0, 40);
@@ -1699,7 +1709,14 @@ function applyActiveCard(ctx, cfg) {
     const tid = getRuntime(ctx.sessionId)?.active_task_id;
     if (!tid) return null;
     const card = taskCard(tid);
-    if (!card || ['done', 'abandoned', 'superseded'].includes(card.task.status)) return null;
+    if (!card) return null;
+    if (['done', 'abandoned', 'superseded'].includes(card.task.status)) {
+      // The card closed but no next card is claimed yet: hold a tiny between-tasks contract so the
+      // session does NOT fall back to the retired legacy monolith (stale-goal resurrection).
+      cfg.doc = renderBetweenTasksMd(card.task);
+      ctx.__betweenTasks = true;
+      return null;
+    }
     cfg.doc = renderCardMd(card);
     const st = ctx.getState();
     if (st.activeTaskId !== card.task.id || st.activeCardVersion !== card.task.version || st.activeCardHash !== card.hash) {
@@ -1785,7 +1802,7 @@ export async function onTick(ctx) {
   // LAZY MIGRATION (phase 6): a hot session still on a legacy doc gets ONE converted-card proposal —
   // seeded ## Now-first, hard rules classified (≤3 doctrine candidates, fossils dropped), the
   // original archived verbatim on the proposed card. Operator activates or declines in the panel.
-  if (!activeCard && flagOn('projectMemory') && tier === 'hot' && cfg.doc && cfg.doc.trim() && !st.migrationProposedAt) {
+  if (!activeCard && !ctx.__betweenTasks && flagOn('projectMemory') && tier === 'hot' && cfg.doc && cfg.doc.trim() && !st.migrationProposedAt) {
     st = applySupervisorState(ctx, { migrationProposedAt: t }); // once per session, ever — even if it fails
     proposeMigration({
       sessionId: ctx.sessionId, projectId: ctx.project()?.id || s.project_id, doc: cfg.doc,
@@ -1918,7 +1935,7 @@ export async function onTick(ctx) {
   // suppress re-reading the operator's latest words, or the supervisor keeps enforcing stale scope.
   let holdSends = false;
   const lastOp = lastOperatorMsgTs(db, ctx.sessionId);
-  if (cfg.doc && cfg.doc.trim() && !ctx.__activeCard) { // card mode: the maintainer stands down — the card is edited structurally via the task API
+  if (cfg.doc && cfg.doc.trim() && !ctx.__activeCard && !ctx.__betweenTasks) { // card mode: the maintainer stands down — the card is edited structurally via the task API
     const cutoff = st.docCutoffTs || st.lastDocMaintainAt || 0;
     const agentReport = s.status === 'waiting' && s.summary ? `${s.category || 'waiting'}: ${clampLine(s.summary, 200)}` : '';
     const { text: sigText, hasNew } = maintainSignals(ctx.sessionId, cutoff, agentReport);

@@ -443,3 +443,22 @@ export function applyCriteriaMet(taskId, criteriaMet, { actor = 'supervisor' } =
   }
   return n;
 }
+
+// ---- polish: closure helpers ------------------------------------------------------------------------
+export function allCriteriaSatisfied(taskId) {
+  const live = listCriteria(taskId);
+  return live.length > 0 && live.every((c) => c.status === 'satisfied');
+}
+// The between-tasks contract: after a card closes, the session must NOT fall back to the retired
+// legacy monolith (stale-goal resurrection). A tiny honest placeholder stands in until the next card.
+export function renderBetweenTasksMd(lastTask) {
+  return [
+    '# Between tasks',
+    '',
+    '> The previous task card closed. There is NO active contract: do not gate completions or push goals —',
+    '> stand by for the operator to start or adopt the next task card.',
+    '',
+    ...(lastTask ? [`Last closed: **${lastTask.title || lastTask.id}** — ${lastTask.status}${lastTask.outcome ? ` (${lastTask.outcome})` : ''}`] : []),
+    '',
+  ].join('\n');
+}

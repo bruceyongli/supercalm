@@ -2230,3 +2230,16 @@ body.map-expanded-open { overflow: hidden; }
 .pm-form input, .pm-form textarea { background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12.5px; }
 .pm-open-row, .pm-arch-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; overflow-wrap: anywhere; }
 .pm-boundary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px dashed #d2992255; border-radius: 8px; padding: 8px 10px; font-size: 12.5px; color: var(--yellow); }
+
+/* Task-card polish: inline editors (no native prompt/confirm), clean archive rows, no chip wrap */
+.sup-badge { white-space: nowrap; }
+.pm-crit.open { cursor: pointer; border-radius: 5px; padding: 1px 4px; margin: 0 -4px; }
+.pm-crit.open:hover { background: rgba(110, 118, 129, 0.12); }
+.pm-inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; border: 1px dashed var(--line2); border-radius: 7px; padding: 7px 9px; }
+.pm-inline.col { display: grid; }
+.pm-inline.warn { border-color: #d2992255; color: var(--yellow); font-size: 12.5px; }
+.pm-inline input, .pm-inline textarea { flex: 1; min-width: 160px; background: var(--panel2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12.5px; }
+.pm-arch { display: grid; gap: 3px; }
+.pm-arch-row, .pm-open-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; min-width: 0; }
+.pm-arch-title { color: var(--ink); flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pm-arch-outcome { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
