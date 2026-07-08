@@ -9,7 +9,7 @@
 // Storage: data/model_providers.json, chmod 600 (holds API keys). Keys are NEVER returned by list
 // APIs (redacted to key_set booleans) and never logged.
 
-import { readFileSync, writeFileSync, existsSync, chmodSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, chmodSync, renameSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
 import { id as genId, now } from './util.js';
@@ -28,6 +28,7 @@ function readAll() {
 }
 function writeAll(data) {
   _cache = data;
+  try { mkdirSync(DATA_DIR, { recursive: true }); } catch {}
   const tmp = FILE + '.tmp';
   writeFileSync(tmp, JSON.stringify(data, null, 2));
   try { chmodSync(tmp, 0o600); } catch {}
@@ -118,3 +119,63 @@ export function syncRoutes() {
 
 // register at boot
 syncRoutes();
+
+// ---- speech provider (STT + TTS) -----------------------------------------------------------------
+// One OpenAI-compatible audio endpoint covers local AND remote voice: /v1/audio/transcriptions (STT)
+// + /v1/audio/speech (TTS). Works with OpenAI, Groq (STT), and local servers that speak the same
+// shape (speaches, Kokoro-FastAPI, whisper.cpp server, openedai-speech). Stored alongside the model
+// providers (same chmod-600 file); key redacted on read like everything else. The Spark device (when
+// configured via SPARK_IP/SPARK_HOST) stays primary; this is the everyone-else path.
+export function getSpeech({ redact = true } = {}) {
+  const sp = readAll().speech || null;
+  if (!sp) return null;
+  return redact ? { ...sp, api_key: undefined, key_set: !!sp.api_key } : sp;
+}
+
+export function setSpeech({ base_url, api_key, stt_model, tts_model, tts_voice, enabled = true } = {}) {
+  const data = readAll();
+  const cur = data.speech || {};
+  const next = {
+    base_url: normalizeBase(base_url ?? cur.base_url, 'openai'),
+    api_key: api_key !== undefined && api_key !== '' ? String(api_key) : cur.api_key || '',
+    stt_model: String(stt_model ?? cur.stt_model ?? 'whisper-1').slice(0, 80),
+    tts_model: String(tts_model ?? cur.tts_model ?? 'tts-1').slice(0, 80),
+    tts_voice: String(tts_voice ?? cur.tts_voice ?? 'alloy').slice(0, 60),
+    enabled: enabled !== false,
+    updated_at: now(),
+  };
+  if (!next.base_url) throw new Error('base_url required');
+  // local servers often need no key — allow empty, but keep the field
+  data.speech = next;
+  writeAll(data);
+  return getSpeech();
+}
+
+export function clearSpeech() {
+  const data = readAll();
+  delete data.speech;
+  writeAll(data);
+}
+
+// Probe: synthesize a one-word clip (the only check that proves TTS actually works; /v1/models is
+// optional on audio servers). Returns {ok, tts, contentType, error}.
+export async function probeSpeech({ base_url, api_key, tts_model = 'tts-1', tts_voice = 'alloy' } = {}) {
+  const base = normalizeBase(base_url, 'openai');
+  try {
+    const r = await fetch(base + '/v1/audio/speech', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(api_key ? { authorization: `Bearer ${api_key}` } : {}) },
+      body: JSON.stringify({ model: tts_model, input: 'ok', voice: tts_voice, response_format: 'mp3' }),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      return { ok: false, error: `TTS HTTP ${r.status}: ${t.slice(0, 160)}` };
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (buf.length < 100) return { ok: false, error: 'TTS returned no audio' };
+    return { ok: true, tts: true, bytes: buf.length, contentType: r.headers.get('content-type') || '' };
+  } catch (e) {
+    return { ok: false, error: String(e.message || e).slice(0, 200) };
+  }
+}

@@ -3,6 +3,7 @@ import https from 'node:https';
 import { route, json, readJson } from './server.js';
 import { sparkRequest } from './spark.js';
 import { SPARK } from './config.js';
+import { getSpeech } from './model_providers.js';
 
 // TTS for the voice concierge. Two backends:
 //   'spark' (default) — Spark server TTS at /v1/audio/speech, reached via tailnet IP+SNI
@@ -109,6 +110,19 @@ function speakLocal(text) {
   });
 }
 
+// OpenAI-compatible /v1/audio/speech (Auth & Models page speech provider): the no-Spark TTS path —
+// OpenAI/local Kokoro-FastAPI/openedai-speech/speaches all speak this shape.
+async function speakProvider(sp, text, format) {
+  const r = await fetch(sp.base_url + '/v1/audio/speech', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(sp.api_key ? { authorization: `Bearer ${sp.api_key}` } : {}) },
+    body: JSON.stringify({ model: sp.tts_model || 'tts-1', input: text, voice: sp.tts_voice || 'alloy', response_format: format }),
+    signal: AbortSignal.timeout(60000),
+  });
+  if (!r.ok) throw new Error(`provider tts ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
+  return { audio: Buffer.from(await r.arrayBuffer()), contentType: r.headers.get('content-type') || '' };
+}
+
 // Browser POSTs text here; we synthesize and return mp3 (Spark primary, local fallback).
 route('POST', '/api/tts', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
@@ -121,13 +135,28 @@ route('POST', '/api/tts', async (req, res) => {
 
   let audio = null;
   let responseHeaders = null;
-  if (wantSpark) {
+  if (wantSpark && SPARK.ip) {
     try {
       const result = await speakSpark(text, voice, engine, format);
       audio = result.audio;
       responseHeaders = proxyTtsHeaders(result.headers, 'spark', format);
     } catch (e) {
-      console.error('[aios] spark tts failed, falling back to local say:', e.message);
+      console.error('[aios] spark tts failed, trying provider/local:', e.message);
+    }
+  }
+  if (!audio) {
+    const speech = getSpeech({ redact: false });
+    if (speech?.enabled && speech.base_url) {
+      try {
+        const result = await speakProvider(speech, text, format);
+        audio = result.audio;
+        responseHeaders = proxyTtsHeaders({}, 'api', format);
+        responseHeaders['x-tts-backend'] = 'api';
+        responseHeaders['x-tts-engine'] = speech.tts_model || 'tts-1';
+        if (result.contentType) responseHeaders['content-type'] = result.contentType;
+      } catch (e) {
+        console.error('[aios] provider tts failed, falling back to local say:', e.message);
+      }
     }
   }
   if (!audio) {

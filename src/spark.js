@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SPARK, FFMPEG } from './config.js';
 import { route, json, readBody } from './server.js';
+import { getSpeech } from './model_providers.js';
 
 // Reuse TLS connections to Spark across requests (STT + TTS) so we don't pay a fresh
 // handshake each time. Measured small (~30ms) since latency is generation-bound, but free.
@@ -103,6 +104,24 @@ async function transcribeWithSpark({ audio, contentType, language, polish }) {
   return sparkRequest('POST', '/v1/audio/transcriptions', { body, contentType: multipartType });
 }
 
+// OpenAI-compatible speech provider (Auth & Models page): the no-Spark STT path. Same multipart
+// shape as Spark; `language` omitted when 'auto' (OpenAI rejects it), bearer only when a key exists.
+async function transcribeWithProvider(sp, { audio, contentType, language }) {
+  const ext = extFor(contentType);
+  const fields = { model: sp.stt_model || 'whisper-1', response_format: 'json' };
+  if (language && language !== 'auto') fields.language = language;
+  const { body, contentType: multipartType } = buildMultipart(
+    fields, 'file', audio, `speech.${ext}`, baseContentType(contentType) || 'application/octet-stream'
+  );
+  const r = await fetch(sp.base_url + '/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'content-type': multipartType, ...(sp.api_key ? { authorization: `Bearer ${sp.api_key}` } : {}) },
+    body,
+    signal: AbortSignal.timeout(120000),
+  });
+  return { status: r.status, body: Buffer.from(await r.arrayBuffer()) };
+}
+
 // Browser records audio and POSTs the raw bytes here; we forward to Spark's
 // recommended multipart transcription endpoint and return { text }.
 route('POST', '/api/transcribe', async (req, res) => {
@@ -119,20 +138,41 @@ route('POST', '/api/transcribe', async (req, res) => {
   if (audio.length < 500) return json(res, 400, { error: 'no audio captured — the recording was empty' });
   console.error('[aios] transcribe: ct=%s bytes=%d', ct, audio.length);
 
+  const sparkConfigured = !!SPARK.ip;
+  const speech = getSpeech({ redact: false });
+  const providerConfigured = !!(speech?.enabled && speech.base_url);
+  if (!sparkConfigured && !providerConfigured) {
+    return json(res, 502, { error: 'no speech-to-text configured — add a speech provider on the Auth page (or set SPARK_IP/SPARK_HOST)' });
+  }
   let r;
   let usedTranscode = false;
+  let backend = sparkConfigured ? 'spark' : 'provider';
   try {
-    if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) {
-      r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+    if (sparkConfigured) {
+      if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) {
+        r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+      }
+      if (!r || r.status >= 400) {
+        if (r && r.status >= 400) console.error('[aios] transcribe direct spark failed:', r.status, r.body.toString('utf8').slice(0, 180));
+        const wav = await toWav(audio, extFor(ct));
+        usedTranscode = true;
+        r = await transcribeWithSpark({ audio: wav, contentType: 'audio/wav', language, polish });
+      }
+      if (r.status >= 400 && providerConfigured) { r = null; backend = 'provider'; } // Spark down -> provider carries it
     }
-    if (!r || r.status >= 400) {
-      if (r && r.status >= 400) console.error('[aios] transcribe direct spark failed:', r.status, r.body.toString('utf8').slice(0, 180));
-      const wav = await toWav(audio, extFor(ct));
-      usedTranscode = true;
-      r = await transcribeWithSpark({ audio: wav, contentType: 'audio/wav', language, polish });
+    if (!r && providerConfigured) {
+      r = await transcribeWithProvider(speech, { audio, contentType: ct, language });
+      if (r.status >= 400) {
+        // some local servers only take wav — one transcode retry (skipped cleanly if ffmpeg is absent)
+        try {
+          const wav = await toWav(audio, extFor(ct));
+          usedTranscode = true;
+          r = await transcribeWithProvider(speech, { audio: wav, contentType: 'audio/wav', language });
+        } catch {}
+      }
     }
     const txt = r.body.toString('utf8');
-    if (r.status >= 400) return json(res, 502, { error: `spark ${r.status}: ${txt.slice(0, 300)}` });
+    if (r.status >= 400) return json(res, 502, { error: `${backend} stt ${r.status}: ${txt.slice(0, 300)}` });
     let payload = {};
     try {
       payload = JSON.parse(txt);
@@ -150,6 +190,7 @@ route('POST', '/api/transcribe', async (req, res) => {
       timings: payload.timings || undefined,
       polish,
       transcoded: usedTranscode,
+      backend,
     });
   } catch (e) {
     json(res, 502, { error: 'transcription failed: ' + e.message });
