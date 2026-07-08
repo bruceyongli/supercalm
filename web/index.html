@@ -1,6 +1,21 @@
 <!doctype html>
 <html lang="en">
   <head>
+  <script>
+    // Phone companion view (web/phone.html): small screens get the triage-first layout. Explicit
+    // opt-out via ?desktop=1 (persisted) — the phone view links back with it. Desktop is untouched.
+    (() => {
+      const q = new URLSearchParams(location.search);
+      if (q.get('desktop') === '1') { try { localStorage.aios_force_desktop = '1'; } catch {} return; }
+      let forced = false;
+      try { forced = localStorage.aios_force_desktop === '1'; } catch {}
+      if (forced || Math.min(screen.width, innerWidth || 1e4) > 720) return;
+      const sid = q.get('id');
+      location.replace(location.pathname.endsWith('/session') || location.pathname.endsWith('session.html')
+        ? 'phone#s/' + (sid || '') : 'phone');
+    })();
+  </script>
+
     <meta charset="utf-8" />
     <!-- Served under /aios on 443 (and direct on :8793). base + relative URLs keep every
          asset/API request under the same prefix; the server strips /aios either way. -->
