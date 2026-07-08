@@ -21,7 +21,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node test/static_path.test.js && node test/project_graph.test.js && node test/knowledge_assets.test.js && node test/supervisor_spec_files.test.js && node test/supervisor_progressive_scope.test.js && node test/supervisor_doc_lifecycle.test.js && node test/supervisor_awareness_guards.test.js && node test/product_audit.test.js && node test/external_recovery.test.js && node test/operator_requirements.test.js && node test/model_catalog_key.test.js && npm run test:supervisor-architecture && npm run test:supervisor-replay && npm run test:supervisor-doctrine && npm run test:supervisor-send-policy && npm run test:update-core && npm run test:supervisor-engagement && npm run test:project-memory && npm run test:task-state && npm run test:model-providers && node test/session_title.test.js && node test/browser_identity.test.js && node test/preview_profiles.test.js && npm run test:council && npm run test:agui",
+    "test": "node test/static_path.test.js && node test/project_graph.test.js && node test/knowledge_assets.test.js && node test/supervisor_spec_files.test.js && node test/supervisor_progressive_scope.test.js && node test/supervisor_doc_lifecycle.test.js && node test/supervisor_awareness_guards.test.js && node test/product_audit.test.js && node test/external_recovery.test.js && node test/operator_requirements.test.js && node test/model_catalog_key.test.js && npm run test:supervisor-architecture && npm run test:supervisor-replay && npm run test:supervisor-doctrine && npm run test:supervisor-send-policy && npm run test:update-core && npm run test:supervisor-engagement && npm run test:project-memory && npm run test:task-state && npm run test:model-providers && npm run test:phone && node test/session_title.test.js && node test/browser_identity.test.js && node test/preview_profiles.test.js && npm run test:council && npm run test:agui",
     "test:static-path": "node test/static_path.test.js",
     "test:project-graph": "node test/project_graph.test.js",
     "test:knowledge-assets": "node test/knowledge_assets.test.js",
@@ -46,7 +46,8 @@
     "test:supervisor-engagement": "node test/supervisor_engagement.test.js",
     "test:project-memory": "node test/project_memory.test.js",
     "test:task-state": "node test/supervisor_task_state.test.js",
-    "test:model-providers": "node test/model_providers.test.js"
+    "test:model-providers": "node test/model_providers.test.js",
+    "test:phone": "node test/phone_api.test.js"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.56",

@@ -1659,7 +1659,7 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
 const SYS_BOUNDARY = 'You classify whether an operator message starts NEW work relative to the active task card. Return STRICT JSON only: {"fit":"amend"|"new"|"none","title":"","goal":"","reason":""}. "amend" = same task (refines/redirects it); "new" = clearly different deliverable (give a short title + one-line goal); "none" = chatter/question/approval, no boundary signal. Be conservative: when unsure, "none".';
 async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp) {
   try {
-    if (!ctx.__activeCard || !lastOp) return;
+    if ((!ctx.__activeCard && !ctx.__betweenTasks) || !lastOp) return;
     if (st.pendingBoundary) return; // one open suggestion at a time
     if (lastOp <= (st.boundaryCheckTs || 0)) return; // no new operator message since the last check
     const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
@@ -1667,8 +1667,10 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp) {
     applySupervisorState(ctx, { boundaryCheckTs: lastOp });
     const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
     if (!latest.trim() || latest.length < 12) return;
-    const user = 'ACTIVE TASK CARD:\n' + renderCardMd(ctx.__activeCard).slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
+    const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; any substantive work request is a NEW task)';
+    const user = 'ACTIVE TASK CARD:\n' + cardMd.slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
     const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+    if (ctx.__betweenTasks && parsed?.fit === 'amend') parsed.fit = 'new'; // nothing to amend between tasks
     if (parsed?.fit === 'new' && (parsed.title || parsed.goal)) {
       applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
       ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
@@ -1966,7 +1968,7 @@ export async function onTick(ctx) {
       }
     }
   }
-  if (ctx.__activeCard) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp);
+  if (ctx.__activeCard || ctx.__betweenTasks) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp);
   if (holdSends) {
     recordNoSend(ctx, snapshot, {
       ruleId: 'doc.maintain_pending',

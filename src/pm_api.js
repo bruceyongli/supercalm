@@ -43,12 +43,18 @@ route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
   const { error, projectId, sess } = sessionProject(sid);
   if (error) return json(res, 404, { error });
   const rt = getRuntime(sid);
-  const active = rt?.active_task_id ? taskCard(rt.active_task_id) : null;
+  let active = rt?.active_task_id ? taskCard(rt.active_task_id) : null;
+  let lastClosed = null;
+  if (active && ['done', 'abandoned', 'superseded'].includes(active.task.status)) {
+    lastClosed = { id: active.task.id, title: active.task.title, status: active.task.status, outcome: active.task.outcome };
+    active = null; // a closed card is history, not the current contract — the panel must say "between tasks"
+  }
   const all = projectId ? listTasks(projectId) : [];
   const pendingBoundary = getGrant(sid, 'supervisor')?.state?.pendingBoundary || null;
   return json(res, 200, {
     ok: true,
     active,
+    lastClosed,
     pendingBoundary,
     open: all.filter((t) => ['proposed', 'active', 'paused', 'verify_pending'].includes(t.status) && t.id !== active?.task?.id)
       .map((t) => ({ ...t, legacy: !!t.legacy_doc, legacy_doc: undefined })),

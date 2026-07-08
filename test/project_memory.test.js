@@ -163,6 +163,17 @@ const card1 = createTask({
   assert.match(panel, /pmData\?\.active/, 'card view replaces the doc UI when a card is active');
 }
 
+// ---- between-tasks: the next card can be proposed, and the panel never headlines a closed card -----
+{
+  const sup8 = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup8, /ctx\.__activeCard \|\| ctx\.__betweenTasks\) await maybeSuggestBoundary/, 'boundary suggestions run between tasks (the stuck-on-done-card bug)');
+  assert.match(sup8, /parsed\.fit = 'new'; \/\/ nothing to amend between tasks/, 'between-tasks amend upgrades to new');
+  const api8 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api8, /a closed card is history, not the current contract/, 'tasks payload demotes closed cards');
+  const panel8 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(panel8, /Between tasks — last:/, 'panel shows the between-tasks state');
+}
+
 console.log('project_memory.test ok');
 
 // ---- phase 4: project awareness ---------------------------------------------------------------------
