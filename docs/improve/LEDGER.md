@@ -111,6 +111,18 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   warnings both-ways, evidence-cited auto-satisfy, lazy migration of a real monolith). The
   supervisor now runs on project memory; the per-session doc monolith is retired by attrition.
 
+- **Polish (operator feedback, v0.3.13–14):** (1) gate-verified AUTO-CLOSE — verify `complete` +
+  all criteria satisfied ⇒ card done, no manual click (manual Done = override); complete with open
+  criteria ⇒ verify_pending; a closed card holds a "between tasks" contract so the retired monolith
+  can never resurface. (2) criteria are CLICKABLE — operator judgment recorded as first-class
+  'operator' evidence (add-only). (3) all card actions became in-theme inline editors; native
+  prompt/confirm dialogs removed (test-locked). (4) archive rows restyled (nowrap chips, ellipsis).
+  (5) LIVE-FOUND + FIXED: the verifier's definition_of_done retrieval held a small test card
+  hostage to the project's full refactor spec — the exact "silent scope expansion" round-2 warned
+  about; the card addendum now pins the verdict to the card's criteria (specs inform, never
+  expand) and stops re-litigating recorded evidence. Proof: the same card that failed at
+  needs_attention(86) then verified complete(86) and AUTO-CLOSED — zero clicks, outcome recorded.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
