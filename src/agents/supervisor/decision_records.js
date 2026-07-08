@@ -32,13 +32,19 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_supervisor_decisions_session_ts ON supervisor_decisions(session_id, ts);
   CREATE INDEX IF NOT EXISTS idx_supervisor_decisions_action ON supervisor_decisions(session_id, action_type, ts);
 `);
+// Project Memory phase 2: every policy record names WHICH contract it acted against — the active
+// task card id + version (null until phase 3 sets an active task). Additive, preserves history.
+for (const col of ['task_id TEXT', 'card_version INTEGER']) {
+  try { db.exec(`ALTER TABLE supervisor_decisions ADD COLUMN ${col}`); } catch {}
+}
 
 const _insert = db.prepare(`
   INSERT INTO supervisor_decisions (
     id, session_id, ts, policy_version, snapshot_hash, rule_id, action_type, action_target,
     allowed_send, suppression_reason, operator_intent, triggering_signal, reasons_json,
-    state_patch_json, decision_json, snapshot_json, sent, sent_text, send_result_json, created_at
-  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    state_patch_json, decision_json, snapshot_json, sent, sent_text, send_result_json, created_at,
+    task_id, card_version
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 `);
 const _updateSend = db.prepare('UPDATE supervisor_decisions SET sent=?, sent_text=?, send_result_json=? WHERE id=?');
 const _latest = db.prepare('SELECT * FROM supervisor_decisions WHERE session_id=? ORDER BY ts DESC LIMIT 1');
@@ -93,6 +99,7 @@ export function makeDecision({
     suppressionReason: suppressionReason || '',
     latestOperatorIntent: latestOperatorIntent || { type: 'none', text: '', ts: null, confidence: 0 },
     currentTask: snapshot?.currentTask || null,
+    task: snapshot?.task || null, // {id, version, hash} of the active task card (Project Memory; null pre-phase-3)
     triggeringSignal: triggeringSignal || null,
     reasons: Array.isArray(reasons) ? reasons : [String(reasons || '')].filter(Boolean),
     statePatch: statePatch || {},
@@ -123,7 +130,9 @@ export function persistDecision(ctxOrSessionId, decision, snapshot = null) {
     0,
     '',
     null,
-    now()
+    now(),
+    decision.task?.id ?? null,
+    Number.isFinite(decision.task?.version) ? decision.task.version : null
   );
   return decision.decisionId;
 }

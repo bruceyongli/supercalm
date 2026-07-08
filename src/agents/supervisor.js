@@ -145,10 +145,16 @@ db.exec(`
 if (!new Set(db.prepare('PRAGMA table_info(supervisor_reviews)').all().map((r) => r.name)).has('repeat')) {
   db.exec('ALTER TABLE supervisor_reviews ADD COLUMN repeat INTEGER NOT NULL DEFAULT 1');
 }
+// Project Memory phase 2: interventions name the task card (+version) they judged — null until
+// phase 3 sets an active task. Additive; old review history keyed to doc snapshots stays comparable
+// because the columns are nullable, and new rows become card-comparable.
+for (const col of ['task_id TEXT', 'card_version INTEGER']) {
+  try { db.exec(`ALTER TABLE supervisor_reviews ADD COLUMN ${col}`); } catch {}
+}
 
 const _insReview = db.prepare(
-  `INSERT INTO supervisor_reviews (session_id, ts, kind, trigger, model, verdict, score, assessment, message, sent, sent_text, screenshot, error, raw)
-   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  `INSERT INTO supervisor_reviews (session_id, ts, kind, trigger, model, verdict, score, assessment, message, sent, sent_text, screenshot, error, raw, task_id, card_version)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 );
 const _latestReview = db.prepare('SELECT * FROM supervisor_reviews WHERE session_id = ? ORDER BY ts DESC LIMIT 1');
 // verify-dedupe: collapse a consecutive same-verdict re-verify into the prior row (bump count + refresh).
@@ -862,6 +868,9 @@ function logIntervention(ctx, o) {
       return prev.id;
     }
   }
+  // Which contract did this intervention act against? Null until Project Memory phase 3.
+  let taskRef = { id: null, version: null };
+  try { const st = ctx.getState(); taskRef = { id: st.activeTaskId ?? null, version: Number.isFinite(st.activeCardVersion) ? st.activeCardVersion : null }; } catch {}
   const info = _insReview.run(
     ctx.sessionId,
     now(),
@@ -876,7 +885,9 @@ function logIntervention(ctx, o) {
     (o.sent_text || '').slice(0, 2000),
     o.screenshot || null,
     o.error || null,
-    tailStr(o.raw, 12000)
+    tailStr(o.raw, 12000),
+    taskRef.id,
+    taskRef.version
   );
   return info.lastInsertRowid;
 }
