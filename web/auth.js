@@ -242,7 +242,26 @@ async function loadApiProviders() {
       const j = await api('api/models/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!j.ok) throw new Error(j.error || 'failed');
       msg.textContent = '✓ added';
-      async function loadSpeech() {
+      loadApiProviders();
+    } catch (e) { msg.textContent = '⚠ ' + e.message; }
+  };
+  for (const row of box.querySelectorAll('.prov-row')) {
+    const id = row.dataset.id;
+    const m = row.querySelector('[data-role="msg"]');
+    row.querySelector('[data-act="test"]').onclick = async () => {
+      m.textContent = 'testing…';
+      try { const j = await api(`api/models/providers/${id}/test`, { method: 'POST' }); m.textContent = j.ok ? `✓ ${j.models.length} models` : '⚠ ' + j.error; }
+      catch (e) { m.textContent = '⚠ ' + e.message; }
+    };
+    row.querySelector('[data-act="del"]').onclick = async () => {
+      await api(`api/models/providers/${id}`, { method: 'DELETE' }).catch(() => {});
+      loadApiProviders();
+    };
+  }
+}
+loadApiProviders();
+
+async function loadSpeech() {
   const box = $('speechProvider');
   if (!box) return;
   let r;
@@ -291,22 +310,4 @@ async function loadApiProviders() {
     };
   }
 }
-loadApiProviders();
 loadSpeech();
-    } catch (e) { msg.textContent = '⚠ ' + e.message; }
-  };
-  for (const row of box.querySelectorAll('.prov-row')) {
-    const id = row.dataset.id;
-    const m = row.querySelector('[data-role="msg"]');
-    row.querySelector('[data-act="test"]').onclick = async () => {
-      m.textContent = 'testing…';
-      try { const j = await api(`api/models/providers/${id}/test`, { method: 'POST' }); m.textContent = j.ok ? `✓ ${j.models.length} models` : '⚠ ' + j.error; }
-      catch (e) { m.textContent = '⚠ ' + e.message; }
-    };
-    row.querySelector('[data-act="del"]').onclick = async () => {
-      await api(`api/models/providers/${id}`, { method: 'DELETE' }).catch(() => {});
-      loadApiProviders();
-    };
-  }
-}
-loadApiProviders();
