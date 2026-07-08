@@ -1146,10 +1146,11 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
 }
 
 async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
-  const projectKnowledge = retrieveProjectKnowledge(ctx, [sess?.summary, sess?.question, ctxData.summary].filter(Boolean).join('\n'));
-  const priorFailures = priorFailuresFor(ctx, { git: ctxData.git });
+  // Pre-action gate: unstick PROPOSES approaches — verified failures on this ground must be visible.
+  const unstickPriorFailures = priorFailuresFor(ctx, ev);
   const evidence = {
     supervision_doc: cfg.doc || '',
+    ...(unstickPriorFailures ? { prior_failures: unstickPriorFailures } : {}),
     ...(reviewBehaviorTemplate(cfg) ? { review_behavior_template: reviewBehaviorTemplate(cfg) } : {}),
     stuck_for_seconds: Math.round(stuckMs / 1000),
     git_stat: ev.git?.stat || '',
@@ -1233,6 +1234,8 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     verifyDoctrine = formatDoctrine(rules);
     if (verifyDoctrine) noteDoctrineReuse(rules.map((r) => r.id));
   } catch (e) { ctx.log('doctrine retrieve failed:', e.message); }
+  const projectKnowledge = retrieveProjectKnowledge(ctx, [sess?.summary, sess?.question, ctxData.summary].filter(Boolean).join('\n'));
+  const priorFailures = priorFailuresFor(ctx, { git: ctxData.git });
   const evidence = {
     trigger,
     verify_prompt_version: VERIFY_PROMPT_VERSION,

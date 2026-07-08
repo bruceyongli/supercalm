@@ -254,6 +254,14 @@ console.log('project_memory.test ok');
   assert.match(sup, /priorFailuresFor/, 'pre-action gate helper exists');
   assert.match(sup, /previouslyFailed: priorFailuresFor\(ctx, ev\)/, 'answer path carries failure history');
   assert.match(sup, /prior_failures: priorFailures/, 'verify evidence carries failure history');
+  // placement lock (a phase-5 live 500: these consts once landed inside runUnstick, which lacks
+  // sess/ctxData — assert they live in runVerify's scope, between the doctrine block and evidence)
+  const vSeg = sup.slice(sup.indexOf("doctrine retrieve failed"), sup.indexOf('verify_prompt_version: VERIFY_PROMPT_VERSION'));
+  assert.match(vSeg, /retrieveProjectKnowledge/, 'projectKnowledge defined in runVerify scope');
+  assert.match(vSeg, /priorFailuresFor/, 'priorFailures defined in runVerify scope');
+  const uSeg = sup.slice(sup.indexOf('async function runUnstick'), sup.indexOf('async function runUnstick') + 900);
+  assert.ok(!uSeg.includes('retrieveProjectKnowledge'), 'runUnstick must not reference verify-scope vars');
+  assert.match(uSeg, /unstickPriorFailures/, 'unstick has its own correctly-built pre-action gate');
   assert.match(sup, /TASK_CARD_ADDENDUM/, 'verifier asked for per-criterion evidence in card mode');
   assert.match(sup, /applyCriteriaMet\(ctx\.__activeCard\.task\.id, rawParsed\?\.criteria_met\)/, 'verify auto-satisfies cited criteria');
   assert.match(sup, /maybeSuggestBoundary/, 'boundary suggestions run in card mode');
