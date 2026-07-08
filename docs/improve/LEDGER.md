@@ -4,6 +4,23 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
 
 ---
 
+## Run 3 — 2026-07-08 · branch `pm/phase-1` · Project Memory phase 1/6
+
+- **Bet (operator-approved plan):** replace the per-session supervision-doc monolith with
+  project-scoped memory — `docs/specs/project-memory-plan.md`, hardened by a 3-round multi-model
+  panel + outward research (PROJECTMEM pre-action gate, ETH generated-context warning, MemGate
+  trust boundary, Zep temporal validity, cogyard/Clash coordination primitives).
+- **Phase 1 built (data-only, zero behavior change):** `src/agents/supervisor/project_memory.js` —
+  pm_tasks (status machine + version counter), pm_criteria (first-class rows, supersede-not-edit
+  validity intervals, per-criterion evidence), pm_task_versions (immutable hash-stamped snapshots),
+  pm_evidence, pm_events (typed, file-overlap retrieval for the future pre-action gate),
+  pm_standards, pm_session_runtime; repo projection = GOAL.md successor (marker-pinned sha256,
+  chmod 444, .git/info/exclude registration, tampered/stale/foreign detection, never clobbers a
+  foreign file). Flag `projectMemory` registered (default OFF; phases 3+ read it). Boot-loaded for
+  schema creation only; **test-locked: supervisor.js must not import project_memory until phase 3**.
+- **Tests:** full lifecycle, temporal criteria, evidence, closing events, overlap retrieval,
+  runtime upsert, projection write/tamper/stale/foreign (suite 24 groups green).
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor

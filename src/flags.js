@@ -22,6 +22,7 @@ export const FLAG_DEFS = {
   claudeHooks: { env: 'AIOS_CLAUDE_HOOKS', desc: 'Inject claude lifecycle hooks (instant working/waiting) via --settings' },
   gitGuardrails: { env: 'AIOS_GIT_GUARDRAILS', desc: 'Block irreversible git via a claude PreToolUse hook' },
   codexNotify: { env: 'AIOS_CODEX_NOTIFY', desc: 'Inject codex notify program for turn-complete reporting' },
+  projectMemory: { env: 'AIOS_PROJECT_MEMORY', desc: 'Project Memory: task cards replace the supervision doc (docs/specs/project-memory-plan.md; behavior phases read this — the schema itself is always present)' },
 };
 export const FLAG_KEYS = Object.keys(FLAG_DEFS);
 
