@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# End-to-end install test in an ISOLATED environment: clone this repo into a temp dir exactly the way
+# a new user would, boot it on its own port + data dir, add an API model provider against a local mock,
+# prove the models join the catalog and the internal transport routes to them, then smoke the core API.
+# Optional deep mode: if a coding CLI (codex/claude) + tmux exist, launch and kill a throwaway session.
+#
+#   bin/e2e-install            # full run (temp clone is removed on success, kept on failure)
+#   E2E_KEEP=1 bin/e2e-install # always keep the temp dir
+#
+# This is the "would a stranger's laptop work?" test — run it before releases that touch
+# install/boot/auth/models. Exit 0 = pass (session step may be SKIPPED, never fails the run).
+set -euo pipefail
+
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d /tmp/supercalm-e2e.XXXXXX)"
+PORT=$((20000 + RANDOM % 20000))
+MOCK=$((PORT + 1))
+SRV_PID=""; MOCK_PID=""
+PASS=(); FAIL=(); SKIP=()
+
+note() { printf '%s\n' "$*"; }
+ok()   { PASS+=("$1"); note "  ✓ $1"; }
+bad()  { FAIL+=("$1"); note "  ✗ $1"; }
+skip() { SKIP+=("$1"); note "  - $1 (skipped: $2)"; }
+
+cleanup() {
+  [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null || true
+  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null || true
+  if [ ${#FAIL[@]} -eq 0 ] && [ "${E2E_KEEP:-0}" != "1" ]; then rm -rf "$TMP"; else note "kept: $TMP (server.log inside)"; fi
+}
+trap cleanup EXIT
+
+note "== e2e install test =="
+note "clone -> $TMP/app  ·  port $PORT  ·  mock provider $MOCK"
+
+# 1) install like a stranger: clone from the local repo, npm install
+BRANCH="$(git -C "$DIR" rev-parse --abbrev-ref HEAD)"
+git clone -q --depth 1 --branch "$BRANCH" "file://$DIR" "$TMP/app"
+cd "$TMP/app"
+if npm install --no-audit --no-fund --loglevel=error > "$TMP/npm.log" 2>&1; then ok "npm install"; else bad "npm install (see $TMP/npm.log)"; exit 1; fi
+
+# 2) boot isolated
+mkdir -p "$TMP/data"
+AIOS_DATA="$TMP/data" AIOS_PORT="$PORT" AIOS_UPDATE_CHECK=0 node src/server.js > "$TMP/server.log" 2>&1 &
+SRV_PID=$!
+disown "$SRV_PID" 2>/dev/null || true
+for i in $(seq 1 40); do
+  curl -sS -m 2 "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1 && break
+  kill -0 "$SRV_PID" 2>/dev/null || { bad "server crashed on boot (see $TMP/server.log)"; exit 1; }
+  sleep 0.5
+done
+H="$(curl -sS -m 3 "http://127.0.0.1:$PORT/healthz" || true)"
+case "$H" in *'"ok":true'*) ok "boot + healthz ($(node -e "console.log(JSON.parse(process.argv[1]).version)" "$H" 2>/dev/null))";; *) bad "healthz: $H"; exit 1;; esac
+
+# 3) mock provider + register it through the public API
+node scripts/e2e/mock-provider.mjs "$MOCK" > "$TMP/mock.log" 2>&1 &
+MOCK_PID=$!
+disown "$MOCK_PID" 2>/dev/null || true
+sleep 0.5
+ADD="$(curl -sS -m 12 -XPOST "http://127.0.0.1:$PORT/api/models/providers" -H 'content-type: application/json' \
+  -d "{\"kind\":\"openai\",\"name\":\"E2E Mock\",\"base_url\":\"http://127.0.0.1:$MOCK\",\"api_key\":\"sk-e2e-test\"}")"
+case "$ADD" in *'"ok":true'*) ok "provider added via API (probed + models auto-discovered)";; *) bad "provider add: $ADD";; esac
+
+# 4) the models joined the catalog
+MODELS="$(curl -sS -m 5 "http://127.0.0.1:$PORT/api/models" || true)"
+case "$MODELS" in *e2e-mini*) ok "provider models in the catalog";; *) bad "catalog missing e2e-mini";; esac
+
+# 5) internal transport routes to the provider (same seam the supervisor/agents use)
+if AIOS_DATA="$TMP/data" node --input-type=module -e "
+  const { routeForModel } = await import('$TMP/app/src/model_catalog.js');
+  await import('$TMP/app/src/model_providers.js');
+  const { callProxyModel } = await import('$TMP/app/src/agents/model.js');
+  const r = routeForModel('e2e-mini');
+  if (r.proxy !== 'api') throw new Error('route not api: ' + JSON.stringify(r));
+  const out = await callProxyModel(r, [{ role: 'user', content: 'ping from e2e' }]);
+  if (!out.content.startsWith('e2e-ok:')) throw new Error('bad reply: ' + out.content);
+" 2>"$TMP/transport.err"; then ok "internal model call routed through the provider"; else bad "transport: $(grep -m1 -E "Error|error" "$TMP/transport.err" || tail -1 "$TMP/transport.err")"; fi
+
+# 6) core API smoke
+S="$(curl -sS -m 5 "http://127.0.0.1:$PORT/api/state" || true)"
+case "$S" in *'"sessions"'*) ok "/api/state";; *) bad "/api/state";; esac
+A="$(curl -sS -m 8 "http://127.0.0.1:$PORT/api/auth/status" || true)"
+case "$A" in *'"mode"'*) ok "/api/auth/status (mode: $(node -e "console.log(JSON.parse(process.argv[1]).mode)" "$A" 2>/dev/null))";; *) bad "/api/auth/status";; esac
+mkdir -p "$TMP/proj"
+P="$(curl -sS -m 5 -XPOST "http://127.0.0.1:$PORT/api/projects" -H 'content-type: application/json' -d "{\"name\":\"e2e\",\"path\":\"$TMP/proj\"}" || true)"
+case "$P" in *'"id"'*) ok "project create";; *) bad "project create: $P";; esac
+
+# 7) optional deep mode: a real throwaway session (needs tmux + a coding CLI + its auth)
+if command -v tmux >/dev/null && { command -v codex >/dev/null || command -v claude >/dev/null; }; then
+  TOOL=$(command -v codex >/dev/null && echo codex || echo claude)
+  SID="$(curl -sS -m 20 -XPOST "http://127.0.0.1:$PORT/api/session" -H 'content-type: application/json' \
+    -d "{\"path\":\"$TMP/proj\",\"tool\":\"$TOOL\",\"autonomy\":\"ask\",\"task\":\"Reply with the single word ready and wait.\"}" \
+    | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).id||''))" 2>/dev/null || true)"
+  if [ -n "$SID" ]; then
+    UP=""
+    for i in $(seq 1 30); do
+      ST="$(curl -sS -m 3 "http://127.0.0.1:$PORT/api/state" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const x=JSON.parse(s).sessions.find(y=>y.id==='$SID');console.log(x?x.status:'')})" 2>/dev/null || true)"
+      case "$ST" in working|waiting) UP=1; break;; esac
+      sleep 2
+    done
+    curl -sS -m 5 -XPOST "http://127.0.0.1:$PORT/api/session/$SID/kill" >/dev/null 2>&1 || true
+    if [ -n "$UP" ]; then ok "real session launched ($TOOL) and killed"; else skip "session launch" "$TOOL never reached working/waiting (auth?)"; fi
+  else
+    skip "session launch" "session create failed (CLI auth missing?)"
+  fi
+else
+  skip "session launch" "tmux or a coding CLI not on PATH"
+fi
+
+note ""
+note "== e2e summary: ${#PASS[@]} pass · ${#FAIL[@]} fail · ${#SKIP[@]} skipped =="
+[ ${#FAIL[@]} -eq 0 ]

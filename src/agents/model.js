@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fleetKey, listProxyModels, routeForModel } from '../model_catalog.js';
 
@@ -11,6 +12,7 @@ const CHAT_TIMEOUT_MS = Number(process.env.AIOS_AGENT_MODEL_TIMEOUT_MS || 90000)
 // A route is a vision route if its provider/model can accept image_url content parts.
 export function isVisionRoute(route) {
   const proxy = route?.proxy;
+  if (proxy === 'api') return false; // user API providers: text-only transport in v1 (no image translation)
   const id = String(route?.model || route?.id || '').toLowerCase();
   if (['antigravity', 'gemini', 'codex', 'claude'].includes(proxy)) return true;
   if (proxy === 'aliyun') return /max|plus|-vl|vision/.test(id);
@@ -46,7 +48,58 @@ export async function callProxyModel(route, messages, opts = {}) {
   throw lastErr;
 }
 
+// ---- user API-provider transport (route.base set by model_providers.js) --------------------------
+function flattenContent(c) {
+  if (Array.isArray(c)) return c.map((p) => (p?.type === 'text' ? p.text : '')).filter(Boolean).join('\n');
+  return String(c ?? '');
+}
+function postJson(base, path, headers, body, timeout) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(base + path);
+    const mod = u.protocol === 'https:' ? https : http;
+    const data = Buffer.from(JSON.stringify(body));
+    const req = mod.request(
+      { host: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80), path: u.pathname + u.search, method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': data.length, ...headers }, timeout },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          try { resolve({ status: res.statusCode, json: JSON.parse(raw), raw }); }
+          catch { reject(new Error(`non-JSON response (HTTP ${res.statusCode})`)); }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.on('timeout', () => req.destroy(new Error('agent model timeout')));
+    req.write(data);
+    req.end();
+  });
+}
+async function callApiProvider(route, messages, { temperature = 0.1, maxTokens = 4000, json = false } = {}) {
+  if (route.kind === 'anthropic') {
+    // native /v1/messages: split system, flatten multimodal to text (v1 transport is text-only)
+    const system = messages.filter((m) => m.role === 'system').map((m) => flattenContent(m.content)).join('\n\n');
+    const rest = messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: flattenContent(m.content) }));
+    const body = { model: route.model, max_tokens: maxTokens, temperature, ...(system ? { system } : {}), messages: rest.length ? rest : [{ role: 'user', content: '' }] };
+    const { status, json: env, raw } = await postJson(route.base, '/v1/messages', { 'x-api-key': route.key, 'anthropic-version': '2023-06-01' }, body, CHAT_TIMEOUT_MS);
+    if (env?.error || status >= 400) throw new Error(env?.error?.message || `HTTP ${status}`);
+    const content = (env.content || []).map((b) => b.text || '').join('');
+    const usage = env.usage ? { prompt_tokens: env.usage.input_tokens, completion_tokens: env.usage.output_tokens } : null;
+    return { content, usage, raw, model: env.model || route.model };
+  }
+  // openai-compatible
+  const body = { model: route.model, temperature, max_tokens: maxTokens, messages: messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? flattenContent(m.content) : m.content })) };
+  if (json) body.response_format = { type: 'json_object' };
+  const { status, json: env, raw } = await postJson(route.base, '/v1/chat/completions', { authorization: `Bearer ${route.key}` }, body, CHAT_TIMEOUT_MS);
+  if (env?.error || status >= 400) throw new Error(env?.error?.message || `HTTP ${status}`);
+  const c = env.choices?.[0]?.message?.content ?? '';
+  return { content: Array.isArray(c) ? flattenContent(c) : String(c || ''), usage: env.usage || null, raw, model: env.model || route.model };
+}
+
 function callOnce(route, messages, { temperature = 0.1, maxTokens = 4000, json = false } = {}) {
+  if (route?.base) return callApiProvider(route, messages, { temperature, maxTokens, json });
   return new Promise((resolve, reject) => {
     fleetKey().then((key) => {
       const body = { model: route.model, temperature, messages };

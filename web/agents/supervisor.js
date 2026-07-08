@@ -390,6 +390,7 @@ function renderHeader() {
         </label>
         <div class="sup-template-row">
           <button class="btn ghost sm" id="sup-template-save" ${busy || !String(d.review_template || '').trim() ? 'disabled' : ''}>Save behavior template</button>
+          ${tmplNaming ? `<span class="pm-inline"><input id="sup-template-name" placeholder="Template name" /><button class="btn sm" id="sup-template-name-go">Save</button><button class="btn ghost sm" id="sup-template-name-cancel">Cancel</button></span>` : ''}
           <select id="sup-template-load" ${busy || !templates.length ? 'disabled' : ''}>${tmplOpts}</select>
         </div>
         <div class="sup-field">Preview URLs</div>
@@ -511,7 +512,9 @@ function wireHeader() {
     draft.review_template = e.target.value;
     P.markDirty();
   });
-  on('#sup-template-save', 'onclick', saveTemplate);
+  on('#sup-template-save', 'onclick', () => { tmplNaming = true; renderHeader(); setTimeout(() => host.querySelector('#sup-template-name')?.focus(), 40); });
+  on('#sup-template-name-cancel', 'onclick', () => { tmplNaming = false; renderHeader(); });
+  on('#sup-template-name-go', 'onclick', () => saveTemplate(host.querySelector('#sup-template-name')?.value || ''));
   on('#sup-template-load', 'onchange', (e) => loadTemplate(e.target.value));
   on('#sup-gate', 'onchange', (e) => {
     draft.completion_gate = e.target.checked;
@@ -965,9 +968,11 @@ async function revise() {
     renderAll();
   }
 }
-async function saveTemplate() {
-  const name = prompt('Review behavior template name');
+let tmplNaming = false; // inline name row open (in-theme — no native prompt)
+async function saveTemplate(name) {
+  name = String(name || '').trim();
   if (!name) return;
+  tmplNaming = false;
   busy = 'template';
   renderHeader();
   try {

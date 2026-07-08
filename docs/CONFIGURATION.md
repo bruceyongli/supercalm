@@ -23,6 +23,21 @@ source** — the [secret-scan hooks](#keeping-secrets-out-of-git) will block tha
 | `AIOS_DATA` | `./data` | sqlite, per-session logs, vapid keys. Gitignored. |
 | `AIOS_SELF_URL` | `http://127.0.0.1:<port>` | Public base URL used in web-push payloads and links. |
 
+## API model providers (no local proxy fleet)
+
+Most users don't run a localhost model-proxy fleet. Add your own API endpoints on the
+**Auth page → "API model providers"** card instead:
+
+- **Anthropic API** (`https://api.anthropic.com` + your `sk-ant-…` key): models join every picker and
+  power the supervisor/agents, **and claude sessions route through it automatically** (auth mode `API`)
+  whenever no fleet or Supercalm login is available.
+- **OpenAI-compatible API** (OpenAI, OpenRouter, together.ai, a local llama.cpp/ollama server — any
+  `/v1/chat/completions` endpoint): models join the pickers and power the supervisor/agents.
+
+Providers are stored in `data/model_providers.json` (chmod 600; keys never leave the server — list
+APIs redact them). "Test & add" verifies the key and auto-discovers the model list. Model ids collide?
+Address a provider's model explicitly as `<provider-name>/<model>`.
+
 ## 2. System binaries
 
 Supercalm shells out to a few tools. Paths are **auto-resolved** across `/opt/homebrew/bin` (macOS ARM),

@@ -5,6 +5,7 @@ const MODE_DESC = {
   aios: 'Routing through Supercalm’s own login + local shim. Supercalm holds + auto-refreshes the credential.',
   cli: 'Using the Claude CLI’s own ~/.claude login (no proxy, no Supercalm login).',
   pinned: 'Pinned to AIOS_CLAUDE_BASE_URL (explicit override).',
+  api: 'Routing through your configured API model provider (Auth & Models below) — no fleet, no OAuth needed.',
 };
 // Per-provider copy: what a login enables + how to grab the code from the callback page.
 const INFO = {
@@ -195,3 +196,67 @@ $('reprobe').onclick = async () => { try { await api('api/auth/probe', { method:
 refreshStatus();
 refreshTools();
 setInterval(refreshStatus, 25000);
+
+
+// ---- API model providers (model_providers.js) ----------------------------------------------------
+// The no-local-fleet path: add an Anthropic/OpenAI(-compatible) endpoint + key; its models join the
+// catalog (pickers, supervisor chains), and an anthropic-kind provider can serve claude sessions.
+async function loadApiProviders() {
+  const box = $('apiProviders');
+  if (!box) return;
+  let r;
+  try { r = await api('api/models/providers'); } catch (e) { box.innerHTML = `<p class="muted">unavailable: ${e.message}</p>`; return; }
+  const rows = (r.providers || []).map((p) => `
+    <div class="prov-row" data-id="${p.id}">
+      <b>${esc(p.name)}</b>
+      <span class="muted">${esc(p.kind)} · ${esc(p.base_url)} · ${(p.models || []).length} models${p.key_set ? '' : ' · <span style="color:#f85149">no key</span>'}</span>
+      <button class="btn sm ghost" data-act="test">Test</button>
+      <button class="btn sm ghost" data-act="del">Remove</button>
+      <span class="muted" data-role="msg"></span>
+    </div>`).join('');
+  box.innerHTML = `
+    ${rows || '<p class="muted">No API providers yet — add one below to use API models without a local proxy fleet.</p>'}
+    <div class="prov-add">
+      <select id="ap-kind">
+        <option value="anthropic">Anthropic API (serves claude sessions + agents)</option>
+        <option value="openai">OpenAI-compatible API (agents; any /v1/chat/completions endpoint)</option>
+      </select>
+      <input id="ap-name" placeholder="Name (e.g. Anthropic, OpenRouter)" />
+      <input id="ap-base" placeholder="Base URL — blank = https://api.anthropic.com" />
+      <input id="ap-key" type="password" placeholder="API key" autocomplete="off" />
+      <input id="ap-models" placeholder="Models (comma-separated; blank = auto-discover)" />
+      <button class="btn sm" id="ap-add">Test & add</button>
+      <span class="muted" id="ap-msg"></span>
+    </div>`;
+  $('ap-kind').onchange = () => {
+    $('ap-base').placeholder = $('ap-kind').value === 'anthropic' ? 'Base URL — blank = https://api.anthropic.com' : 'Base URL (e.g. https://api.openai.com or https://openrouter.ai/api)';
+  };
+  $('ap-add').onclick = async () => {
+    const msg = $('ap-msg');
+    msg.textContent = 'testing…';
+    try {
+      const body = {
+        kind: $('ap-kind').value, name: $('ap-name').value.trim(), base_url: $('ap-base').value.trim(),
+        api_key: $('ap-key').value, models: $('ap-models').value.split(',').map((x) => x.trim()).filter(Boolean),
+      };
+      const j = await api('api/models/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!j.ok) throw new Error(j.error || 'failed');
+      msg.textContent = '✓ added';
+      loadApiProviders();
+    } catch (e) { msg.textContent = '⚠ ' + e.message; }
+  };
+  for (const row of box.querySelectorAll('.prov-row')) {
+    const id = row.dataset.id;
+    const m = row.querySelector('[data-role="msg"]');
+    row.querySelector('[data-act="test"]').onclick = async () => {
+      m.textContent = 'testing…';
+      try { const j = await api(`api/models/providers/${id}/test`, { method: 'POST' }); m.textContent = j.ok ? `✓ ${j.models.length} models` : '⚠ ' + j.error; }
+      catch (e) { m.textContent = '⚠ ' + e.message; }
+    };
+    row.querySelector('[data-act="del"]').onclick = async () => {
+      await api(`api/models/providers/${id}`, { method: 'DELETE' }).catch(() => {});
+      loadApiProviders();
+    };
+  }
+}
+loadApiProviders();

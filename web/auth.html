@@ -12,6 +12,9 @@
       .wrap { max-width: 820px; margin: 0 auto; padding: 14px; }
       .card { border: 1px solid #21262d; border-radius: 10px; padding: 14px; margin-bottom: 14px; background: #0f141b; }
       .card.prov { border-left: 3px solid #30363d; }
+      .prov-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid #1c2128; font-size: 13px; }
+      .prov-add { display: grid; gap: 6px; margin-top: 10px; max-width: 560px; }
+      .prov-add input, .prov-add select { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 13px; }
       .card h2 { font-size: 14px; margin: 0 0 4px; color: #e6edf3; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
       .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; font-size: 13px; }
       .k { color: #8b949e; min-width: 92px; }
@@ -51,6 +54,13 @@
         <div class="row"><span class="k">Proxy fleet</span><span class="v"><span class="dot" id="proxyDot"></span> <span id="proxyTxt">—</span> <span class="hint" id="proxyUrl"></span></span></div>
         <div class="btnrow"><button class="btn ghost sm" id="reprobe">Re-check proxy</button></div>
         <p class="hint" style="margin-top:8px">Sessions auto-detect their auth: an external <b>proxy</b> if present, else Supercalm's own <b>login</b> (below) via a local shim, else the CLI's own login. Logging in below also works for machines with no proxy.</p>
+      </div>
+      <div class="card" id="apiCard">
+        <h2>API model providers</h2>
+        <p class="muted">No local proxy fleet? Add your own API endpoint + key. Models added here appear in every
+        model picker and power the supervisor/agents; an <b>Anthropic</b> provider also serves claude sessions
+        directly (auth mode <b>API</b>).</p>
+        <div id="apiProviders"><p class="muted">loading…</p></div>
       </div>
       <div class="card" id="toolsCard">
         <h2>CLI tools &amp; models</h2>

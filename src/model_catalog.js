@@ -239,7 +239,19 @@ export function listProxyModels({ providers = null, includeImages = false } = {}
             supportsFast: p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id),
           };
         })
-    );
+    )
+    // user API providers ride every listing (panel pickers, /api/models) unless a fleet filter excludes them
+    .concat((!allow || allow.has('api')) ? userRoutes().map((r) => ({
+      id: r.id,
+      label: `${r.providerLabel} / ${r.model}`,
+      modelLabel: r.model,
+      provider: 'api',
+      providerLabel: r.providerLabel,
+      port: null,
+      recommended: false,
+      kind: 'chat',
+      supportsFast: false,
+    })) : []);
 }
 
 export function toolModels(tool) {
@@ -274,8 +286,25 @@ export function toolModels(tool) {
   });
 }
 
+// User API-provider routes (model_providers.js pushes these — push, not pull, to avoid a cycle).
+// Consulted FIRST in routeForModel: a user-added model id wins over a fleet id of the same name,
+// and "<provider-name>/<model>" always addresses the user provider explicitly.
+const USER_ROUTES = new Map();
+export function registerUserRoutes(routes = []) {
+  USER_ROUTES.clear();
+  for (const r of routes) {
+    USER_ROUTES.set(r.id, r);
+    USER_ROUTES.set(`${String(r.providerLabel || 'api').toLowerCase().replace(/\s+/g, '-')}/${r.id}`, r);
+  }
+}
+export function userRoutes() {
+  return [...new Set(USER_ROUTES.values())];
+}
+
 export function routeForModel(model) {
   const raw = String(model || '').trim();
+  const userHit = USER_ROUTES.get(raw);
+  if (userHit) return { ...userHit };
   const prefixed = raw.match(/^([A-Za-z0-9_-]+)[:/](.+)$/);
   if (prefixed && PROVIDER_BY_PROXY.has(prefixed[1])) {
     const provider = PROVIDER_BY_PROXY.get(prefixed[1]);
