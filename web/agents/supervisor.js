@@ -656,6 +656,7 @@ function docSummaryHtml(doc) {
 let pmData = null; // {active, open, archived} | null = flag off / no project / not loaded
 let pmAt = 0;
 let pmForm = false; // "new task" inline form open
+let pmEdit = null; // inline editor state: {kind: 'goal'|'crit'|'done'|'abandon'|'satisfy', cid?}
 let pmBusy = false;
 let pmArchOpen = false;
 
@@ -683,8 +684,13 @@ function pmStatusChip(st) {
 
 function renderTaskCard() {
   const a = pmData.active;
-  const openRows = (pmData.open || []).map((t) => `<div class="pm-open-row"><span>${esc(t.title || t.goal?.slice(0, 60) || t.id)}</span> ${pmStatusChip(t.status)} <button class="btn ghost sm" data-pm-activate="${esc(t.id)}">Resume</button></div>`).join('');
-  const arch = (pmData.archived || []).map((t) => `<div class="pm-arch-row">${pmStatusChip(t.status)} <span>${esc(t.title || t.id)}</span> <span class="count">${esc(t.outcome || '')}</span></div>`).join('');
+  const openRows = (pmData.open || []).map((t) => `<div class="pm-open-row"><span class="pm-arch-title">${esc(t.title || t.goal?.slice(0, 60) || t.id)}</span> ${pmStatusChip(t.status)} <button class="btn ghost sm" data-pm-activate="${esc(t.id)}">Resume</button></div>`).join('');
+  const arch = (pmData.archived || []).map((t) => `
+    <div class="pm-arch-row" title="${esc(t.outcome || '')}">
+      ${pmStatusChip(t.status)}
+      <span class="pm-arch-title">${esc(t.title || t.id)}</span>
+      <span class="pm-arch-outcome">${esc(t.outcome || '')}</span>
+    </div>`).join('');
   const form = pmForm ? `
     <div class="pm-form">
       <input id="pm-new-title" placeholder="Task title" />
@@ -706,17 +712,44 @@ function renderTaskCard() {
       <button class="btn sm" id="pm-b-accept">Start card</button>
       <button class="btn ghost sm" id="pm-b-dismiss">Dismiss</button>
     </div>` : '';
+  // In-theme inline editors — native browser dialogs are unreadable and off-theme:
+  const critRow = (c) => {
+    if (c.status === 'satisfied') return `<div class="pm-crit satisfied" title="evidence recorded">☑ ${esc(c.text)}</div>`;
+    if (pmEdit?.kind === 'satisfy' && pmEdit.cid === c.id) return `
+      <div class="pm-crit open">☐ ${esc(c.text)}</div>
+      <div class="pm-inline">
+        <input id="pm-satisfy-note" placeholder="Evidence note (optional) — why is this met?" />
+        <button class="btn sm" id="pm-satisfy-go">Mark met</button><button class="btn ghost sm" data-pm-cancel>Cancel</button>
+      </div>`;
+    return `<div class="pm-crit open" data-pm-satisfy="${esc(c.id)}" title="Click to mark met (records operator evidence)">☐ ${esc(c.text)}</div>`;
+  };
+  const goalBlock = pmEdit?.kind === 'goal'
+    ? `<div class="pm-inline col"><textarea id="pm-goal-edit" rows="3">${esc(a.task.goal || '')}</textarea>
+       <div class="sup-actions"><button class="btn sm" id="pm-goal-save">Save goal</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div></div>`
+    : `<div class="pm-goal">${esc(a.task.goal || '')}</div>`;
+  const critAdd = pmEdit?.kind === 'crit'
+    ? `<div class="pm-inline"><input id="pm-crit-new" placeholder="New acceptance criterion" />
+       <button class="btn sm" id="pm-crit-save">Add</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div>` : '';
+  const doneRow = pmEdit?.kind === 'done'
+    ? `<div class="pm-inline"><input id="pm-done-outcome" placeholder="Outcome (one line, optional)" />
+       <button class="btn sm" id="pm-done-go">Close as done</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div>` : '';
+  const abandonRow = pmEdit?.kind === 'abandon'
+    ? `<div class="pm-inline warn"><span>Abandon this card? The archive keeps it.</span>
+       <button class="btn sm" id="pm-abandon-go">Yes, abandon</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div>` : '';
   const card = a ? `
     <div class="pm-card">
       <div class="pm-card-head">${pmStatusChip(a.task.status)} <b>${esc(a.task.title || 'Current task')}</b> <span class="count">v${a.task.version}</span></div>
-      <div class="pm-goal">${esc(a.task.goal || '')}</div>
-      <div class="pm-criteria">${(a.criteria || []).map((c) => `<div class="pm-crit ${esc(c.status)}">${c.status === 'satisfied' ? '☑' : '☐'} ${esc(c.text)}</div>`).join('') || '<span class="count">no criteria yet</span>'}</div>
+      ${goalBlock}
+      <div class="pm-criteria">${(a.criteria || []).map(critRow).join('') || '<span class="count">no criteria yet</span>'}</div>
+      ${critAdd}${doneRow}${abandonRow}
       <div class="sup-actions">
-        <button class="btn ghost sm" id="pm-add-crit">+ criterion</button>
-        <button class="btn ghost sm" id="pm-edit-goal">Edit goal</button>
-        <button class="btn ghost sm" id="pm-close-done">✓ Done</button>
-        <button class="btn ghost sm" id="pm-close-abandon">Abandon</button>
+        <button class="btn ghost sm" data-pm-edit="crit">+ criterion</button>
+        <button class="btn ghost sm" data-pm-edit="goal">Edit goal</button>
+        <button class="btn ghost sm" data-pm-edit="done">✓ Done</button>
+        <button class="btn ghost sm" data-pm-edit="abandon">Abandon</button>
+        <span class="count" id="pm-msg"></span>
       </div>
+      <div class="sup-hint">Criteria tick themselves when a verify cites evidence; click one to mark it met yourself. The card closes automatically when the gate verifies complete with every criterion met.</div>
     </div>` : '<div class="sup-empty-doc">No active task card — create one to give the supervisor its contract.</div>';
   return `
     <section class="su-card sup-doc-card">
@@ -727,22 +760,21 @@ function renderTaskCard() {
       ${boundary}
       ${card}
       ${openRows ? `<details class="sup-learn-group"><summary>Open / paused (${pmData.open.length})</summary>${openRows}</details>` : ''}
-      ${arch ? `<details class="sup-learn-group" ${pmArchOpen ? 'open' : ''}><summary>Archive (${pmData.archived.length})</summary>${arch}</details>` : ''}
+      ${arch ? `<details class="sup-learn-group" ${pmArchOpen ? 'open' : ''}><summary>Archive (${pmData.archived.length})</summary><div class="pm-arch">${arch}</div></details>` : ''}
     </section>`;
 }
 
 function wireTaskCard() {
   const on = (sel, ev, fn) => { const el = host.querySelector(sel); if (el) el[ev] = fn; };
+  const msg = (t) => { const el = host.querySelector('#pm-msg'); if (el) el.textContent = t || ''; };
   const post = async (path, body) => {
     pmBusy = true;
-    try { await P.api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }); }
-    catch (e) { alert('task update failed: ' + (e.message || e)); }
-    pmBusy = false; pmForm = false;
+    try { await P.api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }); pmEdit = null; pmForm = false; }
+    catch (e) { msg('⚠ ' + (e.message || e)); pmBusy = false; return; }
+    pmBusy = false;
     await loadTasks(true);
   };
-  on('#pm-new', 'onclick', () => { pmForm = !pmForm; renderDoc(); });
-  on('#pm-b-accept', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'accept' }));
-  on('#pm-b-dismiss', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'dismiss' }));
+  on('#pm-new', 'onclick', () => { pmForm = !pmForm; pmEdit = null; renderDoc(); });
   on('#pm-new-cancel', 'onclick', () => { pmForm = false; renderDoc(); });
   on('#pm-new-save', 'onclick', () => {
     const v = (id) => host.querySelector(id)?.value || '';
@@ -750,21 +782,24 @@ function wireTaskCard() {
     if (!v('#pm-new-title').trim() && !v('#pm-new-goal').trim()) return;
     post(`api/session/${P.sessionId}/tasks`, { title: v('#pm-new-title'), goal: v('#pm-new-goal'), criteria });
   });
-  on('#pm-add-crit', 'onclick', () => {
-    const text = prompt('New acceptance criterion:');
-    if (text?.trim()) post(`api/pm/task/${pmData.active.task.id}`, { addCriteria: [text.trim()] });
+  on('#pm-b-accept', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'accept' }));
+  on('#pm-b-dismiss', 'onclick', () => post(`api/session/${P.sessionId}/tasks/boundary`, { action: 'dismiss' }));
+  // inline editors
+  for (const btn of host.querySelectorAll('[data-pm-edit]')) {
+    btn.onclick = () => { pmEdit = { kind: btn.dataset.pmEdit }; renderDoc(); };
+  }
+  for (const el of host.querySelectorAll('[data-pm-cancel]')) el.onclick = () => { pmEdit = null; renderDoc(); };
+  for (const el of host.querySelectorAll('[data-pm-satisfy]')) {
+    el.onclick = () => { pmEdit = { kind: 'satisfy', cid: el.dataset.pmSatisfy }; renderDoc(); setTimeout(() => host.querySelector('#pm-satisfy-note')?.focus(), 40); };
+  }
+  on('#pm-satisfy-go', 'onclick', () => post(`api/pm/task/${pmData.active.task.id}/criteria/${pmEdit.cid}/satisfy`, { note: host.querySelector('#pm-satisfy-note')?.value || '' }));
+  on('#pm-goal-save', 'onclick', () => post(`api/pm/task/${pmData.active.task.id}`, { goal: host.querySelector('#pm-goal-edit')?.value || '' }));
+  on('#pm-crit-save', 'onclick', () => {
+    const t = host.querySelector('#pm-crit-new')?.value?.trim();
+    if (t) post(`api/pm/task/${pmData.active.task.id}`, { addCriteria: [t] });
   });
-  on('#pm-edit-goal', 'onclick', () => {
-    const goal = prompt('Goal:', pmData.active.task.goal || '');
-    if (goal != null) post(`api/pm/task/${pmData.active.task.id}`, { goal });
-  });
-  on('#pm-close-done', 'onclick', () => {
-    const outcome = prompt('Outcome (one line):', '');
-    if (outcome != null) post(`api/pm/task/${pmData.active.task.id}`, { status: 'done', outcome });
-  });
-  on('#pm-close-abandon', 'onclick', () => {
-    if (confirm('Abandon this task card?')) post(`api/pm/task/${pmData.active.task.id}`, { status: 'abandoned' });
-  });
+  on('#pm-done-go', 'onclick', () => post(`api/pm/task/${pmData.active.task.id}`, { status: 'done', outcome: host.querySelector('#pm-done-outcome')?.value || '' }));
+  on('#pm-abandon-go', 'onclick', () => post(`api/pm/task/${pmData.active.task.id}`, { status: 'abandoned' }));
   for (const btn of host.querySelectorAll('[data-pm-activate]')) {
     btn.onclick = () => post(`api/session/${P.sessionId}/tasks/activate`, { taskId: btn.dataset.pmActivate });
   }

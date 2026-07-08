@@ -151,7 +151,7 @@ const card1 = createTask({
   assert.match(sup, /function applyActiveCard/, 'card-as-contract seam exists');
   assert.match(sup, /flagOn\('projectMemory'\)/, 'card mode is flag-gated');
   assert.match(sup, /cfg\.doc = renderCardMd\(card\)/, 'the card derives cfg.doc for every downstream reader');
-  assert.match(sup, /&& !ctx\.__activeCard\) \{ \/\/ card mode: the maintainer stands down/, 'doc-maintainer stands down in card mode');
+  assert.match(sup, /&& !ctx\.__activeCard && !ctx\.__betweenTasks\) \{ \/\/ card mode: the maintainer stands down/, 'doc-maintainer stands down in card mode (and between tasks)');
   assert.match(sup, /type: parsed\.verdict === 'complete' \? 'verify_pass' : 'verify_fail'/, 'verify verdicts become card events');
   assert.match(sup, /ctx\.__activeCard = applyActiveCard\(ctx, cfg\)/, 'manual/sync runs judge the card too');
   const flags = readFileSync(new URL('../src/flags.js', import.meta.url), 'utf8');
@@ -350,4 +350,37 @@ Ship the widget cache fix and verify reload behavior.
   assert.match(panel6, /Keep legacy doc/, 'decline path');
   const api6 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
   assert.match(api6, /legacy: !!t\.legacy_doc/, 'tasks route flags migrated cards');
+}
+
+// ---- polish: auto-close, operator-satisfy, between-tasks, no native dialogs ------------------------
+{
+  const { allCriteriaSatisfied, renderBetweenTasksMd } = pm;
+  const cardX = createTask({ projectId: 'p_pol', title: 'polish', goal: 'g', criteria: ['a1 must hold', 'b2 must hold'] });
+  assert.equal(allCriteriaSatisfied(cardX.task.id), false);
+  for (const c of listCriteria(cardX.task.id)) {
+    const eid = addEvidence({ taskId: cardX.task.id, criterionId: c.id, kind: 'operator', summary: 'confirmed' });
+    satisfyCriterion(c.id, eid);
+  }
+  assert.equal(allCriteriaSatisfied(cardX.task.id), true, 'all satisfied detected');
+  const empty = createTask({ projectId: 'p_pol', title: 'no crits', goal: 'g' });
+  assert.equal(allCriteriaSatisfied(empty.task.id), false, 'zero criteria never counts as all-satisfied');
+  const btm = renderBetweenTasksMd({ id: 't1', title: 'Widget fix', status: 'done', outcome: 'shipped' });
+  assert.match(btm, /Between tasks/);
+  assert.match(btm, /NO active contract/);
+  assert.match(btm, /Widget fix/);
+
+  const sup7 = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup7, /allCriteriaSatisfied\(tid2\)/, 'gate-verified auto-close checks every criterion');
+  assert.match(sup7, /pmSetTaskStatus\(tid2, 'done'/, 'complete + all satisfied -> done, no manual click needed');
+  assert.match(sup7, /pmSetTaskStatus\(tid2, 'verify_pending'/, 'complete with open criteria -> visible verify_pending');
+  assert.match(sup7, /renderBetweenTasksMd/, 'closed card -> between-tasks contract, never the legacy monolith');
+  assert.match(sup7, /__betweenTasks/, 'maintainer/migration respect the between-tasks state');
+  const api7 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api7, /criteria\/:cid\/satisfy/, 'operator-satisfy route exists');
+  assert.match(api7, /kind: 'operator'/, 'operator judgment recorded as first-class evidence');
+  const panel7 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  const pmSeg = panel7.slice(panel7.indexOf('function renderTaskCard'), panel7.indexOf('function renderDoc'));
+  assert.ok(!/\bprompt\(|\bconfirm\(|\balert\(/.test(pmSeg), 'task-card flows use inline editors, never native dialogs');
+  assert.match(pmSeg, /data-pm-satisfy/, 'open criteria are clickable');
+  assert.match(pmSeg, /pm-arch-outcome/, 'archive rows restyled');
 }

@@ -10,7 +10,7 @@ import { getSession, getProject } from './store.js';
 import {
   createTask, getTask, taskCard, amendTask, addCriterion, supersedeCriterion, setTaskStatus,
   listTasks, listCriteria, appendEvent, getRuntime, upsertRuntime, writeProjection, listEvents,
-  deriveVerifyFacts, pinVerifyFacts,
+  deriveVerifyFacts, pinVerifyFacts, addEvidence, satisfyCriterion,
 } from './agents/supervisor/project_memory.js';
 import { bus } from './bus.js';
 import { getGrant, upsertGrant } from './store.js';
@@ -156,6 +156,20 @@ route('POST', '/api/pm/task/:id', async (req, res, { id: tid }) => {
   const driver = fresh?.driven_by_session;
   const projectPath = driver ? sessionProject(driver).projectPath : null;
   project(taskCard(tid), projectPath);
+  bus.emit('changed');
+  return json(res, 200, { ok: true, card: taskCard(tid) });
+});
+
+// Operator ticks a criterion: their judgment is first-class evidence (kind 'operator'). Add-only —
+// there is deliberately no un-satisfy (evidence doesn't un-happen; supersede the criterion instead).
+route('POST', '/api/pm/task/:id/criteria/:cid/satisfy', async (req, res, { id: tid, cid }) => {
+  const t = getTask(tid);
+  if (!t) return json(res, 404, { error: 'no such task' });
+  const b = await bodyJson(req);
+  const eid = addEvidence({ taskId: tid, criterionId: cid, kind: 'operator', summary: String(b.note || 'operator confirmed').slice(0, 300) });
+  if (!satisfyCriterion(cid, eid, { actor: 'operator' })) return json(res, 409, { error: 'criterion is not open' });
+  const driver = getTask(tid)?.driven_by_session;
+  project(taskCard(tid), driver ? sessionProject(driver).projectPath : null);
   bus.emit('changed');
   return json(res, 200, { ok: true, card: taskCard(tid) });
 });
