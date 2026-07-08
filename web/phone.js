@@ -11,6 +11,7 @@
 // existing input/type/stop/kill/resume + /api/tts + /api/transcribe. Live via /api/events SSE.
 
 import { api, coalesce, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
+import { initAgentPanel } from './agents/host.js';
 
 registerSW();
 
@@ -95,13 +96,17 @@ function digestOf(text) {
 // ---- data --------------------------------------------------------------------------------------
 async function loadHome() {
   try { S.home = await api('api/phone/home'); } catch { /* keep stale */ }
-  if (S.screen === 'home') render();
+  if (S.screen === 'home') renderSoft();
 }
 async function loadDetail(sid) {
   try {
-    S.detail = await api('api/session/' + sid);
-  } catch { S.detail = null; }
-  if (S.screen === 'session' && S.sid === sid) render();
+    const d = await api('api/session/' + sid);
+    // identical message set -> keep the existing DOM entirely (no scroll/pulse churn)
+    const sig = (x) => (x?.messages || []).map((m) => m.id + ':' + (m.read_at ? 1 : 0)).join(',') + '|' + x?.status + '|' + (x?.question || '').length;
+    const changed = sig(d) !== sig(S.detail);
+    S.detail = d;
+    if (S.screen === 'session' && S.sid === sid && changed) renderSoft();
+  } catch { /* keep stale */ }
 }
 const refresh = coalesce(() => { loadHome(); if (S.screen === 'session' && S.sid) loadDetail(S.sid); }, 3000);
 try {
@@ -120,6 +125,25 @@ async function markRead(ids, sid = null) {
   for (const m of S.detail?.messages || []) if (ids.includes(m.id)) m.read_at = t;
   for (const s of S.home?.sessions || []) if (s.last_key && ids.includes(s.last_key.id)) s.unread = Math.max(0, s.unread - 1);
   render();
+}
+
+// ---- spoken briefs (gpt-5.5 via /api/session/:id/brief) -------------------------------------------
+const briefCache = new Map();
+async function fetchBrief(sid) {
+  if (briefCache.has(sid)) return briefCache.get(sid);
+  try {
+    const r = await Promise.race([
+      api(`api/session/${sid}/brief`, { method: 'POST' }),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('brief timeout')), 6000)),
+    ]);
+    if (r?.brief) { briefCache.set(sid, r.brief); setTimeout(() => briefCache.delete(sid), 90000); return r.brief; }
+  } catch {}
+  return null;
+}
+function spokenFromBrief(b, fallback) {
+  if (!b) return fallback;
+  const opts = b.options?.length ? ' Options: ' + b.options.map((o) => `${o.key}, ${o.spoken || o.label}`).join('. ') + '.' : '';
+  return `${b.topic}. ${b.standard}${opts}`.trim();
 }
 
 // ---- TTS (server /api/tts → Audio; speechSynthesis fallback) -------------------------------------
@@ -167,13 +191,124 @@ async function playQueue(items, scope) {
     const it = S.queue.shift();
     S.speakingId = it.mid || null;
     render();
-    const done = await speakOne(it.text);
+    let text = it.text;
+    if (it.briefSid) text = spokenFromBrief(await fetchBrief(it.briefSid), it.text);
+    if (S.playScope !== scope) return;
+    const done = await speakOne(text);
     if (S.playScope !== scope) return; // stopped mid-queue: do NOT mark read (design)
     if (done && it.mid != null) await markRead([it.mid], it.sid || null);
   }
   S.speakingId = null;
   S.playScope = null;
   render();
+}
+
+// ---- interactive voice mode (home): the desktop concierge, hands-free on the phone ----------------
+// start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
+// silence) → STT → /api/voice/turn → confirm-before-send brain (questions answered from session log +
+// project knowledge + supervisor notes) → next item, until done or "stop". One tap in, zero after.
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false };
+
+async function voiceModeStart() {
+  stopSpeech();
+  try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
+  V.on = true; V.state = 'starting'; V.stopFlag = false; S.sheet = 'voicemode';
+  render();
+  try {
+    const r = await api('api/voice/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    V.voiceId = r.voiceId; V.current = r.current || null;
+    await voiceSay(r.say);
+    if (r.done) return voiceModeEnd('done');
+    if (r.listen) return voiceLoopListen();
+  } catch (e) { toast('Voice mode failed: ' + (e.message || e)); voiceModeEnd('error'); }
+}
+async function voiceSay(text) {
+  if (!text || V.stopFlag) return;
+  V.state = 'speaking'; render();
+  await speakOne(text);
+}
+async function voiceLoopListen() {
+  if (V.stopFlag) return;
+  V.state = 'listening'; V.lastHeard = ''; render();
+  const blob = await vadRecord(V.stream, { maxMs: 45000 });
+  if (V.stopFlag) return;
+  if (!blob || blob.size < 800) { await voiceSay("I didn't hear anything. Say skip, stop, or your reply."); return voiceLoopListen(); }
+  V.state = 'thinking'; render();
+  let text = '';
+  try {
+    const r = await fetch('api/transcribe?polish=false', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
+    const j = await r.json();
+    text = (j.text || '').trim();
+  } catch {}
+  if (V.stopFlag) return;
+  if (!text) { await voiceSay('Sorry, I could not transcribe that. Try again.'); return voiceLoopListen(); }
+  V.lastHeard = text; render();
+  try {
+    const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
+    V.current = r.current || V.current;
+    await voiceSay(r.say);
+    if (V.stopFlag) return;
+    if (r.done) return voiceModeEnd('done');
+    if (r.listen) return voiceLoopListen();
+    // sent/skipped -> ask the server to present the next item
+    const c = await api('api/voice/continue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) });
+    V.current = c.current || null;
+    await voiceSay(c.say);
+    if (V.stopFlag) return;
+    if (c.done) return voiceModeEnd('done');
+    return voiceLoopListen();
+  } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
+}
+function voiceModeEnd(why) {
+  V.stopFlag = true; V.on = false; V.state = 'idle';
+  try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
+  V.stream = null;
+  if (V.voiceId) api('api/voice/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) }).catch(() => {});
+  V.voiceId = null;
+  stopSpeech();
+  if (S.sheet === 'voicemode') S.sheet = null;
+  if (why === 'done') loadHome();
+  render();
+}
+// energy-gated recorder: resolves with the utterance blob once the speaker pauses
+function vadRecord(stream, { maxMs = 45000, silenceMs = 1400, minSpeechMs = 500, threshold = 0.017 } = {}) {
+  return new Promise((resolve) => {
+    let rec;
+    try {
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
+        : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch { return resolve(null); }
+    const chunks = [];
+    rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
+    if (!V.ac) { try { V.ac = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }
+    const ac = V.ac;
+    let src, an, buf;
+    try {
+      src = ac.createMediaStreamSource(stream);
+      an = ac.createAnalyser();
+      an.fftSize = 1024;
+      src.connect(an);
+      buf = new Float32Array(an.fftSize);
+    } catch { /* no VAD -> fixed window */ }
+    let spokeAt = 0, silentSince = 0, t0 = Date.now();
+    rec.start(200);
+    const timer = setInterval(() => {
+      const nowT = Date.now();
+      let rms = 1; // no analyser -> pretend speech so the max window applies
+      if (an) { an.getFloatTimeDomainData(buf); rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length); }
+      if (rms > threshold) { if (!spokeAt) spokeAt = nowT; silentSince = 0; }
+      else if (spokeAt && !silentSince) silentSince = nowT;
+      const spokeLong = spokeAt && nowT - spokeAt > minSpeechMs;
+      const silentLong = silentSince && nowT - silentSince > silenceMs;
+      if (V.stopFlag || nowT - t0 > maxMs || (spokeLong && silentLong)) {
+        clearInterval(timer);
+        try { src?.disconnect(); } catch {}
+        rec.onstop = () => resolve(spokeAt || !an ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null);
+        try { rec.stop(); } catch { resolve(null); }
+      }
+    }, 120);
+  });
 }
 
 // ---- voice reply (mic → /api/transcribe → review sheet) ------------------------------------------
@@ -295,6 +430,28 @@ function openSheet(kind) {
   render();
 }
 
+// ---- interaction-aware rendering -----------------------------------------------------------------
+// Background refreshes (SSE/poll) must NEVER clobber what the user is doing: no scroll resets, no
+// sheet/composer teardown, no focus loss. Data still lands in S; the DOM catches up at the next safe
+// moment (interaction idle, nav, or an explicit action render).
+let lastInteract = 0;
+let renderDirty = false;
+for (const ev of ['touchstart', 'pointerdown', 'wheel']) {
+  window.addEventListener(ev, () => { lastInteract = Date.now(); }, { passive: true });
+}
+function interacting() {
+  return !!(S.sheet || S.overlay || S.typing || Date.now() - lastInteract < 3500);
+}
+function renderSoft() {
+  if (interacting()) { renderDirty = true; scheduleCatchup(); return; }
+  render();
+}
+let catchupTimer = null;
+function scheduleCatchup() {
+  clearTimeout(catchupTimer);
+  catchupTimer = setTimeout(() => { if (renderDirty && !interacting()) { renderDirty = false; render(); } else if (renderDirty) scheduleCatchup(); }, 1200);
+}
+
 // ---- render ------------------------------------------------------------------------------------
 function render() {
   const parts = [];
@@ -304,8 +461,11 @@ function render() {
   if (S.overlay === 'raw') parts.push(renderRaw());
   if (S.sheet) parts.push(renderSheet());
   if (S.toast) parts.push(`<div class="toast">${esc(S.toast)}</div>`);
+  const prevScroll = { msgs: $('#msgs')?.scrollTop, home: app.querySelector('.home-scroll')?.scrollTop };
   app.innerHTML = parts.join('');
   wire();
+  const homeBox = app.querySelector('.home-scroll');
+  if (homeBox && prevScroll.home != null) homeBox.scrollTop = prevScroll.home;
   // session opens at the conversation's end (the NEW divider / latest message), like any messenger;
   // subsequent re-renders keep the user's scroll position unless they were already at the bottom.
   const box = $('#msgs');
@@ -320,6 +480,8 @@ function render() {
       }
     } else if (S._nearBottom) {
       box.scrollTop = box.scrollHeight;
+    } else if (prevScroll.msgs != null) {
+      box.scrollTop = prevScroll.msgs; // mid-history reading position survives re-renders
     }
     box.onscroll = () => { S._nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120; };
   }
@@ -332,8 +494,8 @@ function renderHome() {
   const needs = live.filter((s) => s.unread > 0 && s.status === 'waiting');
   const stale = sessions.filter((s) => s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3 && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
-  const playing = S.playScope === 'home';
-  const playLabel = playing ? '■ Stop reading' : totalUnread ? `▶ Play ${totalUnread} unread` : 'All caught up';
+  const playing = S.playScope === 'home' || V.on;
+  const playLabel = V.on ? '■ End voice session' : totalUnread ? `▶ Play ${totalUnread} unread` : 'Voice — ask anything';
 
   const needCards = needs.map((s) => {
     const [bLabel, bColor] = badgeFor(s) || ['REVIEW', '#3fbf5f'];
@@ -507,6 +669,26 @@ function renderRaw() {
 
 function renderSheet() {
   const scrim = '<button class="scrim" data-close-sheet aria-label="close"></button>';
+  if (S.sheet === 'voicemode') {
+    const st = V.state;
+    const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
+    const cur = V.current ? `${V.current.project || ''} · ${V.current.category || ''} · ${V.current.n}/${V.current.total}` : '';
+    return `
+    <button class="scrim" data-voice-end aria-label="end"></button>
+    <div class="sheet">
+      <div class="rec-status">
+        <span class="rec-dot" style="${st === 'listening' ? '' : 'background:var(--teal)'}"></span>
+        <span>${esc(label)}</span>
+      </div>
+      ${cur ? `<div class="footnote">${esc(cur)}</div>` : ''}
+      ${V.lastHeard ? `<div class="pm-goal" style="text-align:center;color:var(--tx-2)">“${esc(V.lastHeard.slice(0, 160))}”</div>` : ''}
+      <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
+      <div class="sheetrow">
+        <button class="sbtn neutral" data-voice-end>■ End</button>
+      </div>
+      <div class="footnote">say “skip” for the next item · “stop” to end · ask any question about the session or project</div>
+    </div>`;
+  }
   if (S.sheet === 'rec') {
     return scrim + `
     <div class="sheet">
@@ -540,50 +722,25 @@ function renderSheet() {
     </div>`;
   }
   if (S.sheet === 'panels') {
-    const tabs = ['Graph', 'Supervisor', 'Knowledge', 'Usage'];
-    const u = S.usage;
-    const usageBody = u ? `
-      ${u.quota ? `
-      <div class="pcard">
-        <div class="lblrow"><span class="lbl">QUOTA</span><span class="lblr">${esc(u.quota.label || '')}</span></div>
-        ${(u.quota.bars || []).map((b) => `
-        <div class="qrow"><span class="qn">${esc(b.name)}</span>
-          <div class="track"><div class="fill" style="width:${Math.min(100, b.pct || 0)}%"></div></div>
-          <span class="cap">${b.pct != null ? b.pct + '%' : '—'}${b.resets ? ' · resets ' + esc(b.resets) : ''}</span></div>`).join('')}
-      </div>` : ''}
-      <div class="pcard">
-        <div class="lblrow"><span class="lbl">CURRENT SESSION</span><span class="lblr">${esc(u.modelLabel || '')}</span></div>
-        <div class="statgrid">
-          <div class="statcell"><div class="v">${esc(u.traffic || '0')}</div><div class="k">TRAFFIC</div></div>
-          <div class="statcell"><div class="v">${esc(u.reported || '0')}</div><div class="k">REPORTED</div></div>
-          <div class="statcell"><div class="v">${esc(u.cached || '0')}</div><div class="k">CACHED</div></div>
-          <div class="statcell"><div class="v money">${esc(u.cost || '$0')}</div><div class="k">API EQUIV</div></div>
-        </div>
-        ${u.footer ? `<div class="pfoot">${esc(u.footer)}</div>` : ''}
-      </div>
-      ${u.models?.length ? `
-      <div class="pcard">
-        <div class="lblrow"><span class="lbl">MODEL HISTORY</span><span class="lblr">${u.models.length} MODELS</span></div>
-        ${u.models.map((m) => `
-        <div class="mrow ${m.current ? 'current' : ''}">
-          <div class="mn">${esc(m.name)}${m.current ? '<span class="chipcur">CURRENT</span>' : ''}</div>
-          <div class="ms">${esc(m.stats)}</div>
-        </div>`).join('')}
-      </div>` : ''}
-    ` : '<div class="pn-placeholder"><span class="a">Usage</span><span class="b">loading…</span></div>';
     return scrim + `
     <div class="sheet tall">
       <div class="pn-head"><span class="pn-title">Session panels</span><button class="pn-x" data-close-sheet>✕</button></div>
-      <div class="pn-tabs">${tabs.map((t) => `<button class="pn-tab ${S.ptab === t ? 'on' : ''}" data-ptab="${t}">${t}</button>`).join('')}</div>
-      <div class="pn-body">
-        ${S.ptab === 'Usage' ? usageBody : `
-          <div class="pn-placeholder"><span class="a">${esc(S.ptab)} panel</span>
-          <span class="b">Same content as desktop, loaded on demand — kept out of the phone's main flow. Open the desktop view for the full ${esc(S.ptab)} panel.</span>
-          <a href="session?id=${esc(S.sid || '')}&desktop=1" style="font-size:12px">Open desktop session ›</a></div>`}
-      </div>
+      <div class="pn-tabs" id="pn-host-tabs"></div>
+      <div class="pn-body" id="pn-host-panels"></div>
     </div>`;
   }
   return '';
+}
+
+// The panels sheet hosts the REAL desktop agent panels (Graph/Supervisor/Knowledge/Usage/…): same
+// modules, same registry, mounted into the sheet (no phone re-implementations, no placeholders).
+function mountPanels() {
+  requestAnimationFrame(() => {
+    const tabsEl = $('#pn-host-tabs');
+    const panelsEl = $('#pn-host-panels');
+    if (!tabsEl || !panelsEl || !S.sid) return;
+    try { initAgentPanel({ sessionId: S.sid, tabsEl, panelsEl }); } catch (e) { panelsEl.innerHTML = `<div class="pn-placeholder"><span class="a">panels failed</span><span class="b">${esc(e.message || e)}</span></div>`; }
+  });
 }
 
 // ---- usage payload → phone shape ------------------------------------------------------------------
@@ -632,13 +789,8 @@ async function loadUsage() {
 function wire() {
   // home
   $('#play-home')?.addEventListener('click', () => {
-    if (S.playScope === 'home') return stopSpeech();
-    const needs = (S.home?.sessions || []).filter((s) => s.unread > 0 && s.status === 'waiting');
-    const q = needs.filter((s) => s.last_key).map((s) => {
-      const [b] = badgeFor(s) || ['review'];
-      return { mid: s.last_key.id, sid: s.id, text: `${s.title || s.id}, ${b.toLowerCase()}: ${s.question || s.summary || s.last_key.text}` };
-    });
-    if (q.length) playQueue(q, 'home');
+    if (V.on) return voiceModeEnd('user');
+    voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
   });
   for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => nav('session', el.dataset.open));
   for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); nav('session', el.dataset.open2); });
@@ -647,7 +799,8 @@ function wire() {
     const s = (S.home?.sessions || []).find((x) => x.id === el.dataset.listen);
     if (!s) return;
     if (S.playScope === 'home' && S.speakingId === s.last_key?.id) return stopSpeech();
-    playQueue([{ mid: s.last_key?.id, sid: s.id, text: s.question || s.summary || s.last_key?.text || '' }], 'home');
+    const fallback = s.question || s.summary || s.last_key?.text || '';
+    playQueue([{ mid: s.last_key?.id, sid: s.id, text: fallback, briefSid: s.id }], 'home');
   });
   for (const el of app.querySelectorAll('[data-replyto]')) el.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -658,11 +811,11 @@ function wire() {
   // session
   $('#go-home')?.addEventListener('click', () => history.back());
   $('#open-actions')?.addEventListener('click', () => openSheet('actions'));
-  $('#open-panels')?.addEventListener('click', () => { openSheet('panels'); loadUsage(); });
+  $('#open-panels')?.addEventListener('click', () => { openSheet('panels'); mountPanels(); });
   $('#play-sess')?.addEventListener('click', () => {
     if (S.playScope === 'sess') return stopSpeech();
     const un = unreadOf(S.detail);
-    playQueue(un.map((m) => ({ mid: m.id, sid: S.sid, text: (S.detail?.question && m.id === un[un.length - 1].id) ? S.detail.question : cleanTail(m.text) })), 'sess');
+    playQueue(un.map((m) => ({ mid: m.id, sid: S.sid, text: (S.detail?.question && m.id === un[un.length - 1].id) ? S.detail.question : cleanTail(m.text), briefSid: m.id === un[un.length - 1].id ? S.sid : null })), 'sess');
   });
   for (const el of app.querySelectorAll('[data-play]')) el.addEventListener('click', () => {
     const mid = Number(el.dataset.play);
@@ -697,6 +850,7 @@ function wire() {
 
   // overlays + sheets
   for (const el of app.querySelectorAll('[data-close-overlay]')) el.addEventListener('click', () => history.back());
+  for (const el of app.querySelectorAll('[data-voice-end]')) el.addEventListener('click', () => voiceModeEnd('user'));
   for (const el of app.querySelectorAll('[data-close-sheet]')) el.addEventListener('click', () => { if (S.sheet === 'rec') return cancelRec(); S.sheet = null; render(); });
   $('#rec-stop')?.addEventListener('click', () => stopRecAndReview());
   $('#re-rec')?.addEventListener('click', () => { S.sheet = null; render(); startRec(); });
@@ -730,7 +884,6 @@ function wire() {
     const m = S.reportMsg;
     if (m) playQueue([{ mid: m.id, text: m.text }], 'report');
   });
-  for (const el of app.querySelectorAll('[data-ptab]')) el.addEventListener('click', () => { S.ptab = el.dataset.ptab; render(); });
 }
 
 // ---- boot ---------------------------------------------------------------------------------------

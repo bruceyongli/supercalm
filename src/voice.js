@@ -4,6 +4,8 @@ import * as sessions from './sessions.js';
 import { bus } from './bus.js';
 import { chatJson } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
+import { buildVoiceBrief, speakBrief, sanitizeForSpeech } from './voice_brief.js';
+import { searchWiki } from './wiki.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -14,6 +16,7 @@ For the user's reply about the CURRENT item:
 - an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await").
 - a confirmation (yes/go/send/correct) -> action "send", with "message" = a clear actionable instruction that captures their intent.
 - asks for detail or your opinion -> answer briefly, stay here (action "await").
+- asks a QUESTION about the session, the project, or what the supervisor thinks -> answer from CONTEXT (recent messages, screen, PROJECT KNOWLEDGE, SUPERVISOR notes) in 1-2 spoken sentences, then action "await". If the context doesn't contain the answer, say so plainly — never invent. Never speak URLs or file paths; use bare file names.
 - skip / pass / later / next -> action "next".
 - stop / done / that's all -> action "stop".
 Default to "await" for any NEW instruction — confirm before acting. Only use "send" once the user confirms (yes / go / correct / send it) OR gives an explicit do-it directive (e.g. "just do it", "go ahead and send"). When unsure between await and send, choose await.
@@ -43,7 +46,23 @@ function buildItems() {
   }));
 }
 
-async function stateContext(vs) {
+function supervisorNoteFor(sessionId) {
+  try {
+    const g = store.getGrant(sessionId, 'supervisor');
+    if (!g?.enabled) return '';
+    const st = g.state || {};
+    const parts = [];
+    if (st.needsOperatorHold) parts.push(`HOLD needs you: ${String(st.needsOperatorHold.reason || '').slice(0, 160)}`);
+    if (st.pendingBoundary) parts.push(`suggests a new task card: ${String(st.pendingBoundary.title || '').slice(0, 80)}`);
+    try {
+      const r = store.db.prepare("SELECT verdict, substr(assessment,1,180) a FROM supervisor_reviews WHERE session_id = ? AND kind IN ('verify','gate','escalate') ORDER BY ts DESC LIMIT 1").get(sessionId);
+      if (r) parts.push(`latest review: ${r.verdict} — ${r.a}`);
+    } catch {}
+    return parts.join(' · ');
+  } catch { return ''; }
+}
+
+async function stateContext(vs, userText = '') {
   const it = vs.items[vs.pointer];
   const lines = [`You are on item ${vs.pointer + 1} of ${vs.items.length}.`];
   if (it) {
@@ -57,7 +76,20 @@ async function stateContext(vs) {
     try {
       snap = stripAnsi(await sessions.snapshot(it.sessionId)).split('\n').map((l) => l.trim()).filter(Boolean).slice(-8).join('\n');
     } catch {}
-    if (snap) lines.push('Screen:', snap.slice(-700));
+    if (snap) lines.push('Screen:', sanitizeForSpeech(snap).slice(-700));
+    const supNote = supervisorNoteFor(it.sessionId);
+    if (supNote) lines.push('SUPERVISOR: ' + supNote);
+    // RAG for in-between questions: the project knowledge base, scoped to what the user just asked
+    if (userText && userText.length > 8) {
+      try {
+        const sess = store.getSession(it.sessionId);
+        const hits = sess?.project_id ? searchWiki(sess.project_id, userText, 2) : [];
+        if (hits.length) {
+          lines.push('PROJECT KNOWLEDGE (descriptive reference):');
+          for (const h of hits) lines.push(`  [${h.path}] ${String(h.snippet).replace(/\s+/g, ' ').slice(0, 220)}`);
+        }
+      } catch {}
+    }
   }
   return lines.join('\n');
 }
@@ -66,7 +98,25 @@ async function stateContext(vs) {
 // computed at waiting-time, so we skip the ~1.5s brain round-trip and go straight to TTS —
 // the only remaining wait before speaking is neural generation. (The brain is still used
 // for the conversational REPLIES in brainReply.)
-function present(vs, greet) {
+async function briefFor(it) {
+  if (!it) return null;
+  if (it._brief) return it._brief;
+  try {
+    let screen = '';
+    try { screen = await sessions.snapshot(it.sessionId); } catch {}
+    const s2 = store.getSession(it.sessionId);
+    it._brief = await buildVoiceBrief({
+      sessionId: it.sessionId, project: it.project, tool: it.tool, category: it.category,
+      summary: it.summary, ask: s2?.question || '', screen, supervisorNote: supervisorNoteFor(it.sessionId),
+    });
+  } catch { it._brief = null; }
+  return it._brief;
+}
+function prefetchBriefs(vs) {
+  for (const it of vs.items.slice(0, 12)) briefFor(it).catch(() => {}); // fire-and-forget: item 2+ speak instantly
+}
+
+async function present(vs, greet) {
   const it = vs.items[vs.pointer];
   let say;
   if (!it) {
@@ -74,17 +124,18 @@ function present(vs, greet) {
   } else {
     const n = vs.items.length;
     const where = it.project && it.project !== 'adhoc' ? `${it.project} ${it.tool}` : it.tool;
-    const cat = ['action', 'decision', 'review'].includes(it.category) ? it.category : 'response';
-    // Build as SHORT separate sentences so the client's per-sentence TTS pipeline plays the
-    // lead in ~2s while the gist generates. Cap the spoken gist (full detail is on screen / on "more").
-    let gist = String(it.summary || it.title || '').replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-    if (gist.length > 120) gist = gist.slice(0, 120).replace(/\s+\S*$/, '') + '…';
-    const parts = [];
-    if (greet) parts.push(`You have ${n} ${n > 1 ? 'items' : 'item'} waiting.`);
-    parts.push(`${greet ? 'First up' : 'Next'}, ${where} needs a ${cat}.`);
-    if (gist) parts.push(`${gist}.`);
-    parts.push('What would you like to do?');
-    say = parts.join(' ');
+    const lead = greet ? `You have ${n} ${n > 1 ? 'items' : 'item'} waiting. First up, ${where}.` : `Next, ${where}.`;
+    // spoken brief (gpt-5.5) with a hard latency budget; sanitized template if it isn't ready
+    const brief = await Promise.race([briefFor(it), new Promise((r) => setTimeout(() => r(null), 4000))]);
+    if (brief) {
+      say = `${lead} ${speakBrief(brief, { level: 'standard' })} ${brief.needs ? '' : 'What would you like to do?'}`.trim();
+      if (brief.needs && !brief.options?.length) say += ` ${brief.needs}`;
+    } else {
+      const cat = ['action', 'decision', 'review'].includes(it.category) ? it.category : 'response';
+      let gist = sanitizeForSpeech(String(it.summary || '')).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      if (gist.length > 120) gist = gist.slice(0, 120).replace(/\s+\S*$/, '') + '…';
+      say = `${lead} A ${cat}. ${gist ? gist + '.' : ''} What would you like to do?`;
+    }
   }
   vs.history.push({ role: 'assistant', content: say });
   trim(vs.history);
@@ -93,7 +144,7 @@ function present(vs, greet) {
 
 async function brainReply(vs, userText) {
   try {
-    const ctx = await stateContext(vs);
+    const ctx = await stateContext(vs, userText);
     const { obj } = await chatJson([{ role: 'system', content: SYS + '\n\n' + ctx }, ...vs.history, { role: 'user', content: userText }], { temperature: 0.3, max_tokens: 650 });
     const action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
     return { say: String(obj.say || '').trim() || 'Okay.', action, message: obj.message ? String(obj.message) : '' };
@@ -109,6 +160,7 @@ route('POST', '/api/voice/start', async (req, res) => {
   const items = buildItems();
   const vs = { id: id('v'), items, pointer: 0, history: [], createdAt: now() };
   voiceSessions.set(vs.id, vs);
+  prefetchBriefs(vs);
   if (!items.length) return json(res, 200, { voiceId: vs.id, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
   const say = await present(vs, true);
   json(res, 200, { voiceId: vs.id, say, done: false, listen: true, count: items.length, current: cur(vs) });
@@ -178,6 +230,22 @@ route('POST', '/api/voice/stop', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   voiceSessions.delete(b.voiceId);
   json(res, 200, { ok: true });
+});
+
+// Spoken brief for one session (phone Listen buttons; desktop uses it through /api/voice).
+route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
+  const s2 = store.getSession(sid);
+  if (!s2) return json(res, 404, { error: 'no such session' });
+  let screen = '';
+  try { screen = await sessions.snapshot(sid); } catch {}
+  const brief = await buildVoiceBrief({
+    sessionId: sid,
+    project: s2.project_id ? store.getProject(s2.project_id)?.name || 'adhoc' : 'adhoc',
+    tool: s2.tool, category: s2.category || 'review',
+    summary: s2.summary || s2.title || '', ask: s2.question || '',
+    screen, supervisorNote: supervisorNoteFor(sid),
+  });
+  json(res, 200, { ok: true, brief });
 });
 
 console.log('[aios] voice concierge ready');
