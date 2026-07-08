@@ -373,6 +373,8 @@ Ship the widget cache fix and verify reload behavior.
   assert.match(sup7, /allCriteriaSatisfied\(tid2\)/, 'gate-verified auto-close checks every criterion');
   assert.match(sup7, /pmSetTaskStatus\(tid2, 'done'/, 'complete + all satisfied -> done, no manual click needed');
   assert.match(sup7, /pmSetTaskStatus\(tid2, 'verify_pending'/, 'complete with open criteria -> visible verify_pending');
+  assert.match(sup7, /must NOT expand this verdict/, 'card defines the task scope — DoD/spec cannot expand it (round-2: no silent scope expansion)');
+  assert.match(sup7, /do not re-litigate them/, 'satisfied criteria carry recorded evidence');
   assert.match(sup7, /renderBetweenTasksMd/, 'closed card -> between-tasks contract, never the legacy monolith');
   assert.match(sup7, /__betweenTasks/, 'maintainer/migration respect the between-tasks state');
   const api7 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
