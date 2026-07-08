@@ -1,6 +1,7 @@
 import { join, normalize } from 'node:path';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { getSession, getProject, getGrant, upsertGrant, addMessage, addEvent, GLOBAL_AGENT_SCOPE } from '../store.js';
+import { viewTaskState, routeTaskPatch } from './supervisor/task_state.js';
 import { recordUsage, getSessionLimit } from '../usage_store.js';
 import { routeForModel } from '../model_catalog.js';
 import { resume as resumeSessionById, sendText, noteReply } from '../sessions.js';
@@ -216,11 +217,16 @@ export function makeContext(agent, session_id, extra = {}) {
     setConfig(patch) {
       return upsertGrant(session_id, agent.id, { config: patch }).config;
     },
+    // Task-scoped state seam (supervisor/task_state.js): reads resolve the active task-card's
+    // fingerprints/counters over the flat legacy keys; writes route scoped keys into the task's
+    // bucket. A no-op for every grant without `activeTaskId` (all agents today; supervisor until
+    // Project Memory phase 3), so legacy behavior is byte-identical — replay-suite-locked.
     getState() {
-      return getGrant(session_id, agent.id)?.state || {};
+      return viewTaskState(getGrant(session_id, agent.id)?.state || {});
     },
     setState(patch) {
-      return upsertGrant(session_id, agent.id, { state: patch }).state;
+      const raw = getGrant(session_id, agent.id)?.state || {};
+      return viewTaskState(upsertGrant(session_id, agent.id, { state: routeTaskPatch(raw, patch) }).state);
     },
     sessionLimit() {
       return isGlobal ? null : getSessionLimit(session_id);

@@ -70,6 +70,12 @@ export function buildSupervisorSnapshot(ctx, {
   const snapshot = {
     schema: 'supervisor.snapshot',
     generatedAt,
+    // Project Memory: the active task card this tick judges against ({id, version, hash} read from
+    // task-state keys phase 3 maintains — null until then). Flows into the decision records'
+    // task_id/card_version columns so "allowed" stays auditable against a specific contract version.
+    task: st.activeTaskId
+      ? { id: st.activeTaskId, version: Number.isFinite(st.activeCardVersion) ? st.activeCardVersion : null, hash: st.activeCardHash || null }
+      : null,
     session: {
       id: session.id || ctx?.sessionId || '',
       projectId: session.project_id || project.id || null,

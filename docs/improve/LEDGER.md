@@ -20,6 +20,14 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   schema creation only; **test-locked: supervisor.js must not import project_memory until phase 3**.
 - **Tests:** full lifecycle, temporal criteria, evidence, closing events, overlap retrieval,
   runtime upsert, projection write/tamper/stale/foreign (suite 24 groups green).
+- **Phase 2 built (rescoping, still zero behavior change):** task-scoped supervisor state at the
+  SINGLE seam — `supervisor/task_state.js` (pure: TASK_SCOPED_KEYS, viewTaskState, routeTaskPatch)
+  wired into ctx.getState/setState in agents/context.js, so all ~20 loop-breaker fingerprints/
+  counters (gate re-arm, answer caps, keepworking, goal-holds) resolve per-(session, task) with
+  zero call-site changes; no activeTaskId ⇒ byte-identical legacy behavior (replay suite green).
+  Records now name the contract they acted against: supervisor_decisions + supervisor_reviews gain
+  nullable task_id/card_version columns; the decide snapshot carries task {id, version, hash}.
+  Task-switch isolation test-locked both directions (no leak, no re-arm, pause/resume restores).
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
