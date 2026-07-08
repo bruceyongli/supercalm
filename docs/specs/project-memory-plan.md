@@ -80,6 +80,36 @@ convenience copy, never the authority.
 - **On demand**: project standards (verifying / drafting a card), history events + precedents + wiki (retrieved when relevant, each stamped with provenance, never allowed to override your words or the card).
 - **Never again**: a 15-task scroll of stale prose. The contract is never truncated — if a card outgrows the budget, the gate retrieves criteria individually rather than judging a shortened copy (all 3 reviewers: a truncated contract silently false-passes).
 
+## 2b. Self-provisioning knowledge (no human config)
+
+The supervisor must never start blind, and nobody should have to set it up. It has a **required
+knowledge set** per project, and it builds/refreshes that set itself:
+
+| Required item | Where it comes from | If missing |
+|---|---|---|
+| Project overview + component map | wiki `overview` / `components` pages (or curated `docs/wiki/`) | Supervisor triggers the existing wiki build for the missing pages |
+| Verify facts (test / build / run commands) | wiki + repo manifests; **pinned onto each card at task start** with provenance | Supervisor derives them (manifests, CI config) and writes them to its own store, proposing a wiki addition for the builder side |
+| Project goals | operator/maintainer (PSS) | Card-maintainer drafts from the first task; operator can edit any time |
+| Project standards | operator-approved (PSS, via the triage queue) | Starts empty; grows from doctrine distillation + migration |
+
+**On supervisor start** (enable, or first tick of a session on the project): read the wiki index
+(`wiki_list`); if the index is missing or doesn't cover the required topics, read the underlying
+files/repo directly and trigger a rebuild of just the gaps; then refresh the supervisor's own
+context artifacts (goals / standards / verify facts) if stale. The knowledge line stays intact:
+descriptive gaps are *filled on the wiki side* (builder-visible), normative artifacts live in the
+supervisor's store — the supervisor updates its own context files, and only those.
+
+## 2c. GOAL.md grows up — automated, zero-config
+
+`write_goal_file` has sat in settings, default-off, effectively never used. Verdict: if a repo
+projection is worth having, it's worth having *without a knob*. In the new architecture the
+**projection is always on**: the active task card is written to the repo as a read-only,
+hash-pinned file (so builders can see the contract in their own filesystem), registered in
+`.git/info/exclude` (repo-local ignore — it never pollutes commits or the git history, and we
+never edit the project's tracked `.gitignore`). Builder edits to it are detected by the hash pin
+and treated as tampering evidence, not as goal changes. The `write_goal_file` setting is
+**removed** in phase 3 — one less knob, per the no-human-config principle.
+
 ## 3. Multi-session, same project
 
 1. **Inheritance-on-open**: a fresh session on a known project starts with the project's standards, goals, and the open-task list ("resume card X or start new?"). No more from-scratch sessions that re-discover everything.
@@ -93,8 +123,8 @@ convenience copy, never the authority.
 |---|---|---|---|
 | **1. Foundation** (data only) | Tables: tasks, criteria, card versions, evidence, events, standards, session runtime. Repo projection writer + tamper detection. **No behavior change.** | Nothing (flag off) | Schema locks + unit tests green |
 | **2. Rescoping** (data only) | Fingerprints/counters re-keyed per-(session, task); decide.js snapshot gains task id + card version; reviews stamped with card version | Nothing | Replay fixtures: old runaway classes stay dead |
-| **3. The card goes live** | Card-maintainer; Supervision tab becomes the **Task card view** (active card + archive drawer); gate/answer read the card; boundary suggestions + `/task`; live_context→amendment flow | The panel's doc section becomes a card; suggestion chips appear | A/B on scratch sessions: no false gate-passes; card stays current where the doc lagged |
-| **4. Project awareness** | Inheritance-on-open; conflict warnings; advisory claims; supervisor reads wiki via retrieval; verify_facts pinned at task start | New-session modal offers open tasks; conflict banners | Thrash-incident replay: warning fires |
+| **3. The card goes live** | Card-maintainer; Supervision tab becomes the **Task card view** (active card + archive drawer); gate/answer read the card; boundary suggestions + `/task`; live_context→amendment flow; **always-on repo projection replaces `write_goal_file`** (§2c, setting removed) | The panel's doc section becomes a card; suggestion chips appear; the repo gains a read-only task file (commit-invisible) | A/B on scratch sessions: no false gate-passes; card stays current where the doc lagged |
+| **4. Project awareness** | Inheritance-on-open; conflict warnings; advisory claims; supervisor reads wiki via retrieval; verify_facts pinned at task start; **self-provisioning knowledge check on supervisor start** (§2b) | New-session modal offers open tasks; conflict banners; missing wiki pages get built automatically | Thrash-incident replay: warning fires; fresh project bootstrap leaves no missing required items |
 | **5. History + pre-action gate** | Event write path; retrieval into card-drafting/verify; "previously failed" warnings (seeded from supervisor_reviews immediately) | "⚠ this approach failed on 07-03" lines in supervisor messages | Repeat-push replay: warning fires before 2nd identical push |
 | **6. Lazy migration** | Touching an old session converts its doc: active card seeded from `## Now`+criteria; history → one archive event; hard-rules classified (≤3 doctrine candidates per **project bundle** in your triage queue; fossils discarded; the doc itself archived verbatim) | One-time "review this session's converted card" prompt per old session | Your existing 19-candidate queue must not flood — caps enforced |
 

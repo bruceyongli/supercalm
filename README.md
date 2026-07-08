@@ -15,6 +15,14 @@ can run sessions on your behalf (Observe → Co-pilot → Autopilot) and learns 
 
 ## What it does
 
+Supercalm is built on top of the most powerful coding CLIs — it **supervises** them instead of
+becoming one. The goal: prolong their superhuman autonomy on long-term, complex projects.
+→ [**What each agent does and why**](docs/agents.md)
+
+- **Supervise** — an opt-in, per-session Supervisor answers builder questions the way *you* would,
+  verifies claimed completions against real evidence (diff / terminal / screenshots) before they
+  count, unsticks stalls, recovers crashes, escalates only what's truly yours — and **learns your
+  judgment** from your real replies (you approve every learned rule before it goes live).
 - **Run agents** — start `claude` / `codex` / `agy` sessions per project; they run in tmux so they
   survive restarts and disconnects.
 - **See everything** — live raw terminal (xterm.js over SSE), full saved transcripts, and the
