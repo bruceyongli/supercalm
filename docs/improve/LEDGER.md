@@ -65,6 +65,27 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   the test itself. Inheritance route lists both open cards for the project; the knowledge bootstrap
   left 4 wiki pages in place. Cleanup: edit reverted, probe card closed done, probe killed.
 
+- **Phase 5 built (history + pre-action gate + the 3b set):** `previouslyFailed` — verified
+  failures on the same ground reach the brains BEFORE they propose/accept (file-overlap events
+  first, recent project verify-fails as the day-one seed, fail-open, capped 4) — injected into the
+  answer prompt ("do NOT repeat an approach below without naming what changed"), verify evidence
+  (`prior_failures`), and unstick. Card-mode verify gains TASK_CARD_ADDENDUM: per-criterion
+  evidence-cited verdicts → `applyCriteriaMet` auto-satisfies OPEN criteria (prefix-matched,
+  evidence required, add-only, records evidence rows). Boundary SUGGESTIONS (one settled
+  classification per new operator message vs the active card; panel chip; accept = create+activate,
+  dismiss clears; nothing auto-applies). `/task` composer command opens the new-card form.
+- **Phase 5 hotfix (v0.3.11):** live verify 500'd — the new consts had anchored on the FIRST
+  `const evidence = {` in the file, which belongs to runUnstick (no sess/ctxData in scope).
+  Source-lock tests PASSED while the code was broken — the exact narrative-vs-inspection gap the
+  operator's #1 doctrine rule names. Fixed placement, gave unstick its own gate, added ORDERING
+  locks (scope-segment asserts) so a misplaced insert cannot pass tests again.
+- **Phase 5 live test (v0.3.11, operator's session):** with proof OUTSIDE its evidence window the
+  verifier correctly returned NO criteria_met ("supported only by narrative"); with proof printed
+  INTO the terminal it reads, the next verify returned criteria_met for exactly the two provable
+  criteria — auto-satisfied with evidence rows (ev_f93ed011fd, ev_6d15f7efd6), two others correctly
+  held open, verdict still needs_attention(76). Per-criterion evidence-cited gating works live,
+  conservative in the right direction; prior_failures fed from this card's own verify_fail events.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
