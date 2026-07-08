@@ -739,6 +739,11 @@ function renderTaskCard() {
   const abandonRow = pmEdit?.kind === 'abandon'
     ? `<div class="pm-inline warn"><span>Abandon this card? The archive keeps it.</span>
        <button class="btn sm" id="pm-abandon-go">Yes, abandon</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div>` : '';
+  const between = !a && pmData?.lastClosed ? `
+    <div class="pm-boundary" style="border-style:solid;color:var(--muted)">
+      <span>Between tasks — last: <b>${esc(pmData.lastClosed.title || pmData.lastClosed.id)}</b> ${pmStatusChip(pmData.lastClosed.status)}${pmData.lastClosed.outcome ? ` <span class="count">${esc(String(pmData.lastClosed.outcome).slice(0, 90))}</span>` : ''}</span>
+      <span class="count">start the next card (or accept a suggestion) so the supervisor has a current contract</span>
+    </div>` : '';
   const card = a ? `
     <div class="pm-card">
       <div class="pm-card-head">${pmStatusChip(a.task.status)} <b>${esc(a.task.title || 'Current task')}</b> <span class="count">v${a.task.version}</span></div>
@@ -761,6 +766,7 @@ function renderTaskCard() {
       ${form}
       ${migBanner}
       ${boundary}
+      ${between}
       ${card}
       ${openRows ? `<details class="sup-learn-group"><summary>Open / paused (${pmData.open.length})</summary>${openRows}</details>` : ''}
       ${arch ? `<details class="sup-learn-group" ${pmArchOpen ? 'open' : ''}><summary>Archive (${pmData.archived.length})</summary><div class="pm-arch">${arch}</div></details>` : ''}
