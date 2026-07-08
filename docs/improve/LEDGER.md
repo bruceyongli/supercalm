@@ -46,6 +46,17 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   needs_attention(82) — correctly skeptical: two criteria weren't yet demonstrable at judge time.
   Doc-maintainer stood down (0 doc-update rows after activation). The supervisor that verified all
   this is itself running on the card — the system supervised its own migration.
+- **Phase 4 built (project awareness):** per-tick session runtime (files touched from evidence
+  already collected) + `liveOverlaps` cross-session conflict detection — one warning per
+  overlap-set (state-keyed), operator escalation naming sessions+files, incident events on BOTH
+  cards; advisory claims (adopting a card another live session drives warns, never locks);
+  inheritance-on-open (new-session modal offers the project's open cards via
+  /api/project/:id/tasks/open, activate-after-launch); the supervisor finally READS the knowledge
+  layer (searchWiki retrieval into answer + verify prompts, provenance-marked "descriptive
+  reference — never overrides the contract/operator/doctrine", capped 2 hits); self-provisioning
+  knowledge bootstrap on first card sync (missing overview/components pages → debounced wiki
+  rebuild) + verify facts derived from manifests and PINNED at task open (first pin wins —
+  goalposts cannot move mid-task).
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 

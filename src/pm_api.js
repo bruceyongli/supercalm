@@ -10,6 +10,7 @@ import { getSession, getProject } from './store.js';
 import {
   createTask, getTask, taskCard, amendTask, addCriterion, supersedeCriterion, setTaskStatus,
   listTasks, listCriteria, appendEvent, getRuntime, upsertRuntime, writeProjection, listEvents,
+  deriveVerifyFacts, pinVerifyFacts,
 } from './agents/supervisor/project_memory.js';
 import { bus } from './bus.js';
 
@@ -28,6 +29,13 @@ function sessionProject(sid) {
 function project(card, projectPath) {
   if (card && projectPath) { try { writeProjection(projectPath, card, { force: true }); } catch {} }
 }
+
+// Inheritance-on-open: the new-session modal's card offer for a project.
+route('GET', '/api/project/:id/tasks/open', (req, res, { id: pid }) => {
+  const open = listTasks(pid, { statuses: ['proposed', 'active', 'paused', 'verify_pending'] })
+    .map((t) => ({ id: t.id, title: t.title, status: t.status, driven_by_session: t.driven_by_session }));
+  return json(res, 200, { ok: true, open });
+});
 
 // The panel's read: active card + open/paused list + archive drawer.
 route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
@@ -56,6 +64,7 @@ route('POST', '/api/session/:id/tasks', async (req, res, { id: sid }) => {
     title: String(b.title || '').trim(), goal: String(b.goal || '').trim(),
     criteria: Array.isArray(b.criteria) ? b.criteria.map((c) => String(c).trim()).filter(Boolean) : [],
   });
+  if (projectPath) { try { pinVerifyFacts(card.task.id, deriveVerifyFacts(projectPath)); } catch {} }
   if (b.activate !== false) {
     const prev = getRuntime(sid)?.active_task_id || null;
     setTaskStatus(card.task.id, 'active', { actor: 'operator', sessionId: sid });
@@ -79,6 +88,15 @@ route('POST', '/api/session/:id/tasks/activate', async (req, res, { id: sid }) =
   const t = getTask(String(b.taskId || ''));
   if (!t) return json(res, 404, { error: 'no such task' });
   if (t.project_id !== projectId) return json(res, 400, { error: 'task belongs to another project' });
+  // Advisory claim (never a lock): warn when adopting a card another LIVE session is driving.
+  let warning = '';
+  if (t.driven_by_session && t.driven_by_session !== sid) {
+    const other = getSession(t.driven_by_session);
+    if (other && ['working', 'waiting'].includes(other.status)) {
+      warning = `This card is currently driven by live session ${t.driven_by_session} — coordinate or expect conflict warnings.`;
+      appendEvent({ projectId, taskId: t.id, sessionId: sid, actor: 'operator', type: 'incident', summary: `Card adopted by ${sid} while ${t.driven_by_session} is live on it (advisory claim overridden by operator).` });
+    }
+  }
   const prev = getRuntime(sid)?.active_task_id || null;
   if (prev && prev !== t.id) {
     const p = getTask(prev);
@@ -89,7 +107,7 @@ route('POST', '/api/session/:id/tasks/activate', async (req, res, { id: sid }) =
   appendEvent({ projectId, taskId: t.id, sessionId: sid, actor: 'operator', type: 'claimed', summary: `Task claimed by ${sid}` });
   project(taskCard(t.id), projectPath);
   bus.emit('changed');
-  return json(res, 200, { ok: true, card: taskCard(t.id) });
+  return json(res, 200, { ok: true, card: taskCard(t.id), ...(warning ? { warning } : {}) });
 });
 
 // Amend / close the card: goal & title edits, add/supersede criteria, status transitions.
