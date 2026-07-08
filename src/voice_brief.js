@@ -62,7 +62,13 @@ export function buildBriefUserText({ project, tool, category, summary, ask, scre
 export function validateBrief(o) {
   if (!o || typeof o !== 'object') return null;
   const kinds = ['decision', 'input', 'discussion', 'review', 'blocked', 'progress'];
-  const clamp = (s, n) => sanitizeForSpeech(String(s || '')).slice(0, n);
+  const clamp = (s, n) => {
+    let t = sanitizeForSpeech(String(s || ''));
+    if (t.length <= n) return t;
+    t = t.slice(0, n - 1); // room for the ellipsis
+    const cut = t.lastIndexOf(' ');
+    return (cut > n * 0.6 ? t.slice(0, cut) : t).replace(/[,;:—-]$/, '') + '…'; // never end mid-word
+  };
   const brief = {
     topic: clamp(o.topic, 60) || 'agent update',
     kind: kinds.includes(o.kind) ? o.kind : 'review',
