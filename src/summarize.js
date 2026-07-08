@@ -1,7 +1,8 @@
 import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { stripAnsi } from './util.js';
-import { fleetKey } from './model_catalog.js';
+import { fleetKey, userRoutes, routeForModel } from './model_catalog.js';
+import { callProxyModel } from './agents/model.js';
 
 // Summarize a waiting session's screen into {category, summary} using a local proxy model.
 // Default: claude-haiku-4-5 (fast + accurate on technical text). Override via env.
@@ -74,6 +75,7 @@ export async function summarize(snap) {
   // Retry transient proxy/upstream blips (the proxy surfaces "fetch failed" / 5xx when the real model
   // API briefly can't be reached) so one hiccup doesn't drop a queue summary.
   let env;
+  let content = null;
   for (let i = 0; ; i++) {
     try {
       env = JSON.parse(await chat(payload));
@@ -84,10 +86,16 @@ export async function summarize(snap) {
         await sleep(500 * (i + 1));
         continue;
       }
-      throw e;
+      // Fleet unreachable/exhausted: user API providers (Auth & Models) carry the summary — the
+      // needs-you queue must work for installs whose only model source is an API key.
+      const fallback = userRoutes()[0];
+      if (!fallback) throw e;
+      const out = await callProxyModel(routeForModel(fallback.id), payload.messages, { temperature: payload.temperature ?? 0, maxTokens: 500 });
+      content = out.content.trim();
+      break;
     }
   }
-  let content = (env.choices?.[0]?.message?.content || '').trim();
+  if (content === null) content = (env.choices?.[0]?.message?.content || '').trim();
   content = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
   const m = content.match(/\{[\s\S]*\}/);
   const parsed = JSON.parse(m ? m[0] : content);

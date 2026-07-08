@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { fleetKey } from './model_catalog.js';
+import { fleetKey, userRoutes, routeForModel } from './model_catalog.js';
+import { callProxyModel } from './agents/model.js';
 
 // Local-proxy chat with a fallback chain. Default brain for the voice concierge,
 // chosen by a faithfulness+latency benchmark (NOT speed alone — see README/commit):
@@ -18,9 +19,19 @@ export const VOICE_CHAIN = (process.env.AIOS_VOICE_CHAIN ||
   '8791:gemini-3.1-flash-lite,8790:kimi-k2.6,8789:claude-haiku-4-5')
   .split(',')
   .map((s) => {
-    const [port, ...rest] = s.split(':');
-    return { port: Number(port), model: rest.join(':') };
+    // "8791:model" = fleet port entry; a bare model id (or "api:model") = user API provider route.
+    const [head, ...rest] = s.split(':');
+    if (/^\d+$/.test(head)) return { port: Number(head), model: rest.join(':') };
+    return { api: true, model: head === 'api' ? rest.join(':') : s };
   });
+
+// No fleet? The voice/summary brains still need to think: user API providers (Auth & Models page)
+// ride as the chain's tail, resolved at CALL time so providers added later are picked up live.
+function withUserTail(chain) {
+  if (chain !== VOICE_CHAIN) return chain; // explicit chains are the caller's business
+  const tail = userRoutes().slice(0, 2).map((r) => ({ api: true, model: r.id }));
+  return tail.length ? [...chain, ...tail] : chain;
+}
 
 async function once(port, model, messages, { temperature = 0.3, max_tokens = 700 } = {}) {
   const key = await fleetKey(); // the proxy fleet rejects keyless calls
@@ -53,13 +64,20 @@ async function once(port, model, messages, { temperature = 0.3, max_tokens = 700
 // Try each model in the chain until one returns content. Returns { content, model }.
 export async function chat(messages, opts = {}, chain = VOICE_CHAIN) {
   let lastErr;
-  for (const { port, model } of chain) {
+  for (const entry of withUserTail(chain)) {
+    const { port, model, api } = entry;
     try {
+      if (api) {
+        const r = routeForModel(model);
+        if (!r?.base) throw new Error('no API route for ' + model);
+        const out = await callProxyModel(r, messages, { temperature: opts.temperature ?? 0.3, maxTokens: opts.max_tokens ?? 700, retries: 0 });
+        return { content: out.content, model };
+      }
       const content = await once(port, model, messages, opts);
       return { content, model };
     } catch (e) {
       lastErr = e;
-      console.error(`[aios] llm ${model}@${port} failed: ${e.message}`);
+      console.error(`[aios] llm ${model}@${api ? 'api' : port} failed: ${e.message}`);
     }
   }
   throw lastErr || new Error('no models available');

@@ -46,6 +46,7 @@ import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
 import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, renderBetweenTasksMd } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
+import { userRoutes } from '../model_catalog.js';
 import { proposeMigration } from './supervisor/doc_migration.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
@@ -801,8 +802,12 @@ function canSend(ctx, cfg, kind = 'nudge', meta = {}) {
 // so the supervisor isn't down for the same reason the session is (a codex/GPT outage shouldn't also blind
 // a GPT-primary supervisor). Operator-overridable per session (cfg.fallback_models / the Model pick).
 export function defaultChain(tool) {
-  if (tool === 'codex') return ['claude-opus-4-8', 'gpt-5.5', 'gemini-pro-agent']; // session=GPT -> lead Claude
-  return ['gpt-5.5', 'claude-opus-4-8', 'gemini-pro-agent']; // claude / agy / default -> lead GPT
+  const fleet = tool === 'codex'
+    ? ['claude-opus-4-8', 'gpt-5.5', 'gemini-pro-agent'] // session=GPT -> lead Claude
+    : ['gpt-5.5', 'claude-opus-4-8', 'gemini-pro-agent']; // claude / agy / default -> lead GPT
+  // No fleet? User API providers (Auth & Models) tail the chain so the supervisor still thinks —
+  // resolved live, so a provider added after enable is picked up on the next tick.
+  try { return [...fleet, ...userRoutes().slice(0, 2).map((r) => r.id)]; } catch { return fleet; }
 }
 function modelChain(cfg, session) {
   const dflt = defaultChain(session?.tool);

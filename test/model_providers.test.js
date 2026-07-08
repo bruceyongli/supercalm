@@ -112,4 +112,40 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(ui, /apiProviders/, 'auth page carries the providers card');
 }
 
+// ---- fleet-less brains: voice chain api entries + summarize fallback + supervisor chain tail --------
+{
+  const { chat } = await import('../src/llm.js');
+  const mock2 = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => (b += c));
+    req.on('end', () => {
+      res.setHeader('content-type', 'application/json');
+      if (req.url === '/v1/chat/completions') return res.end(JSON.stringify({ choices: [{ message: { content: 'brain-ok' } }] }));
+      if (req.url === '/v1/models') return res.end(JSON.stringify({ data: [{ id: 'brain-model' }] }));
+      res.statusCode = 404; res.end('{}');
+    });
+  });
+  await new Promise((ok) => mock2.listen(9998, '127.0.0.1', ok));
+  upsertProvider({ name: 'BrainProv', kind: 'openai', base_url: 'http://127.0.0.1:9998', api_key: 'sk-b', models: ['brain-model'] });
+
+  // explicit api entry in a chain
+  const r1 = await chat([{ role: 'user', content: 'x' }], {}, [{ api: true, model: 'brain-model' }]);
+  assert.equal(r1.content, 'brain-ok');
+  // a dead fleet port falls through to the api entry (deterministic — the dev box may run a live fleet,
+  // so the DEFAULT chain's behavior is covered by the withUserTail source-lock below instead)
+  const r2 = await chat([{ role: 'user', content: 'x' }], {}, [{ port: 1, model: 'dead-model' }, { api: true, model: 'brain-model' }]);
+  assert.equal(r2.content, 'brain-ok', 'dead fleet entry falls through to the user provider');
+
+  const llmSrc = readFileSync(new URL('../src/llm.js', import.meta.url), 'utf8');
+  assert.match(llmSrc, /withUserTail/, 'voice chain gains the user tail');
+  const sumSrc = readFileSync(new URL('../src/summarize.js', import.meta.url), 'utf8');
+  assert.match(sumSrc, /userRoutes\(\)\[0\]/, 'summaries fall back to a user provider');
+  const supSrc = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(supSrc, /userRoutes\(\)\.slice\(0, 2\)\.map\(\(r\) => r\.id\)/, 'supervisor default chain tails into user providers');
+  const rel = readFileSync(new URL('../bin/release', import.meta.url), 'utf8');
+  assert.match(rel, /RELEASE_SKIP_TESTS/, 'releases are test-gated');
+  assert.match(rel, /GITHUB_PAT_AIOS/, 'release auto-loads the GitHub token');
+  await new Promise((ok) => mock2.close(ok));
+}
+
 console.log('model_providers.test ok');

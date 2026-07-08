@@ -10,6 +10,20 @@ cd "$(dirname "$0")/.."
 [ -z "$(git status --porcelain)" ] || { echo "bin/release: commit or stash local changes first." >&2; exit 1; }
 node scripts/scan-secrets.mjs >/dev/null   # belt-and-suspenders before anything is tagged for the public
 
+# At release cadence, a red build must not reach the public: the full suite gates every release.
+# RELEASE_SKIP_TESTS=1 for emergencies only (the tag will still be CI-checked on GitHub).
+if [ "${RELEASE_SKIP_TESTS:-0}" != "1" ]; then
+  echo "==> running the test suite (RELEASE_SKIP_TESTS=1 to skip)"
+  npm test >/dev/null 2>&1 || { echo "bin/release: test suite FAILED — not releasing. (npm test for details)" >&2; exit 1; }
+fi
+
+# GitHub Release token: env GITHUB_TOKEN wins; otherwise auto-read GITHUB_PAT_AIOS / GITHUB_TOKEN
+# from ~/.dev.vars so the Release object (which update toasts poll) is created without manual steps.
+if [ -z "${GITHUB_TOKEN:-}" ] && [ -f "$HOME/.dev.vars" ]; then
+  GITHUB_TOKEN="$(sed -n 's/^\(export \)\{0,1\}GITHUB_PAT_AIOS=//p; s/^\(export \)\{0,1\}GITHUB_TOKEN=//p' "$HOME/.dev.vars" | head -1 | tr -d '\"' )"
+  export GITHUB_TOKEN
+fi
+
 NEW="$(bin/version "${1:-patch}")"
 BR="$(git rev-parse --abbrev-ref HEAD)"
 echo "==> pushing $BR + tags"
