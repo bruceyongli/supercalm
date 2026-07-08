@@ -1,4 +1,4 @@
-import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity } from './common.js';
+import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 
 registerSW();
@@ -2382,17 +2382,33 @@ async function openFileViewer(rawPath) {
     else errText = r.status === 403 ? 'That path is outside the project root.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
   } catch { errText = 'Could not reach the server.'; }
   fileViewerBusy = false;
+  // Text files get a toolbar: markdown renders as a PREVIEW by default (raw on toggle), any text can
+  // be copied, everything can go fullscreen or be downloaded. Content stays untrusted: preview goes
+  // through common.js renderMarkdown (escape-first, safe hrefs only), raw stays escaped <pre>.
   let body;
+  let text = '';
+  const isText = meta && !meta.binary && meta.contentKind !== 'image' && meta.contentKind !== 'pdf';
+  const isMd = isText && /\.(md|markdown)$/i.test(meta.path || rel);
+  const truncNote = meta?.truncated ? '\n\n… (truncated at 2 MB — download for the full file)' : '';
   if (!meta) body = `<pre class="asset-detail-text">${escapeHtml(errText)}</pre>`;
   else if (meta.contentKind === 'image') body = `<img class="asset-detail-image" src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" />`;
   else if (meta.contentKind === 'pdf') body = `<div class="asset-detail-file"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open PDF</a> · <a href="${escapeHtml(meta.downloadUrl)}" download>Download</a></div>`;
   else if (meta.binary) body = `<div class="asset-detail-file">Binary file — <a href="${escapeHtml(meta.downloadUrl)}" download>Download ${escapeHtml(meta.name)}</a></div>`;
   else {
-    let text = '';
     try { text = await fetch(meta.viewUrl).then((x) => (x.ok ? x.text() : '')); } catch {}
-    body = `<pre class="asset-detail-text">${escapeHtml(text)}${meta.truncated ? '\n\n… (truncated at 2 MB — download for the full file)' : ''}</pre>`;
+    body = isMd
+      ? `<div class="md-view">${renderMarkdown(text)}${meta.truncated ? '<p class="count">… (truncated at 2 MB — download for the full file)</p>' : ''}</div>`
+      : `<pre class="asset-detail-text">${escapeHtml(text)}${escapeHtml(truncNote)}</pre>`;
   }
   const title = meta ? meta.path : rel;
+  const toolbar = !meta ? '' : `
+    <div class="file-toolbar">
+      ${isMd ? `<button class="btn ghost sm on" type="button" data-fv="preview">Preview</button><button class="btn ghost sm" type="button" data-fv="raw">Raw</button>` : ''}
+      ${isText ? `<button class="btn ghost sm" type="button" data-fv="copy">Copy</button>` : ''}
+      <button class="btn ghost sm" type="button" data-fv="full" title="Fullscreen reading">⛶ Fullscreen</button>
+      <a class="btn ghost sm" href="${escapeHtml(meta.downloadUrl)}" download>Download</a>
+      <span class="count" data-fv="msg"></span>
+    </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'asset-detail-backdrop';
   overlay.innerHTML = `
@@ -2400,6 +2416,7 @@ async function openFileViewer(rawPath) {
       <button class="asset-detail-close" type="button" aria-label="Close">×</button>
       <h3>${escapeHtml(title)}</h3>
       ${meta ? `<div class="asset-detail-sub">${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</div>` : ''}
+      ${toolbar}
       <div class="asset-detail-body">${body}</div>
       ${meta ? `<div class="asset-detail-meta">${metaRows([['path', meta.path], ['size', formatBytes(meta.bytes)], ['download', `${meta.name}`]])}</div>` : ''}
     </div>`;
@@ -2407,6 +2424,26 @@ async function openFileViewer(rawPath) {
   const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } };
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
+  const detail = overlay.querySelector('.asset-detail');
+  const bodyEl = overlay.querySelector('.asset-detail-body');
+  const msgEl = overlay.querySelector('[data-fv="msg"]');
+  const setMode = (mode) => {
+    bodyEl.innerHTML = mode === 'preview'
+      ? `<div class="md-view">${renderMarkdown(text)}</div>`
+      : `<pre class="asset-detail-text">${escapeHtml(text)}${escapeHtml(truncNote)}</pre>`;
+    for (const b of overlay.querySelectorAll('[data-fv="preview"],[data-fv="raw"]')) b.classList.toggle('on', b.dataset.fv === mode);
+  };
+  overlay.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-fv]')?.dataset.fv;
+    if (!act || act === 'msg') return;
+    if (act === 'preview' || act === 'raw') return setMode(act);
+    if (act === 'copy') {
+      try { await navigator.clipboard.writeText(text); if (msgEl) msgEl.textContent = '✓ copied'; } catch { if (msgEl) msgEl.textContent = 'copy failed — select manually'; }
+      setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 2000);
+      return;
+    }
+    if (act === 'full') detail.classList.toggle('full');
+  });
   document.addEventListener('keydown', onKey, true);
   document.body.appendChild(overlay);
 }

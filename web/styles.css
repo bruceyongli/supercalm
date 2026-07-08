@@ -2177,3 +2177,27 @@ body.map-expanded-open { overflow: hidden; }
   .asset-cards { gap: 10px; }
 }
 .kn-model { background: var(--bg2, #0f1318); color: var(--fg, #cdd3da); border: 1px solid var(--border, #2a2f37); border-radius: 4px; font-size: 11px; padding: 1px 3px; max-width: 210px; vertical-align: middle; }
+
+/* File viewer: preview toolbar + fullscreen + rendered-markdown body */
+.file-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.file-toolbar .btn.on { border-color: var(--blue); color: var(--blue); }
+.file-toolbar a.btn { text-decoration: none; }
+.asset-detail.full { width: calc(100vw - 16px); height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
+.md-view { font-size: 13.5px; line-height: 1.6; overflow-wrap: anywhere; display: block; }
+.md-view h1 { font-size: 18px; margin: 12px 0 6px; }
+.md-view h2 { font-size: 16px; margin: 12px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.md-view h3 { font-size: 14.5px; margin: 10px 0 4px; }
+.md-view h4, .md-view h5, .md-view h6 { font-size: 13.5px; margin: 8px 0 4px; }
+.md-view p { margin: 6px 0; }
+.md-view ul, .md-view ol { margin: 6px 0; padding-left: 22px; }
+.md-view li { margin: 3px 0; }
+.md-view table { border-collapse: collapse; margin: 10px 0; display: block; overflow-x: auto; max-width: 100%; }
+.md-view th, .md-view td { border: 1px solid var(--line2); padding: 5px 9px; text-align: left; font-size: 12.5px; vertical-align: top; }
+.md-view th { background: var(--panel2); }
+.md-view pre { background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; padding: 8px 10px; overflow-x: auto; margin: 8px 0; }
+.md-view code { background: var(--panel2); border-radius: 4px; padding: 0 4px; font-size: 12.5px; }
+.md-view pre code { background: none; padding: 0; }
+.md-view blockquote { border-left: 3px solid var(--line2); margin: 8px 0; padding: 2px 12px; color: var(--muted); }
+.md-view hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.md-view a { color: var(--blue); }
+.md-view input[type="checkbox"] { margin-right: 5px; }
