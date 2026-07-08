@@ -8,6 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 [ -z "$(git status --porcelain)" ] || { echo "bin/release: commit or stash local changes first." >&2; exit 1; }
+# Releases cut from a feature branch never reach origin/main — installs and bin/update see nothing
+# (learned live: v0.3.19 was tagged on feat/phone and the live box reported "already up to date").
+BR0="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$BR0" != "main" ] && [ "${RELEASE_BRANCH_OK:-0}" != "1" ]; then
+  echo "bin/release: on '$BR0', not main — merge first (or RELEASE_BRANCH_OK=1 to force)." >&2; exit 1
+fi
 node scripts/scan-secrets.mjs >/dev/null   # belt-and-suspenders before anything is tagged for the public
 
 # At release cadence, a red build must not reach the public: the full suite gates every release.
