@@ -144,6 +144,17 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   restart. CI (free on the public repo, billable 0ms verified) runs test + fleet-less e2e-install
   per push. e2e re-verified 9/9 on v0.3.16.
 
+- **Speech providers (operator-directed, v0.3.17–18):** STT/TTS for everyone — ONE
+  OpenAI-compatible audio endpoint config (base_url + optional key + stt/tts models + voice) covers
+  remote (OpenAI, Groq) and local model servers (Kokoro-FastAPI, speaches, whisper.cpp,
+  openedai-speech; keyless local supported). /api/transcribe: Spark primary when configured →
+  provider (direct container, one wav-transcode retry) → helpful 502; /api/tts: spark → provider
+  /v1/audio/speech → local say. Test-first save (probe synthesizes a clip); keys chmod-600 +
+  redacted. e2e grew TTS-bytes + STT-roundtrip checks (12/12). Two process lessons banked the hard
+  way: a first-occurrence replace nested loadSpeech inside a click handler (v0.3.18 hotfix — parse
+  checks can't catch never-called), and an edit chained behind an exploratory grep silently skipped
+  (third silent-anchor incident today → rule: edits never ride && behind greps; verify writes).
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor
