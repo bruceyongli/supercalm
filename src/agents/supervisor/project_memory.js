@@ -379,3 +379,65 @@ export function pinVerifyFacts(taskId, facts) {
   db.prepare('UPDATE pm_tasks SET verify_facts_json = COALESCE(verify_facts_json, ?) WHERE id = ?')
     .run(JSON.stringify(facts).slice(0, 1000), taskId);
 }
+
+// ---- phase 5: history retrieval + the pre-action gate -------------------------------------------------
+
+// "Previously failed" (PROJECTMEM 2606.12329 steal): before the supervisor proposes an approach or
+// signs anything off, surface prior FAILURES on the same ground. Two sources, strongest first:
+//   1. pm_events verify_fail/incident with FILE OVERLAP (typed, precise — post-phase-3 history);
+//   2. seed: recent project verify-fails from supervisor_reviews (no file mapping pre-phase-3 —
+//      weaker, recency-bound, clearly labeled). Fable round-3: this makes the gate useful on day one.
+export function previouslyFailed({ projectId, files = [], excludeSession = null, days = 14, limit = 4 } = {}) {
+  const out = [];
+  if (files?.length) {
+    for (const e of listEvents({ projectId, types: ['verify_fail', 'incident'], files, limit })) {
+      out.push({ kind: 'file-overlap', ts: e.ts, summary: e.summary, ref: e.id });
+    }
+  }
+  if (out.length < limit) {
+    try { // fail-open: the reviews table belongs to supervisor.js — absent in standalone use
+    const since = now() - days * 864e5;
+    const rows = db.prepare(`
+      SELECT r.session_id, r.ts, r.verdict, substr(r.assessment, 1, 220) AS a
+      FROM supervisor_reviews r JOIN sessions s ON s.id = r.session_id
+      WHERE s.project_id = ? AND r.kind = 'verify' AND r.verdict IN ('needs_attention','off_track')
+        AND r.ts > ? ${excludeSession ? 'AND r.session_id != ?' : ''}
+      ORDER BY r.ts DESC LIMIT ?`).all(...[projectId, since, ...(excludeSession ? [excludeSession] : []), limit * 2]);
+    const seen = new Set(out.map((o) => o.summary.slice(0, 60)));
+    for (const r of rows) {
+      if (out.length >= limit) break;
+      const key = r.a.slice(0, 60);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ kind: 'project-recent', ts: r.ts, summary: `${r.verdict}: ${r.a}`, ref: r.session_id });
+    }
+    } catch {}
+  }
+  return out.slice(0, limit);
+}
+export function formatPreviouslyFailed(rows) {
+  if (!rows?.length) return '';
+  return 'PREVIOUSLY_FAILED (verified failures on this ground — do NOT repeat an approach below without naming what changed):\n'
+    + rows.map((r) => `• [${r.kind}] ${r.summary}`).join('\n');
+}
+
+// Auto-satisfy (phase 3b): map the verifier's evidence-cited criteria onto open card criteria.
+// Conservative on purpose: prefix-match against OPEN criteria only, evidence text required,
+// satisfaction only ever ADDS (never un-satisfies), and each hit records an evidence row.
+export function applyCriteriaMet(taskId, criteriaMet, { actor = 'supervisor' } = {}) {
+  if (!Array.isArray(criteriaMet) || !criteriaMet.length) return 0;
+  const open = listCriteria(taskId).filter((c) => c.status === 'open');
+  const norm = (x) => String(x || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  let n = 0;
+  for (const m of criteriaMet.slice(0, 12)) {
+    const prefix = norm(m?.text_prefix || m?.text);
+    const evText = String(m?.evidence || '').trim();
+    if (!prefix || prefix.length < 8 || !evText) continue;
+    const hit = open.find((c) => norm(c.text).startsWith(prefix.slice(0, 60)));
+    if (!hit) continue;
+    const eid = addEvidence({ taskId, criterionId: hit.id, kind: 'terminal', summary: evText.slice(0, 400) });
+    if (satisfyCriterion(hit.id, eid, { actor })) n++;
+    open.splice(open.indexOf(hit), 1);
+  }
+  return n;
+}

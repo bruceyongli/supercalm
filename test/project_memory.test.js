@@ -212,3 +212,56 @@ console.log('project_memory.test ok');
   assert.match(api, /tasks\/open/, 'inheritance-on-open route exists');
   assert.match(api, /coordinate or expect conflict warnings/, 'advisory claim warning on cross-session adoption');
 }
+
+// ---- phase 5: history retrieval + pre-action gate + auto-satisfy ----------------------------------
+{
+  const { previouslyFailed, formatPreviouslyFailed, applyCriteriaMet } = pm;
+  // file-overlap events rank first; the reviews seed fills up to the cap with recency + dedupe
+  const hits = previouslyFailed({ projectId: 'p_test', files: ['src/state.js'] });
+  assert.ok(hits.length >= 1);
+  assert.equal(hits[0].kind, 'file-overlap');
+  assert.match(hits[0].summary, /fix attempt A/);
+  const fmt = formatPreviouslyFailed(hits);
+  assert.match(fmt, /PREVIOUSLY_FAILED/);
+  assert.match(fmt, /do NOT repeat/i);
+  assert.equal(formatPreviouslyFailed([]), '', 'empty history injects nothing');
+  // reviews seed: a project verify-fail row surfaces even with no file overlap
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_pf','p_pf','codex','tmx_pf','waiting', 1, 1)").run();
+  await import('../src/agents/supervisor.js'); // ensures supervisor_reviews exists
+  const { db: db2 } = await import('../src/store.js');
+  db2.prepare("INSERT INTO supervisor_reviews (session_id, ts, kind, verdict, assessment, sent) VALUES ('s_pf', ?, 'verify', 'needs_attention', 'reload loses state — approach X rejected', 0)").run(Date.now());
+  const seeded = previouslyFailed({ projectId: 'p_pf', files: [] });
+  assert.equal(seeded.length, 1);
+  assert.equal(seeded[0].kind, 'project-recent');
+  assert.match(seeded[0].summary, /approach X rejected/);
+
+  // auto-satisfy: prefix-matched, evidence-required, add-only
+  const cardM = createTask({ projectId: 'p_pf', title: 'satisfy', goal: 'g', criteria: ['The suite passes on node 25 with zero failures', 'Docs updated for the new flag'] });
+  const n = applyCriteriaMet(cardM.task.id, [
+    { text_prefix: 'The suite passes on node 25', evidence: 'npm test output: 25 groups green' },
+    { text_prefix: 'Something not on the card', evidence: 'x' },
+    { text_prefix: 'Docs updated', evidence: '' }, // no evidence -> ignored
+  ]);
+  assert.equal(n, 1, 'only the evidenced, matching criterion satisfies');
+  const crits = listCriteria(cardM.task.id, { includeInactive: true });
+  const sat = crits.find((c) => c.status === 'satisfied');
+  assert.match(sat.text, /suite passes/);
+  assert.ok(sat.evidence_id, 'satisfaction recorded an evidence row');
+  assert.equal(applyCriteriaMet(cardM.task.id, [{ text_prefix: 'The suite passes on node 25', evidence: 'again' }]), 0, 'already-satisfied never re-satisfies');
+
+  // source locks
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /priorFailuresFor/, 'pre-action gate helper exists');
+  assert.match(sup, /previouslyFailed: priorFailuresFor\(ctx, ev\)/, 'answer path carries failure history');
+  assert.match(sup, /prior_failures: priorFailures/, 'verify evidence carries failure history');
+  assert.match(sup, /TASK_CARD_ADDENDUM/, 'verifier asked for per-criterion evidence in card mode');
+  assert.match(sup, /applyCriteriaMet\(ctx\.__activeCard\.task\.id, rawParsed\?\.criteria_met\)/, 'verify auto-satisfies cited criteria');
+  assert.match(sup, /maybeSuggestBoundary/, 'boundary suggestions run in card mode');
+  assert.match(sup, /pendingBoundary/, 'suggestion persists for the panel');
+  const ap2 = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
+  assert.match(ap2, /previouslyFailed/, 'answer prompt renders the failure block');
+  const api2 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api2, /tasks\/boundary/, 'boundary accept/dismiss route exists');
+  const sess = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
+  assert.match(sess, /aios:new-task/, '/task palette command wired');
+}

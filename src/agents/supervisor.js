@@ -44,7 +44,7 @@ import {
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
-import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask } from './supervisor/project_memory.js';
+import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
@@ -1071,6 +1071,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     doctrine,
     liveContext,
     projectKnowledge: retrieveProjectKnowledge(ctx, [question, s?.summary].filter(Boolean).join('\n')),
+    previouslyFailed: priorFailuresFor(ctx, ev),
     tries: sentTries, // the prompt's "you already directed the agent N×" must count DELIVERED sends only
     factCheck,
     definition_of_done: dod.text,
@@ -1146,6 +1147,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
 
 async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
   const projectKnowledge = retrieveProjectKnowledge(ctx, [sess?.summary, sess?.question, ctxData.summary].filter(Boolean).join('\n'));
+  const priorFailures = priorFailuresFor(ctx, { git: ctxData.git });
   const evidence = {
     supervision_doc: cfg.doc || '',
     ...(reviewBehaviorTemplate(cfg) ? { review_behavior_template: reviewBehaviorTemplate(cfg) } : {}),
@@ -1242,6 +1244,7 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     ...(patterns ? { recent_failure_patterns: patterns } : {}),
     ...(verifyDoctrine ? { operator_doctrine: verifyDoctrine } : {}),
     ...(projectKnowledge ? { project_knowledge: projectKnowledge } : {}),
+    ...(priorFailures ? { prior_failures: priorFailures } : {}),
     visual_work: visual,
     ...(opReq ? { current_operator_requirements: opReq } : {}),
     ...ctxData,
@@ -1266,7 +1269,12 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     hasPriorVerifications: !!prior,
     hasFailurePatterns: !!patterns,
   });
-  const sys = verifyPrompt.systemPrompt;
+  let sys = verifyPrompt.systemPrompt;
+  if (ctx.__activeCard) {
+    // Card mode: ask for per-criterion, evidence-cited verdicts so satisfied criteria tick themselves
+    // (compiled-in addendum like STAGE_ADDENDUM — never edited into the playbook-swappable base).
+    sys += '\n\nTASK_CARD_ADDENDUM: The supervision document is a TASK CARD whose acceptance criteria appear as "- [ ] text" lines. In your JSON, ALSO return "criteria_met": [{"text_prefix": "<first ~8 words of the criterion exactly as written>", "evidence": "<one line citing the CONCRETE evidence (command output, diff, record) that proves it>"}] — ONLY for criteria you can prove from the evidence provided. Omit criteria you cannot prove; never guess.';
+  }
   const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);
   const parsed = normalizeVerificationResult(rawParsed || null, { error: error || 'no output' });
   // DOCTRINE AUDIT (run 2 — doctrine as enforcement): the operator's audit-type rules are CHECKED
@@ -1311,6 +1319,10 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     } catch (e) { ctx.log('ledger/snapshot record failed:', e.message); }
   }
   if (ctx.__activeCard) {
+    try {
+      const met = applyCriteriaMet(ctx.__activeCard.task.id, rawParsed?.criteria_met);
+      if (met) ctx.log(`card: ${met} criteria satisfied with cited evidence`);
+    } catch {}
     try {
       const g3 = ctxData.git || {};
       const files = [...new Set((String(g3.stat || g3.committed_stat || '').match(/^\s*([^\s|]+)\s+\|/gm) || []).map((l) => l.replace(/\s*\|\s*$/, '').trim()))].slice(0, 40);
@@ -1620,12 +1632,49 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
   return true;
 }
 
+// Phase 5 (3b): BOUNDARY SUGGESTIONS — card mode replaces the prose doc-maintainer, but the
+// operator's messages still signal task boundaries. A settled new operator message gets ONE cheap
+// classification against the active card: fits (amend/none) or looks like NEW work → a suggestion
+// chip in the panel (state.pendingBoundary). SUGGESTION ONLY — the reviews were unanimous that
+// boundary changes are contract changes: the operator accepts or dismisses; nothing auto-applies.
+const SYS_BOUNDARY = 'You classify whether an operator message starts NEW work relative to the active task card. Return STRICT JSON only: {"fit":"amend"|"new"|"none","title":"","goal":"","reason":""}. "amend" = same task (refines/redirects it); "new" = clearly different deliverable (give a short title + one-line goal); "none" = chatter/question/approval, no boundary signal. Be conservative: when unsure, "none".';
+async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp) {
+  try {
+    if (!ctx.__activeCard || !lastOp) return;
+    if (st.pendingBoundary) return; // one open suggestion at a time
+    if (lastOp <= (st.boundaryCheckTs || 0)) return; // no new operator message since the last check
+    const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
+    if (t - lastOp < settle) return; // let the conversation settle first
+    applySupervisorState(ctx, { boundaryCheckTs: lastOp });
+    const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
+    if (!latest.trim() || latest.length < 12) return;
+    const user = 'ACTIVE TASK CARD:\n' + renderCardMd(ctx.__activeCard).slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
+    const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+    if (parsed?.fit === 'new' && (parsed.title || parsed.goal)) {
+      applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
+      ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
+    }
+  } catch (e) { ctx.log('boundary suggestion skipped:', e.message); }
+}
+
 // PROJECT MEMORY phase 3 (flag `projectMemory`): with an active task card claimed for this session,
 // the CARD is the contract. cfg.doc derives from it ONCE per tick, so every downstream reader
 // (answer / verify / gate key / focus line) reads the card with zero call-site changes — the same
 // single-seam move as phase-2's state scoping. st.activeTask* keys stamp every decision/review with
 // the card version, and the repo projection self-heals (missing/stale/tampered -> rewrite; a
 // tampered write is also EVIDENCE, recorded as an event).
+// Phase 5 pre-action gate: verified failures on the same ground reach the brain BEFORE it proposes
+// or accepts an approach (PROJECTMEM steal — kills the repeat-failed-fix loop class we lived).
+function priorFailuresFor(ctx, ev) {
+  try {
+    if (!flagOn('projectMemory')) return '';
+    const projectId = ctx.project()?.id;
+    if (!projectId) return '';
+    const files = [...new Set((String(ev?.git?.stat || ev?.git?.committed_stat || '').match(/^\s*([^\s|]+)\s+\|/gm) || []).map((l) => l.replace(/\s*\|\s*$/, '').trim()))].slice(0, 60);
+    return formatPreviouslyFailed(previouslyFailed({ projectId, files, excludeSession: null }));
+  } catch { return ''; }
+}
+
 // Phase 4: the supervisor finally READS the project knowledge layer — retrieval-only, scoped to
 // the live question + card, capped hard, and provenance-marked as DESCRIPTIVE/UNTRUSTED (MemGate:
 // retrieved memory must never override the operator's words or the card contract).
@@ -1875,6 +1924,7 @@ export async function onTick(ctx) {
       }
     }
   }
+  if (ctx.__activeCard) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp);
   if (holdSends) {
     recordNoSend(ctx, snapshot, {
       ruleId: 'doc.maintain_pending',
