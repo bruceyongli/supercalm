@@ -393,3 +393,99 @@ export async function pushStatus() {
   const sub = reg && (await reg.pushManager.getSubscription());
   return sub ? 'on' : 'off';
 }
+
+// --- minimal, XSS-safe markdown renderer (shared: file viewer, docs) ------------------------------
+// Untrusted input: every text span is escaped FIRST; only renderer-generated tags exist in the output.
+// Supports: h1–h6, fenced code, GFM tables, ul/ol (+ checkboxes), blockquote, hr, bold/italic/inline
+// code, links (http/https/mailto/#/relative only — javascript: etc. render as plain text). Images
+// render as links on purpose: an <img> to an attacker URL would leak the viewer's address.
+const MD_ESC = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function mdSafeHref(h) {
+  const t = String(h || '').trim();
+  if (/^(https?:|mailto:|#)/i.test(t)) return t;
+  if (/^[\w./-][\w./?#=&%-]*$/.test(t) && !t.includes(':')) return t; // relative path
+  return null;
+}
+function mdInline(s) {
+  let x = MD_ESC(s);
+  x = x.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
+  // links + images (image -> link). Href was escaped by MD_ESC; sanitize scheme on the raw-ish value.
+  x = x.replace(/!?\[([^\]]*)\]\(([^()\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (m, label, href) => {
+    const safe = mdSafeHref(href.replace(/&amp;/g, '&'));
+    if (!safe) return m;
+    return `<a href="${MD_ESC(safe)}" target="_blank" rel="noopener noreferrer">${label || MD_ESC(safe)}</a>`;
+  });
+  x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  x = x.replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
+  x = x.replace(/(^|[\s(])_([^_\s][^_]*)_(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
+  return x;
+}
+export function renderMarkdown(md) {
+  const lines = String(md || '').replace(/\r/g, '').split('\n');
+  const out = [];
+  let i = 0;
+  let list = null; // {tag, items} open list tag
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+  while (i < lines.length) {
+    const line = lines[i];
+    // fenced code
+    const fence = line.match(/^```(\w*)/);
+    if (fence) {
+      closeList();
+      const buf = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++; // closing fence
+      out.push(`<pre><code>${MD_ESC(buf.join('\n'))}</code></pre>`);
+      continue;
+    }
+    // GFM table: header row + separator row
+    if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:-]+\|[|\s:-]*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
+      closeList();
+      const rowCells = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+      const head = rowCells(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(rowCells(lines[i++]));
+      out.push('<table><thead><tr>' + head.map((c) => `<th>${mdInline(c)}</th>`).join('') + '</tr></thead><tbody>'
+        + rows.map((r) => '<tr>' + head.map((_, k) => `<td>${mdInline(r[k] ?? '')}</td>`).join('') + '</tr>').join('')
+        + '</tbody></table>');
+      continue;
+    }
+    const t = line.trim();
+    if (!t) { closeList(); i++; continue; }
+    if (/^(---|\*\*\*|___)\s*$/.test(t)) { closeList(); out.push('<hr>'); i++; continue; }
+    const h = t.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+    if (h) { closeList(); const n = h[1].length; out.push(`<h${n}>${mdInline(h[2])}</h${n}>`); i++; continue; }
+    const q = line.match(/^\s*>\s?(.*)$/);
+    if (q) {
+      closeList();
+      const buf = [q[1]];
+      i++;
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ''));
+      out.push(`<blockquote>${renderMarkdown(buf.join('\n'))}</blockquote>`);
+      continue;
+    }
+    const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    const ul = line.match(/^\s*[-*+]\s+(.+)$/);
+    if (ol || ul) {
+      const tag = ol ? 'ol' : 'ul';
+      if (list !== tag) { closeList(); out.push(`<${tag}>`); list = tag; }
+      let item = (ol || ul)[1];
+      const box = item.match(/^\[([ xX])\]\s+(.*)$/);
+      if (box) item = `<input type="checkbox" disabled${box[1] !== ' ' ? ' checked' : ''}> ${mdInline(box[2])}`;
+      else item = mdInline(item);
+      out.push(`<li>${item}</li>`);
+      i++;
+      continue;
+    }
+    // paragraph: gather consecutive plain lines
+    closeList();
+    const buf = [t];
+    i++;
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+[.)]\s|\s*>|\s*\|)/.test(lines[i]) && !/^(---|\*\*\*)\s*$/.test(lines[i].trim())) buf.push(lines[i++].trim());
+    out.push(`<p>${mdInline(buf.join(' '))}</p>`);
+  }
+  closeList();
+  return out.join('\n');
+}
