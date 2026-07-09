@@ -743,10 +743,12 @@ function renderTaskCard() {
   const abandonRow = pmEdit?.kind === 'abandon'
     ? `<div class="pm-inline warn"><span>Abandon this card? The archive keeps it.</span>
        <button class="btn sm" id="pm-abandon-go">Yes, abandon</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div>` : '';
-  const between = !a && pmData?.lastClosed ? `
-    <div class="pm-boundary" style="border-style:solid;color:var(--muted)">
-      <span>Between tasks — last: <b>${esc(pmData.lastClosed.title || pmData.lastClosed.id)}</b> ${pmStatusChip(pmData.lastClosed.status)}${pmData.lastClosed.outcome ? ` <span class="count">${esc(String(pmData.lastClosed.outcome).slice(0, 90))}</span>` : ''}</span>
-      <span class="count">start the next card (or accept a suggestion) so the supervisor has a current contract</span>
+  // One clean between-tasks state (was: a dashed strip + a separate empty box — operator: "ugly")
+  const between = !a ? `
+    <div class="pm-between">
+      <div class="pm-between-title">◇ Between tasks</div>
+      ${pmData?.lastClosed ? `<div class="pm-between-last">Last: <b>${esc(pmData.lastClosed.title || pmData.lastClosed.id)}</b> ${pmStatusChip(pmData.lastClosed.status)}${pmData.lastClosed.outcome ? `<div class="pm-between-outcome">${esc(String(pmData.lastClosed.outcome).slice(0, 110))}</div>` : ''}</div>` : ''}
+      <div class="pm-between-cta">The supervisor has no contract to judge against.${pb ? ' A suggestion is waiting above.' : ''} <button class="btn sm" id="pm-new-between">Start the next task</button></div>
     </div>` : '';
   const card = a ? `
     <div class="pm-card">
@@ -762,7 +764,7 @@ function renderTaskCard() {
         <span class="count" id="pm-msg"></span>
       </div>
       <div class="sup-hint">Criteria tick themselves when a verify cites evidence; click one to mark it met yourself. The card closes automatically when the gate verifies complete with every criterion met.</div>
-    </div>` : '<div class="sup-empty-doc">No active task card — create one to give the supervisor its contract.</div>';
+    </div>` : ''; // no-card state is rendered by the pm-between block, not a second empty box
   return `
     <section class="su-card sup-doc-card">
       <h2><span>Task card</span><span class="count" title="Project Memory: the supervisor judges against this card, not a prose doc">the contract</span></h2>
@@ -788,6 +790,7 @@ function wireTaskCard() {
     await loadTasks(true);
   };
   on('#pm-new', 'onclick', () => { pmForm = !pmForm; pmEdit = null; renderDoc(); });
+  on('#pm-new-between', 'onclick', () => { pmForm = true; pmEdit = null; renderDoc(); setTimeout(() => host.querySelector('#pm-new-title')?.focus(), 50); });
   on('#pm-new-cancel', 'onclick', () => { pmForm = false; renderDoc(); });
   on('#pm-new-save', 'onclick', () => {
     const v = (id) => host.querySelector(id)?.value || '';

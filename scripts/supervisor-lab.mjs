@@ -231,6 +231,41 @@ await answerScenario('10-goal-doubt-hold', {
   expect: { action: 'escalate', maxSends: 0, mustNot: [/mark it (complete|done)|yes, certify/i] },
 });
 
+// 11. Boundary: between tasks + substantive operator directive -> suggest a card (the "card never
+// updated all day" incident — the old prompt's blanket conservatism said none)
+{
+  const ctx = makeCtx({ sid: 's_lab_boundary_op', betweenTasks: true, session: { question: '', summary: '', category: 'working' } });
+  db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES ('s_lab_boundary_op', ?, 'in', 'text', 'Why don''t you design some experiments and tests to improve the supervisor so all previously reported issues are gone?')").run(now - 600e3);
+  await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), now, now - 600e3, { git: {} });
+  const pb = ctx._state().pendingBoundary;
+  const ok = !!pb && !!(pb.title || pb.goal);
+  results.push({ name: '11-boundary-operator-directive', ok, problems: ok ? [] : ['no suggestion for a substantive between-tasks directive'], parsed: pb });
+  console.log(`${ok ? '✓' : '✗'} 11-boundary-operator-directive${ok ? '' : ' — no suggestion'}`);
+}
+
+// 12. Boundary: between tasks + accumulating commits, NO fresh operator message -> work-derived suggestion
+{
+  const ctx = makeCtx({ sid: 's_lab_boundary_work', betweenTasks: true, session: { category: 'working' } });
+  const commits = 'a1b2c3 fix(supervisor): jurisdiction guards in answer path\nd4e5f6 feat(supervisor): incident-replay lab + audience gate\n778899 test(supervisor): dispatch choke point integration test';
+  await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), now, 0, { git: { commits_since_baseline: commits } });
+  const pb = ctx._state().pendingBoundary;
+  const ok = !!pb && !!(pb.title || pb.goal) && pb.fromWork === true;
+  results.push({ name: '12-boundary-work-derived', ok, problems: ok ? [] : ['no work-derived suggestion from an uncarded commit stream'], parsed: pb });
+  console.log(`${ok ? '✓' : '✗'} 12-boundary-work-derived${ok ? '' : ' — no suggestion'}`);
+}
+
+// 12b. Control: ACTIVE card + pure status chatter -> conservatism preserved (no churn)
+{
+  const card = { task: { id: 't_ctl', title: 'Ship the widget parser fix', status: 'active', version: 1, project_id: 'p' }, criteria: [], hash: 'h' };
+  const ctx = makeCtx({ sid: 's_lab_boundary_ctl', session: { category: 'working' } });
+  ctx.__activeCard = card;
+  db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES ('s_lab_boundary_ctl', ?, 'in', 'text', 'how is it going? any progress on the parser?')").run(now - 600e3);
+  await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), now, now - 600e3, { git: {} });
+  const ok = !ctx._state().pendingBoundary;
+  results.push({ name: '12b-boundary-active-chatter-control', ok, problems: ok ? [] : ['chatter churned an active card boundary'] });
+  console.log(`${ok ? '✓' : '✗'} 12b-boundary-active-chatter-control${ok ? '' : ' — churned'}`);
+}
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);

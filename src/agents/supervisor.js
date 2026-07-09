@@ -1679,24 +1679,43 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
 // classification against the active card: fits (amend/none) or looks like NEW work → a suggestion
 // chip in the panel (state.pendingBoundary). SUGGESTION ONLY — the reviews were unanimous that
 // boundary changes are contract changes: the operator accepts or dismisses; nothing auto-applies.
-const SYS_BOUNDARY = 'You classify whether an operator message starts NEW work relative to the active task card. Return STRICT JSON only: {"fit":"amend"|"new"|"none","title":"","goal":"","reason":""}. "amend" = same task (refines/redirects it); "new" = clearly different deliverable (give a short title + one-line goal); "none" = chatter/question/approval, no boundary signal. Be conservative: when unsure, "none".';
-async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp) {
+const SYS_BOUNDARY = 'You classify whether NEW work is starting relative to the active task card. Return STRICT JSON only: {"fit":"amend"|"new"|"none","title":"","goal":"","reason":""}. "amend" = same task (refines/redirects it); "new" = a different deliverable (short title + one-line goal); "none" = chatter/question/approval, no work signal. With an ACTIVE card, be conservative: when unsure, "none" (do not churn a working contract). BETWEEN TASKS (no active card) the bar FLIPS: the session has NO contract, which starves the whole supervision loop — any message or work stream that directs/contains substantive work (build, fix, design, investigate, test, improve, experiment) is "new"; reserve "none" for pure questions, acknowledgments, or status chatter. If given RECENT COMMITTED WORK instead of an operator message, judge whether that commit stream forms a coherent task and title it from the work itself.';
+async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
   try {
-    if ((!ctx.__activeCard && !ctx.__betweenTasks) || !lastOp) return;
+    if (!ctx.__activeCard && !ctx.__betweenTasks) return;
     if (st.pendingBoundary) return; // one open suggestion at a time
-    if (lastOp <= (st.boundaryCheckTs || 0)) return; // no new operator message since the last check
     const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
-    if (t - lastOp < settle) return; // let the conversation settle first
-    applySupervisorState(ctx, { boundaryCheckTs: lastOp });
+    const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; the session is BETWEEN TASKS)';
+    // Path 1 — a fresh, settled operator message (the original trigger).
+    if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= settle) {
+      applySupervisorState(ctx, { boundaryCheckTs: lastOp });
+      const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
+      if (latest.trim() && latest.length >= 12) {
+        const user = 'ACTIVE TASK CARD:\n' + cardMd.slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
+        const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+        if (ctx.__betweenTasks && parsed?.fit === 'amend') parsed.fit = 'new'; // nothing to amend between tasks
+        if (parsed?.fit === 'new' && (parsed.title || parsed.goal)) {
+          applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
+          ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
+        }
+        return;
+      }
+    }
+    // Path 2 — WORK-DERIVED (between tasks only): the session keeps committing real work with no
+    // contract. Operator-message triggers alone left the ops session card-less through a full day
+    // of releases (2026-07-09) — the work stream itself must be able to open a boundary.
+    if (!ctx.__betweenTasks) return;
+    const WORK_COOLDOWN = 45 * 60e3;
+    if (t - (st.boundaryWorkTs || 0) < WORK_COOLDOWN) return;
+    const commits = String(ev?.git?.commits_since_baseline || '').trim();
+    if (!commits || commits.split('\n').length < 2) return; // needs accumulated committed work, not a stray commit
+    applySupervisorState(ctx, { boundaryWorkTs: t });
     const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
-    if (!latest.trim() || latest.length < 12) return;
-    const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; any substantive work request is a NEW task)';
-    const user = 'ACTIVE TASK CARD:\n' + cardMd.slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
+    const user = 'ACTIVE TASK CARD:\n(no active card — between tasks)\n\nRECENT COMMITTED WORK (git log, newest first):\n' + commits.slice(0, 1800) + (latest ? '\n\nLATEST OPERATOR MESSAGE (context, may be stale):\n' + latest.slice(0, 600) : '');
     const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
-    if (ctx.__betweenTasks && parsed?.fit === 'amend') parsed.fit = 'new'; // nothing to amend between tasks
-    if (parsed?.fit === 'new' && (parsed.title || parsed.goal)) {
-      applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
-      ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
+    if (parsed?.fit && parsed.fit !== 'none' && (parsed.title || parsed.goal)) {
+      applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp || t, at: t, fromWork: true } });
+      ctx.emit('review', { verdict: 'suggested', summary: 'uncarded work stream — task suggestion in the panel' });
     }
   } catch (e) { ctx.log('boundary suggestion skipped:', e.message); }
 }
@@ -1998,7 +2017,7 @@ export async function onTick(ctx) {
       }
     }
   }
-  if (ctx.__activeCard || ctx.__betweenTasks) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp);
+  if (ctx.__activeCard || ctx.__betweenTasks) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev);
   if (holdSends) {
     recordNoSend(ctx, snapshot, {
       ruleId: 'doc.maintain_pending',
@@ -2833,4 +2852,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary };

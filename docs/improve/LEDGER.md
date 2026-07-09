@@ -248,6 +248,22 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   behind gemini-pro-agent/:8791 is 403 ToS-disabled (production unaffected — gpt-5.5 leads the
   chain; voice brain degrades to its fallbacks). HARD RULE now in three layers: agent memory,
   CLAUDE.md prime directive, and the doctrine distiller's queue.
+  FOURTH FOLLOW-ON — usage issues the loop was blind to (v0.3.30, operator: "why is the task card
+  no longer updating… the no task UI is ugly… did you catch this? redesign your workflow"): NO — the
+  lab graded brain decisions, not product usage. Root causes: (a) SYS_BOUNDARY's blanket "when
+  unsure, none" is correct with an ACTIVE card but backwards BETWEEN tasks — the ops session ran a
+  full day of releases contract-less because every operator directive was classified "none";
+  (b) boundary suggestions were operator-message-driven ONLY — an autonomous work stream could never
+  open its own boundary. Fixes: prompt bar FLIPS between tasks (substantive work ⇒ new; chatter ⇒
+  none), new WORK-DERIVED trigger (between tasks + ≥2 commits since close + 45min cooldown ⇒ suggest
+  from the git log itself), panel between-tasks state merged into one calm block (dashed strip +
+  redundant empty box removed), and a NEW usage net: `npm run ui-lab` (scripts/ui-lab.mjs) renders
+  real panel states headless (CDP), asserts DOM invariants per state (merged empty state present,
+  no zombie boxes, zero console errors), saves screenshot artifacts, and vision-grades visual
+  coherence. Lab grew scenarios 11/12/12b (operator-directive boundary, work-derived boundary,
+  active-chatter conservatism control): 14/14 green. LESSON: every layer of the loop tests what it
+  can SEE — brains need the lab, usage needs rendered-state probes, and an operator report that
+  neither catches means a new NET, not just a new fix.
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires

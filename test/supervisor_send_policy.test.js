@@ -124,6 +124,15 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
     assert.ok(lab.includes(sc), `lab scenario ${sc} present`);
   }
   assert.match(sup, /export const __lab/, 'lab seam exported');
+  // Boundary judgment: between-tasks bias flip + the work-derived trigger (card-never-updated incident)
+  assert.match(sup, /BETWEEN TASKS \(no active card\) the bar FLIPS/, 'boundary prompt flips conservatism between tasks');
+  assert.match(sup, /RECENT COMMITTED WORK \(git log, newest first\)/, 'work-derived boundary path exists');
+  assert.match(sup, /boundaryWorkTs/, 'work-derived cooldown state');
+  const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(panel, /pm-between-title/, 'merged between-tasks empty state');
+  assert.ok(!/sup-empty-doc">No active task card/.test(panel), 'redundant second empty box removed');
+  const uilab = readFileSync(new URL('../scripts/ui-lab.mjs', import.meta.url), 'utf8');
+  assert.match(uilab, /between-tasks-state/, 'ui-lab covers the between-tasks usage state');
 }
 
 console.log('supervisor_send_policy.test ok');
