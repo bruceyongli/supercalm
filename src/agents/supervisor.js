@@ -1290,6 +1290,11 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     // Card mode: ask for per-criterion, evidence-cited verdicts so satisfied criteria tick themselves
     // (compiled-in addendum like STAGE_ADDENDUM — never edited into the playbook-swappable base).
     sys += '\n\nTASK_CARD_ADDENDUM: The supervision document is a TASK CARD — it defines THIS task\'s full scope. Any definition_of_done or repo spec in the evidence is PROJECT-level context: it may inform HOW you judge evidence quality, but it must NOT expand this verdict\'s scope beyond the card\'s criteria (note mismatches as observations, never as unmet criteria). Criteria already marked "- [x]" carry recorded evidence — do not re-litigate them; judge the open "- [ ]" ones. The card\'s acceptance criteria appear as "- [ ] text" lines. In your JSON, ALSO return "criteria_met": [{"text_prefix": "<first ~8 words of the criterion exactly as written>", "evidence": "<one line citing the CONCRETE evidence (command output, diff, record) that proves it>"}] — ONLY for criteria you can prove from the evidence provided. Omit criteria you cannot prove; never guess.';
+  } else if (ctx.__betweenTasks) {
+    // Between tasks the DoD/spec must not inflate into "the contract" — the verdict the panel showed
+    // ("authoritative definition_of_done is the full refactor") gated a finished slice against the
+    // ENTIRE project spec because no card bounded scope. Symmetric to TASK_CARD_ADDENDUM.
+    sys += '\n\nBETWEEN_TASKS_ADDENDUM: There is NO active task card. Any definition_of_done or repo spec in the evidence is PROJECT-level background — it is NOT the active contract, and full-spec completion must NOT be demanded or certified. Judge ONLY the specific work the agent just reported: is it honestly evidenced? Note anything beyond it as observations. Never demand that new work or the "remaining" spec be started — which task runs next is the OPERATOR\'s decision.';
   }
   sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: verify's message_to_agent obeys jurisdiction + card-admin rules too
   const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);

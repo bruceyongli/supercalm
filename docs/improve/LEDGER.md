@@ -230,6 +230,12 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   the LLM honoring the addendum. Deterministic audience/jurisdiction classification stays on the
   run-4 backlog with a design sketch (detect.js PROMPT_RX = real interactive prompt vs synthetic
   question; summarizer audience field).
+  SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
+  rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
+  slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires
+  with an active card). Added the symmetric BETWEEN_TASKS_ADDENDUM to runVerify: DoD/specs are
+  project background between tasks, judge only the reported work, never demand the "remaining"
+  spec be started — next task selection is the operator's. Test-locked.
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 

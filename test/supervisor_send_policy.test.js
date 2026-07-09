@@ -101,6 +101,8 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   const disp = readFileSync(new URL('../src/agents/supervisor/dispatch.js', import.meta.url), 'utf8');
   assert.match(disp, /ruleId !== 'hold\.resolve_send' && cardLifecycleDirective\(msg\)/, 'dispatcher-level lifecycle block, operator relay exempt');
   assert.match(disp, /card-lifecycle-operator-reserved/, 'distinct suppression reason for the panel feed');
+  // Between tasks, verify must not inflate the project DoD/spec into the contract.
+  assert.match(sup, /BETWEEN_TASKS_ADDENDUM: There is NO active task card/, 'verify carries the between-tasks scope bound');
   // The jurisdiction addendum rides EVERY steering prompt, not just answers.
   assert.match(sup, /SYS_UNSTICK \+ '\\n\\n' \+ SCOPE_CARD_ADMIN_ADDENDUM/, 'unstick prompt carries jurisdiction rules');
   assert.ok(/sys \+= '\\n\\n' \+ SCOPE_CARD_ADMIN_ADDENDUM; \/\/ self-echo hardening: verify/.test(sup), 'verify prompt carries jurisdiction rules');
