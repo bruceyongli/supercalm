@@ -184,6 +184,23 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   mid-stream. Release gate caught a broken commit mid-stream (pipe swallowed a test failure) and
   refused to ship — the cadence tooling working as designed.
 
+- **Card-first panel + stale-proposal hygiene (operator: "the old doc came up, no way to get rid
+  of it", v0.3.23–24):** (1) The card shell (active card / between-tasks strip / open / archive)
+  is now the panel's PRIMARY surface whenever Project Memory answers, with any legacy doc demoted
+  to a collapsed "retired" relic; the old review&activate banner is owner-scoped (`t.mine`) and
+  gained a real Dismiss. (2) `expireStaleMigrationProposals()`: proposed legacy-migration cards
+  auto-abandon when their driving session is gone or 72h pass — no operator chore. (3) v0.3.24
+  bugfix from live verify: `renderTaskCard`'s `goalBlock` computed eagerly and deref'd
+  `a.task` with no active card → TypeError mid-template → `innerHTML` never assigned → the STALE
+  legacy view zombied (exactly the operator's complaint; my phase tests always had an active card,
+  so the between-tasks path never rendered once). Fixes: null-guard, a visible "Card failed to
+  render" fallback (a render bug can never again silently preserve stale DOM), loaders moved ahead
+  of renders in `renderAll` (a render throw starved `loadTasks` → pmData stayed null forever).
+  LESSON (pattern, 2nd occurrence after the phase-5 scope misplacement): a template helper computed
+  OUTSIDE the conditional that makes it safe is a live null-deref; compute inside the guard or
+  guard the helper. Test-locked: goalBlock guard, visible-failure string, loader-before-render
+  ordering.
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor

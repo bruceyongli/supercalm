@@ -201,6 +201,14 @@ const card1 = createTask({
   assert.match(panel9, />Dismiss</, 'a real Dismiss exists');
   assert.match(panel9, /Legacy doc \(retired/, 'legacy doc demoted behind the card shell');
   assert.ok(!panel9.includes('Keep legacy doc'), 'the confusing keep-doc label is gone');
+
+  // Between-tasks render safety: goalBlock is computed eagerly, so it MUST guard on a-null —
+  // an unguarded a.task deref threw mid-template and left the stale legacy doc in the DOM
+  // (the operator-reported zombie view on s_0e9e27b282).
+  assert.match(panel9, /const goalBlock = !a \? ''/, 'goalBlock guards the no-active-card path');
+  assert.match(panel9, /Card failed to render/, 'card render failures surface visibly, never stale DOM');
+  const ra = panel9.slice(panel9.indexOf('function renderAll()'), panel9.indexOf('function renderAll()') + 600);
+  assert.ok(ra.indexOf('loadTasks()') < ra.indexOf('renderDoc()'), 'loaders run before renders in renderAll');
 }
 
 console.log('project_memory.test ok');

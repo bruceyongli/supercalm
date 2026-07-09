@@ -171,12 +171,14 @@ function previewProfilesHtml(d) {
 }
 
 function renderAll() {
+  // Loaders first: a throw inside a render below must never starve the data fetches (that
+  // ordering bug once froze the panel on a stale legacy doc with pmData permanently null).
+  if (Date.now() - doctrineAt > 30000) loadDoctrine(); // piggyback on SSE updates, throttled
+  if (Date.now() - pmAt > 30000) loadTasks(); // task card (Project Memory), same throttle
   renderHeader();
   renderDoc();
   renderLearn();
   renderResult();
-  if (Date.now() - doctrineAt > 30000) loadDoctrine(); // piggyback on SSE updates, throttled
-  if (Date.now() - pmAt > 30000) loadTasks(); // task card (Project Memory), same throttle
 }
 
 // ---- Learning (operator doctrine) -------------------------------------------
@@ -726,7 +728,9 @@ function renderTaskCard() {
       </div>`;
     return `<div class="pm-crit open" data-pm-satisfy="${esc(c.id)}" title="Click to mark met (records operator evidence)">☐ ${esc(c.text)}</div>`;
   };
-  const goalBlock = pmEdit?.kind === 'goal'
+  // Guard on `a`: this is computed eagerly (before the `card = a ? …` ternary), and between tasks
+  // `active` is null — an unguarded a.task deref here threw and zombied the legacy doc view.
+  const goalBlock = !a ? '' : pmEdit?.kind === 'goal'
     ? `<div class="pm-inline col"><textarea id="pm-goal-edit" rows="3">${esc(a.task.goal || '')}</textarea>
        <div class="sup-actions"><button class="btn sm" id="pm-goal-save">Save goal</button><button class="btn ghost sm" data-pm-cancel>Cancel</button></div></div>`
     : `<div class="pm-goal">${esc(a.task.goal || '')}</div>`;
@@ -826,12 +830,19 @@ function renderDoc() {
     // between-tasks strip, suggestions, open/paused, archive). The legacy doc — when one still
     // exists — collapses behind it as a relic: an LLM tick already treats the card as the
     // contract, so the panel must stop presenting the retired doc as current.
-    const legacyDoc = String(draft?.doc || '').trim();
-    hostEl.innerHTML = renderTaskCard() + (legacyDoc ? `
-      <details class="sup-learn-group" style="margin-top:8px"><summary>Legacy doc (retired — cards are the contract now)</summary>
-        <div class="sup-md" style="opacity:.75">${renderMarkdown(legacyDoc.slice(0, 4000))}${legacyDoc.length > 4000 ? '<p class="count">… truncated — the full doc is archived</p>' : ''}</div>
-      </details>` : '');
-    wireTaskCard();
+    try {
+      const legacyDoc = String(draft?.doc || '').trim();
+      hostEl.innerHTML = renderTaskCard() + (legacyDoc ? `
+        <details class="sup-learn-group" style="margin-top:8px"><summary>Legacy doc (retired — cards are the contract now)</summary>
+          <div class="sup-md" style="opacity:.75">${renderMarkdown(legacyDoc.slice(0, 4000))}${legacyDoc.length > 4000 ? '<p class="count">… truncated — the full doc is archived</p>' : ''}</div>
+        </details>` : '');
+      wireTaskCard();
+    } catch (e) {
+      // Fail VISIBLY. A throw mid-template used to leave the previously-rendered legacy doc in the
+      // DOM (innerHTML never assigned) — a silent zombie the operator couldn't dismiss.
+      hostEl.innerHTML = `<section class="su-card sup-doc-card"><h2><span>Task card</span></h2>
+        <div class="sup-hint">⚠ Card failed to render: ${esc(e?.message || String(e))} — reload the page; if it persists this is a bug.</div></section>`;
+    }
     return;
   }
   const d = draft;
