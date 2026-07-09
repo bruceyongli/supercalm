@@ -129,6 +129,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.match(sup, /RECENT COMMITTED WORK \(git log, newest first\)/, 'work-derived boundary path exists');
   assert.match(sup, /boundaryWorkTs/, 'work-derived recheck spacing state');
   assert.match(sup, /boundaryWorkFp === wfp/, 'work-derived trigger keyed on the commit set, not wall-clock (first live test lockout)');
+  assert.match(sup, /Advance the evidence baseline at the close boundary/, 'baseRef advances when a card closes — audits scope to current work');
   const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(panel, /pm-between-title/, 'merged between-tasks empty state');
   assert.ok(!/sup-empty-doc">No active task card/.test(panel), 'redundant second empty box removed');

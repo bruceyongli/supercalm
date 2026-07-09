@@ -1775,7 +1775,14 @@ function applyActiveCard(ctx, cfg) {
       // (the self-echo directive was recorded against a done card).
       try {
         const st = ctx.getState();
-        if (st.activeTaskId != null) applySupervisorState(ctx, { activeTaskId: null, activeCardVersion: null, activeCardHash: null });
+        if (st.activeTaskId != null) {
+          applySupervisorState(ctx, { activeTaskId: null, activeCardVersion: null, activeCardHash: null });
+          // Advance the evidence baseline at the close boundary: the gate accepted this card's work,
+          // so diffs/audits/work-derived boundary triggers must scope to what comes NEXT. A days-old
+          // baseRef made every doctrine audit re-demand checkpoints for long-shipped spans, and fed
+          // the boundary watcher a giant stale stream instead of the fresh one.
+          ctx.gitHead().then((h) => { if (h) applySupervisorState(ctx, { baseRef: h }); }).catch(() => {});
+        }
       } catch {}
       return null;
     }
