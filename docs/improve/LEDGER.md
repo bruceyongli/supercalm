@@ -201,6 +201,25 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   guard the helper. Test-locked: goalBlock guard, visible-failure string, loader-before-render
   ordering.
 
+- **CRITICAL incident — supervisor self-echo / cross-session directive (2026-07-09, fixed v0.3.25):**
+  the AIOS ops session (dogfooding) DISCUSSED another session's task cards with the operator (the
+  OpenHand editor/log-UI boundary). Its own supervisor's summarizer classified that operator-facing
+  report (ending in an option list) as `agent_question`; runAnswer — between tasks, stamped against a
+  DONE card, `operator_intent: {"type":"none"}` — answered the "question" under autopilot and auto-sent
+  "Start the pending Workflow Editor card… treat the log-UI card as done/closed", which the agent then
+  executed as real cross-project card mutations. Authority was hallucinated end-to-end: no operator
+  words existed. Fixes: (1) `SCOPE_CARD_ADMIN_ADDENDUM` compiled into every runAnswer (subject matter ≠
+  jurisdiction; card lifecycle is operator-reserved; operator-addressed option lists are reports, not
+  agent questions); (2) deterministic `cardLifecycleDirective()` regex backstop in send_policy —
+  a drafted answer directing card state changes is forced to escalate in EVERY mode (the verbatim
+  incident text is a test vector); (3) between-tasks answer restraint line + contract wording;
+  (4) applyActiveCard clears `activeTaskId/version/hash` between tasks (no more attributing
+  interventions to dead contracts). LESSON: an agent whose terminal ROUTINELY contains other sessions'
+  artifacts (any admin/ops/dogfooding session) turns evidence-window trust into a contamination
+  vector; guards must separate what a session TALKS ABOUT from what it OWNS. Backlog: apply the same
+  jurisdiction rule to verify/unstick prompts; provenance-tag summarizer output (question addressed to
+  operator vs builder blocked).
+
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
 - **Trigger:** operator — "Supervisor's learning is too much to review… ask our primary supervisor

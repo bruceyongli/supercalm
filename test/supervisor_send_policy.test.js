@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE } = await import('../src/agents/supervisor/send_policy.js');
+const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE, cardLifecycleDirective } = await import('../src/agents/supervisor/send_policy.js');
 
 // ---- modeOf: legacy resolution (mode wins; observe_only only as fallback; NEVER default-merged) ----
 {
@@ -63,5 +63,38 @@ for (const mode of MODES) {
 
 // ---- unknown mode string degrades to legacy autopilot behavior (never bricks sends) ----
 assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
+
+// ---- cardLifecycleDirective: the operator-reserved card-admin backstop (self-echo incident) ----
+{
+  // THE incident text (verbatim shape) must be caught in every mode
+  assert.equal(cardLifecycleDirective('Start the pending \u201cWorkflow Editor design + connection fixes\u201d card as the active task. Treat the Workflow log UI redesign card as done/closed rather than merging the two goals; preserve its history, then continue on the editor card.'), true, 'the real incident directive is caught');
+  assert.equal(cardLifecycleDirective('Close the current card as done and start the next one.'), true);
+  assert.equal(cardLifecycleDirective('Activate task card task_9caa308172.'), true);
+  assert.equal(cardLifecycleDirective('Abandon this card; the goal moved.'), true);
+  assert.equal(cardLifecycleDirective('Treat the log-UI work as done and move on.'), true);
+  assert.equal(cardLifecycleDirective('Resume the paused card for the editor work.'), true);
+  // Ordinary engineering directives must NOT trip it — builders legitimately work ON card UI code
+  assert.equal(cardLifecycleDirective('Fix the null deref in renderTaskCard and add a test.'), false);
+  assert.equal(cardLifecycleDirective('Add a Dismiss button to the card banner component.'), false);
+  assert.equal(cardLifecycleDirective('Run the suite, then commit.'), false);
+  assert.equal(cardLifecycleDirective('The card component should render the archive drawer collapsed.'), false);
+  assert.equal(cardLifecycleDirective(''), false);
+  assert.equal(cardLifecycleDirective(null), false);
+}
+
+// ---- source locks: the self-echo guards stay wired into the live answer path ----
+{
+  const { readFileSync } = await import('node:fs');
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /SCOPE_CARD_ADMIN_ADDENDUM; \/\/ self-echo hardening/, 'scope addendum compiled into runAnswer sys');
+  assert.match(sup, /cardLifecycleDirective\(answer\)/, 'deterministic lifecycle guard runs on the drafted answer');
+  assert.match(sup, /BETWEEN TASKS: there is NO active contract/, 'between-tasks answers are restraint-scoped');
+  assert.match(sup, /activeTaskId: null, activeCardVersion: null, activeCardHash: null/, 'between-tasks clears stale contract attribution');
+  const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
+  assert.match(ap, /SCOPE & CARD ADMINISTRATION — HARD RULES/, 'addendum text present');
+  assert.match(ap, /not your jurisdiction/i, 'subject-matter vs jurisdiction rule present');
+  const pm = readFileSync(new URL('../src/agents/supervisor/project_memory.js', import.meta.url), 'utf8');
+  assert.match(pm, /Choosing, starting, or closing/, 'between-tasks contract names card admin as operator territory');
+}
 
 console.log('supervisor_send_policy.test ok');

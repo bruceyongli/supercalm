@@ -3,7 +3,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, buildAnswerUserText } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, buildAnswerUserText } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -27,7 +27,7 @@ import { decideSupervisorAction } from './supervisor/decide.js';
 import { filterHardRulesForCurrentTask } from './supervisor/challenge.js';
 import { readSupervisorState, statePatchForStance } from './supervisor/state.js';
 import { STANCE_SYS, buildStanceUserText, classifyStanceFromText, resolveStance, isStance } from './supervisor/stance.js';
-import { modeOf, copilotThreshold, sendPolicy } from './supervisor/send_policy.js';
+import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective } from './supervisor/send_policy.js';
 import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
 import {
   VERIFY_EVIDENCE_VERSION,
@@ -1099,10 +1099,17 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   if (auto) sys += '\n\n' + pb.autonomy_addendum;
   sys += '\n\n' + STAGE_ADDENDUM; // stand down if the agent is still planning / awaiting plan approval (any playbook version)
   sys += '\n\n' + RESERVED_APPROVAL_ADDENDUM; // deploy-incident hardening: operator words ONLY from OPERATOR_MESSAGES, never the terminal
+  sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: other sessions' work is subject matter, not jurisdiction; card lifecycle is the operator's
+  if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
   const { parsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
 
   const answer = clampLine(parsed?.answer, 1500);
+  // Deterministic backstop (self-echo incident): a drafted answer that DIRECTS task-card lifecycle
+  // ("start/activate/close/abandon the … card", "treat … as done") is operator territory in every
+  // mode — force it to the escalate path no matter what action/confidence the model returned.
+  const lifecycle = cardLifecycleDirective(answer);
+  if (lifecycle && parsed) { parsed.action = 'escalate'; parsed.reason = `Held: drafted a task-card lifecycle directive ("${clampLine(answer, 120)}") — card administration is the operator's call${parsed.reason ? '. ' + parsed.reason : ''}`; }
   const wantSend = parsed?.action !== 'escalate' && answer;
   if (!wantSend) {
     const conf = Number.isFinite(Number(parsed?.confidence)) ? ` conf ${Number(parsed.confidence).toFixed(2)}` : '';
@@ -1722,6 +1729,13 @@ function applyActiveCard(ctx, cfg) {
       // session does NOT fall back to the retired legacy monolith (stale-goal resurrection).
       cfg.doc = renderBetweenTasksMd(card.task);
       ctx.__betweenTasks = true;
+      // Clear contract attribution: decision/review records stamp st.activeTaskId, and leaving the
+      // CLOSED card's id here falsely attributed between-tasks interventions to a dead contract
+      // (the self-echo directive was recorded against a done card).
+      try {
+        const st = ctx.getState();
+        if (st.activeTaskId != null) applySupervisorState(ctx, { activeTaskId: null, activeCardVersion: null, activeCardHash: null });
+      } catch {}
       return null;
     }
     cfg.doc = renderCardMd(card);

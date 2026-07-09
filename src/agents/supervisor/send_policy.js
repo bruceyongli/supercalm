@@ -63,3 +63,16 @@ export function sendPolicy(mode, kind, { confidence, reserved, threshold = DEFAU
 export function modeLabel(mode) {
   return mode === 'observe' ? 'Observe' : mode === 'copilot' ? 'Co-pilot' : 'Autopilot';
 }
+
+// Deterministic backstop for the self-echo incident (2026-07-09): the supervisor drafted
+// "Start the pending X card as the active task… treat the Y card as done/closed" for an ops session
+// that was merely DISCUSSING another session's cards — and autopilot delivered it. Card lifecycle is
+// operator-reserved in EVERY mode, so a drafted ANSWER that directs card state changes is forced to
+// the escalate path regardless of the model's action/confidence fields (prompts ask for this too,
+// but the sharp edge gets a regex, not hope). Scope: imperative lifecycle verb near "card" /
+// "task card", or the "treat … as done/closed" form. Deliberately fail-safe — a false positive
+// only converts a send into an operator escalation.
+const CARD_LIFECYCLE_RX = /\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?\n]{0,80}\bas\s+done\b/i;
+export function cardLifecycleDirective(text) {
+  return CARD_LIFECYCLE_RX.test(String(text || ''));
+}
