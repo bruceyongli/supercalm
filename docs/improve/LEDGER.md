@@ -264,6 +264,13 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   active-chatter conservatism control): 14/14 green. LESSON: every layer of the loop tests what it
   can SEE — brains need the lab, usage needs rendered-state probes, and an operator report that
   neither catches means a new NET, not just a new fix.
+  v0.3.31 addendum: ui-lab's FIRST vision pass immediately caught a real unreported issue — the
+  policy-decision card tripled the same operator quote (Operator / Latest words considered / Direct
+  operator span) — deduped across levels; grader scoped to panel chrome (quoted content is data;
+  terminal mirror's cross-viewer width artifacts are by-design and excluded via element clip).
+  Loop rerun: supervisor-lab 14/14, ui-lab 2/2 with vision ON. The ops session now runs ON a card
+  (task_705273a80c, 3/4 criteria satisfied with evidence; 4th = work-derived boundary observed live,
+  open until the next natural between-tasks gap).
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires
