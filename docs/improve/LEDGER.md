@@ -291,6 +291,15 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   work-fp, visible 'held' intervention: uncarded new work belongs to the boundary-suggestion
   mechanism, not the gate). Lab scenario 13 locks it; caught BY the grill itself, per the rule that
   supervisor misbehavior becomes a scenario before a fix.
+  v0.3.36: the UNSTICK path nudged the agent to start benchmark Phase 1 "after Go Phase 1" — an
+  operator approval that never existed (verified against the messages record); the agent was
+  correctly AWAITING the phase gate. Root causes: unstick evidence contained NO operator-message
+  record (nothing to check a premise against), and the unstick prompt lacked the stage/phase-gate
+  addendum the answer path has. Fixed: operator_messages in unstick evidence, STAGE_ADDENDUM +
+  OPERATOR-RECORD hard rule ("the agent's own 'say go' text is the AGENT awaiting the operator,
+  not the operator speaking") on the unstick prompt; lab scenarios 14 (gate respected) + 14b
+  (genuine stuck still nudged) green. The agent side of the defense also held: the directive was
+  refused pending verification per the self-echo rule — supervisor paraphrase ≠ operator words.
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires

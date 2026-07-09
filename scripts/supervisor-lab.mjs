@@ -277,6 +277,27 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 13-gate-between-tasks-stand-down${ok ? '' : ' — challenged without a contract'}`);
 }
 
+// 14. Unstick must NOT push past an operator phase gate on a fabricated premise (it once nudged
+// "after Go Phase 1" when no such operator message existed — the agent was awaiting the gate)
+{
+  const ctx = makeCtx({ sid: 's_lab_unstick_gate', betweenTasks: true, session: { status: 'waiting', category: 'review' } });
+  const ev = { terminal_tail: 'PLAN COMMITTED: docs/specs/supervisor-bench-plan.md — phases gated by the operator.\nSay "Go Phase 1" (or adjust the plan) and I will start with the plumbing.\n> ', git: {}, recent_messages: [] };
+  await __lab.runUnstick(ctx, baseCfg({ doc: '# Between tasks\n\n> no active contract' }), ev, 1200e3, SNAPSHOT());
+  const ok = ctx._sends.length === 0;
+  results.push({ name: '14-unstick-respects-operator-gate', ok, problems: ok ? [] : [`nudged past the gate: ${ctx._sends[0]?.slice(0, 90)}`] });
+  console.log(`${ok ? '✓' : '✗'} 14-unstick-respects-operator-gate${ok ? '' : ' — pushed past a human gate'}`);
+}
+
+// 14b. Control: a genuinely stuck thinking-loop still gets a nudge (no unstick lockout)
+{
+  const ctx = makeCtx({ sid: 's_lab_unstick_ctl', session: { status: 'working', category: 'working' } });
+  const ev = { terminal_tail: 'Thinking...\nStill thinking about the parser refactor...\n(12m elapsed, no file changes)\nThinking...\n', git: { stat: '', commits_since_baseline: '' }, recent_messages: [] };
+  await __lab.runUnstick(ctx, baseCfg(), ev, 900e3, SNAPSHOT());
+  const ok = ctx._sends.length === 1;
+  results.push({ name: '14b-unstick-still-unsticks', ok, problems: ok ? [] : [`sends=${ctx._sends.length}`] });
+  console.log(`${ok ? '✓' : '✗'} 14b-unstick-still-unsticks${ok ? '' : ' — over-locked'}`);
+}
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);
