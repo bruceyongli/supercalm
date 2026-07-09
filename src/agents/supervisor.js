@@ -1705,11 +1705,16 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
     // contract. Operator-message triggers alone left the ops session card-less through a full day
     // of releases (2026-07-09) — the work stream itself must be able to open a boundary.
     if (!ctx.__betweenTasks) return;
-    const WORK_COOLDOWN = 45 * 60e3;
-    if (t - (st.boundaryWorkTs || 0) < WORK_COOLDOWN) return;
+    // Keyed on the COMMIT SET, not wall-clock: the first live test stamped a 45-min cooldown on the
+    // session's very first tick (pre-existing repo history judged 'none') and the REAL commits 90s
+    // later were locked out. Re-judge when the stream changes, with 5-min spacing to bound cost.
+    const MIN_RECHECK = 5 * 60e3;
+    if (t - (st.boundaryWorkTs || 0) < MIN_RECHECK) return;
     const commits = String(ev?.git?.commits_since_baseline || '').trim();
     if (!commits || commits.split('\n').length < 2) return; // needs accumulated committed work, not a stray commit
-    applySupervisorState(ctx, { boundaryWorkTs: t });
+    const wfp = h32(commits);
+    if (st.boundaryWorkFp === wfp) return; // this exact commit set was already judged — don't re-ask
+    applySupervisorState(ctx, { boundaryWorkTs: t, boundaryWorkFp: wfp });
     const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
     const user = 'ACTIVE TASK CARD:\n(no active card — between tasks)\n\nRECENT COMMITTED WORK (git log, newest first):\n' + commits.slice(0, 1800) + (latest ? '\n\nLATEST OPERATOR MESSAGE (context, may be stale):\n' + latest.slice(0, 600) : '');
     const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
