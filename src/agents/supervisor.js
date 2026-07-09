@@ -1105,6 +1105,15 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   const { parsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
 
   const answer = clampLine(parsed?.answer, 1500);
+  // Audience gate (self-echo first domino): the model must classify WHO the pending item is for.
+  // A report/option list addressed to the OPERATOR gets answered only under an explicit autopilot
+  // stance (real delegation); otherwise it escalates no matter how confident the model is.
+  // Deterministic on the model's own JSON field; absent field = legacy playbook, no-op.
+  if (parsed && String(parsed.audience || '') === 'operator_choice' && resolveStance(ctx.getState().operatorStance) !== 'autopilot') {
+    parsed.action = 'escalate';
+    if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
+    parsed.reason = `The pending item is addressed to the operator (audience=operator_choice, no autopilot delegation)${parsed.reason ? ' — ' + parsed.reason : ''}`;
+  }
   // Deterministic backstop (self-echo incident): a drafted answer that DIRECTS task-card lifecycle
   // ("start/activate/close/abandon the … card", "treat … as done") is operator territory in every
   // mode — force it to the escalate path no matter what action/confidence the model returned.
@@ -1113,7 +1122,8 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   const wantSend = parsed?.action !== 'escalate' && answer;
   if (!wantSend) {
     const conf = Number.isFinite(Number(parsed?.confidence)) ? ` conf ${Number(parsed.confidence).toFixed(2)}` : '';
-    const note = calibrated ? ` [reserved=${parsed?.reserved === true}${conf}]` : '';
+    const aud = parsed?.audience ? ` audience=${String(parsed.audience).slice(0, 24)}` : '';
+    const note = calibrated ? ` [reserved=${parsed?.reserved === true}${conf}${aud}]` : aud ? ` [${aud.trim()}]` : '';
     // Non-repeating escalation: don't re-notify the SAME reserved ask until the operator has engaged
     // since (a stable key on the ask itself, not the volatile screen). Avoids escalation spam / silence.
     const escKey = h32((s?.category || '') + '|' + clampLine(question || s?.summary || '', 200).toLowerCase());
@@ -1154,7 +1164,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   sent_text = r.message || '';
   // Honest re-grill accounting: only DELIVERED directives count as "times the agent was directed".
   if (sent) applySupervisorState(ctx, { answerSentTries: Number(ctx.getState().answerSentTries || 0) + 1 });
-  logIntervention(ctx, { kind: 'answer', trigger, model, verdict: sent ? 'answered' : 'draft', assessment: parsed?.reason || '', message: answer, sent, sent_text, raw, error });
+  logIntervention(ctx, { kind: 'answer', trigger, model, verdict: sent ? 'answered' : 'draft', assessment: [parsed?.reason || '', parsed?.audience ? `[audience=${String(parsed.audience).slice(0, 24)}]` : ''].filter(Boolean).join(' '), message: answer, sent, sent_text, raw, error });
   ctx.emit('review', { verdict: 'answered', summary: clampLine(answer, 160) });
 }
 
@@ -2818,3 +2828,9 @@ export const actions = {
     return { held: false, wasHeld, docUpdated, sent: !!sent };
   },
 };
+
+// Test seam for the supervisor lab (scripts/supervisor-lab.mjs): the lab drives the REAL brains
+// with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
+// incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
+// imports this.
+export const __lab = { runAnswer, runVerify, applyActiveCard };

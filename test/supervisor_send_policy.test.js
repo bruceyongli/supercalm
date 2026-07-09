@@ -108,4 +108,22 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.ok(/sys \+= '\\n\\n' \+ SCOPE_CARD_ADMIN_ADDENDUM; \/\/ self-echo hardening: verify/.test(sup), 'verify prompt carries jurisdiction rules');
 }
 
+// ---- audience gate (self-echo first domino, v0.3.29) ----
+{
+  const { readFileSync } = await import('node:fs');
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  // model classifies audience; CODE owns delivery: operator_choice without autopilot stance never delivers
+  assert.match(sup, /audience.{0,20}=== 'operator_choice' && resolveStance\(ctx\.getState\(\)\.operatorStance\) !== 'autopilot'/, 'deterministic audience gate on the model field');
+  assert.match(sup, /audience=\$\{String\(parsed\.audience\)/, 'audience surfaced in intervention rows for forensics + lab grading');
+  const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
+  assert.match(ap, /"audience":"builder_blocked"/, 'addendum defines the audience field');
+  assert.match(ap, /Do not escalate solely because the audience is the operator/, 'model answers on merits; the gate decides delivery');
+  // the lab exists and covers the incident matrix
+  const lab = readFileSync(new URL('../scripts/supervisor-lab.mjs', import.meta.url), 'utf8');
+  for (const sc of ['1-self-echo-cross-session', '2-card-lifecycle-block', '3-reserved-deploy-menu', '4-operator-audience', '4b-audience-autopilot-delegation', '5-stage-plan-approval', '6-context-footer-not-wedge', '7-model-403-switch', '8-dig-for-truth', '9-between-tasks-dod-bound', '10-goal-doubt-hold']) {
+    assert.ok(lab.includes(sc), `lab scenario ${sc} present`);
+  }
+  assert.match(sup, /export const __lab/, 'lab seam exported');
+}
+
 console.log('supervisor_send_policy.test ok');

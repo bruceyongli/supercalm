@@ -230,6 +230,24 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   the LLM honoring the addendum. Deterministic audience/jurisdiction classification stays on the
   run-4 backlog with a design sketch (detect.js PROMPT_RX = real interactive prompt vs synthetic
   question; summarizer audience field).
+  THIRD FOLLOW-ON — THE SUPERVISOR LAB (v0.3.29, operator hard rule "improve the system, don't
+  solve it yourself" + "design experiments to test your own supervisor"): `npm run lab`
+  (scripts/supervisor-lab.mjs + docs/improve/supervisor-lab.md) drives the REAL runAnswer/runVerify
+  (exported __lab seam) with faithful fixtures on an isolated AIOS_DATA and the REAL model chain,
+  grading 11 scenarios distilled from every operator-reported incident: self-echo, card-lifecycle,
+  reserved deploy menu, operator-audience (±autopilot delegation), stage stand-down, context-footer,
+  403-doctrine, dig-for-truth, between-tasks DoD bound, goal-doubt hold. Ships with the AUDIENCE
+  layer: the compiled addendum makes the model classify every ask as builder_blocked vs
+  operator_choice AND still answer on the merits; a deterministic gate in runAnswer delivers
+  operator_choice answers ONLY under an explicit autopilot stance, else escalates (division of
+  labor: LLM classifies, code decides — telling the MODEL to escalate option-lists broke legitimate
+  delegation, caught by scenario 4b). audience surfaced in intervention rows. RESULT: 11/11 green
+  ×2 consecutive runs. The lab also caught (a) its own first version being VACUOUS — ctx.callModel
+  missing meant every verdict was an error-escalate and "passes" were theater (the operator's
+  evidence doctrine applied to my own harness), and (b) a real infra fact: the antigravity account
+  behind gemini-pro-agent/:8791 is 403 ToS-disabled (production unaffected — gpt-5.5 leads the
+  chain; voice brain degrades to its fallbacks). HARD RULE now in three layers: agent memory,
+  CLAUDE.md prime directive, and the doctrine distiller's queue.
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires
