@@ -1059,7 +1059,7 @@ function policyLine(label, value) {
   const v = value == null || value === '' ? '—' : String(value);
   return `<div class="sup-policy-row"><span>${esc(label)}</span><b title="${esc(v)}">${esc(v)}</b></div>`;
 }
-function currentTaskHtml(task) {
+function currentTaskHtml(task, shownQuote = '') {
   if (!task) return '';
   const intent = task.directOperatorIntent || {};
   const forwarded = Array.isArray(task.forwardedReports) ? task.forwardedReports : [];
@@ -1071,8 +1071,8 @@ function currentTaskHtml(task) {
       ${policyLine('Intent source', task.source || '')}
       ${policyLine('Confidence', task.confidence == null ? '' : Number(task.confidence).toFixed(2))}
     </div>
-    ${task.latestOperatorWordsConsidered ? `<div class="sup-policy-quote"><b>Latest words considered:</b> ${esc(task.latestOperatorWordsConsidered)}</div>` : ''}
-    ${intent.text ? `<div class="sup-policy-quote"><b>Direct operator span:</b> ${esc(intent.text)}</div>` : ''}
+    ${task.latestOperatorWordsConsidered && task.latestOperatorWordsConsidered !== shownQuote ? `<div class="sup-policy-quote"><b>Latest words considered:</b> ${esc(task.latestOperatorWordsConsidered)}</div>` : ''}
+    ${intent.text && intent.text !== task.latestOperatorWordsConsidered ? `<div class="sup-policy-quote"><b>Direct operator span:</b> ${esc(intent.text)}</div>` : ''}
     ${stale ? `<div class="sup-policy-quote"><b>Doc override:</b> ${esc(stale.reason || 'latest operator words override stale doc')} ${stale.docCurrentWork ? `<span class="muted">(${esc(stale.docCurrentWork)})</span>` : ''}</div>` : ''}
     ${forwarded.length ? `<div class="sup-policy-reasons">${forwarded.slice(0, 3).map((r) => `<span>Forwarded: ${esc(r.text)}</span>`).join('')}</div>` : ''}`;
 }
@@ -1105,7 +1105,7 @@ function policyCard() {
       </div>
       ${intent.text ? `<div class="sup-policy-quote"><b>Operator:</b> ${esc(intent.text)}</div>` : ''}
       ${signal.summary ? `<div class="sup-policy-quote"><b>Signal:</b> ${esc(signal.summary)}</div>` : ''}
-      ${currentTaskHtml(task)}
+      ${currentTaskHtml(task, intent.text)}
       ${reasonHtml}
       ${sentText}
     </section>`;

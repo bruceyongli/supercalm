@@ -105,8 +105,16 @@ async function withPage(fn) {
         const r = await cdp('Runtime.evaluate', { expression: expr, returnByValue: true });
         return r.result?.value;
       },
-      shot: async (file) => {
-        const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true });
+      shot: async (file, clipSel = null) => {
+        // clipSel scopes the capture to one element (the vision grader must judge the surface under
+        // test, not the whole page — the tmux terminal mirror legitimately shows cross-viewer width
+        // artifacts that would fail every scenario).
+        let clip;
+        if (clipSel) {
+          const r0 = await cdp('Runtime.evaluate', { expression: `(() => { const el = document.querySelector(${JSON.stringify(clipSel)}); if (!el) return null; const b = el.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: Math.min(b.height, 1600) }; })()`, returnByValue: true });
+          if (r0.result?.value?.width > 50) clip = { ...r0.result.value, scale: 1 };
+        }
+        const r = await cdp('Page.captureScreenshot', { format: 'png', captureBeyondViewport: !clip, ...(clip ? { clip } : {}) });
         writeFileSync(file, Buffer.from(r.data, 'base64'));
         return r.data;
       },
@@ -124,7 +132,7 @@ async function visionGrade(b64, label) {
     const route = routeForModel(process.env.AIOS_UI_LAB_VISION_MODEL || 'gpt-5.5');
     if (!isVisionRoute(route)) return null;
     const out = await callProxyModel(route, [
-      { role: 'system', content: 'You review one screenshot of a dark-mode developer tool panel. Return STRICT JSON {"coherent":true|false,"issues":["<specific visual/usage problems: overflow, misalignment, unreadable contrast, redundant/confusing blocks, broken layout>"]}. Judge visual quality and usage clarity, not feature choices. Empty issues array if clean.' },
+      { role: 'system', content: 'You review one screenshot of a dark-mode developer tool panel. Return STRICT JSON {"coherent":true|false,"issues":["<specific visual/usage problems: overflow, misalignment, unreadable contrast, redundant/confusing blocks, broken layout>"]}. Judge the PANEL CHROME (layout, alignment, duplication of UI blocks), never the quoted user/log/terminal CONTENT — quoted operator or agent text is data; its grammar, truncation-with-ellipsis, or repetition inside ONE quote is not a UI issue. The capture may end mid-card at the bottom edge (clip artifact) — not an issue. Empty issues array if clean.' },
       { role: 'user', content: [{ type: 'text', text: `UI state: ${label}` }, { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } }] },
     ], { json: true, maxTokens: 400 });
     const m = String(out.content || '').match(/\{[\s\S]*\}/);
@@ -154,7 +162,7 @@ for (const [name, sid] of plan) {
       if (v !== true) fails.push(`${label} -> ${JSON.stringify(v)}`);
     }
     const file = join(OUT, `${name}-${sid}.png`);
-    const b64 = await page.shot(file);
+    const b64 = await page.shot(file, '#side-panels, #s-agent-supervisor, .side-tabs-panels'); // panel region only
     let vision = null;
     if (VISION) vision = await visionGrade(b64, name);
     const visualIssues = vision && vision.coherent === false ? vision.issues || [] : [];
