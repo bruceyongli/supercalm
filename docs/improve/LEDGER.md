@@ -285,6 +285,12 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   falling back to 'claude-opus-4-8'") — every supervisor JSON call is riding the opus fallback.
   Chain resilience is carrying production, but latency/cost doubled: needs a follow-up (payload
   response_format vs proxy contract) — NOT fixed tonight, filed as next-run work.
+  v0.3.34: the completion gate challenged the agent 48 SECONDS after its own complete verdict
+  auto-closed the card (between tasks, task_id correctly null) — a contract-less evidence-grill
+  loop the between-tasks contract forbids. runGateChallenge now stands down between tasks (once per
+  work-fp, visible 'held' intervention: uncarded new work belongs to the boundary-suggestion
+  mechanism, not the gate). Lab scenario 13 locks it; caught BY the grill itself, per the rule that
+  supervisor misbehavior becomes a scenario before a fix.
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires

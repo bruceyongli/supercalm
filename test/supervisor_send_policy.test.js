@@ -134,6 +134,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.ok(!/sup-empty-doc">No active task card/.test(panel), 'redundant second empty box removed');
   const uilab = readFileSync(new URL('../scripts/ui-lab.mjs', import.meta.url), 'utf8');
   assert.match(uilab, /between-tasks-state/, 'ui-lab covers the between-tasks usage state');
+  assert.match(sup, /if \(ctx\.__betweenTasks\) \{\n    const st0 = ctx\.getState\(\);\n    const bfp = 'between\|'/, 'completion gate stands down between tasks (48s-after-complete loop)');
 }
 
 console.log('supervisor_send_policy.test ok');

@@ -266,6 +266,17 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 12b-boundary-active-chatter-control${ok ? '' : ' — churned'}`);
 }
 
+// 13. Between tasks: the completion gate must STAND DOWN (it once challenged 48s after its own
+// complete verdict closed the card — a contract-less evidence-grill loop)
+{
+  const ctx = makeCtx({ sid: 's_lab_gate_between', betweenTasks: true, session: { category: 'review', summary: 'agent reports the slice done' } });
+  const r = await __lab.runGateChallenge(ctx, baseCfg({ doc: '# Between tasks\n\n> no active contract' }), SNAPSHOT());
+  const held = ctx._state().gateBetweenHeldKey;
+  const ok = r?.sent === 0 && ctx._sends.length === 0 && !!held;
+  results.push({ name: '13-gate-between-tasks-stand-down', ok, problems: ok ? [] : [`sent=${r?.sent} sends=${ctx._sends.length} heldKey=${!!held}`] });
+  console.log(`${ok ? '✓' : '✗'} 13-gate-between-tasks-stand-down${ok ? '' : ' — challenged without a contract'}`);
+}
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);

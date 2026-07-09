@@ -2413,6 +2413,20 @@ async function runDocMaintain(ctx, cfg, signalsText) {
 
 // the completion interrogation: a templated challenge built from the doc (no model call).
 async function runGateChallenge(ctx, cfg, snapshot = null) {
+  // BETWEEN TASKS: no active contract -> no completion gating (the contract says stand by). The
+  // gate once challenged the agent 48s AFTER its own complete verdict closed the card (2026-07-09):
+  // the completion-claim trigger re-armed on the agent's report with nothing left to gate against.
+  // Uncarded new work is the boundary-suggestion mechanism's job, not the gate's.
+  if (ctx.__betweenTasks) {
+    const st0 = ctx.getState();
+    const bfp = 'between|' + (progressFp(await ctx.getEvidence({ diff: false, terminalMax: 400 }).catch(() => ({})))?.work || 'none');
+    if (st0.gateBetweenHeldKey !== bfp) {
+      applySupervisorState(ctx, { gateBetweenHeldKey: bfp });
+      logIntervention(ctx, { kind: 'gate', trigger: 'completion', model: null, verdict: 'held', assessment: 'Between tasks — no active contract to gate. Completion claims about uncarded work need a card first (the boundary suggestion mechanism covers new work); standing down instead of re-challenging a closed contract.', message: '', sent: 0 });
+      ctx.emit('review', { verdict: 'held', summary: 'between tasks — completion gate stands down' });
+    }
+    return { sent: 0, message: '' };
+  }
   const msg = buildChallenge(cfg.doc, ctx, snapshot);
   let sent = 0;
   let sent_text = '';
@@ -2858,4 +2872,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge };
