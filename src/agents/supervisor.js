@@ -839,7 +839,8 @@ async function callChain(ctx, cfg, messages, opts = {}) {
       return { ...r, model, usedFallback: i > 0 };
     } catch (e) {
       lastErr = e;
-      if (i < chain.length - 1) ctx.log(`model '${model}' failed (${String(e.message || e).slice(0, 80)}); falling back to '${chain[i + 1]}'`);
+      // 400-char reason, single line: the old 80-char clamp hid WHY 5,595 gpt-5.5 /responses 400s happened (found 2026-07-09).
+      if (i < chain.length - 1) ctx.log(`model '${model}' failed (${String(e.message || e).replace(/\s+/g, ' ').slice(0, 400)}); falling back to '${chain[i + 1]}'`);
     }
   }
   throw lastErr;
