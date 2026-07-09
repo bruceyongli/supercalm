@@ -171,7 +171,7 @@ const card1 = createTask({
   const api8 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
   assert.match(api8, /a closed card is history, not the current contract/, 'tasks payload demotes closed cards');
   const panel8 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
-  assert.match(panel8, /Between tasks — last:/, 'panel shows the between-tasks state');
+  assert.match(panel8, /pm-between-title/, 'panel shows the merged between-tasks state (one calm block, v0.3.30)');
 }
 
 // ---- card-first + stale-proposal hygiene ----------------------------------------------------------
