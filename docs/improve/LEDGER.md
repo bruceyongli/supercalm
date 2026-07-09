@@ -271,6 +271,20 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   Loop rerun: supervisor-lab 14/14, ui-lab 2/2 with vision ON. The ops session now runs ON a card
   (task_705273a80c, 3/4 criteria satisfied with evidence; 4th = work-derived boundary observed live,
   open until the next natural between-tasks gap).
+  LIVE VERIFICATION of the work-derived boundary (v0.3.32): the first scratch-session test EXPOSED
+  a real bug the lab missed — the 45-min wall-clock cooldown was stamped on the session's very first
+  tick (pre-existing repo history, correctly judged 'none') and locked out the real commits 90s
+  later. Fix: keyed on h32(commit set) + 5-min spacing — a changed stream re-judges, an unchanged
+  one never re-asks. Second live run, clean-room (raw /type task, ZERO operator-source messages so
+  the message path was impossible): agent committed slugify util+test uncarded → tick opened
+  pendingBoundary {title:"Add slugify utility", fromWork:1} → rendered in the panel with
+  Start card/Dismiss (artifact v0.3.32-work-derived-suggestion.png). Bonus finding: the model's
+  'none' on the first run's trivial "note 1/note 2" commits was CORRECT judgment — trivial streams
+  shouldn't card. ALSO DISCOVERED live: since the ~05:00 model rescan, gpt-5.5 supervisor calls
+  400 on the codex proxy's /responses endpoint ("[agent:supervisor] model 'gpt-5.5' failed …
+  falling back to 'claude-opus-4-8'") — every supervisor JSON call is riding the opus fallback.
+  Chain resilience is carrying production, but latency/cost doubled: needs a follow-up (payload
+  response_format vs proxy contract) — NOT fixed tonight, filed as next-run work.
   SECOND FOLLOW-ON (v0.3.28, from the supervisor's own next verdict): between tasks the verify
   rubric inflated the repo spec into "the authoritative definition_of_done" and gated a finished
   slice against the ENTIRE refactor plan (no card = no scope bound; TASK_CARD_ADDENDUM only fires
