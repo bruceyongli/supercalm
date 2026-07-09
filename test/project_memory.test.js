@@ -174,6 +174,35 @@ const card1 = createTask({
   assert.match(panel8, /Between tasks — last:/, 'panel shows the between-tasks state');
 }
 
+// ---- card-first + stale-proposal hygiene ----------------------------------------------------------
+{
+  const { expireStaleMigrationProposals } = pm;
+  // dead-driver proposal expires; fresh live-driver proposal survives
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_dead','p_exp','codex','tmx_d','exited', 1, 1)").run();
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_live2','p_exp','codex','tmx_l','waiting', 1, 1)").run();
+  const dm2 = await import('../src/agents/supervisor/doc_migration.js');
+  const doc = '# T\n## Now\nX\n## Acceptance criteria\n- [ ] c';
+  const a = await dm2.proposeMigration({ sessionId: 's_dead', projectId: 'p_exp', doc, call: null });
+  const b = await dm2.proposeMigration({ sessionId: 's_live2', projectId: 'p_exp', doc, call: null });
+  const n = expireStaleMigrationProposals();
+  assert.ok(n >= 1, 'dead-driver proposal expired');
+  assert.equal(pm.getTask(a.card.task.id).status, 'abandoned');
+  assert.equal(pm.getTask(b.card.task.id).status, 'proposed', 'live fresh proposal survives');
+  const old3 = pm.getTask(b.card.task.id);
+  db.prepare('UPDATE pm_tasks SET created_at = ? WHERE id = ?').run(Date.now() - 80 * 3600e3, b.card.task.id);
+  expireStaleMigrationProposals();
+  assert.equal(pm.getTask(b.card.task.id).status, 'abandoned', '72h-old proposal expires');
+
+  const api9 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
+  assert.match(api9, /expireStaleMigrationProposals\(\)/, 'lazy expiry on the tasks read');
+  assert.match(api9, /mine: t\.driven_by_session === sid/, 'proposals carry ownership');
+  const panel9 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(panel9, /t\.status === 'proposed' && t\.mine/, 'migration banner only for the owning session');
+  assert.match(panel9, />Dismiss</, 'a real Dismiss exists');
+  assert.match(panel9, /Legacy doc \(retired/, 'legacy doc demoted behind the card shell');
+  assert.ok(!panel9.includes('Keep legacy doc'), 'the confusing keep-doc label is gone');
+}
+
 console.log('project_memory.test ok');
 
 // ---- phase 4: project awareness ---------------------------------------------------------------------
@@ -357,8 +386,8 @@ Ship the widget cache fix and verify reload behavior.
   assert.match(sup6, /tier === 'hot' && cfg\.doc && cfg\.doc\.trim\(\) && !st\.migrationProposedAt/, 'lazy: hot-tier, once, doc present, no card');
   assert.match(sup6, /migrationProposedAt: t/, 'once-per-session state mark');
   const panel6 = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
-  assert.match(panel6, /Converted from this session's legacy doc/, 'migration banner');
-  assert.match(panel6, /Keep legacy doc/, 'decline path');
+  assert.match(panel6, /Card drafted from this session's old doc/, 'migration banner');
+  assert.match(panel6, />Dismiss</, 'decline path');
   const api6 = readFileSync(new URL('../src/pm_api.js', import.meta.url), 'utf8');
   assert.match(api6, /legacy: !!t\.legacy_doc/, 'tasks route flags migrated cards');
 }

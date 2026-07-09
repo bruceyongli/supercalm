@@ -10,7 +10,7 @@ import { getSession, getProject } from './store.js';
 import {
   createTask, getTask, taskCard, amendTask, addCriterion, supersedeCriterion, setTaskStatus,
   listTasks, listCriteria, appendEvent, getRuntime, upsertRuntime, writeProjection, listEvents,
-  deriveVerifyFacts, pinVerifyFacts, addEvidence, satisfyCriterion,
+  deriveVerifyFacts, pinVerifyFacts, addEvidence, satisfyCriterion, expireStaleMigrationProposals,
 } from './agents/supervisor/project_memory.js';
 import { bus } from './bus.js';
 import { getGrant, upsertGrant } from './store.js';
@@ -42,6 +42,7 @@ route('GET', '/api/project/:id/tasks/open', (req, res, { id: pid }) => {
 route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
   const { error, projectId, sess } = sessionProject(sid);
   if (error) return json(res, 404, { error });
+  try { expireStaleMigrationProposals(); } catch {}
   const rt = getRuntime(sid);
   let active = rt?.active_task_id ? taskCard(rt.active_task_id) : null;
   let lastClosed = null;
@@ -57,7 +58,7 @@ route('GET', '/api/session/:id/tasks', (req, res, { id: sid }) => {
     lastClosed,
     pendingBoundary,
     open: all.filter((t) => ['proposed', 'active', 'paused', 'verify_pending'].includes(t.status) && t.id !== active?.task?.id)
-      .map((t) => ({ ...t, legacy: !!t.legacy_doc, legacy_doc: undefined })),
+      .map((t) => ({ ...t, legacy: !!t.legacy_doc, mine: t.driven_by_session === sid, legacy_doc: undefined })),
     archived: all.filter((t) => ['done', 'abandoned', 'superseded'].includes(t.status)).slice(0, 20),
   });
 });

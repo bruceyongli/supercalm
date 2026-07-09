@@ -382,6 +382,26 @@ export function pinVerifyFacts(taskId, facts) {
     .run(JSON.stringify(facts).slice(0, 1000), taskId);
 }
 
+// A migration proposal is a snapshot of a doc that was ALREADY going stale; it must not outlive its
+// moment. Expire proposals whose driving session is gone/dead or that sat unreviewed for 72h — the
+// boundary suggester (live operator messages) is the durable source of next cards, not old docs.
+export function expireStaleMigrationProposals({ maxAgeMs = 72 * 3600e3 } = {}) {
+  const rows = db.prepare("SELECT id, driven_by_session, created_at FROM pm_tasks WHERE status = 'proposed' AND legacy_doc IS NOT NULL").all();
+  let n = 0;
+  for (const t of rows) {
+    let dead = false;
+    try {
+      const s2 = t.driven_by_session ? db.prepare('SELECT status FROM sessions WHERE id = ?').get(t.driven_by_session) : null;
+      dead = !s2 || s2.status === 'exited';
+    } catch {}
+    if (dead || now() - t.created_at > maxAgeMs) {
+      setTaskStatus(t.id, 'abandoned', { actor: 'supervisor', outcome: 'migration proposal expired (stale doc / session gone) — current work proposes its own cards' });
+      n++;
+    }
+  }
+  return n;
+}
+
 // ---- phase 5: history retrieval + the pre-action gate -------------------------------------------------
 
 // "Previously failed" (PROJECTMEM 2606.12329 steal): before the supervisor proposes an approach or
