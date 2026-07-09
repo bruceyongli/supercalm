@@ -1,4 +1,5 @@
 import { makeDecision, persistDecision, updateDecisionSend } from './decision_records.js';
+import { cardLifecycleDirective } from './send_policy.js';
 import { guardSupervisorSendContext } from './context_guard.js';
 
 function line(s, max = 1500) {
@@ -76,6 +77,16 @@ export async function dispatchSupervisorSend(ctx, {
     allowed = false;
     suppressed = suppressed || guard.suppressionReason || 'context-guard-blocked';
     guardedReasons = guard.reasons || [];
+  }
+  // Choke-point backstop (self-echo incident): NO supervisor-authored text may direct task-card
+  // lifecycle, on any path (answer/unstick/keep-working/challenge/recover) in any mode — card admin
+  // is the operator's. Only the operator relay (hold.resolve_send: the operator's own typed words)
+  // is exempt. runAnswer converts these to escalations before dispatch; this catches every other
+  // path plus any future call site, so the guard cannot be forgotten.
+  if (allowed && ruleId !== 'hold.resolve_send' && cardLifecycleDirective(msg)) {
+    allowed = false;
+    suppressed = 'card-lifecycle-operator-reserved';
+    guardedReasons = [...guardedReasons, 'drafted supervisor text directs task-card lifecycle (start/close/abandon/done) — operator territory in every mode'];
   }
   const decision = recordSupervisorDecision(ctx, {
     snapshot,

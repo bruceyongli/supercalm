@@ -1171,7 +1171,7 @@ async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
     terminal_tail: tailStr(ev.terminal_tail, 6000),
   };
   const userText = 'The agent appears stuck. Decide a nudge or escalate. Return JSON only.\n\nCONTEXT_JSON:\n' + JSON.stringify(evidence).slice(0, MAX_CONTEXT_CHARS);
-  const { parsed, raw, error, model } = await callJson(ctx, cfg, SYS_UNSTICK, userText);
+  const { parsed, raw, error, model } = await callJson(ctx, cfg, SYS_UNSTICK + '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM, userText); // self-echo hardening: unstick nudges obey jurisdiction + card-admin rules too
 
   const message = clampLine(parsed?.message, 1500);
   const wantSend = parsed?.action !== 'escalate' && message;
@@ -1291,6 +1291,7 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     // (compiled-in addendum like STAGE_ADDENDUM — never edited into the playbook-swappable base).
     sys += '\n\nTASK_CARD_ADDENDUM: The supervision document is a TASK CARD — it defines THIS task\'s full scope. Any definition_of_done or repo spec in the evidence is PROJECT-level context: it may inform HOW you judge evidence quality, but it must NOT expand this verdict\'s scope beyond the card\'s criteria (note mismatches as observations, never as unmet criteria). Criteria already marked "- [x]" carry recorded evidence — do not re-litigate them; judge the open "- [ ]" ones. The card\'s acceptance criteria appear as "- [ ] text" lines. In your JSON, ALSO return "criteria_met": [{"text_prefix": "<first ~8 words of the criterion exactly as written>", "evidence": "<one line citing the CONCRETE evidence (command output, diff, record) that proves it>"}] — ONLY for criteria you can prove from the evidence provided. Omit criteria you cannot prove; never guess.';
   }
+  sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: verify's message_to_agent obeys jurisdiction + card-admin rules too
   const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);
   const parsed = normalizeVerificationResult(rawParsed || null, { error: error || 'no output' });
   // DOCTRINE AUDIT (run 2 — doctrine as enforcement): the operator's audit-type rules are CHECKED

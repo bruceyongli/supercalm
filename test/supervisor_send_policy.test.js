@@ -95,6 +95,15 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.match(ap, /not your jurisdiction/i, 'subject-matter vs jurisdiction rule present');
   const pm = readFileSync(new URL('../src/agents/supervisor/project_memory.js', import.meta.url), 'utf8');
   assert.match(pm, /Choosing, starting, or closing/, 'between-tasks contract names card admin as operator territory');
+
+  // Choke point: the dispatcher blocks card-lifecycle text on EVERY path/mode except the operator
+  // relay — so no current or future call site can forget the guard.
+  const disp = readFileSync(new URL('../src/agents/supervisor/dispatch.js', import.meta.url), 'utf8');
+  assert.match(disp, /ruleId !== 'hold\.resolve_send' && cardLifecycleDirective\(msg\)/, 'dispatcher-level lifecycle block, operator relay exempt');
+  assert.match(disp, /card-lifecycle-operator-reserved/, 'distinct suppression reason for the panel feed');
+  // The jurisdiction addendum rides EVERY steering prompt, not just answers.
+  assert.match(sup, /SYS_UNSTICK \+ '\\n\\n' \+ SCOPE_CARD_ADMIN_ADDENDUM/, 'unstick prompt carries jurisdiction rules');
+  assert.ok(/sys \+= '\\n\\n' \+ SCOPE_CARD_ADMIN_ADDENDUM; \/\/ self-echo hardening: verify/.test(sup), 'verify prompt carries jurisdiction rules');
 }
 
 console.log('supervisor_send_policy.test ok');

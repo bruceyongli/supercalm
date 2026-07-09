@@ -219,6 +219,17 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
   vector; guards must separate what a session TALKS ABOUT from what it OWNS. Backlog: apply the same
   jurisdiction rule to verify/unstick prompts; provenance-tag summarizer output (question addressed to
   operator vs builder blocked).
+  FOLLOW-ON same day (operator: "the Supervisor bug persisted… you ended up not doing your work" —
+  v0.3.26): the answer-path-only guard was the criticism's true part. Closed: (a) the lifecycle
+  block moved to the dispatchSupervisorSend CHOKE POINT — every path (unstick/keep-working/
+  challenge/recover/checkpoint) and every FUTURE call site is covered, operator relay
+  (hold.resolve_send) exempt, distinct suppression reason `card-lifecycle-operator-reserved`;
+  (b) SCOPE_CARD_ADMIN_ADDENDUM now rides the unstick AND verify prompts, not just answers.
+  Residual (named, not hidden): the summarizer/decide misclassification (operator-addressed report
+  → agent_question) is still only prompt-guarded; a non-card cross-project directive would rely on
+  the LLM honoring the addendum. Deterministic audience/jurisdiction classification stays on the
+  run-4 backlog with a design sketch (detect.js PROMPT_RX = real interactive prompt vs synthetic
+  question; summarizer audience field).
 
 ## Run 2.5 — 2026-07-07 · branch `improve/doctrine-triage` (operator-requested quick win)
 
