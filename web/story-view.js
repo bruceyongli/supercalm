@@ -37,15 +37,18 @@ function rollup(evs) {
   return parts.join(' · ') || 'session log';
 }
 
+function stepsBodyHtml(steps) {
+  return `<div class="story-steps" data-story-steps>${steps.map((st) => `
+      <div class="story-step">${esc(st.human || '')}</div>
+      ${st.cmd ? `<div class="story-cmd">$ ${esc(String(st.cmd).slice(0, 200))}</div>` : ''}`).join('')}</div>`;
+}
 function stepsHtml(ev, i) {
   const steps = ev.steps || [];
   if (!steps.length) return '';
   const open = openSteps.has(i);
   return `
     <div class="story-steps-toggle" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length} step${steps.length > 1 ? 's' : ''}</div>
-    ${open ? `<div class="story-steps" data-story-steps>${steps.map((st) => `
-      <div class="story-step">${esc(st.human || '')}</div>
-      ${st.cmd ? `<div class="story-cmd">$ ${esc(String(st.cmd).slice(0, 200))}</div>` : ''}`).join('')}</div>` : ''}`;
+    ${open ? stepsBodyHtml(steps) : ''}`;
 }
 
 function askHtml(ev) {
@@ -97,9 +100,13 @@ function render() {
 function wire() {
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
     t.onclick = () => {
+      // toggle IN PLACE — a full re-render would detach the element mid-interaction (verifier
+      // holds the handle across open/close, and a user double-click would misfire too)
       const i = Number(t.dataset.i);
-      openSteps.has(i) ? openSteps.delete(i) : openSteps.add(i);
-      render();
+      const open = openSteps.has(i);
+      if (open) { openSteps.delete(i); t.nextElementSibling?.matches('[data-story-steps]') && t.nextElementSibling.remove(); }
+      else { openSteps.add(i); t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || [])); }
+      t.firstChild && (t.textContent = `${open ? '▸' : '▾'} ${t.textContent.replace(/^[▸▾]\s*/, '')}`);
     };
   }
   for (const b of panelEl.querySelectorAll('[data-story-ask-opt]')) {
