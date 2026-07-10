@@ -56,6 +56,16 @@ const PROBES = {
     ],
   }),
   // Settings: sticky sub-nav + five sections, all populated from real endpoints.
+  'records-page': () => ({
+    url: `${BASE}/records`,
+    actions: async () => { await new Promise((r) => setTimeout(r, 2200)); },
+    probes: [
+      ["filter card renders", "!!document.querySelector('[data-rc-filter]') && !!document.querySelector('#rc-q')"],
+      ["record cards populate", "document.querySelectorAll('[data-rc-card]').length >= 5"],
+      ["session links present", "!!document.querySelector('[data-rc-card] a[href^=\"session\"]')"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'projects-page': () => ({
     url: `${BASE}/projects`,
     actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
@@ -232,6 +242,7 @@ plan.push(['desktop-shell', 'global']);
 plan.push(['onboarding-wizard', 'global']);
 plan.push(['settings-page', 'global']);
 plan.push(['projects-page', 'global']);
+plan.push(['records-page', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];
