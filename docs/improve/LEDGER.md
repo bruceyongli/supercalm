@@ -19,6 +19,23 @@ exception net caught a null-onclick crash (user-row loop matched builtin rows) p
 answered this session: Supercalm has NO OpenHand API integration — the "out of OpenHand credit"
 report came from a session building the OpenHand app itself.
 
+## Fleet thrash detector (2026-07-10, v0.3.67–68, operator-requested 3×) — the fix-relay mitigation, built
+
+Lab-scenario-FIRST per the standing rule: 15-fleet-thrash ran RED (`checkThrash not implemented`)
+before a line of detector existed, GREEN after. src/agents/supervisor/thrash.js: pure detectThrash
+(revert-oscillation / file-oscillation / deploy-churn; episode key = oldest in-window sha), bounded
+git reader, checkpoint tagger; checkThrash in the tick (≥2 live sessions on the project, 60s
+throttle, cross-session once-per-episode via pm_events, needsOperatorHold on involved supervisors,
+single operator notification). Unit tests in CI. LIVE DRILL on the deployed build: real repo with
+5 oscillating login-revert commits + 2 real codex sessions → detected in ~1min, tag
+supercalm-checkpoint-mrfcsowz, both sessions named in the escalation, hold applied, exactly two
+pm_events. Post-ship exposure check found a LATENT FALSE-POSITIVE: 5 release-commits sat in the
+window on the aios project itself — one more live session and the operator's own release cadence
+would have been HELD. v0.3.68: deploy-churn requires ≥1 revert marker (the incident shape is
+deploys FIGHTING regressions, not shipping fast). Gate closed the card complete(88). Closing lab:
+18/18. The incident class that cost 10 deploys + a repeatedly-regressed login now surfaces in
+under a minute with a known-good ref waiting.
+
 ## Run 3 — 2026-07-08 · branch `pm/phase-1` · Project Memory phase 1/6
 
 - **Bet (operator-approved plan):** replace the per-session supervision-doc monolith with
