@@ -288,7 +288,7 @@ async function loadApiProviders() {
       loadApiProviders();
     } catch (e) { msg.textContent = '⚠ ' + e.message; }
   };
-  for (const row of box.querySelectorAll('.prov-row')) {
+  for (const row of box.querySelectorAll('.prov-row[data-id]')) { // user rows only; builtin rows have their own toggle handler
     const id = row.dataset.id;
     const m = row.querySelector('[data-role="msg"]');
     row.querySelector('[data-act="test"]').onclick = async () => {
