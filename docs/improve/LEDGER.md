@@ -4,6 +4,21 @@ Append-only record of improvement-loop runs (see [`LOOP.md`](LOOP.md)). Newest f
 
 ---
 
+## Providers unification + pricing (2026-07-09, v0.3.37–39, operator-directed)
+
+One mental model on the Models page: subscription auth up top, every model ENDPOINT is a provider
+row. Built-in fleet proxies render in the API-providers section (live-derived, key auto from
+plists, per-proxy use-toggle that drops them from the scan); keyless local/LAN endpoints accepted
+end-to-end (store/probe/route/call-path). Cost stats optional: price-manifest URL with one-click
+Supercalm-hosted list — docs/model-prices.json GENERATED from usage_pricing RULES (npm run
+gen-prices; one source of truth — the first hand-written seed had guessed prices, replaced same
+session), auto-detects LiteLLM + openhand-models.json shapes, manifest overrides rules per id,
+skip = token stats (rules still price common models). Live-verified: one-click fetched 25 models
+from raw.githubusercontent; builtin rows populated (fix: group by .provider); shot.mjs's page-
+exception net caught a null-onclick crash (user-row loop matched builtin rows) pre-report. Also
+answered this session: Supercalm has NO OpenHand API integration — the "out of OpenHand credit"
+report came from a session building the OpenHand app itself.
+
 ## Run 3 — 2026-07-08 · branch `pm/phase-1` · Project Memory phase 1/6
 
 - **Bet (operator-approved plan):** replace the per-session supervision-doc monolith with
