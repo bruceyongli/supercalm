@@ -58,6 +58,16 @@ const PROBES = {
   // Settings: sticky sub-nav + five sections, all populated from real endpoints.
   // Redesign skin on the operator-critical SYSTEM pages: tokens applied, logic untouched,
   // approval controls still present and functional-looking, zero console errors.
+  // Home flip: / serves the new shell; ?classic=1 still serves the pre-redesign dashboard.
+  'home-flip': () => ({
+    url: `${BASE}/?desktop=1`,
+    actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
+    probes: [
+      ["root serves the shell", "!!document.querySelector('[data-dk-sidebar]')"],
+      ["classic escape link present", "!!document.querySelector('.dk-classic')"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'system-pages-skin': () => ({
     url: `${BASE}/decisions`,
     actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
@@ -257,6 +267,7 @@ plan.push(['settings-page', 'global']);
 plan.push(['projects-page', 'global']);
 plan.push(['records-page', 'global']);
 plan.push(['system-pages-skin', 'global']);
+plan.push(['home-flip', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

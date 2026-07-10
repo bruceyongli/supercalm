@@ -243,7 +243,12 @@ const TYPES = {
 };
 async function serveStatic(req, res, url) {
   let p = decodeURIComponent(url.pathname);
-  if (p === '/') p = '/index.html';
+  if (p === '/') {
+    // Home flip (design handoff): the redesigned shell is the home page; ?classic=1 serves the
+    // pre-redesign dashboard (bookmarkable escape hatch — no persistence server-side, the link in
+    // the shell footer always carries it).
+    p = url.searchParams.get('classic') === '1' ? '/index.html' : '/desktop.html';
+  }
   if (p === '/session') p = '/session.html';
   if (p === '/records') p = '/records.html';
   if (p === '/decisions') p = '/decisions.html';

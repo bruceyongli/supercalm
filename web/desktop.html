@@ -1,6 +1,18 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>
+    // Same phone-redirect contract as the classic home: small screens -> phone view; ?desktop=1
+    // (persisted) opts out. ?classic=1 falls back to the pre-redesign dashboard (served by index.html).
+    (() => {
+      const q = new URLSearchParams(location.search);
+      if (q.get('desktop') === '1') { try { localStorage.aios_force_desktop = '1'; } catch {} return; }
+      let forced = false;
+      try { forced = localStorage.aios_force_desktop === '1'; } catch {}
+      if (forced || Math.min(screen.width, innerWidth || 1e4) > 720) return;
+      location.replace('phone');
+    })();
+  </script>
   <meta charset="utf-8" />
   <base href="./" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -36,6 +48,7 @@
         <a class="dk-nav-item" href="settings" data-nav="settings">Settings</a>
       </nav>
       <div class="dk-foot" id="dk-foot"></div>
+      <a class="dk-classic" href="./?classic=1" title="The pre-redesign dashboard">classic view</a>
     </aside>
     <main class="dk-main" id="dk-main">
       <section id="dk-inbox" data-dk-inbox>

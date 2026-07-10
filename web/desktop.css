@@ -101,3 +101,6 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 .dk-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .dk-launch-foot { display: flex; align-items: center; gap: 10px; }
 .dk-launch-foot .dk-new { margin-left: auto; }
+
+.dk-classic { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #3a4453; text-decoration: none; padding: 2px 6px; }
+.dk-classic:hover { color: #8a95a5; }
