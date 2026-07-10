@@ -56,6 +56,16 @@ const PROBES = {
     ],
   }),
   // Settings: sticky sub-nav + five sections, all populated from real endpoints.
+  'projects-page': () => ({
+    url: `${BASE}/projects`,
+    actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
+    probes: [
+      ["project rows render", "document.querySelectorAll('[data-pj-row]').length >= 2"],
+      ["graph chips present", "/graph ready|not indexed/.test(document.querySelector('#pj-list')?.textContent || '')"],
+      ["index + session actions per row", "!!document.querySelector('[data-pj-index]') && !!document.querySelector('[data-pj-launch]')"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'settings-page': () => ({
     url: `${BASE}/settings`,
     actions: async (page) => { await new Promise((r) => setTimeout(r, 2500)); },
@@ -221,6 +231,7 @@ if (withCard || between) plan.push(['graph-settings-popover', withCard || betwee
 plan.push(['desktop-shell', 'global']);
 plan.push(['onboarding-wizard', 'global']);
 plan.push(['settings-page', 'global']);
+plan.push(['projects-page', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];
