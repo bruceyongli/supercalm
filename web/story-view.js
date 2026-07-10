@@ -84,8 +84,16 @@ function eventHtml(ev, i) {
     </div>`;
 }
 
+let seededOpen = false;
 function render() {
   if (!panelEl) return;
+  // First render: open the first steps-bearing cluster so the peek layer is visible (and style-
+  // verifiable) without a click; later renders respect the user's own open/close choices.
+  if (!seededOpen) {
+    seededOpen = true;
+    const i = events.findIndex((e) => (e.steps || []).length);
+    if (i >= 0) openSteps.add(i);
+  }
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>

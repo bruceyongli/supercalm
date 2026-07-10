@@ -18,7 +18,8 @@ const hexToRgb = (h) => {
   const m = /^#([0-9a-f]{6})$/i.exec(h); if (!m) return h;
   const n = parseInt(m[1], 16); return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
 };
-const cmpColor = (want, got) => norm(got).startsWith(norm(hexToRgb(want)).slice(0, -1)) || norm(got) === norm(hexToRgb(want)) || norm(got) === norm(want);
+const canon = (v) => norm(v).replace(/\s+/g, '').replace(/\(\./g, '(0.').replace(/,\./g, ',0.');
+const cmpColor = (want, got) => canon(got).startsWith(canon(hexToRgb(want)).slice(0, -1)) || canon(got) === canon(hexToRgb(want)) || canon(got) === canon(want);
 const cmpPx = (want, got) => Math.abs(parseFloat(want) - parseFloat(got)) <= 0.5;
 
 const browser = await chromium.launch();
