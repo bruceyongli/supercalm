@@ -30,6 +30,10 @@ SearchQA/Sheet/Office/DocVQA/LiveMath/ALFWorld — generalist-agent boards; we g
   Expected effect concentrates in the hard tail (long tasks, stalls, premature give-ups) — TB 2.1's
   89 tasks × 5 trials gives per-task variance to show it.
 
+Scoring, comparison metrics, integrity protocol, publication decision rule, and the publicity
+plan are frozen in **[benchmark-scoring-plan.md](benchmark-scoring-plan.md)** (pre-registered
+before any run).
+
 ## Phases (operator-gated, as always)
 
 | Phase | Ships | Gate |
