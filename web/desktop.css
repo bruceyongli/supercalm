@@ -83,3 +83,6 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 
 /* ---- toast ---- */
 .dk-toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); background: #10151d; border: 1px solid #1d2632; border-radius: 999px; color: #dde5ee; font-family: 'JetBrains Mono', monospace; font-size: 12px; padding: 9px 18px; z-index: 60; }
+
+.dk-palette[hidden] { display: none; }
+.dk-toast[hidden] { display: none; }
