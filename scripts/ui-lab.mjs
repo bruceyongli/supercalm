@@ -56,6 +56,19 @@ const PROBES = {
     ],
   }),
   // Settings: sticky sub-nav + five sections, all populated from real endpoints.
+  // Redesign skin on the operator-critical SYSTEM pages: tokens applied, logic untouched,
+  // approval controls still present and functional-looking, zero console errors.
+  'system-pages-skin': () => ({
+    url: `${BASE}/decisions`,
+    actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
+    probes: [
+      ["skin stylesheet applied", "[...document.styleSheets].some(ss => (ss.href||'').includes('redesign-skin'))"],
+      ["page background is bg/app token", "getComputedStyle(document.body).backgroundColor === 'rgb(10, 14, 20)'"],
+      ["doctrine rule cards render", "document.body.textContent.includes('WHEN') || document.querySelectorAll('.card, .su-card').length > 0"],
+      ["approve controls still present", "[...document.querySelectorAll('button')].some(b => /approve/i.test(b.textContent))"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'records-page': () => ({
     url: `${BASE}/records`,
     actions: async () => { await new Promise((r) => setTimeout(r, 2200)); },
@@ -243,6 +256,7 @@ plan.push(['onboarding-wizard', 'global']);
 plan.push(['settings-page', 'global']);
 plan.push(['projects-page', 'global']);
 plan.push(['records-page', 'global']);
+plan.push(['system-pages-skin', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];
