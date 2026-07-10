@@ -206,15 +206,14 @@ function renderControls(row) {
   const lab = labeling || {};
   const labOn = !!lab.enabled;
   const labSpend = lab.calls ? `${fmtUsd(lab.usd || 0)} · ${fmtTok(lab.tokens || 0)} tok · ${lab.calls} call${lab.calls > 1 ? 's' : ''}` : 'nothing yet';
-  const labChip = labOn ? (lab.calls ? ' ' + fmtUsd(lab.usd || 0) : '') : ' off';
+  const labChip = labOn ? '' : ' off'; // lifetime spend lives in the ⚙ footer — toolbar stays quiet
   const labTitle = `AI labels ${labOn ? 'ON' : 'OFF'} — a cheap model (${esc(lab.model || 'llm')}) names each request & the session goal. Spent ${labSpend} across all sessions. Click to turn ${labOn ? 'off' : 'on'}.`;
   box.innerHTML =
     seg('map-view', view, [['timeline', ICON_TIMELINE], ['cost', ICON_COST], ['galaxy', ICON_3D], ['code', ICON_CODE]]) +
     (codeMode ? '' : seg('map-metric', metric, [['usd', '$'], ['tokens', 'tok'], ['time', 'time']])) +
     `<button class="btn ghost sm map-lbl-toggle ${labOn ? 'on' : 'off'}" id="map-label" title="${esc(labTitle)}">🏷${esc(labChip)}</button>` +
     `<button class="btn ghost sm" id="map-config" title="Graph settings — default view, labeling model &amp; prompt">⚙</button>` +
-    (graphTools ? `<button class="btn ghost sm" id="map-reset" title="Reset to overview">◎</button>` : '') +
-    (graphTools ? `<button class="btn ghost sm" id="map-tidy" title="Re-tidy &amp; fit">⟳</button>` : '') +
+    (graphTools ? `<button class="btn ghost sm" id="map-tidy" title="Tidy layout &amp; reset the view">⛶</button>` : '') +
     (has ? `<button class="btn ghost sm" id="map-fit" title="${expanded ? 'Collapse' : 'Expand'}">${expanded ? '⤡' : '⤢'}</button>` : '') +
     (row?.built_at ? `<span class="map-when muted">auto · ${esc(fmtAgo(row.built_at))} ago</span>` : '');
   if (!MAP_WEBGL) { const g = box.querySelector('#map-view button[data-v="galaxy"]'); if (g) { g.classList.add('seg-off'); g.title = '3D needs WebGL — turn on hardware acceleration in your browser settings'; } }
@@ -246,8 +245,15 @@ function renderControls(row) {
     if (next) setTimeout(() => load({ quiet: true }), 1800); // labels begin arriving on the next sweep -> pick them up
   });
   box.querySelector('#map-config')?.addEventListener('click', () => openConfig(row));
-  box.querySelector('#map-reset')?.addEventListener('click', () => (graph?.resetView ? graph.resetView() : graph?.fit?.()));
-  box.querySelector('#map-tidy')?.addEventListener('click', () => (graph?.relayout ? graph.relayout() : graph?.fit()));
+  box.querySelector('#map-tidy')?.addEventListener('click', (e) => {
+    // one "fix my view" action: re-layout where supported, then camera home. Brief pressed-state
+    // feedback so an already-tidy view never reads as a dead button (the old ◎ looked broken).
+    try { graph?.relayout?.(); } catch {}
+    try { graph?.resetView ? graph.resetView() : graph?.fit?.(); } catch {}
+    const b = e.currentTarget;
+    b.classList.add('on');
+    setTimeout(() => b.classList.remove('on'), 350);
+  });
   box.querySelector('#map-fit')?.addEventListener('click', toggleExpand);
 }
 
