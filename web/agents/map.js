@@ -271,8 +271,10 @@ function modelSelectHtml(models, current, modelDefault) {
   if (current && !known.has(current)) opts += `<option value="${esc(current)}" selected>${esc(current)} · custom</option>`;
   for (const prov of order) {
     opts += `<optgroup label="${esc(prov)}">` + groups.get(prov).map((m) => {
-      const short = String(m.label || m.id).split(' / ').slice(1).join(' / ') || m.id;
-      return `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc(short)}</option>`;
+      let short = String(m.label || m.id).split(' / ').slice(1).join(' / ') || m.id;
+      short = short.replace(/\s*\([^)]*\)\s*$/, ''); // drop trailing qualifiers: "(High)", "(NVFP4 Marlin)"
+      if (short.length > 26) short = short.slice(0, 25) + '…';
+      return `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''} title="${esc(m.label || m.id)}">${esc(short)}</option>`;
     }).join('') + `</optgroup>`;
   }
   return `<select id="cfg-model">${opts}</select>`;

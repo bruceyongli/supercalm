@@ -133,6 +133,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.match(sup, /unstickSys \+= '\\n\\n' \+ STAGE_ADDENDUM/, 'unstick carries the phase-gate stand-down');
   assert.match(sup, /OPERATOR RECORD — HARD RULE/, 'unstick may not invent operator instructions');
   assert.match(sup, /evidence\.operator_messages = lc/, 'unstick evidence includes the operator record');
+  assert.match(sup, /BOUNDARY_FRESH_MS/, 'stale pending suggestions supersede instead of freezing card detection');
   const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(panel, /pm-between-title/, 'merged between-tasks empty state');
   assert.ok(!/sup-empty-doc">No active task card/.test(panel), 'redundant second empty box removed');

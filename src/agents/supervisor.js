@@ -1690,7 +1690,14 @@ const SYS_BOUNDARY = 'You classify whether NEW work is starting relative to the 
 async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
   try {
     if (!ctx.__activeCard && !ctx.__betweenTasks) return;
-    if (st.pendingBoundary) return; // one open suggestion at a time
+    if (st.pendingBoundary) {
+      // One FRESH suggestion at a time — but a stale unactioned one must not freeze card detection
+      // (a 40h-old suggestion silently blocked 14 commits of new work from ever being suggested).
+      const age = t - Number(st.pendingBoundary.at || 0);
+      const BOUNDARY_FRESH_MS = 2 * 3600e3;
+      if (age < BOUNDARY_FRESH_MS) return;
+      // stale: fall through — the newest judgment replaces it (panel simply shows the latest)
+    }
     const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
     const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; the session is BETWEEN TASKS)';
     // Path 1 — a fresh, settled operator message (the original trigger).
