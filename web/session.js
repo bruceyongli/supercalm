@@ -66,7 +66,7 @@ if ('ResizeObserver' in window) {
 }
 
 function railWidth() {
-  return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : 0;
+  return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
   return Math.max(640, window.innerWidth - railWidth());
