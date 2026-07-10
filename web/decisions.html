@@ -80,7 +80,12 @@
   </head>
   <body>
     <header>
-      <div class="brand"><a href="." class="rlink">←</a> <h1>Decisions</h1></div>
+      <div class="brand"><a href="." class="rlink">←</a> <h1>Decisions</h1>
+    <div class="dc-seg" data-dc-seg style="display:flex;gap:5px;margin:10px 0 16px">
+      <button data-dc-tab="doctrine" class="on">Doctrine</button>
+      <button data-dc-tab="messages">Messages</button>
+    </div>
+    <div id="dc-doctrine" data-dc-doctrine></div></div>
       <div class="tabs"><a href="decisions" class="on">Decisions</a><a href="records">Messages</a></div>
       <div class="spacer"></div>
       <span class="count" id="summary"></span>
@@ -111,6 +116,7 @@
       </div>
     </main>
     <script type="module" src="decisions.js"></script>
+    <script type="module" src="doctrine-tab.js"></script>
     <script type="module" src="doctrine-panel.js"></script>
     <script type="module" src="version-badge.js"></script>
   </body>
