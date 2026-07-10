@@ -19,7 +19,7 @@ route('GET', '/api/models/providers', (req, res) => {
   // builtin = the local proxy fleet presented as provider rows (operator: one section, one mental
   // model — subscription auth up top, every model ENDPOINT lives here). Live-derived, key auto.
   const byProxy = {};
-  for (const m of listProxyModels({ includeImages: true })) (byProxy[m.proxy] = byProxy[m.proxy] || []).push(m.id);
+  for (const m of listProxyModels({ includeImages: true })) (byProxy[m.provider] = byProxy[m.provider] || []).push(m.id); // entries key the proxy as .provider
   json(res, 200, {
     ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
     builtin: listBuiltinProviders(currentProviders(), byProxy),
