@@ -298,6 +298,49 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 14b-unstick-still-unsticks${ok ? '' : ' — over-locked'}`);
 }
 
+// 15. FLEET THRASH (operator-requested 3x; the 3-codex fix-relay incident): 2+ sessions on one
+// project producing revert-pattern commits must trigger ONE escalation + holds + a checkpoint
+// pm_event — and the same episode must not re-notify. RED until the detector exists.
+{
+  const { mkdirSync: mk } = await import('node:fs');
+  const { execSync } = await import('node:child_process');
+  const repo = join(LAB_DATA, 'thrash-repo');
+  mk(repo, { recursive: true });
+  const sh = (c) => execSync(c, { cwd: repo, stdio: 'pipe' });
+  sh('git init -q && git config user.email lab@sc && git config user.name lab');
+  const fs = await import('node:fs');
+  const mkc = (content, msg) => { fs.writeFileSync(join(repo, 'auth.js'), content); sh(`git add -A && git commit -qm "${msg}"`); };
+  mkc('login v1', 'feat: login flow');
+  mkc('login v2', 'fix: session cookie');
+  mkc('login v1', 'revert: session cookie broke prod login');
+  mkc('login v2', 'reapply: session cookie with guard');
+  mkc('login v1', 'revert: guard also breaks login');
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_lab_thrash_a','p_lab_thrash','codex','t_a','working', ?, ?)").run(now - 3600e3, now);
+  db.prepare("INSERT OR REPLACE INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_lab_thrash_b','p_lab_thrash','claude','t_b','working', ?, ?)").run(now - 3600e3, now);
+  const ctx = makeCtx({ sid: 's_lab_thrash_a', project: { id: 'p_lab_thrash', path: repo }, session: { project_id: 'p_lab_thrash', status: 'working' } });
+  let ok = false, problems = [];
+  if (!__lab.checkThrash) {
+    problems.push('checkThrash not implemented (expected RED before the detector exists)');
+  } else {
+    await __lab.checkThrash(ctx, { model: MODEL });
+    const notified = ctx._notes.filter((n) => /thrash/i.test(n));
+    const held = !!ctx._state().needsOperatorHold;
+    const evs = db.prepare("SELECT type, summary FROM pm_events WHERE project_id='p_lab_thrash'").all();
+    const checkpointed = evs.some((e) => /checkpoint/i.test(e.summary || ''));
+    // second call, same episode: must NOT re-notify
+    const notesBefore = ctx._notes.length;
+    await __lab.checkThrash(ctx, { model: MODEL });
+    const renotified = ctx._notes.length > notesBefore;
+    if (notified.length !== 1) problems.push(`notify count ${notified.length} (want exactly 1)`);
+    if (!held) problems.push('no needsOperatorHold set');
+    if (!checkpointed) problems.push('no checkpoint pm_event');
+    if (renotified) problems.push('same episode re-notified');
+    ok = !problems.length;
+  }
+  results.push({ name: '15-fleet-thrash', ok, problems });
+  console.log(`${ok ? '✓' : '✗'} 15-fleet-thrash${ok ? '' : ' — ' + problems.join('; ')}`);
+}
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);

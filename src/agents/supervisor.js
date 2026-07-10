@@ -28,6 +28,7 @@ import { filterHardRulesForCurrentTask } from './supervisor/challenge.js';
 import { readSupervisorState, statePatchForStance } from './supervisor/state.js';
 import { STANCE_SYS, buildStanceUserText, classifyStanceFromText, resolveStance, isStance } from './supervisor/stance.js';
 import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective } from './supervisor/send_policy.js';
+import { readRecentCommits, detectThrash, checkpointRepo } from './supervisor/thrash.js';
 import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
 import {
   VERIFY_EVIDENCE_VERSION,
@@ -44,7 +45,7 @@ import {
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
-import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, renderBetweenTasksMd } from './supervisor/project_memory.js';
+import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, renderBetweenTasksMd, listEvents } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
 import { userRoutes } from '../model_catalog.js';
 import { proposeMigration } from './supervisor/doc_migration.js';
@@ -1687,6 +1688,40 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
 // chip in the panel (state.pendingBoundary). SUGGESTION ONLY — the reviews were unanimous that
 // boundary changes are contract changes: the operator accepts or dismisses; nothing auto-applies.
 const SYS_BOUNDARY = 'You classify whether NEW work is starting relative to the active task card. Return STRICT JSON only: {"fit":"amend"|"new"|"none","title":"","goal":"","reason":""}. "amend" = same task (refines/redirects it); "new" = a different deliverable (short title + one-line goal); "none" = chatter/question/approval, no work signal. With an ACTIVE card, be conservative: when unsure, "none" (do not churn a working contract). BETWEEN TASKS (no active card) the bar FLIPS: the session has NO contract, which starves the whole supervision loop — any message or work stream that directs/contains substantive work (build, fix, design, investigate, test, improve, experiment) is "new"; reserve "none" for pure questions, acknowledgments, or status chatter. If given RECENT COMMITTED WORK instead of an operator message, judge whether that commit stream forms a coherent task and title it from the work itself.';
+// FLEET THRASH (operator-requested 3x): >=2 live sessions on one project + revert/oscillation or
+// deploy churn in the window -> ONE escalation per episode (pm_events is the cross-session marker),
+// needsOperatorHold on the involved supervisors, and a checkpoint tag before anything else pushes.
+async function checkThrash(ctx, cfg) {
+  try {
+    const s = ctx.session();
+    const project = ctx.project();
+    if (!project?.path || !s?.project_id) return;
+    const live = db.prepare("SELECT id FROM sessions WHERE project_id = ? AND status IN ('working','waiting') AND id != ?").all(s.project_id, ctx.sessionId);
+    if (!live.length) return; // thrash needs >=2 live sessions on the project
+    const st = ctx.getState();
+    if (st.thrashCheckAt && now() - st.thrashCheckAt < 60_000) return; // once a minute is plenty
+    applySupervisorState(ctx, { thrashCheckAt: now() });
+    const commits = await readRecentCommits(project.path);
+    const det = detectThrash(commits);
+    if (!det.thrash) return;
+    if (st.thrashEpisodeKey === det.episodeKey) {
+      // episode already handled by this session — keep the hold, no re-notify
+      if (!ctx.getState().needsOperatorHold) applySupervisorState(ctx, { needsOperatorHold: { at: now(), reason: 'fleet_thrash', gateKey: det.episodeKey } });
+      return;
+    }
+    applySupervisorState(ctx, { thrashEpisodeKey: det.episodeKey, needsOperatorHold: { at: now(), reason: 'fleet_thrash', gateKey: det.episodeKey } });
+    // cross-session once-marker: only the first session to record the episode event notifies + checkpoints
+    const already = (listEvents({ projectId: s.project_id, types: ['incident'] }) || []).some((e) => (e.summary || '').includes(det.episodeKey));
+    if (already) return;
+    const cp = await checkpointRepo(project.path, det.episodeKey).catch(() => null);
+    pmAppendEvent({ projectId: s.project_id, sessionId: ctx.sessionId, actor: 'supervisor', type: 'incident', summary: `Fleet-thrash checkpoint ${cp?.tag || '(tag failed)'} — known-good ref before further pushes [${det.episodeKey}]`, refs: { tag: cp?.tag, files: det.files } });
+    pmAppendEvent({ projectId: s.project_id, sessionId: ctx.sessionId, actor: 'supervisor', type: 'incident', summary: `Fleet thrash (${det.kind}): ${1 + live.length} live sessions with ${det.commits.length} conflicting commits [${det.episodeKey}]`, refs: { files: det.files, sessions: [ctx.sessionId, ...live.map((x) => x.id)] } });
+    logIntervention(ctx, { kind: 'escalate', trigger: 'thrash', model: null, verdict: 'escalated', assessment: `Fleet thrash detected (${det.kind}) on ${project.path}: sessions ${[ctx.sessionId, ...live.map((x) => x.id)].join(', ')} are producing conflicting/reverting commits (${det.commits.slice(0, 4).join(' · ')}). Checkpoint ${cp?.tag || 'n/a'} tagged; involved supervisors HELD until you decide who proceeds.`, message: '', sent: 0 });
+    ctx.notifyOperator('Fleet thrash — sessions overwriting each other', `${project.name || project.path}: ${det.kind}, ${1 + live.length} sessions involved${det.files.length ? ` (${det.files[0]}…)` : ''}. Checkpointed ${cp?.tag || ''}; holds applied.`);
+    ctx.emit('review', { verdict: 'escalated', summary: `fleet thrash: ${det.kind} — held` });
+  } catch (e) { ctx.log('thrash check skipped:', e.message); }
+}
+
 async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
   try {
     if (!ctx.__activeCard && !ctx.__betweenTasks) return;
@@ -2044,6 +2079,7 @@ export async function onTick(ctx) {
     }
   }
   if (ctx.__activeCard || ctx.__betweenTasks) await maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev);
+  await checkThrash(ctx, cfg); // fleet-thrash net: independent of card state — thrash is thrash
   if (holdSends) {
     recordNoSend(ctx, snapshot, {
       ruleId: 'doc.maintain_pending',
@@ -2892,4 +2928,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, checkThrash };
