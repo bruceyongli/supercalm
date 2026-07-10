@@ -113,9 +113,16 @@ function wire() {
       // holds the handle across open/close, and a user double-click would misfire too)
       const i = Number(t.dataset.i);
       const open = openSteps.has(i);
-      if (open) { openSteps.delete(i); t.nextElementSibling?.matches('[data-story-steps]') && t.nextElementSibling.remove(); }
-      else { openSteps.add(i); t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || [])); }
-      t.firstChild && (t.textContent = `${open ? '▸' : '▾'} ${t.textContent.replace(/^[▸▾]\s*/, '')}`);
+      // accordion: one peek open at a time — closing others keeps the timeline tidy and makes
+      // open/close state fully deterministic for tests and users alike
+      for (const other of panelEl.querySelectorAll('[data-story-steps]')) other.remove();
+      for (const ot of panelEl.querySelectorAll('[data-story-steps-toggle]')) ot.textContent = `▸ ${ot.textContent.replace(/^[▸▾]\s*/, '')}`;
+      openSteps.clear();
+      if (!open) {
+        openSteps.add(i);
+        t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || []));
+        t.textContent = `▾ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
+      }
     };
   }
   for (const b of panelEl.querySelectorAll('[data-story-ask-opt]')) {
