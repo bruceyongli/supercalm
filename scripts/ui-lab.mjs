@@ -55,6 +55,19 @@ const PROBES = {
       ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
     ],
   }),
+  // Settings: sticky sub-nav + five sections, all populated from real endpoints.
+  'settings-page': () => ({
+    url: `${BASE}/settings`,
+    actions: async (page) => { await new Promise((r) => setTimeout(r, 2500)); },
+    probes: [
+      ["five sub-nav sections", "document.querySelectorAll('[data-st-nav] a').length === 5"],
+      ["auth path card populated", "/Session auth path/.test(document.querySelector('#st-authpath')?.textContent || '')"],
+      ["per-CLI rows present", "document.querySelectorAll('#st-clis .ob-row').length >= 2"],
+      ["providers section populated", "!/loading/.test(document.querySelector('#st-prov')?.textContent || '')"],
+      ["preference controls render", "document.querySelectorAll('.st-pref').length === 3 && !!document.querySelector('.st-toggle')"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'desktop-shell': () => ({
     url: `${BASE}/desktop`,
     actions: async (page) => {
@@ -201,6 +214,7 @@ if (withCard) plan.push(['active-card-state', withCard]);
 if (withCard || between) plan.push(['graph-settings-popover', withCard || between]);
 plan.push(['desktop-shell', 'global']);
 plan.push(['onboarding-wizard', 'global']);
+plan.push(['settings-page', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

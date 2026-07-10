@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <base href="./" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0a0e14" />
+  <title>Supercalm · settings</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="desktop.css" />
+  <link rel="stylesheet" href="onboarding.css" />
+  <style>
+    .st-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
+    .st-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 16px; }
+    .st-nav { position: sticky; top: 0; background: #0a0e14ee; backdrop-filter: blur(6px); display: flex; gap: 6px; padding: 10px 0; margin-bottom: 20px; border-bottom: 1px solid #161d27; z-index: 5; }
+    .st-nav a { color: #8a95a5; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 12px; border-radius: 9px; }
+    .st-nav a.active { background: #121a26; box-shadow: inset 0 -2px 0 #58a6ff; color: #e9eef5; }
+    .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
+    .st-sec h2 { font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; font-weight: 600; color: #e9eef5; margin: 0 0 10px; }
+    .st-pref { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #10151d; }
+    .st-pref b { font-weight: 600; color: #dde5ee; font-size: 13.5px; }
+    .st-pref .sub { color: #5c6675; font-size: 12px; }
+    .st-toggle { margin-left: auto; width: 40px; height: 22px; border-radius: 999px; background: #232c38; border: none; position: relative; cursor: pointer; transition: background 0.15s; }
+    .st-toggle.on { background: #238636; }
+    .st-toggle::after { content: ''; position: absolute; top: 1px; left: 1px; width: 20px; height: 20px; border-radius: 99px; background: #e9eef5; transition: left 0.15s; }
+    .st-toggle.on::after { left: 19px; }
+    .st-step { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #dde5ee; }
+    .st-step button { width: 26px; height: 26px; border-radius: 8px; background: #0b0f16; border: 1px solid #232c38; color: #b9c4d4; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="st-wrap" data-st>
+    <div class="st-head"><h1>Settings</h1></div>
+    <nav class="st-nav" data-st-nav>
+      <a href="#st-agents" class="active">Agents &amp; sign-in</a>
+      <a href="#st-providers">API providers</a>
+      <a href="#st-voice">Voice</a>
+      <a href="#st-remote">Remote access</a>
+      <a href="#st-prefs">Preferences</a>
+    </nav>
+    <section class="st-sec" id="st-agents" data-st-agents>
+      <h2>Agents &amp; sign-in</h2>
+      <div class="ob-card" id="st-authpath">loading…</div>
+      <div class="ob-card" id="st-clis">loading…</div>
+    </section>
+    <section class="st-sec" id="st-providers" data-st-providers>
+      <h2>API providers</h2>
+      <div class="ob-card" id="st-prov">loading…</div>
+    </section>
+    <section class="st-sec" id="st-voice" data-st-voice>
+      <h2>Voice</h2>
+      <div class="ob-card" id="st-voicecard">loading…</div>
+    </section>
+    <section class="st-sec" id="st-remote" data-st-remote>
+      <h2>Remote access</h2>
+      <div class="ob-card" id="st-remotecard">loading…</div>
+    </section>
+    <section class="st-sec" id="st-prefs" data-st-prefs>
+      <h2>Preferences</h2>
+      <div class="ob-card" id="st-prefscard"></div>
+    </section>
+  </div>
+  <div id="dk-toast" class="dk-toast" hidden></div>
+  <script type="module" src="settings.js"></script>
+  <script type="module" src="version-badge.js"></script>
+</body>
+</html>
