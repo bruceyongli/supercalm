@@ -67,10 +67,40 @@ export function upsertProvider({ id = null, name, kind, base_url, api_key, model
   row.enabled = enabled !== false;
   row.updated_at = now();
   if (!row.base_url) throw new Error('base_url required');
-  if (!row.api_key) throw new Error('api_key required');
+  // Keyless is allowed (local/LAN endpoints often have no auth); the probe tells the user if the
+  // endpoint actually requires one.
   if (!existing) data.providers.push(row);
   writeAll(data);
   return listProviders().find((p) => p.id === row.id);
+}
+
+// Built-in local proxies (the fleet, when present) presented AS provider rows — same section,
+// same mental model as user-added endpoints. Live-derived from the scanned catalog (never stored:
+// no key duplication; fleetKey() stays the auth). The registry file only remembers which builtins
+// the user disabled.
+export function listBuiltinProviders(currentProviders, modelsByProxy) {
+  const disabled = new Set(readAll().builtin_disabled || []);
+  return (currentProviders || []).map((p) => ({
+    id: `builtin:${p.proxy}`,
+    builtin: true,
+    name: `${p.label} (local proxy)`,
+    kind: 'openai',
+    base_url: `http://127.0.0.1:${p.port}`,
+    key_set: 'auto',
+    enabled: !disabled.has(p.proxy),
+    models: (modelsByProxy?.[p.proxy] || []).slice(0, 100),
+  }));
+}
+export function setBuiltinEnabled(proxy, enabled) {
+  const data = readAll();
+  const set = new Set(data.builtin_disabled || []);
+  if (enabled) set.delete(proxy); else set.add(proxy);
+  data.builtin_disabled = [...set];
+  writeAll(data);
+  return { proxy, enabled };
+}
+export function builtinDisabled() {
+  return new Set(readAll().builtin_disabled || []);
 }
 
 export function deleteProvider(id) {
@@ -84,8 +114,8 @@ export async function probeProvider({ kind, base_url, api_key }) {
   const base = normalizeBase(base_url, kind);
   try {
     const headers = kind === 'anthropic'
-      ? { 'x-api-key': api_key, 'anthropic-version': '2023-06-01' }
-      : { authorization: `Bearer ${api_key}` };
+      ? { ...(api_key ? { 'x-api-key': api_key } : {}), 'anthropic-version': '2023-06-01' }
+      : api_key ? { authorization: `Bearer ${api_key}` } : {};
     const r = await fetch(base + '/v1/models', { headers, signal: AbortSignal.timeout(12000) });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return { ok: false, error: j?.error?.message || `HTTP ${r.status}`, models: [] };
@@ -101,7 +131,7 @@ export async function probeProvider({ kind, base_url, api_key }) {
 export function providerRoutes() {
   const routes = [];
   for (const p of readAll().providers) {
-    if (!p.enabled || !p.api_key) continue;
+    if (!p.enabled) continue; // keyless rows route too — call path sends auth only when a key exists
     for (const m of p.models || []) {
       const route = {
         proxy: 'api', kind: p.kind, providerId: p.id, providerLabel: p.name,

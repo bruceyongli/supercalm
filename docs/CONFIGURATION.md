@@ -14,6 +14,20 @@ source** — the [secret-scan hooks](#keeping-secrets-out-of-git) will block tha
 
 ---
 
+## Model providers & pricing (Auth & Models page)
+
+- **One section for every model endpoint.** Built-in local proxies (when a fleet is present) appear
+  as provider rows with auto keys — toggle "use" to include/exclude them from the catalog. Your own
+  endpoints (Anthropic / any OpenAI-compatible) live in the same list.
+- **Keyless endpoints work**: leave the API key blank for local/LAN servers without auth (vLLM,
+  llama.cpp, LM Studio…). The probe tells you if the endpoint actually requires a key.
+- **Cost stats are optional.** Point the pricing field at any price manifest URL —
+  the one-click "Use Supercalm's list" (docs/model-prices.json in this repo, regenerate with
+  `npm run gen-prices`, PRs welcome), a LiteLLM `model_prices_and_context_window.json` URL, or an
+  `openhand-models.json`-style feed. Manifest prices override the built-in defaults per model id;
+  skip it entirely and the Usage page still shows token stats (common models are priced by the
+  built-in rules regardless). Env: `AIOS_PRICES_URL_DEFAULT`, `AIOS_PRICES_REFRESH_MS`.
+
 ## 1. Core
 
 | Var | Default | Notes |

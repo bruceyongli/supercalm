@@ -96,7 +96,11 @@ export async function scanCatalog() {
     if (!seeds.has(proxy) && Number(p.port)) seeds.set(proxy, { proxy, label: proxy, port: p.port, nativeFor: [], models: [] });
   }
 
-  return Promise.all([...seeds.values()].map((seed) => scanProvider(seed, ovByProxy.get(seed.proxy), key)));
+  // Builtin rows the user disabled on the Models page drop out of the scan entirely — their
+  // models leave the catalog on the next apply, exactly like removing a user provider.
+  let disabled = new Set();
+  try { disabled = (await import('./model_providers.js')).builtinDisabled(); } catch {}
+  return Promise.all([...seeds.values()].filter((s2) => !disabled.has(s2.proxy)).map((seed) => scanProvider(seed, ovByProxy.get(seed.proxy), key)));
 }
 
 export async function rescanModels() {

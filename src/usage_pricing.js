@@ -1,3 +1,5 @@
+import { manifestPriceFor } from './pricing.js';
+
 const MTOK = 1_000_000;
 
 export const PRICE_SOURCES = [
@@ -197,9 +199,17 @@ export function pricingCatalog() {
 export function priceRuleFor({ model, provider, tool } = {}) {
   const m = String(model || '').toLowerCase();
   if (!m || m === '(unknown)' || m === '<synthetic>') return null;
+  // USER manifest (Auth & Models → Pricing) overrides the compiled rules for exact ids; the
+  // compiled RULES stay as the zero-config fallback.
+  const mp = manifestPriceFor(model);
+  if (mp && (mp.in != null || mp.out != null)) {
+    return { id: `manifest:${model}`, provider: 'manifest', source: 'manifest', label: String(model),
+      input: mp.in ?? 0, output: mp.out ?? 0, cachedInput: mp.cached ?? mp.in ?? 0, cacheRead: mp.cached ?? mp.in ?? 0, cacheWrite: mp.in ?? 0 };
+  }
   const p = String(provider || tool || '').toLowerCase();
   return RULES.find((r) => r.match.test(m) && (!p || p === r.provider || providerAlias(p, r.provider))) || RULES.find((r) => r.match.test(m)) || null;
 }
+
 
 function providerAlias(actual, expected) {
   if (expected === 'google') return actual === 'agy' || actual === 'antigravity' || actual === 'gemini';

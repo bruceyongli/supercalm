@@ -3,7 +3,9 @@
 // registered before any :id patterns (router matches in registration order).
 
 import { route, json } from './server.js';
-import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech } from './model_providers.js';
+import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech, listBuiltinProviders, setBuiltinEnabled } from './model_providers.js';
+import { currentProviders, listProxyModels } from './model_catalog.js';
+import { pricingStatus, refreshPrices, clearPricing, SUPERCALM_PRICES_URL } from './pricing.js';
 import { bus } from './bus.js';
 
 function readBody(req) {
@@ -14,8 +16,35 @@ async function bodyJson(req) {
 }
 
 route('GET', '/api/models/providers', (req, res) => {
-  json(res, 200, { ok: true, kinds: PROVIDER_KINDS, providers: listProviders(), speech: getSpeech() });
+  // builtin = the local proxy fleet presented as provider rows (operator: one section, one mental
+  // model — subscription auth up top, every model ENDPOINT lives here). Live-derived, key auto.
+  const byProxy = {};
+  for (const m of listProxyModels({ includeImages: true })) (byProxy[m.proxy] = byProxy[m.proxy] || []).push(m.id);
+  json(res, 200, {
+    ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
+    builtin: listBuiltinProviders(currentProviders(), byProxy),
+    speech: getSpeech(), pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
+  });
 });
+
+// Built-in local proxy rows: enable/disable only (they are discovered, not stored).
+route('POST', '/api/models/providers/builtin/:proxy', async (req, res, { proxy }) => {
+  const b = await bodyJson(req);
+  const r = setBuiltinEnabled(String(proxy), b.enabled !== false);
+  bus.emit('changed');
+  json(res, 200, { ok: true, ...r });
+});
+
+// Pricing manifest (optional): set a URL (or one-click the Supercalm-hosted list), refresh, or
+// clear to skip cost stats entirely. Providers whose own API carries prices override per-model.
+route('GET', '/api/models/pricing', (req, res) => json(res, 200, { ok: true, ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL }));
+route('POST', '/api/models/pricing', async (req, res) => {
+  const b = await bodyJson(req);
+  const r = await refreshPrices(String(b.url || SUPERCALM_PRICES_URL));
+  json(res, r.ok ? 200 : 400, r);
+});
+route('POST', '/api/models/pricing/refresh', async (req, res) => json(res, 200, await refreshPrices()));
+route('DELETE', '/api/models/pricing', (req, res) => { clearPricing(); json(res, 200, { ok: true, configured: false }); });
 
 // Speech (STT/TTS) provider — one OpenAI-compatible audio endpoint, local or remote.
 route('POST', '/api/models/speech', async (req, res) => {

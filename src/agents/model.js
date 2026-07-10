@@ -83,7 +83,7 @@ async function callApiProvider(route, messages, { temperature = 0.1, maxTokens =
     const system = messages.filter((m) => m.role === 'system').map((m) => flattenContent(m.content)).join('\n\n');
     const rest = messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: flattenContent(m.content) }));
     const body = { model: route.model, max_tokens: maxTokens, temperature, ...(system ? { system } : {}), messages: rest.length ? rest : [{ role: 'user', content: '' }] };
-    const { status, json: env, raw } = await postJson(route.base, '/v1/messages', { 'x-api-key': route.key, 'anthropic-version': '2023-06-01' }, body, CHAT_TIMEOUT_MS);
+    const { status, json: env, raw } = await postJson(route.base, '/v1/messages', { ...(route.key ? { 'x-api-key': route.key } : {}), 'anthropic-version': '2023-06-01' }, body, CHAT_TIMEOUT_MS);
     if (env?.error || status >= 400) throw new Error(env?.error?.message || `HTTP ${status}`);
     const content = (env.content || []).map((b) => b.text || '').join('');
     const usage = env.usage ? { prompt_tokens: env.usage.input_tokens, completion_tokens: env.usage.output_tokens } : null;
@@ -92,7 +92,7 @@ async function callApiProvider(route, messages, { temperature = 0.1, maxTokens =
   // openai-compatible
   const body = { model: route.model, temperature, max_tokens: maxTokens, messages: messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? flattenContent(m.content) : m.content })) };
   if (json) body.response_format = { type: 'json_object' };
-  const { status, json: env, raw } = await postJson(route.base, '/v1/chat/completions', { authorization: `Bearer ${route.key}` }, body, CHAT_TIMEOUT_MS);
+  const { status, json: env, raw } = await postJson(route.base, '/v1/chat/completions', route.key ? { authorization: `Bearer ${route.key}` } : {}, body, CHAT_TIMEOUT_MS);
   if (env?.error || status >= 400) throw new Error(env?.error?.message || `HTTP ${status}`);
   const c = env.choices?.[0]?.message?.content ?? '';
   return { content: Array.isArray(c) ? flattenContent(c) : String(c || ''), usage: env.usage || null, raw, model: env.model || route.model };

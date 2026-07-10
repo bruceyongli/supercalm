@@ -25,7 +25,11 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const mode = (await stat(file)).mode & 0o777;
   assert.equal(mode, 0o600, 'provider file is chmod 600');
   assert.throws(() => upsertProvider({ name: 'x', kind: 'bogus', base_url: 'http://x', api_key: 'k' }), /kind/);
-  assert.throws(() => upsertProvider({ name: 'x', kind: 'openai', base_url: 'http://x' }), /api_key/);
+  // keyless is ALLOWED since the providers-unification (local/LAN endpoints without auth);
+  // the probe reports if the endpoint actually requires a key.
+  const keyless = upsertProvider({ name: 'x', kind: 'openai', base_url: 'http://x' });
+  assert.equal(keyless.key_set, false, 'keyless provider accepted');
+  deleteProvider(keyless.id);
 }
 
 // ---- catalog integration: routeForModel + listings -------------------------------------------------

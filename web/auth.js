@@ -206,16 +206,38 @@ async function loadApiProviders() {
   if (!box) return;
   let r;
   try { r = await api('api/models/providers'); } catch (e) { box.innerHTML = `<p class="muted">unavailable: ${e.message}</p>`; return; }
+  // Built-in local proxies render as provider rows in the SAME section (one mental model:
+  // subscription auth lives above; every model ENDPOINT lives here). Key is auto (fleet plists).
+  const builtin = (r.builtin || []).map((p) => `
+    <div class="prov-row prov-builtin" data-proxy="${esc(p.id.replace('builtin:', ''))}">
+      <b>${esc(p.name)}</b>
+      <span class="muted">built-in · ${esc(p.base_url)} · ${(p.models || []).length} models · key auto</span>
+      <label class="muted" style="margin-left:auto"><input type="checkbox" data-act="bi-toggle" ${p.enabled ? 'checked' : ''}/> use</label>
+    </div>`).join('');
   const rows = (r.providers || []).map((p) => `
     <div class="prov-row" data-id="${p.id}">
       <b>${esc(p.name)}</b>
-      <span class="muted">${esc(p.kind)} · ${esc(p.base_url)} · ${(p.models || []).length} models${p.key_set ? '' : ' · <span style="color:#f85149">no key</span>'}</span>
+      <span class="muted">${esc(p.kind)} · ${esc(p.base_url)} · ${(p.models || []).length} models · ${p.key_set ? 'key set' : 'no key (open endpoint)'}</span>
       <button class="btn sm ghost" data-act="test">Test</button>
       <button class="btn sm ghost" data-act="del">Remove</button>
       <span class="muted" data-role="msg"></span>
     </div>`).join('');
+  const pr = r.pricing || {};
+  const pricingCard = `
+    <div class="prov-pricing">
+      <b>Cost stats (optional)</b>
+      <span class="muted">${pr.configured ? `✓ ${pr.count} priced models from ${esc(pr.source_kind)} manifest` : 'Point at a price manifest to see $ estimates on the Usage page — or skip entirely (token stats still work). Built-in defaults price the common models either way.'}</span>
+      <div class="prov-add" style="margin-top:6px">
+        <input id="price-url" placeholder="Price manifest URL (Supercalm / LiteLLM / openhand-models.json shapes)" value="${esc(pr.configured ? pr.url : '')}" />
+        <button class="btn sm" id="price-set">Set</button>
+        <button class="btn sm ghost" id="price-ours" title="${esc(pr.suggested_url || '')}">Use Supercalm's list</button>
+        ${pr.configured ? '<button class="btn sm ghost" id="price-clear">Clear</button>' : ''}
+        <span class="muted" id="price-msg"></span>
+      </div>
+    </div>`;
   box.innerHTML = `
-    ${rows || '<p class="muted">No API providers yet — add one below to use API models without a local proxy fleet.</p>'}
+    ${builtin}
+    ${rows || '<p class="muted">No API providers yet — add one below to use API models without a local proxy fleet. Local/LAN endpoints without auth work too (leave the key blank).</p>'}
     <div class="prov-add">
       <select id="ap-kind">
         <option value="anthropic">Anthropic API (serves claude sessions + agents)</option>
@@ -223,11 +245,32 @@ async function loadApiProviders() {
       </select>
       <input id="ap-name" placeholder="Name (e.g. Anthropic, OpenRouter)" />
       <input id="ap-base" placeholder="Base URL — blank = https://api.anthropic.com" />
-      <input id="ap-key" type="password" placeholder="API key" autocomplete="off" />
+      <input id="ap-key" type="password" placeholder="API key (blank for open/local endpoints)" autocomplete="off" />
       <input id="ap-models" placeholder="Models (comma-separated; blank = auto-discover)" />
       <button class="btn sm" id="ap-add">Test & add</button>
       <span class="muted" id="ap-msg"></span>
-    </div>`;
+    </div>
+    ${pricingCard}`;
+  for (const row of box.querySelectorAll('.prov-builtin')) {
+    row.querySelector('[data-act="bi-toggle"]').onchange = async (e) => {
+      await api(`api/models/providers/builtin/${row.dataset.proxy}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch(() => {});
+      api('api/models/refresh', { method: 'POST' }).catch(() => {}); // models leave/rejoin the catalog on next apply
+    };
+  }
+  const priceMsg = $('price-msg');
+  const setPrice = async (url) => {
+    priceMsg.textContent = 'fetching…';
+    try {
+      const j = await api('api/models/pricing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url }) });
+      if (!j.ok) throw new Error(j.error || 'failed');
+      priceMsg.textContent = `✓ ${j.count} models (${j.source_kind})`;
+      setTimeout(loadApiProviders, 600);
+    } catch (e) { priceMsg.textContent = '⚠ ' + e.message; }
+  };
+  $('price-set').onclick = () => setPrice($('price-url').value.trim());
+  $('price-ours').onclick = () => setPrice('');
+  const pc = $('price-clear');
+  if (pc) pc.onclick = async () => { await api('api/models/pricing', { method: 'DELETE' }).catch(() => {}); loadApiProviders(); };
   $('ap-kind').onchange = () => {
     $('ap-base').placeholder = $('ap-kind').value === 'anthropic' ? 'Base URL — blank = https://api.anthropic.com' : 'Base URL (e.g. https://api.openai.com or https://openrouter.ai/api)';
   };
