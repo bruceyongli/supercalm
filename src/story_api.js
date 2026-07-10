@@ -70,6 +70,33 @@ async function findClaudeLog(cwd, s) {
   return cands[0]?.p || null;
 }
 
+// Screenshot thumbnails: claude transcripts embed image tool-results as base64. Attach the LAST
+// few as data-URLs to the nearest following check/edit/work event (payload-bounded: 4 shots max).
+function attachShots(text, events) {
+  try {
+    const shots = [];
+    for (const line of text.split('\n')) {
+      if (!line.includes('"type":"image"')) continue;
+      try {
+        const j = JSON.parse(line);
+        const items = Array.isArray(j?.toolUseResult?.content) ? j.toolUseResult.content
+          : Array.isArray(j?.message?.content) ? j.message.content : [];
+        for (const it of items) {
+          const src = it?.type === 'image' ? it.source : null;
+          if (src?.type === 'base64' && src.data && src.data.length < 900_000) {
+            shots.push({ ts: Date.parse(j.timestamp || 0) || 0, url: `data:${src.media_type || 'image/png'};base64,${src.data}` });
+          }
+        }
+      } catch {}
+    }
+    for (const sh of shots.slice(-4)) {
+      const ev = events.find((e) => !e.shot && ['check', 'edit', 'work'].includes(e.kind) && Math.abs((e.ts || 0) - sh.ts) < 180e3)
+        || events.find((e) => !e.shot && e.kind === 'check');
+      if (ev) ev.shot = sh.url;
+    }
+  } catch {}
+}
+
 export async function storyFor(sid) {
   const s = getSession(sid);
   if (!s) return { error: 'no such session' };
@@ -82,6 +109,7 @@ export async function storyFor(sid) {
   if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs) return { events: hit.events, meta: hit.meta };
   const text = await readFile(file, 'utf8');
   const events = parseSessionLog(text);
+  attachShots(text, events); // the drop-in parser stays verbatim; thumbnails enrich here
   const meta = { file, mtimeMs: st.mtimeMs, count: events.length };
   cache.set(sid, { file, mtimeMs: st.mtimeMs, events, meta });
   if (cache.size > 40) cache.delete(cache.keys().next().value);

@@ -91,8 +91,9 @@ function render() {
   // verifiable) without a click; later renders respect the user's own open/close choices.
   if (!seededOpen) {
     seededOpen = true;
-    const i = events.findIndex((e) => (e.steps || []).length);
-    if (i >= 0) openSteps.add(i);
+    const idxs = events.map((e, i) => ((e.steps || []).length ? i : -1)).filter((i) => i >= 0);
+    if (idxs[1] != null) openSteps.add(idxs[1]); // second cluster: first stays closed for a natural first-click
+    else if (idxs[0] != null) openSteps.add(idxs[0]);
   }
   panelEl.innerHTML = `
     <div class="story-head">
