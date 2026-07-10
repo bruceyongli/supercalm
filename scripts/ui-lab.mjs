@@ -73,15 +73,20 @@ const PROBES = {
     actions: async (page) => {
       await page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', metaKey: true, bubbles: true}))");
       await new Promise((r) => setTimeout(r, 500));
+      // record palette state, close it, then open the merged launch modal for its own probes
+      await page.eval("window.__paletteWasOpen = !document.querySelector('[data-dk-palette]')?.hidden; window.__paletteItems = document.querySelectorAll('.dk-pal-item').length");
+      await page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))");
+      await page.eval("document.querySelector('[data-dk-new]')?.click()");
+      await new Promise((r) => setTimeout(r, 1200));
     },
     probes: [
       ["sidebar renders", "!!document.querySelector('[data-dk-sidebar]')"],
       ["live counters populated", "/waiting/.test(document.querySelector('[data-dk-counters]')?.textContent || '')"],
       ["session rows in sidebar", "document.querySelectorAll('[data-dk-sess]').length > 0"],
       ["inbox present (cards or all-clear)", "!!document.querySelector('[data-dk-cards]') && (document.querySelectorAll('[data-dk-card]').length > 0 || !!document.querySelector('[data-dk-allclear]'))"],
-      ["palette opens on cmd-k", "!document.querySelector('[data-dk-palette]')?.hidden"],
-      ["palette lists sessions", "document.querySelectorAll('.dk-pal-item').length > 2"],
-      ["merged launch modal opens with project select + gate", "(() => { document.querySelector('[data-dk-palette]')?.setAttribute('hidden',''); document.querySelector('[data-dk-new]')?.click(); return new Promise(r => setTimeout(() => r(!!document.querySelector('[data-dk-launch]') && !!document.querySelector('#nl-project') && document.querySelectorAll('#nl-tool [data-tool]').length >= 2), 900)); })()"],
+      ["palette opened on cmd-k", "window.__paletteWasOpen === true"],
+      ["palette listed sessions", "window.__paletteItems > 2"],
+      ["merged launch modal: project select + tool segmented + launch gate", "!!document.querySelector('[data-dk-launch]') && !!document.querySelector('#nl-project') && document.querySelectorAll('#nl-tool [data-tool]').length >= 2 && !!document.querySelector('[data-dk-launch-go]')"],
       ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
     ],
   }),
