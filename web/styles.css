@@ -2096,10 +2096,15 @@ body.map-expanded-open { overflow: hidden; }
   background: var(--panel2); border: 1px solid var(--line2); border-radius: 6px; color: var(--ink);
   font: inherit; font-size: 12px; padding: 4px 7px; min-width: 0;
 }
-.map-config-row select, .map-config-row input:not([type="checkbox"]) { flex: 0 1 60%; }
+.map-config-row select, .map-config-row input:not([type="checkbox"]) { flex: 0 1 60%; min-width: 0; max-width: 60%; text-overflow: ellipsis; }
+/* min-width:0 everywhere — a <select> with long option labels otherwise refuses to shrink below its
+   intrinsic width and shoves the whole popover past the panel edge (the "broken settings" report) */
+.map-config-pop, .map-config-pop * { min-width: 0; }
 .map-config-pop textarea { width: 100%; resize: vertical; line-height: 1.4; }
 .map-config-note { font-size: 10px; line-height: 1.35; margin-top: -2px; }
 .map-config-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.map-config-foot > .muted { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.map-config-btns { flex-shrink: 0; }
 .map-config-btns { display: inline-flex; gap: 6px; }
 .map-needsyou { text-align: left; font: inherit; cursor: pointer; width: 100%; background: #2a1d0733; border: 1px solid var(--yellow); border-radius: 7px; padding: 7px 9px; color: var(--ink); line-height: 1.45; }
 .map-needsyou:hover { background: #2a1d0755; }
