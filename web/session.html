@@ -23,7 +23,10 @@
     <title>Supercalm · session</title>
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="vendor/xterm.css" />
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="session-page">
     <header>
@@ -31,6 +34,10 @@
       <span class="title" id="s-title"></span>
       <span class="status-txt" id="s-status"></span>
       <div class="spacer"></div>
+      <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
+        <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
+        <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
+      </div>
       <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
       <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
       <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
@@ -49,6 +56,7 @@
 
       <main class="session-main">
         <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
+        <section id="story-panel" class="story-panel main-view-panel" data-main-panel="story" data-story-panel hidden aria-live="polite"></section>
         <section id="scrollback" class="scrollback-view main-view-panel" data-main-panel="scrollback" hidden aria-live="polite">
           <div class="scrollback-head">
             <span>Transcript</span>

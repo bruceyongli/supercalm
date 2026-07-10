@@ -335,8 +335,8 @@ let userPausedTail = false;
 let lastDims = '';
 let lastTrustedResizeActivity = 0;
 const requestedMainView = params.get('view');
-const MAIN_VIEWS = new Set(['terminal', 'scrollback', 'conversation', 'agent']);
-let activeMainView = MAIN_VIEWS.has(requestedMainView) ? requestedMainView : localStorage.getItem(PREF_MAIN_VIEW) || 'terminal';
+const MAIN_VIEWS = new Set(['terminal', 'scrollback', 'conversation', 'agent', 'story']);
+let activeMainView = MAIN_VIEWS.has(requestedMainView) ? requestedMainView : localStorage.getItem(PREF_MAIN_VIEW) || 'story'; // design handoff: story is the default log view
 let timelineLoaded = false;
 let latestTimelineData = null;
 let agentViewApi = null;
@@ -437,6 +437,10 @@ function setMainView(view) {
   shell.classList.toggle('conversation-mode', activeMainView === 'conversation');
   shell.classList.toggle('agent-mode', activeMainView === 'agent');
   shell.classList.toggle('scrollback-mode', activeMainView === 'scrollback');
+  shell.classList.toggle('story-mode', activeMainView === 'story'); // hides quick-keys (terminal-only per spec)
+  document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
+    b.classList.toggle('active', (b.dataset.mode === 'story') === (activeMainView === 'story'));
+  });
   document.querySelectorAll('[data-main-view]').forEach((b) => {
     const on = b.dataset.mainView === activeMainView;
     b.classList.toggle('on', on);
@@ -445,7 +449,8 @@ function setMainView(view) {
   document.querySelectorAll('[data-main-panel]').forEach((p) => {
     p.hidden = p.dataset.mainPanel !== activeMainView;
   });
-  if (activeMainView === 'conversation') loadTimeline();
+  if (activeMainView === 'story') loadStoryView();
+  else if (activeMainView === 'conversation') loadTimeline();
   else if (activeMainView === 'agent') setTimeout(() => loadAgentView(), 0);
   else if (activeMainView === 'scrollback') loadScrollback();
   else setTimeout(syncSize, 80);
@@ -453,6 +458,16 @@ function setMainView(view) {
 document.querySelectorAll('[data-main-view]').forEach((b) => {
   b.onclick = () => setMainView(b.dataset.mainView);
 });
+// Story/terminal segmented toggle (design handoff DOM contract).
+document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
+  b.onclick = () => setMainView(b.dataset.mode === 'story' ? 'story' : 'terminal');
+});
+let storyInited = false;
+async function loadStoryView() {
+  const mod = await import('./story-view.js');
+  if (!storyInited) { storyInited = true; mod.initStoryView({ sessionId: sid, panel: document.querySelector('[data-story-panel]') }); }
+  else mod.refreshStory();
+}
 setMainView(activeMainView);
 
 function terminalBottomDistance() {
@@ -1529,6 +1544,7 @@ events.addEventListener('changed', coalesce(() => {
   if (activeMainView === 'conversation') loadTimeline();
   if (activeMainView === 'agent') loadAgentView({ refresh: true });
   if (activeMainView === 'scrollback') loadScrollback({ quiet: true });
+  if (activeMainView === 'story') loadStoryView(); // story keeps up with the live session
 }, 3000));
 
 // ---- usage / quota / limits -------------------------------------------------
