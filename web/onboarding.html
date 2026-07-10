@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <base href="./" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0a0e14" />
+  <title>Supercalm · setup</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="desktop.css" />
+  <link rel="stylesheet" href="onboarding.css" />
+</head>
+<body>
+  <div class="ob-wrap" data-ob>
+    <div class="ob-rail" id="ob-rail" data-ob-rail hidden>
+      <div class="ob-rail-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span></div>
+      <div id="ob-rail-steps"></div>
+      <button class="ob-start-now" id="ob-start-now" data-ob-finish hidden>▶ Start using Supercalm<span>skip the rest — Settings keeps it all</span></button>
+    </div>
+    <main class="ob-main" id="ob-main" data-ob-main></main>
+  </div>
+  <div id="dk-toast" class="dk-toast" hidden></div>
+  <script type="module" src="onboarding.js"></script>
+</body>
+</html>

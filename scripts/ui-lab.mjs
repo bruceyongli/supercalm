@@ -38,6 +38,23 @@ async function discover() {
 
 const PROBES = {
   // Desktop shell (design handoff phase 2, slice 1): sidebar + inbox + palette render and behave.
+  // Onboarding wizard: welcome renders with real detection; Get started reveals the step rail
+  // with required-gate steps; step 1 lists real CLI scan rows.
+  'onboarding-wizard': () => ({
+    url: `${BASE}/onboarding`,
+    actions: async (page) => {
+      await page.eval("document.querySelector('[data-ob-go]')?.click()");
+      await new Promise((r) => setTimeout(r, 1200));
+    },
+    probes: [
+      ["step rail visible after Get started", "!document.querySelector('[data-ob-rail]')?.hidden"],
+      ["four steps in the rail", "document.querySelectorAll('[data-ob-step]').length === 4"],
+      ["agents step lists detected CLIs", "document.querySelectorAll('.ob-row b').length >= 2"],
+      ["gate note or continue present", "!!document.querySelector('[data-ob-next]')"],
+      ["credentialed installs get the start-now shortcut", "!document.querySelector('[data-ob-finish]')?.hidden || !!document.querySelector('[data-ob-finish]')"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'desktop-shell': () => ({
     url: `${BASE}/desktop`,
     actions: async (page) => {
@@ -183,6 +200,7 @@ if (between) plan.push(['between-tasks-state', between]);
 if (withCard) plan.push(['active-card-state', withCard]);
 if (withCard || between) plan.push(['graph-settings-popover', withCard || between]);
 plan.push(['desktop-shell', 'global']);
+plan.push(['onboarding-wizard', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

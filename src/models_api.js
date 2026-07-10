@@ -7,6 +7,11 @@ import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvid
 import { currentProviders, listProxyModels } from './model_catalog.js';
 import { pricingStatus, refreshPrices, clearPricing, SUPERCALM_PRICES_URL } from './pricing.js';
 import { bus } from './bus.js';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+import { DATA_DIR } from './config.js';
+import { db } from './store.js';
 
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
@@ -25,6 +30,27 @@ route('GET', '/api/models/providers', (req, res) => {
     builtin: listBuiltinProviders(currentProviders(), byProxy),
     speech: getSpeech(), pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
   });
+});
+
+// First-run setup flag (design handoff onboarding contract): finishing the wizard sets it; a box
+// that already runs sessions is grandfathered complete so onboarding never hijacks a live install.
+route('GET', '/api/setup', (req, res) => {
+  try {
+    const { existsSync, readFileSync } = require('node:fs');
+    const f = join(DATA_DIR, 'setup.json');
+    let complete = false;
+    try { complete = !!JSON.parse(readFileSync(f, 'utf8')).complete; } catch {}
+    if (!complete) {
+      const n = db.prepare('SELECT count(*) c FROM sessions').get()?.c || 0;
+      if (n > 0) complete = true; // grandfathered
+    }
+    json(res, 200, { ok: true, complete });
+  } catch (e) { json(res, 200, { ok: true, complete: true }); }
+});
+route('POST', '/api/setup', async (req, res) => {
+  const { writeFileSync } = require('node:fs');
+  writeFileSync(join(DATA_DIR, 'setup.json'), JSON.stringify({ complete: true, at: Date.now() }));
+  json(res, 200, { ok: true, complete: true });
 });
 
 // Built-in local proxy rows: enable/disable only (they are discovered, not stored).
