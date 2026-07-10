@@ -40,3 +40,5 @@
 .ob-gate { color: #e2b23e; font-size: 12px; }
 .dk-new.sm { padding: 7px 12px; font-size: 12px; }
 .dk-new:disabled { background: #10151d; border-color: #232c38; color: #5c6675; cursor: default; }
+
+.ob-rail[hidden] { display: none; }
