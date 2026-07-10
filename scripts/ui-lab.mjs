@@ -37,6 +37,23 @@ async function discover() {
 }
 
 const PROBES = {
+  // Geometry probe: the graph-settings popover once shoved its selects + Save past the panel edge
+  // (flexbox intrinsic-width trap on long model labels) — DOM-presence checks can't see overflow,
+  // so this one asserts geometry after actually opening the popover.
+  'graph-settings-popover': (sid) => ({
+    url: `${BASE}/session?id=${sid}&desktop=1&sideTab=map`,
+    actions: async (page) => {
+      await page.eval("document.querySelector('#map-config')?.click()");
+      await new Promise((r) => setTimeout(r, 1500));
+    },
+    probes: [
+      ["popover opened", "!!document.querySelector('#map-config-pop')"],
+      ["popover within panel", "(() => { const p = document.querySelector('#map-config-pop'); if (!p) return 'no pop'; const pr = p.getBoundingClientRect(); const panel = p.closest('.map-space').getBoundingClientRect(); return pr.right <= panel.right + 1; })()"],
+      ["no element overflows the panel", "(() => { const p = document.querySelector('#map-config-pop'); if (!p) return 'no pop'; const panel = p.closest('.map-space').getBoundingClientRect(); return [...p.querySelectorAll('select,button,textarea')].every(el => el.getBoundingClientRect().right <= panel.right + 1); })()"],
+      ["save button visible", "(() => { const b = document.querySelector('#cfg-save'); if (!b) return false; const r = b.getBoundingClientRect(); return r.width > 30 && r.right <= innerWidth; })()"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'between-tasks-state': (sid) => ({
     url: `${BASE}/session?id=${sid}&desktop=1&sideTab=supervisor`,
     probes: [
@@ -147,6 +164,7 @@ const { withCard, between } = await discover();
 const plan = [];
 if (between) plan.push(['between-tasks-state', between]);
 if (withCard) plan.push(['active-card-state', withCard]);
+if (withCard || between) plan.push(['graph-settings-popover', withCard || between]);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];
@@ -155,6 +173,7 @@ for (const [name, sid] of plan) {
   const { url, probes } = PROBES[name](sid);
   await withPage(async (page) => {
     await page.goto(url);
+    if (PROBES[name](sid).actions) await PROBES[name](sid).actions(page);
     const fails = [];
     for (const [label, expr] of probes) {
       let v = null;
