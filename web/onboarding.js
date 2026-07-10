@@ -217,5 +217,5 @@ async function finish() {
   setTimeout(() => (location.href = 'desktop'), 900);
 }
 
-await loadState();
-render();
+render(); // welcome paints instantly — the CLI scan (npm registry) can take seconds
+loadState().then(render);
