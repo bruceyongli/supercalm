@@ -97,6 +97,42 @@ setRailPinned(localStorage.getItem(PREF_RAIL_PINNED) === '1', { save: false });
 applyUsageWidth();
 railPin.onclick = () => setRailPinned(!shell.classList.contains('rail-pinned'));
 
+// ---- 56px mini-rail + peek (design handoff session-view collapse model) ---------------------------
+// docked (rail-pinned) ⇄ mini (rail-mini): ⟨ collapse / ⌘\ toggles; the mini rail's ≡ PEEKS the full
+// sidebar as a fixed overlay (no terminal reflow); state persists until docked again.
+const PREF_RAIL_MODE = 'aios.session.railMode';
+function setRailMini(mini, { save = true } = {}) {
+  shell.classList.toggle('rail-mini', mini);
+  document.querySelector('[data-rail-mini]').hidden = !mini;
+  rail.classList.toggle('mini', mini);
+  if (mini) setRailPinned(false, { save: false });
+  if (save) localStorage.setItem(PREF_RAIL_MODE, mini ? 'mini' : 'docked');
+  renderMiniDots();
+  applyUsageWidth();
+}
+function renderMiniDots() {
+  const box = document.getElementById('mini-dots');
+  if (!box || !shell.classList.contains('rail-mini')) return;
+  const rows = [...document.querySelectorAll('#session-rail-list a[href*="session?id="]')].slice(0, 8);
+  box.innerHTML = rows.map((a) => {
+    const active = a.href.includes(id);
+    const working = /working/i.test(a.textContent);
+    return `<a class="mini-dot${active ? ' me' : ''}" href="${a.getAttribute('href')}" title="${(a.textContent || '').trim().slice(0, 60).replace(/"/g, '')}"><i class="dk-dot ${working ? 'ok' : 'warn'}"></i></a>`;
+  }).join('');
+}
+document.getElementById('rail-collapse').onclick = () => setRailMini(true);
+document.getElementById('mini-peek').onclick = () => {
+  // peek: overlay the full rail, fixed — zero reflow; leaves on mouseout or dock
+  rail.classList.add('peek');
+  const close = (e) => { if (!rail.contains(e.relatedTarget)) { rail.classList.remove('peek'); rail.removeEventListener('mouseleave', close); } };
+  rail.addEventListener('mouseleave', close);
+};
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === '\\') { e.preventDefault(); setRailMini(!shell.classList.contains('rail-mini')); }
+});
+if (localStorage.getItem(PREF_RAIL_MODE) === 'mini') setRailMini(true, { save: false });
+setInterval(renderMiniDots, 5000); // dots follow the live rail list
+
 let resizeDrag = null;
 usageResizer.addEventListener('pointerdown', (e) => {
   if (matchMedia('(max-width: 1050px)').matches) return;

@@ -48,7 +48,14 @@
         <div class="session-rail-inner">
           <div class="rail-head">
             <span class="rail-title">Sessions</span>
+            <button class="btn ghost sm" id="rail-collapse" type="button" title="Collapse to a 56px rail (⌘\\)" data-rail-collapse>⟨ collapse</button>
             <button class="btn ghost sm" id="rail-pin" type="button">Pin</button>
+          </div>
+          <div class="rail-mini-col" data-rail-mini hidden>
+            <button class="mini-btn" id="mini-peek" title="Peek the sidebar">≡</button>
+            <a class="mini-badge" id="mini-inbox" href="./" title="Inbox" hidden></a>
+            <div id="mini-dots"></div>
+            <a class="mini-btn" href="./" title="New session — opens the launch surface">+</a>
           </div>
           <div class="rail-list" id="session-rail-list"></div>
         </div>

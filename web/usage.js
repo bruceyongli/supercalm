@@ -140,6 +140,13 @@ function renderOverview(data = {}) {
     <div class="v">loading</div>
     <div class="subtext">Checking local subscription windows.</div>
   `;
+  const mini = document.getElementById('mini-stats');
+  if (mini) mini.innerHTML = [
+    ['total tokens', short(t.total_tokens)],
+    ['cached', t.total_tokens ? Math.round(100 * n(t.cached_input_tokens) / (n(t.total_tokens) + n(t.cached_input_tokens))) + '%' : '—'],
+    ['priced events', fmt(t.priced_events)],
+    ['unpriced tokens', short(unpriced)],
+  ].map(([k, v]) => `<div class="mini-stat"><div class="k">${k}</div><div class="v">${escapeHtml(String(v))}</div></div>`).join('');
   el.burnCard.innerHTML = `
     <div class="k">Top burner</div>
     <div class="v">${escapeHtml(topProject?.name || 'none')}</div>

@@ -38,3 +38,9 @@ tr, td { border-color: #10151d !important; }
 .dc-live summary { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a95a5; cursor: pointer; }
 
 .dc-edit[hidden] { display: none; }
+
+/* usage mini-stats (4 cells per the README) */
+.mini-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 16px; }
+.mini-stat { background: #0d1219; border: 1px solid #161d27; border-radius: 11px; padding: 9px 12px; }
+.mini-stat .k { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: #5c6675; }
+.mini-stat .v { font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 800; color: #e9eef5; margin-top: 3px; }

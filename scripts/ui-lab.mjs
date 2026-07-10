@@ -60,6 +60,28 @@ const PROBES = {
   // approval controls still present and functional-looking, zero console errors.
   // Home flip: / serves the new shell; ?classic=1 still serves the pre-redesign dashboard.
   // Doctrine tab on /decisions: segmented, rule cards with WHEN + approve controls, triage actions.
+  // Session mini-rail: collapse to 56px, xterm survives (rows render), peek overlays without reflow.
+  'session-mini-rail': (sid) => ({
+    url: `${BASE}/session?id=${sid}&desktop=1`,
+    actions: async (page) => {
+      await page.eval("localStorage.removeItem('aios.session.railMode')");
+      await page.eval("document.querySelector('[data-story-toggle] [data-mode=terminal]')?.click()");
+      await new Promise((r) => setTimeout(r, 1200));
+      await page.eval("window.__termW1 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#rail-collapse')?.click()");
+      await new Promise((r) => setTimeout(r, 900));
+      await page.eval("window.__termW2 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#mini-peek')?.click()");
+      await new Promise((r) => setTimeout(r, 500));
+      await page.eval("window.__termW3 = document.querySelector('#term')?.getBoundingClientRect().width");
+    },
+    probes: [
+      ["mini rail column present", "!document.querySelector('[data-rail-mini]')?.hidden"],
+      ["collapse widened the terminal or kept it stable", "window.__termW2 >= window.__termW1 - 2"],
+      ["peek overlays with ZERO terminal reflow", "Math.abs(window.__termW3 - window.__termW2) < 2"],
+      ["peek shows the full rail list", "!!document.querySelector('.session-rail.peek .rail-list')"],
+      ["xterm still renders rows", "document.querySelectorAll('#term .xterm-rows > div').length > 10"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   'doctrine-tab': () => ({
     url: `${BASE}/decisions`,
     actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
@@ -282,6 +304,7 @@ plan.push(['records-page', 'global']);
 plan.push(['system-pages-skin', 'global']);
 plan.push(['home-flip', 'global']);
 plan.push(['doctrine-tab', 'global']);
+if (withCard || between) plan.push(['session-mini-rail', withCard || between]);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

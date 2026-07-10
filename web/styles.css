@@ -2297,3 +2297,19 @@ body.map-expanded-open { overflow: hidden; }
 .story-gap::before, .story-gap::after { content: ''; flex: 1; border-top: 1px solid #161d27; }
 .story-empty { color: #5c6675; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; padding: 24px; text-align: center; }
 .story-mode .keys { display: none; }
+
+/* ---- session mini-rail + peek (design handoff) ---- */
+.session-shell.rail-mini { grid-template-columns: 56px minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width)); }
+.session-shell.rail-mini.conversation-mode, .session-shell.rail-mini.agent-mode, .session-shell.rail-mini.scrollback-mode, .session-shell.rail-mini.story-mode { grid-template-columns: 56px minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw)); }
+.session-rail.mini { width: 56px; overflow: visible; }
+.session-rail.mini .session-rail-inner > .rail-head, .session-rail.mini .rail-list { display: none; }
+.session-rail.mini.peek { overflow: visible; }
+.session-rail.mini.peek .session-rail-inner { position: fixed; left: 8px; top: var(--session-header-h, 52px); bottom: 8px; width: 272px; background: #0c1017; border: 1px solid #1d2632; border-radius: 12px; z-index: 40; box-shadow: 12px 0 40px #000a; padding: 8px; overflow-y: auto; }
+.session-rail.mini.peek .session-rail-inner > .rail-head, .session-rail.mini.peek .rail-list { display: block; }
+.rail-mini-col { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 10px 0; }
+.mini-btn { width: 34px; height: 34px; border-radius: 9px; background: #0b0f16; border: 1px solid #232c38; color: #8a95a5; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 15px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; }
+.mini-btn:hover { color: #e9eef5; border-color: #365a86; }
+.mini-badge { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 800; color: #e2b23e; border: 1px solid rgba(226,178,62,.4); background: rgba(226,178,62,.12); border-radius: 999px; padding: 1px 8px; text-decoration: none; }
+.mini-dot { width: 26px; height: 26px; border-radius: 99px; border: 1px solid #232c38; display: flex; align-items: center; justify-content: center; }
+.mini-dot.me { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff55; }
+#mini-dots { display: flex; flex-direction: column; gap: 6px; }
