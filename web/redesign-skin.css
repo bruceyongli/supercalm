@@ -36,3 +36,5 @@ tr, td { border-color: #10151d !important; }
 .dc-edit textarea { flex: 1; }
 .dc-live { margin-top: 16px; }
 .dc-live summary { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #8a95a5; cursor: pointer; }
+
+.dc-edit[hidden] { display: none; }

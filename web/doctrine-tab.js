@@ -9,7 +9,7 @@ function card(r) {
   const cand = r.status === 'candidate';
   return `
   <div class="dc-rule${cand ? '' : ' settled'}" data-dc-rule data-id="${esc(r.id)}">
-    <div class="dc-when">WHEN ${esc((r.situation || '').toUpperCase().slice(0, 160))}</div>
+    <div class="dc-when">WHEN ${esc((r.situation || '').replace(/^\s*when\s+/i, '').toUpperCase().slice(0, 160))}</div>
     <div class="dc-text">${esc(r.rule || '')}</div>
     ${r.apply_how ? `<div class="dc-apply">apply ▸ ${esc(r.apply_how)}</div>` : ''}
     <div class="dc-foot">
