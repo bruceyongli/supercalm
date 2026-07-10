@@ -251,6 +251,7 @@ async function serveStatic(req, res, url) {
   if (p === '/usage') p = '/usage.html';
   if (p === '/health') p = '/health.html';
   if (p === '/phone') p = '/phone.html';
+  if (p === '/desktop') p = '/desktop.html';
   const file = confinedPath(WEB_DIR, p);
   if (!file) return send(res, 403, 'forbidden');
   try {

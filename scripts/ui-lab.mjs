@@ -37,6 +37,23 @@ async function discover() {
 }
 
 const PROBES = {
+  // Desktop shell (design handoff phase 2, slice 1): sidebar + inbox + palette render and behave.
+  'desktop-shell': () => ({
+    url: `${BASE}/desktop`,
+    actions: async (page) => {
+      await page.eval("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', metaKey: true, bubbles: true}))");
+      await new Promise((r) => setTimeout(r, 500));
+    },
+    probes: [
+      ["sidebar renders", "!!document.querySelector('[data-dk-sidebar]')"],
+      ["live counters populated", "/waiting/.test(document.querySelector('[data-dk-counters]')?.textContent || '')"],
+      ["session rows in sidebar", "document.querySelectorAll('[data-dk-sess]').length > 0"],
+      ["inbox present (cards or all-clear)", "!!document.querySelector('[data-dk-cards]') && (document.querySelectorAll('[data-dk-card]').length > 0 || !!document.querySelector('[data-dk-allclear]'))"],
+      ["palette opens on cmd-k", "!document.querySelector('[data-dk-palette]')?.hidden"],
+      ["palette lists sessions", "document.querySelectorAll('.dk-pal-item').length > 2"],
+      ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
+    ],
+  }),
   // Geometry probe: the graph-settings popover once shoved its selects + Save past the panel edge
   // (flexbox intrinsic-width trap on long model labels) — DOM-presence checks can't see overflow,
   // so this one asserts geometry after actually opening the popover.
@@ -165,6 +182,7 @@ const plan = [];
 if (between) plan.push(['between-tasks-state', between]);
 if (withCard) plan.push(['active-card-state', withCard]);
 if (withCard || between) plan.push(['graph-settings-popover', withCard || between]);
+plan.push(['desktop-shell', 'global']);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

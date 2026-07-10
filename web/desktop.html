@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <base href="./" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0a0e14" />
+  <title>Supercalm</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="desktop.css" />
+</head>
+<body>
+  <div id="shell" class="dk-shell">
+    <aside class="dk-side" id="dk-side" data-dk-sidebar>
+      <div class="dk-brand">
+        <span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span>
+      </div>
+      <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
+      <button class="dk-new" id="dk-new" data-dk-new>+ New session</button>
+      <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
+      <nav class="dk-nav">
+        <a class="dk-nav-item active" data-nav="inbox" href="#inbox">Inbox <span class="dk-badge warn" id="dk-inbox-badge" hidden></span></a>
+        <a class="dk-nav-item" data-nav="projects" href="#projects">Projects <span class="dk-nav-plus" id="dk-proj-plus" title="Add project">+</span></a>
+      </nav>
+      <div class="dk-sec">SESSIONS</div>
+      <div class="dk-sessions" id="dk-sessions" data-dk-sessions></div>
+      <div class="dk-sec">SYSTEM</div>
+      <nav class="dk-nav">
+        <a class="dk-nav-item" href="decisions" data-nav="decisions">Decisions</a>
+        <a class="dk-nav-item" href="records" data-nav="records">Records</a>
+        <a class="dk-nav-item" href="usage" data-nav="usage">Usage</a>
+        <a class="dk-nav-item" href="health" data-nav="health">Health <span class="dk-dot warn" id="dk-health-dot" hidden></span></a>
+        <a class="dk-nav-item" href="auth" data-nav="settings">Settings</a>
+      </nav>
+      <div class="dk-foot" id="dk-foot"></div>
+    </aside>
+    <main class="dk-main" id="dk-main">
+      <section id="dk-inbox" data-dk-inbox>
+        <div class="dk-page-head">
+          <h1>Needs you <span class="dk-badge warn" id="dk-needs-count" hidden></span></h1>
+        </div>
+        <div id="dk-cards" data-dk-cards></div>
+        <div class="dk-sec-row">SESSIONS</div>
+        <div id="dk-rows"></div>
+      </section>
+    </main>
+  </div>
+  <div id="dk-palette" class="dk-palette" data-dk-palette hidden>
+    <div class="dk-palette-box">
+      <input id="dk-palette-q" placeholder="Jump to a screen, session, or action…" autocomplete="off" />
+      <div id="dk-palette-list"></div>
+    </div>
+  </div>
+  <div id="dk-toast" class="dk-toast" hidden></div>
+  <script type="module" src="desktop.js"></script>
+  <script type="module" src="version-badge.js"></script>
+</body>
+</html>
