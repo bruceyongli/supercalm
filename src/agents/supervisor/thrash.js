@@ -46,7 +46,10 @@ export function detectThrash(commits, { oscillationMin = OSCILLATION_MIN, deploy
   let kind = null;
   if (reverts.length >= 2 && (oscillating.length || reverts.length >= 3)) kind = 'revert-oscillation';
   else if (oscillating.length && reverts.length >= 1) kind = 'file-oscillation';
-  else if (deploys.length >= deployChurnMin) kind = 'deploy-churn';
+  // deploy-churn alone is NOT thrash — a healthy release cadence from one actor looks identical
+  // (observed live: 5 releases/45min of normal solo work). The incident shape is deploys FIGHTING
+  // regressions, so churn only counts when at least one revert/rollback marker rides the window.
+  else if (deploys.length >= deployChurnMin && reverts.length >= 1) kind = 'deploy-churn';
   if (!kind) return { thrash: false };
   const episode = commits[commits.length - 1]?.sha || 'none'; // oldest in-window commit anchors the episode
   return {

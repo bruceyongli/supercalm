@@ -29,11 +29,13 @@ const c = (sha, subject, files = ['auth.js']) => ({ sha, ts: Date.now(), subject
   const r = detectThrash([c('b1', 'feat: add settings'), c('b2', 'fix: overflow'), c('b3', 'test: locks'), c('b4', 'docs: ledger')]);
   assert.equal(r.thrash, false);
 }
-// deploy churn
+// deploy churn REQUIRES a revert marker — pure release cadence is normal work, not thrash
 {
-  const r = detectThrash([c('d1', 'release: v9'), c('d2', 'release: v8'), c('d3', 'release: v7'), c('d4', 'release: v6'), c('d5', 'release: v5'), c('d6', 'feat: x')]);
-  assert.equal(r.thrash, true);
-  assert.equal(r.kind, 'deploy-churn');
+  const cadence = detectThrash([c('d1', 'release: v9'), c('d2', 'release: v8'), c('d3', 'release: v7'), c('d4', 'release: v6'), c('d5', 'release: v5'), c('d6', 'feat: x')]);
+  assert.equal(cadence.thrash, false, 'solo release cadence must never hold the operator');
+  const churn = detectThrash([c('d1', 'release: v9', ['a.js']), c('d2', 'revert: v8 broke login', ['b.js']), c('d3', 'release: v8', ['c.js']), c('d4', 'release: v7', ['d.js']), c('d5', 'release: v6', ['e.js']), c('d6', 'release: v5', ['f.js'])]);
+  assert.equal(churn.thrash, true);
+  assert.equal(churn.kind, 'deploy-churn');
 }
 // too little history = no verdict
 assert.equal(detectThrash([c('x', 'revert: y')]).thrash, false);
