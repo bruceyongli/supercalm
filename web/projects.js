@@ -10,7 +10,7 @@ async function load() {
   try { home = await api('api/phone/home'); } catch {}
   const liveByPath = {};
   for (const s of home.sessions || []) if (s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
-  const rows = (health.projects || []).map((p) => {
+  const rows = (health.graphs || []).map((p) => {
     const ready = p.status === 'ready';
     const counts = p.counts || {};
     const live = liveByPath[p.project_id] || 0;
