@@ -1,80 +1,57 @@
-# Supervisor-Bench — proving the supervision approach on famous benchmarks
+# Benchmarking the supervisor on EXISTING famous benchmarks (no custom benchmark)
 
-**The claim we want to demonstrate publicly:** an autonomous coding agent under Supercalm
-supervision sustains longer autonomy and delivers more *actually-finished* work than the same agent
-alone. Not "our agent is smarter" — "our **supervisor** makes any agent finish honestly."
+**Operator direction (2026-07-09):** do not build our own benchmark. Pick suitable, famous,
+*existing* LLM benchmarks — mission-fit (supervising coding agents in terminals), with public
+leaderboards so a good result is real, free marketing. (Reference point: skillopt used
+SearchQA/Sheet/Office/DocVQA/LiveMath/ALFWorld — generalist-agent boards; we go mission-focused.)
 
-## Why these benchmarks (famous + fit)
+## The pick
 
-| Benchmark | Fame | What it proves about the supervisor | Cost |
+| Priority | Benchmark | Why it's the one | Marketing surface |
 |---|---|---|---|
-| **SWE-bench Verified** (subset → full) | The industry-standard coding-agent benchmark | End-to-end: supervised agent resolves more, stops-early less, false-claims less | High (agent runtime + official eval harness) |
-| **SWE-bench Lite** | Same family, cheaper | Pilot A/B to size the effect before the headline run | Medium |
-| **DevAI** (Agent-as-a-Judge) | The published judge-alignment benchmark (90% agent-judge vs 60–70% LLM-judge) | Our verify brain, measured head-to-head against published numbers on the same tasks | Low (judging existing trajectories; no agent runs) |
-| AI-control backdoor games (later) | The safety-monitoring literature | Catch-rate of our gate against seeded sabotage | Medium |
+| **1** | **Terminal-Bench 2.1** (tbench.ai) | Mission-identical: agents doing real work in a terminal — literally what Supercalm supervises. The leaderboard's own narrative is "the harness matters more than the model" (Codex CLI @ GPT-5.5: **83.4%**; same model under Terminus-2 harness: **76.4%**). A supervision entry competes in exactly that lane. **The unsupervised baseline is already on the board** — we only run our condition. | Public leaderboard row: "Codex CLI + Supercalm supervisor" with org + repo URL; submission is a public HF PR; the harness-gap story is pre-sold |
+| **2** | **SWE-bench Verified** | The most famous coding-agent benchmark, period. Heavier infra (docker eval, x86), more saturated board — do it after TB proves the effect | Leaderboard + the standard citation everyone recognizes |
+| (internal) | DevAI judge-alignment | Not marketing (niche) — kept only as a cheap internal check of the verify brain if we want it; NOT a headline | — |
 
-## The headline experiment (SWE-bench A/B)
+## Terminal-Bench entry — how it works
 
-Two conditions, same agent, same model, same budget, same prompts — the ONLY variable is supervision:
+- **What we submit:** agent = `Codex CLI under Supercalm supervision` (and/or Claude Code variant),
+  model = gpt-5.5 (matching the published unsupervised row for a clean same-model comparison).
+- **Harness integration (the Phase-1 plumbing):** Terminal-Bench 2.1 runs via the **Harbor**
+  framework; tasks execute in docker sandboxes. Our custom Harbor agent launches the CLI inside the
+  sandbox's tmux and runs the supervisor loop against that tmux (supervisor sidecar in-container, or
+  host Supercalm reaching the sandbox tmux socket; model calls to the fleet via host networking).
+  The supervisor sees exactly its production evidence surface — terminal, git, its own card.
+- **Rules compliance:** ≥5 trials per task (`-k 5`); the agent must not access tbench.ai or the
+  terminal-bench GitHub (anti-gaming) — enforce via the sandbox's network policy + a preflight
+  grep of our prompts; submission PR to the HF leaderboard repo with `metadata.yaml`
+  (agent URL = github.com/bruceyongli/supercalm, org = Supercalm, models listed).
+- **The claim we can honestly chase:** same model, same CLI, supervision as the only delta.
+  Expected effect concentrates in the hard tail (long tasks, stalls, premature give-ups) — TB 2.1's
+  89 tasks × 5 trials gives per-task variance to show it.
 
-- **A — solo:** codex/claude CLI runs the task in a Supercalm session, supervisor **Off**.
-- **B — supervised:** identical launch, supervisor **Autopilot** with a task card auto-created from
-  the issue (criteria = "official eval passes" is NOT visible — the supervisor judges evidence the
-  same way it does in production: tests it can run, diffs, claims).
-
-Per task: repo checked out at base commit in an isolated worktree; task text = the GitHub issue;
-agent produces a patch; patch graded by the **official SWE-bench docker harness** (ground truth
-hidden from both agent and supervisor — no test peeking; the harness never mounts
-`fail_to_pass` tests into the workspace).
-
-**Metrics (the story is in more than resolve-rate):**
-1. **Resolve rate** (official) — A vs B.
-2. **False-completion rate** — agent claimed done but eval fails. *This is the supervisor's
-   signature metric: the gate should collapse it.*
-3. **Premature stops recovered** — sessions that stalled/quit and were unstuck/kept-working to a
-   real finish.
-4. Wall-clock, tokens, intervention counts (the "control tax" we pay).
-5. Every raw session log + supervisor decision record committed to a results repo (auditable, like
-   docs/verify/ artifacts).
-
-**Honesty guardrails (what makes it credible):** identical budgets/timeouts per condition; task
-sample selected by seeded RNG and published *before* running; no solution/test leakage to either
-the agent or the supervisor (the supervisor sees exactly its production evidence surface); all
-misses reported, not just wins; harness + configs open-sourced in this repo (`bench/`).
-
-## The cheap, fast result first (DevAI judge study)
-
-Before any agent runs: take DevAI's 55 tasks + the three published agent trajectory sets
-(MetaGPT, GPT-Pilot, OpenHands), run **our runVerify** as the judge over each requirement, and
-compute alignment with their human consensus labels. Published comparators already exist
-(agent-judge ~90%, LLM-judge 60–70%). One afternoon of judge calls, zero agent runtime, and it
-directly benchmarks the exact brain our gate uses — including per-model (gpt-5.5 vs opus vs
-fable-5 as the verify brain), which also answers our chain-order question.
-
-## Phases (each shippable, each gated by you)
+## Phases (operator-gated, as always)
 
 | Phase | Ships | Gate |
 |---|---|---|
-| **1. Plumbing** | `bench/` runner: 3 SWE-bench Lite tasks end-to-end through REAL Supercalm sessions (launch → work → patch → official eval), both conditions, results JSON + committed artifacts | 3/3 tasks complete the pipeline; eval verdicts recorded; no test leakage (audited) |
-| **2. DevAI judge study** | Verify-brain alignment numbers vs published baselines, per supervisor model | Table published in docs/; chain-order decision made from data |
-| **3. Pilot A/B** | n=30 Lite tasks × 2 conditions (seeded sample), full metrics | Effect direction + variance known; go/no-go + n for the headline run |
-| **4. Headline run** | SWE-bench Verified subset (n=100+, budget-dependent) × 2 conditions | The public number |
-| **5. Write-up** | README section + `docs/bench-results.md` with full methodology, raw-log links, misses included | Operator sign-off before anything is published |
+| **1. Harbor plumbing** | Harbor + terminal-bench-2-1 running locally; our custom agent wrapper runs Codex CLI in-sandbox WITH the supervisor attached, end-to-end on 2–3 tasks; rules-compliance audit (no benchmark-site access; evidence surface unchanged) | 3 tasks complete under both bare-CLI and supervised runs; artifacts committed |
+| **2. Calibration run** | ~15-task subset × 5 trials, supervised; compare per-task vs the published Codex CLI row; tune nothing mid-run (config frozen & committed first) | Effect size + variance known; go/no-go |
+| **3. Full run** | All 89 tasks × 5 trials, supervised | The number |
+| **4. Submission + write-up** | HF leaderboard PR; README/results doc with per-task breakdown, all misses included, raw logs archived | **Operator approves the public submission before the PR opens** |
+| (5. later) | SWE-bench Verified, same pattern | separate gate |
 
-## Infrastructure notes (honest constraints)
+## Cost & constraints (honest)
 
-- **Official eval harness** runs in docker; bb1 is macOS/arm64 — SWE-bench images are best on
-  x86 linux. Options: `sb-cli` (SWE-bench's hosted eval service) for verdicts, a small x86 cloud
-  box for eval only, or arm64 image support where available. Phase 1 resolves this concretely.
-- **Concurrency is our own product**: 4–6 benchmark sessions run in parallel as ordinary Supercalm
-  sessions — the dashboard supervising a benchmark fleet is itself the demo (and the dogfood).
-- **Cost**: fleet CLIs are subscription-based — the constraint is wall-clock + rate limits, not
-  dollars. Pilot ≈ 60 sessions × ~10–20 min ≈ 2–3 days of background running at modest concurrency.
-- The existing supervisor-lab/ui-lab stay as the *behavioral* nets; this plan is the *outcome*
-  benchmark. Scenario coverage there is a prerequisite for honest numbers here.
+- 89 tasks × 5 trials ≈ 445 codex runs for the full board (plus plumbing/calibration). Fleet CLIs
+  are subscription — the budget is wall-clock + rate limits; run as parallel Supercalm sessions
+  (the dashboard supervising the benchmark fleet is itself the dogfood demo).
+- Harbor sandboxes are docker; bb1 is arm64 macOS — TB tasks are generally arch-agnostic
+  containers, but Phase 1 verifies before we commit to the full run.
+- Risk stated up front: supervision may move short tasks very little; the honest result may be
+  "flat median, big tail effect + fewer premature stops." We publish whatever it is — a flat
+  result with a credible methodology still buys more trust than an overclaimed one.
 
-## What we do NOT claim
+## What we do NOT do
 
-Supervision ≠ smarter model. We expect modest-to-zero resolve-rate lift on tasks agents ace solo,
-and the real effect on: false completions, premature stops, long tasks, and multi-task streams.
-The write-up frames it that way — overclaiming would burn the credibility this exists to build.
+No custom benchmark. No cherry-picked task subsets in anything public. No tuning between
+calibration and the full run. No submission without the operator's explicit approval of the PR.
