@@ -81,6 +81,7 @@ const PROBES = {
       ["inbox present (cards or all-clear)", "!!document.querySelector('[data-dk-cards]') && (document.querySelectorAll('[data-dk-card]').length > 0 || !!document.querySelector('[data-dk-allclear]'))"],
       ["palette opens on cmd-k", "!document.querySelector('[data-dk-palette]')?.hidden"],
       ["palette lists sessions", "document.querySelectorAll('.dk-pal-item').length > 2"],
+      ["merged launch modal opens with project select + gate", "(() => { document.querySelector('[data-dk-palette]')?.setAttribute('hidden',''); document.querySelector('[data-dk-new]')?.click(); return new Promise(r => setTimeout(() => r(!!document.querySelector('[data-dk-launch]') && !!document.querySelector('#nl-project') && document.querySelectorAll('#nl-tool [data-tool]').length >= 2), 900)); })()"],
       ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
     ],
   }),

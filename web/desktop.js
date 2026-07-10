@@ -114,7 +114,7 @@ const SCREENS = [['Inbox', 'desktop'], ['Projects', '.'], ['Decisions', 'decisio
 function paletteItems(q) {
   const items = [];
   for (const [label, href] of SCREENS) items.push({ kind: 'go', label, run: () => (location.href = href) });
-  items.push({ kind: 'action', label: 'New session', run: () => (location.href = './#new') });
+  items.push({ kind: 'action', label: 'New session', run: () => { closePalette(); openLaunch(); } });
   items.push({ kind: 'action', label: 'Re-auth CLIs', run: () => (location.href = 'auth') });
   for (const s of home.sessions || []) {
     if (s.status !== 'working' && s.status !== 'waiting') continue;
@@ -149,7 +149,74 @@ $('#dk-palette-q')?.addEventListener('input', renderPalette);
 $('#dk-palette')?.addEventListener('click', (e) => { if (e.target === $('#dk-palette')) closePalette(); });
 $('#dk-cmdk-row').onclick = openPalette;
 $('#dk-counters').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-$('#dk-new').onclick = () => (location.href = './#new'); // existing New-session modal home (merged modal lands with the full flip)
+$('#dk-new').onclick = openLaunch;
+
+// ---- merged New-session / New-project modal (the single launch surface per the README) ------------
+let stateCache = null;
+async function openLaunch() {
+  try { stateCache = await api('api/state'); } catch { stateCache = { projects: [], tools: [] }; }
+  const m = document.createElement('div');
+  m.className = 'dk-palette'; // reuse scrim
+  m.id = 'dk-launch';
+  m.setAttribute('data-dk-launch', '');
+  const projects = stateCache.projects || [];
+  const tools = stateCache.tools || [];
+  m.innerHTML = `
+    <div class="dk-palette-box dk-launch-box">
+      <div class="dk-launch-h">New session</div>
+      <label class="dk-field">Project
+        <select id="nl-project">${projects.map((p) => `<option value="${esc(p.id)}" data-path="${esc(p.path)}">${esc(p.name)}</option>`).join('')}<option value="__new">+ new project…</option></select>
+      </label>
+      <div id="nl-newproj" hidden>
+        <label class="dk-field">Path<input id="nl-path" placeholder="/Users/you/repo (created as a project on launch)" /></label>
+        <label class="dk-field">Name<input id="nl-name" placeholder="auto from path" /></label>
+        <label class="dk-check"><input type="checkbox" id="nl-kb" /> Build knowledge base after launch</label>
+      </div>
+      <div class="dk-field">Agent
+        <div class="dk-seg" id="nl-tool">${tools.map((t, i) => `<button data-tool="${esc(t.id)}" class="${i === 0 ? 'on' : ''}">${esc(t.label || t.id)}</button>`).join('')}</div>
+      </div>
+      <div class="dk-two">
+        <label class="dk-field">Model<select id="nl-model"></select></label>
+        <label class="dk-field">Autonomy<select id="nl-auto"><option value="full">full — hands-off</option><option value="auto">auto</option><option value="ask">ask</option></select></label>
+      </div>
+      <label class="dk-field">Task<textarea id="nl-task" rows="4" placeholder="What should the agent do? Be concrete — repo, goal, done-when."></textarea></label>
+      <div class="dk-launch-foot">
+        <button class="dk-reply-btn" id="nl-example">use an example</button>
+        <span class="dk-hint" id="nl-gate"></span>
+        <button class="dk-reply-btn" id="nl-cancel">Cancel</button>
+        <button class="dk-new" id="nl-go" data-dk-launch-go>Launch</button>
+      </div>
+    </div>`;
+  document.body.appendChild(m);
+  const q = (sel) => m.querySelector(sel);
+  const toolBtns = [...m.querySelectorAll('#nl-tool [data-tool]')];
+  const fillModels = () => {
+    const t = tools.find((x) => x.id === (toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool));
+    q('#nl-model').innerHTML = (t?.models || []).map((mo) => `<option value="${esc(mo.id || mo)}" ${String(mo.id || mo) === String(t.model) ? 'selected' : ''}>${esc(mo.label || mo.id || mo)}</option>`).join('') || '<option value="">default</option>';
+  };
+  fillModels();
+  for (const b of toolBtns) b.onclick = () => { toolBtns.forEach((x) => x.classList.toggle('on', x === b)); fillModels(); };
+  q('#nl-project').onchange = () => { q('#nl-newproj').hidden = q('#nl-project').value !== '__new'; };
+  q('#nl-path')?.addEventListener('input', () => { const seg = q('#nl-path').value.split('/').filter(Boolean).pop() || ''; if (!q('#nl-name').value) q('#nl-name').placeholder = seg || 'auto from path'; });
+  q('#nl-example').onclick = () => { q('#nl-task').value = 'Read the failing tests, fix the root cause they expose, run the full suite, and summarize the change for review.'; };
+  q('#nl-cancel').onclick = () => m.remove();
+  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  q('#nl-go').onclick = async () => {
+    const isNew = q('#nl-project').value === '__new';
+    const task = q('#nl-task').value.trim();
+    const path = isNew ? q('#nl-path').value.trim() : q('#nl-project').selectedOptions[0]?.dataset.path;
+    if (!task || !path) { q('#nl-gate').textContent = !task ? 'a task is required' : 'a path is required for a new project'; return; }
+    q('#nl-go').textContent = 'Launching…';
+    try {
+      const body = { path, tool: toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool || 'claude', task, autonomy: q('#nl-auto').value, model: q('#nl-model').value || undefined };
+      if (isNew && q('#nl-name').value.trim()) body.name = q('#nl-name').value.trim();
+      if (isNew && q('#nl-kb').checked) body.kb = true;
+      const r = await api('api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r?.id) throw new Error(r?.error || 'launch failed');
+      location.href = `session?id=${r.id}`;
+    } catch (e) { q('#nl-gate').textContent = '⚠ ' + (e.message || e); q('#nl-go').textContent = 'Launch'; }
+  };
+}
 
 // ---- toast -----------------------------------------------------------------------------------------
 let toastT = null;
