@@ -2300,6 +2300,16 @@ body.map-expanded-open { overflow: hidden; }
 
 /* ---- session mini-rail + peek (design handoff) ---- */
 .session-shell.rail-mini { grid-template-columns: 56px minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width)); }
+/* rail-mini column remaps — mirror the rail-pinned block: main col 2, resizer col 3 in modes */
+.session-shell.rail-mini .session-main { grid-column: 2; }
+.session-shell.rail-mini.conversation-mode .session-main,
+.session-shell.rail-mini.agent-mode .session-main,
+.session-shell.rail-mini.scrollback-mode .session-main,
+.session-shell.rail-mini.story-mode .session-main { grid-column: 2; }
+.session-shell.rail-mini.conversation-mode .usage-resizer,
+.session-shell.rail-mini.agent-mode .usage-resizer,
+.session-shell.rail-mini.scrollback-mode .usage-resizer,
+.session-shell.rail-mini.story-mode .usage-resizer { grid-column: 3; }
 /* the mini rail must sit IN the grid like the pinned rail — the unpinned base is position:fixed
    (edge-reveal), which would leave the grid's 56px column to the TERMINAL (observed: term at 56px) */
 .session-shell.rail-mini .session-rail { position: sticky; grid-column: 1; left: auto; top: 0; width: 56px; height: 100%; box-shadow: none; border: 1px solid var(--line); border-radius: 8px; overflow: visible; }
