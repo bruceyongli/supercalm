@@ -1,0 +1,43 @@
+{
+  "$comment": "Machine-checkable spec for story view. The verifier (verify_story_view.mjs) asserts these against the LIVE implementation. Values are exact — not suggestions.",
+  "domContract": {
+    "$comment": "Required data attributes. The implementation MUST render these hooks; the verifier and future tests key off them.",
+    "toggle": "[data-story-toggle]",
+    "toggleStory": "[data-story-toggle] [data-mode=story]",
+    "toggleTerminal": "[data-story-toggle] [data-mode=terminal]",
+    "panel": "[data-story-panel]",
+    "rollup": "[data-story-rollup]",
+    "event": "[data-story-ev]",
+    "eventKindAttr": "data-kind",
+    "kinds": ["you", "sys", "work", "plan", "note", "sub", "edit", "fail", "check", "ship", "web", "report", "ask", "stop", "gap"],
+    "stepsExpander": "[data-story-steps-toggle]",
+    "stepsBody": "[data-story-steps]",
+    "askOptions": "[data-story-ask-opt]",
+    "shotThumb": "[data-story-shot]"
+  },
+  "computedStyles": {
+    "$comment": "Asserted via getComputedStyle on the implemented page. Tolerance: 0 for colors, ±0.5px for sizes.",
+    "[data-story-panel]": { "backgroundColor": "#0c1118", "borderColor": "#1d2632", "borderRadius": "13px" },
+    "[data-story-rollup]": { "fontFamily": "JetBrains Mono", "fontSize": "10.5px", "color": "#5c6675" },
+    "[data-story-ev] .story-title": { "fontSize": "13.5px", "fontWeight": "600", "color": "#e9eef5", "fontFamily": "IBM Plex Sans" },
+    "[data-story-ev] .story-body": { "fontSize": "13px", "lineHeight": "1.7", "fontFamily": "IBM Plex Sans" },
+    "[data-story-ev='you'] .story-body": { "backgroundColor": "#10151d", "borderColor": "#1d2632", "borderRadius": "12px", "color": "#dde5ee" },
+    "[data-story-ev] .story-icon": { "width": "30px", "height": "30px", "borderRadius": "99px", "fontFamily": "JetBrains Mono", "fontSize": "13px" },
+    "[data-story-ev='ask'] .story-card": { "backgroundColor": "rgba(226,178,62,.05)", "borderColor": "rgba(226,178,62,.25)", "borderRadius": "12px" },
+    "[data-story-ev='ask'] .story-title": { "color": "#e2b23e" },
+    "[data-story-ev='fail'] .story-title": { "color": "#f2554d" },
+    "[data-story-ask-opt]": { "height": "38px", "borderRadius": "10px", "fontFamily": "JetBrains Mono", "fontSize": "12px", "fontWeight": "700" },
+    "[data-story-steps-toggle]": { "fontFamily": "JetBrains Mono", "fontSize": "11px", "color": "#5c6675", "cursor": "pointer" },
+    "[data-story-steps] .story-step": { "fontSize": "12.5px", "color": "#8a95a5" },
+    "[data-story-steps] .story-cmd": { "fontFamily": "JetBrains Mono", "fontSize": "10.5px", "color": "#5c6675" },
+    "[data-story-shot]": { "width": "132px", "height": "82px", "borderRadius": "8px" },
+    "[data-mode=story].active, [data-mode=terminal].active": { "color": "#79b8ff", "backgroundColor": "rgba(88,166,255,.08)" }
+  },
+  "layout": {
+    "iconColumnWidth": 30, "iconContentGap": 14, "blockBottomPadding": 22,
+    "subIndent": 42, "feedPadding": [20, 26], "headerStripPadding": [11, 20],
+    "toggleChipHeight": 30, "toggleChipRadius": 8, "toggleGap": 5
+  },
+  "glyphs": { "you": "❯", "sys": "○", "work": "⌕", "plan": "☑", "note": "·", "sub": "⑂", "edit": "✎", "fail": "✗", "check": "✓", "ship": "⬆", "web": "⌾", "report": "≡", "ask": "?", "stop": "⏹" },
+  "colors": { "you": "#58a6ff", "sys": "#3a4453", "work": "#8a95a5", "plan": "#79b8ff", "note": "#5c6675", "sub": "#9aa7b8", "edit": "#d9924e", "fail": "#f2554d", "check": "#4ecb6c", "ship": "#2fd6be", "report": "#b9c4d4", "ask": "#e2b23e", "stop": "#e2b23e" }
+}

@@ -465,7 +465,7 @@ document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
 let storyInited = false;
 async function loadStoryView() {
   const mod = await import('./story-view.js');
-  if (!storyInited) { storyInited = true; mod.initStoryView({ sessionId: sid, panel: document.querySelector('[data-story-panel]') }); }
+  if (!storyInited) { storyInited = true; mod.initStoryView({ sessionId: id, panel: document.querySelector('[data-story-panel]') }); }
   else mod.refreshStory();
 }
 setMainView(activeMainView);
