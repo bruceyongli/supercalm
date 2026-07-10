@@ -2300,6 +2300,13 @@ body.map-expanded-open { overflow: hidden; }
 
 /* ---- session mini-rail + peek (design handoff) ---- */
 .session-shell.rail-mini { grid-template-columns: 56px minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width)); }
+/* the mini rail must sit IN the grid like the pinned rail — the unpinned base is position:fixed
+   (edge-reveal), which would leave the grid's 56px column to the TERMINAL (observed: term at 56px) */
+.session-shell.rail-mini .session-rail { position: sticky; grid-column: 1; left: auto; top: 0; width: 56px; height: 100%; box-shadow: none; border: 1px solid var(--line); border-radius: 8px; overflow: visible; }
+.session-shell.rail-mini .session-rail:hover { width: 56px; }
+.session-shell.rail-mini .session-rail::after { display: none; }
+.session-shell.rail-mini .session-rail-inner { width: 56px; }
+.session-shell.rail-mini .session-rail.peek .session-rail-inner { width: 272px; }
 .session-shell.rail-mini.conversation-mode, .session-shell.rail-mini.agent-mode, .session-shell.rail-mini.scrollback-mode, .session-shell.rail-mini.story-mode { grid-template-columns: 56px minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw)); }
 .session-rail.mini { width: 56px; overflow: visible; }
 .session-rail.mini .session-rail-inner > .rail-head, .session-rail.mini .rail-list { display: none; }
