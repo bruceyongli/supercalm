@@ -1,17 +1,21 @@
 :root {
   color-scheme: dark;
-  --bg: #0d1117;
-  --panel: #161b22;
-  --panel2: #0f141b;
-  --line: #21262d;
-  --line2: #30363d;
-  --ink: #c9d1d9;
-  --muted: #8b949e;
-  --dim: #6e7681;
+  /* Palette aligned to the authoritative design prototype (Supercalm Desktop.dc.html): the injected
+     page content (usage/health/records/decisions/settings/projects/session) renders from these tokens,
+     so matching them to the prototype's inline hexes brings every surface into the design's palette at
+     once (was the GitHub-dark palette #0d1117/#161b22/#21262d/#c9d1d9 — visibly "far from the design"). */
+  --bg: #0b0f16;
+  --panel: #161d27;
+  --panel2: #10151d;
+  --line: #232c38;
+  --line2: #2c3646;
+  --ink: #e2e8f1;
+  --muted: #8a95a5;
+  --dim: #5c6675;
   --blue: #58a6ff;
-  --green: #3fb950;
-  --yellow: #d29922;
-  --red: #f85149;
+  --green: #4ecb6c;
+  --yellow: #e2b23e;
+  --red: #f2554d;
   --purple: #bc8cff;
 }
 * { box-sizing: border-box; }
