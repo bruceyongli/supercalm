@@ -25,7 +25,11 @@ async function discover() {
   const sessions = state.sessions || [];
   const withCard = [];
   const between = [];
-  for (const s of sessions.slice(0, 12)) {
+  // Only LIVE sessions carry the supervisor panel an operator actually sees; an exited scratch
+  // session on a shared project still returns the project's archived cards and would be mis-picked
+  // as a between-tasks fixture (observed: the R2 verifier's exited fixture session).
+  const live = sessions.filter((s) => s.status === 'working' || s.status === 'waiting');
+  for (const s of live.slice(0, 12)) {
     try {
       const t = await (await fetch(`${BASE}/api/session/${s.id}/tasks`)).json();
       if (!t?.ok) continue;
