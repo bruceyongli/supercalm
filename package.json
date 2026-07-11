@@ -1,8 +1,8 @@
 {
   "name": "supercalm",
-  "version": "0.3.74",
+  "version": "0.3.75",
   "type": "module",
-  "description": "Supercalm \u2014 a remote operating system to drive CLI coding agents (claude/codex/agy) on a Tailscale node, with a voice/text web console",
+  "description": "Supercalm — a remote operating system to drive CLI coding agents (claude/codex/agy) on a Tailscale node, with a voice/text web console",
   "license": "MIT",
   "keywords": [
     "coding-agents",
