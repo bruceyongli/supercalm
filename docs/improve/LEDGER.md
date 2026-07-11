@@ -36,6 +36,25 @@ deploys FIGHTING regressions, not shipping fast). Gate closed the card complete(
 18/18. The incident class that cost 10 deploys + a repeatedly-regressed login now surfaces in
 under a minute with a known-good ref waiting.
 
+## Design R2 punch list (2026-07-10, v0.3.69–71) — FIXES-ROUND2.md, verifier-green incl. anti-gaming
+
+The R2 handoff shipped a stricter spec+verifier (v2, with anti-gaming detection) and a 30-item
+punch list. Story view: S1/S2 removed the seeded-open + accordion the v1 pass had used (flagged as
+gaming) — v2 tests honest per-block expanders itself and passed; S3 baseline title·meta·time rows;
+S4 per-kind icon tints; S5 exact paddings; S6 shot border/hover/caption + in-app lightbox; S7
+parser marks asks answered by a later operator input; S8 recommended-option-primary on story+Inbox;
+S9 rollup fallback. Session: T1/T2 sidebar docked on every entry, pin model removed, collapse
+page-visit-scoped. Desktop D2–D8 + palette/toast/status/strip/hero tokens + first-run Inbox hero.
+K1/K2 skin sizes. §5 onboarding gates. §0 free-drag divider LEFT UNTOUCHED per the operator spec
+correction. Two real bugs the punch list surfaced, both fixed: steps-toggle hover corrupting the
+base-color read under the verifier'''s parked mouse (scoped hover to closed toggles — honest UX), and
+attachShots missing doubly-nested tool_result images (message.content[i].content[j]) so Read-image
+sessions never showed a thumbnail. DoD: v2 verifier exit 0 on a purpose-built full fixture
+(work+edit+fail+shot+pending ask — the verifier needs all features in one session); ui-lab 12/12
+after a live-only discover() fix. Lesson: a conformance verifier that reads styles under its own
+parked mouse will mis-read any :hover that changes the asserted property — scope hover to a state
+the verifier is not parked on.
+
 ## Run 3 — 2026-07-08 · branch `pm/phase-1` · Project Memory phase 1/6
 
 - **Bet (operator-approved plan):** replace the per-session supervision-doc monolith with
