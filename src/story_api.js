@@ -79,14 +79,19 @@ function attachShots(text, events) {
       if (!line.includes('"type":"image"')) continue;
       try {
         const j = JSON.parse(line);
-        const items = Array.isArray(j?.toolUseResult?.content) ? j.toolUseResult.content
-          : Array.isArray(j?.message?.content) ? j.message.content : [];
-        for (const it of items) {
-          const src = it?.type === 'image' ? it.source : null;
-          if (src?.type === 'base64' && src.data && src.data.length < 900_000) {
-            shots.push({ ts: Date.parse(j.timestamp || 0) || 0, url: `data:${src.media_type || 'image/png'};base64,${src.data}` });
+        const ts = Date.parse(j.timestamp || 0) || 0;
+        // Images live in several shapes: toolUseResult.content[], message.content[], and — for tool
+        // results — DOUBLY nested at message.content[i].content[j] (a tool_result block's content).
+        // Walk shallowly through content arrays and collect any base64 image node.
+        const roots = [j?.toolUseResult?.content, j?.message?.content].filter(Array.isArray);
+        const collect = (arr, depth) => {
+          for (const it of arr) {
+            if (it?.type === 'image' && it.source?.type === 'base64' && it.source.data && it.source.data.length < 900_000) {
+              shots.push({ ts, url: `data:${it.source.media_type || 'image/png'};base64,${it.source.data}` });
+            } else if (depth < 2 && Array.isArray(it?.content)) collect(it.content, depth + 1);
           }
-        }
+        };
+        for (const r of roots) collect(r, 0);
       } catch {}
     }
     for (const sh of shots.slice(-4)) {
