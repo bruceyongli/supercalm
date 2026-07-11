@@ -99,7 +99,7 @@ function renderSide() {
       <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
       <span class="dk-sess-l2">${esc((s.summary || s.title || '').slice(0, 64))}</span>
     </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
-  $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><i class="dk-dot ok"></i><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
+  $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy"><i class="dk-dot ok"></i>proxy</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
 }
 
 // ---- command palette (⌘K) -------------------------------------------------------------------------
