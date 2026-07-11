@@ -45,6 +45,14 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 
 /* ---- main / inbox ---- */
 .dk-main { padding: 26px 32px 90px; max-width: 1080px; margin: 0 auto; }
+/* Injected system pages (decisions/usage/health) keep their own page <header> inside .dk-main. The
+   sidebar is now the nav, so reset the header's pre-shell full-width-bar styling (flex row / fixed
+   height) to a normal block that flows, and drop the now-redundant ← back link (the sidebar's Inbox
+   replaces it). Keeps each page's title + its own controls (e.g. decisions' Doctrine/Messages tabs). */
+.dk-main > header { display: block; position: static; height: auto; min-height: 0; padding: 0; margin: 0 0 16px; background: none; border: none; }
+.dk-main > header .brand { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.dk-main > header .brand > a[href="."], .dk-main > header a.rlink[href="."] { display: none; }
+.dk-main > header .spacer { display: none; }
 .dk-page-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 18px; display: flex; align-items: center; gap: 10px; }
 .dk-card { position: relative; background: #10151d; border: 1px solid #1d2632; border-radius: 13px; padding: 14px 16px 14px 19px; margin-bottom: 12px; }
 .dk-card::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--strip, #4ecb6c); }
