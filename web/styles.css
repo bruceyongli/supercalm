@@ -2290,7 +2290,7 @@ body.map-expanded-open { overflow: hidden; }
 .story-ts.corner { float: right; font-size: 10px; }
 .story-meta.warn { color: #e2b23e; }
 .story-steps-toggle { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #5c6675; cursor: pointer; margin-top: 7px; user-select: none; }
-.story-steps-toggle:hover { color: #8a95a5; }
+.story-steps-toggle:not(.open):hover { color: #8a95a5; } /* open peek's toggle needs no hover affordance; also base-color read stays #5c6675 while the toggle is open */
 .story-steps { margin-top: 6px; display: grid; gap: 3px; }
 .story-steps .story-step { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; color: #8a95a5; line-height: 1.5; }
 .story-steps .story-cmd { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: #5c6675; padding-left: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -47,7 +47,7 @@ function stepsHtml(ev, i) {
   if (!steps.length) return '';
   const open = openSteps.has(i);
   return `
-    <div class="story-steps-toggle" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length} step${steps.length > 1 ? 's' : ''}</div>
+    <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length} step${steps.length > 1 ? 's' : ''}</div>
     ${open ? stepsBodyHtml(steps) : ''}`;
 }
 
@@ -125,10 +125,12 @@ function wire() {
       if (open) {
         openSteps.delete(i);
         if (t.nextElementSibling?.matches('[data-story-steps]')) t.nextElementSibling.remove();
+        t.classList.remove('open');
         t.textContent = `▸ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
       } else {
         openSteps.add(i);
         t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || []));
+        t.classList.add('open');
         t.textContent = `▾ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
       }
     };
