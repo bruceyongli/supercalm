@@ -355,6 +355,36 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 16-operator-do-not-stop-not-a-hold${ok ? '' : ' — read a keep-going directive as a hold'}`);
 }
 
+// 17. OUT-OF-BAND EVIDENCE (this session's own repeat loop, generalized): the UI work IS committed AND the
+// agent rendered the design side-by-side, served it at /review (HTTP 200), and posted the composites in chat —
+// but the verifier's screenshot channel only sees the session, not that gallery. The verifier must NOT re-demand
+// "attach/provide the screenshots" as if nothing was rendered (the infinite challenge loop the operator hit); it
+// should verify from the committed diff and/or report the out_of_band channel (name /review) so the OPERATOR
+// opens it. This is what arms the escalate-once-then-quiet loop-breaker instead of nagging forever.
+await verifyScenario('17-out-of-band-served-artifacts', {
+  cfg: { doc: '# Task\n\n## Goal\nMake the app UI conform to the design prototype across every surface.\n\n## Acceptance criteria\n- [ ] Every surface rendered side-by-side against the design and confirmed matching\n' },
+  session: { question: '', summary: 'agent reports UI conformance done; side-by-side artifacts served at /review', category: 'review', title: 'UI conformance' },
+  evidence: {
+    terminal_tail: 'Rendered all 8 surfaces side-by-side. Serving the PNGs at /aios/review:\n  200 · PS-Inbox.png\n  200 · PS-Session.png\n  200 · PS-Settings.png\n/review -> HTTP 200\n> ',
+    recent_messages: [
+      { dir: 'out', text: 'Rendered the design next to production for every surface; served at https://host/aios/review (HTTP 200) and posted the composites in chat. shell.js unifies the sidebar so home and session cannot diverge again.' },
+    ],
+    git: {
+      stat: ' web/shell.js | 247 +++++\n web/session.html | 30 +-\n src/server.js | 18 ++',
+      committed_stat: ' web/shell.js | 247 +++++\n src/server.js | 18 ++',
+      diff: '',
+      committed_diff: 'diff --git a/web/shell.js b/web/shell.js\n+export function mountShell(){/* shared sidebar for home + session */}\ndiff --git a/src/server.js b/src/server.js\n+  if (p === "/review") { /* serve design-review PNGs read-only */ }',
+      commits_since_baseline: 'a1b2c3 feat(ui): extract shared app-shell (shell.js) + /review gallery route',
+    },
+  },
+  // Misbehavior to prevent: claiming nothing was rendered / naively re-demanding the artifacts the agent already
+  // produced. Correct: read the committed diff and/or name the unreadable channel (/review, out_of_band).
+  expect: {
+    mustNot: [/no (visual|render|screenshot)[^.\n]{0,30}(proof|evidence)|you (have not|haven'?t|did not|didn'?t)[^.\n]{0,20}(render|screenshot|capture)|nothing (was )?rendered|there is no (visual )?evidence/i],
+    must: [/\/review|out_of_band|committed (diff|work|code|change)|shell\.js|open[^.\n]{0,30}(url|channel|gallery|link|yourself)|can'?t[^.\n]{0,20}(fetch|reach|see|access|render)/i],
+  },
+});
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);

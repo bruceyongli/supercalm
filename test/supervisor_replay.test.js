@@ -82,11 +82,18 @@ Improve Supervisor
   assert.match(prompt.systemPrompt, /PRODUCT WALKTHROUGH/);
   assert.match(prompt.systemPrompt, /CURRENT_OPERATOR_REQUIREMENTS/);
   assert.match(prompt.systemPrompt, /OPERATOR LATEST WORDS WIN/);
+  // The rubric must offer the out-of-band blind-channel kind (proof served at a URL / committed
+  // artifacts / chat-only), so the verifier reports the unreadable channel instead of re-demanding it.
+  assert.match(prompt.systemPrompt, /out_of_band/);
   const result = normalizeVerificationResult({ verdict: 'complete', score: 101, assessment: 'ok', unmet: ['none'], goal_conflict: false, unverifiable: 'bad', message_to_agent: '' });
   assert.equal(result.schema, 'supervisor.verify_result');
   assert.equal(result.score, 100);
   assert.equal(result.unverifiable, 'none');
   assert.deepEqual(result.missingEvidence, ['none']);
+  // out_of_band is a real blind-channel kind and must survive normalization (it drives the
+  // escalate-once-then-quiet loop-breaker, identical to no_git/auth_wall).
+  const oob = normalizeVerificationResult({ verdict: 'needs_attention', score: 55, assessment: 'proof is served at /review but not in git or the screenshot', unmet: [], goal_conflict: false, unverifiable: 'out_of_band', message_to_agent: '' });
+  assert.equal(oob.unverifiable, 'out_of_band');
 }
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/supervisor_replay/incidents.json', import.meta.url), 'utf8'));

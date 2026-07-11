@@ -43,14 +43,15 @@ Rules:
 - UNVERIFIABLE (blind evidence channel): set "unverifiable" to report WHY you could not actually inspect the work — so the supervisor asks the OPERATOR to fix the channel instead of re-demanding evidence the agent cannot supply. This is about the EVIDENCE being unreadable, NOT about work that is merely incomplete:
   - "no_git" — the evidence has no readable git (no status/diff/commits) although the agent claims committed code, so you cannot inspect the real changes.
   - "auth_wall" — a preview screenshot was expected but shows a login / sign-in / auth page (not the app), so you cannot verify any UI/visual claim.
-  - "both" — both of the above.
+  - "out_of_band" — the proof the agent cites genuinely EXISTS but lives in a channel you CANNOT inspect from git + the screenshot you were given: a served URL/route or dashboard (e.g. a "/review" gallery, a preview link), committed binary artifacts you can't render (PNG/PDF), or output shown only in the agent's chat/messages. Use this ONLY after checking the git diff/commits and confirming they don't themselves contain the proof — it means "ask the operator to open that channel or confirm", NOT "I didn't look". Do not use it to dodge reading a diff that is right there.
+  - "both" — both no_git AND auth_wall.
   - "none" — you had enough evidence (git and/or a usable screenshot, or the task needs neither) to judge normally.
 
 Return STRICT minified JSON only:
-{"verdict":"on_track|needs_attention|off_track|complete|unknown","score":0-100,"assessment":"<2-4 evidence-based sentences>","unmet":["<unmet criterion/rule/decision>"],"goal_conflict":true|false,"unverifiable":"none|no_git|auth_wall|both","message_to_agent":"<short corrective message, or empty>"}
+{"verdict":"on_track|needs_attention|off_track|complete|unknown","score":0-100,"assessment":"<2-4 evidence-based sentences>","unmet":["<unmet criterion/rule/decision>"],"goal_conflict":true|false,"unverifiable":"none|no_git|auth_wall|out_of_band|both","message_to_agent":"<short corrective message, or empty>"}
 score = verifier confidence in the verdict, not percent completion (0 no confidence, 100 fully verified).`;
 
-export const SYS_VERIFY_VISUAL = `VISUAL PROOF REQUIRED — this work touches UI/visual surfaces but you were given NO visual evidence (no screenshot). Code that compiles is NOT code that renders correctly, so you CANNOT certify any UI / visual / layout / styling / rendering gate from the diff alone — mark every such gate UNVERIFIED in "unmet". In message_to_agent, DEMAND visual proof before any sign-off: the agent must capture a screenshot of the ACTUAL rendered result (run a headless screenshot of the running app / the affected screen) and confirm it matches each visual gate — or a preview URL must be set so the supervisor can capture one. "Looks done" / "the UI is clean" without a rendered screenshot is exactly the untested-UI failure; never sign off on it.`;
+export const SYS_VERIFY_VISUAL = `VISUAL PROOF REQUIRED — this work touches UI/visual surfaces but you were given NO visual evidence (no screenshot). Code that compiles is NOT code that renders correctly, so you CANNOT certify any UI / visual / layout / styling / rendering gate from the diff alone — mark every such gate UNVERIFIED in "unmet". In message_to_agent, DEMAND visual proof before any sign-off: the agent must capture a screenshot of the ACTUAL rendered result (run a headless screenshot of the running app / the affected screen) and confirm it matches each visual gate — or a preview URL must be set so the supervisor can capture one. "Looks done" / "the UI is clean" without a rendered screenshot is exactly the untested-UI failure; never sign off on it. BUT distinguish "never rendered" from "rendered out-of-band": if the evidence shows the agent DID capture the renders and they are merely in a channel you can't fetch (served at a URL/route/gallery such as /review, committed as PNG/PDF artifacts, or posted in chat), that is unverifiable:"out_of_band" — report that channel for the operator to open; do NOT keep re-demanding a screenshot the agent has already produced, and do NOT call already-rendered UI "untested".`;
 
 export const SYS_VERIFY_PATTERNS = `LEARNED WATCH-LIST — the evidence includes recent_failure_patterns: bad behaviors THIS project's agents were CAUGHT in recently, confirmed against ground truth after a "done" claim later fell apart. These are this project's repeat offenders — check EXPLICITLY for each before signing off. E.g. if "fake_done: claimed the migration ran but only committed a doc" is listed, verify the migration actually ran (command output), not just that a file exists; if "untested: shipped UI without a render" is listed, require a screenshot. Do not let the same trick pass twice.`;
 
@@ -97,7 +98,7 @@ export function normalizeVerificationResult(m, { error = '' } = {}) {
     unmet,
     missingEvidence: unmet,
     goal_conflict: m?.goal_conflict === true,
-    unverifiable: ['no_git', 'auth_wall', 'both'].includes(m?.unverifiable) ? m.unverifiable : 'none',
+    unverifiable: ['no_git', 'auth_wall', 'out_of_band', 'both'].includes(m?.unverifiable) ? m.unverifiable : 'none',
     message: String(m?.message_to_agent || m?.message || '').slice(0, 2000),
   };
 }

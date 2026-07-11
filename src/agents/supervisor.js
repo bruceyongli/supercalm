@@ -1542,8 +1542,10 @@ function blindBlockerMessage(kind, ctx) {
   const authWall = hasPreviewCreds
     ? `A configured preview is still login-gated after applying the Supervisor preview login, so my screenshot is only the sign-in page — I can't verify any UI claim. Check that the matching preview profile's username/passcode are current and that this gate is supported, or confirm the UI yourself.`
     : `A configured preview is login-gated, so my screenshot is only the sign-in page — I can't verify any UI claim. Set the preview login in the matching Supervisor preview profile, or confirm the UI yourself.`;
+  const outOfBand = `The proof exists but in a channel I structurally can't inspect from git + a screenshot — the agent points to a served URL/route (e.g. a /review gallery or preview link), committed binary artifacts I can't render, or output shown only in chat. Re-demanding it is pointless. Open that channel and confirm it yourself, or tell me to trust it.`;
   if (kind === 'no_git') return `Can't verify the agent's "done": ${noGit}`;
   if (kind === 'auth_wall') return `Can't verify the agent's "done": ${authWall}`;
+  if (kind === 'out_of_band') return `Can't verify the agent's "done": ${outOfBand}`;
   return `Can't verify the agent's "done" on two channels — (1) ${noGit} (2) ${authWall}`;
 }
 
