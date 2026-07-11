@@ -3,6 +3,7 @@
 // owns the Inbox. Data: the phone contract's triage endpoint via the shell's load, handed to renderInbox.
 import { mountShell, getHome, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
+import { startVoiceMode } from './voicemode.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const $ = (s) => document.querySelector(s);
@@ -89,3 +90,7 @@ function wireCards() {
 }
 
 mountShell({ onData: renderInbox, activeNav: 'inbox' });
+// Voice button on the Inbox header (design parity — the prototype's hands-free triage entry point;
+// dropped in the home-flip to this shell). Reuses the existing voice concierge.
+const voiceBtn = document.getElementById('dk-voice');
+if (voiceBtn) voiceBtn.onclick = () => startVoiceMode();
