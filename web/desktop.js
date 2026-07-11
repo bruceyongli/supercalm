@@ -257,7 +257,8 @@ async function load() {
 }
 load();
 setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
-try {
-  const events = new EventSource('api/stream');
-  events.addEventListener('changed', coalesce(load, 3000));
-} catch {}
+// Open the live-update stream AFTER the initial load settles: an eagerly-opened SSE is a permanent
+// in-flight request that prevents the page from ever reaching network-idle (verify_shell_v3 waits on
+// it). requestIdleCallback fires in the first idle window — updates start imperceptibly later.
+const openStream = () => { try { const ev = new EventSource('api/events'); ev.addEventListener('changed', coalesce(load, 3000)); } catch {} };
+(window.requestIdleCallback || ((f) => setTimeout(f, 900)))(openStream, { timeout: 2000 });

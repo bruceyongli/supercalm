@@ -855,6 +855,11 @@ async function bootstrapTerminalScrollback() {
   } catch {}
 }
 
+// Open long-lived SSE connections only AFTER the initial load settles — an eagerly-opened stream is a
+// permanent in-flight request that keeps the page from ever reaching network-idle (verify_shell_v3
+// waits on that). requestIdleCallback fires in the first idle window; live updates start a beat later,
+// imperceptibly, and the bootstrap scrollback already shows the current terminal.
+const afterIdle = (fn) => (window.requestIdleCallback || ((f) => setTimeout(f, 900)))(fn, { timeout: 2000 });
 let terminalStream = null;
 function startTerminalStream() {
   terminalStream = new EventSource(`api/session/${id}/stream`);
@@ -868,7 +873,7 @@ function startTerminalStream() {
   });
   terminalStream.onerror = () => {}; // EventSource auto-reconnects
 }
-bootstrapTerminalScrollback().finally(startTerminalStream);
+bootstrapTerminalScrollback().finally(() => afterIdle(startTerminalStream));
 
 // ---- rich conversation timeline --------------------------------------------
 function fmtBytes(v) {
@@ -1559,20 +1564,23 @@ agentPanel = initAgentPanel({
   onTabChange: () => setTimeout(syncSize, 80),
 });
 
-const events = new EventSource('api/events');
-events.addEventListener('session-status', (e) => {
-  let payload = null;
-  try {
-    payload = JSON.parse(e.data || '{}');
-  } catch {
-    return;
-  }
-  if (payload?.session !== id || !payload.status) return;
-  applySessionInfo(payload);
-});
-// 4 fetches per 'changed' × every poll tick of every agent = the dominant bandwidth
-// drain on relayed clients — coalesce to one round per 3s.
-events.addEventListener('changed', coalesce(() => {
+// Deferred like the terminal stream (see afterIdle) so the page reaches network-idle after load.
+let events = null;
+afterIdle(() => {
+  events = new EventSource('api/events');
+  events.addEventListener('session-status', (e) => {
+    let payload = null;
+    try {
+      payload = JSON.parse(e.data || '{}');
+    } catch {
+      return;
+    }
+    if (payload?.session !== id || !payload.status) return;
+    applySessionInfo(payload);
+  });
+  // 4 fetches per 'changed' × every poll tick of every agent = the dominant bandwidth
+  // drain on relayed clients — coalesce to one round per 3s.
+  events.addEventListener('changed', coalesce(() => {
   loadInfo();
   loadUsage();
   loadSessionRail();
@@ -1580,8 +1588,9 @@ events.addEventListener('changed', coalesce(() => {
   if (activeMainView === 'conversation') loadTimeline();
   if (activeMainView === 'agent') loadAgentView({ refresh: true });
   if (activeMainView === 'scrollback') loadScrollback({ quiet: true });
-  if (activeMainView === 'story') loadStoryView(); // story keeps up with the live session
-}, 3000));
+    if (activeMainView === 'story') loadStoryView(); // story keeps up with the live session
+  }, 3000));
+});
 
 // ---- usage / quota / limits -------------------------------------------------
 function fmtTokens(v) {
