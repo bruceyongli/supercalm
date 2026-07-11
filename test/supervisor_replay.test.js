@@ -115,4 +115,18 @@ for (const fx of fixtures) {
   }
 }
 
+// Integration locks (source-level, like supervisor_engagement.test.js): the OUT-OF-BAND CHANNEL
+// PERSISTENCE guard must stay wired. Without it, blindEscalatedFp is per-work-state (fp.work), so a
+// session whose proof is structurally out-of-band (served /review) re-fires the whole completion gate
+// on every commit — the repeated "attach the artifacts" loop. These asserts fail if the guard is removed.
+{
+  const { readFileSync } = await import('node:fs');
+  const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /const outOfBandStanding = !!st\.outOfBandEscalatedAt && !hasOperatorMessageSince/, 'out-of-band standing flag is computed session-level');
+  assert.match(sup, /!gateRecentlySent && !outOfBandStanding/, 'completion gate stops re-challenging while the out-of-band channel is standing');
+  assert.match(sup, /parsed\.unverifiable === 'out_of_band' && outOfBandStanding\) return;/, 'a standing out-of-band verdict does not re-escalate to the operator per commit');
+  assert.match(sup, /parsed\.unverifiable === 'out_of_band' \? \{ outOfBandEscalatedAt: now\(\) \}/, 'escalating an out-of-band verdict sets the session-level flag');
+  assert.match(sup, /else if \(st\.outOfBandEscalatedAt\)[\s\S]{0,220}outOfBandEscalatedAt: null/, 'a clean git-verifiable verdict clears the flag so the gate re-engages');
+}
+
 console.log('supervisor_replay.test ok');

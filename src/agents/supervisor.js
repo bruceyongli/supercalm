@@ -2246,6 +2246,15 @@ export async function onTick(ctx) {
       st = ctx.getState();
     }
 
+    // OUT-OF-BAND CHANNEL PERSISTENCE: once a prior verify told the operator that THIS session's completion
+    // proof lives out-of-band (a served /review URL, committed binary artifacts, chat-only output) — a channel
+    // the git+screenshot verifier structurally cannot read — stop re-challenging the agent for "inspectable
+    // evidence" on every new commit. fp.work is per-commit, so without this the whole gate re-fires each deploy
+    // (the repeated "attach the artifacts" loop). Re-engage only when the operator speaks again, or when the
+    // work becomes git-verifiable (the verify path below clears the flag on a clean, non-blind verdict). This is
+    // the session-level generalization of blindEscalatedFp, which was per-work-state and so reset every commit.
+    const outOfBandStanding = !!st.outOfBandEscalatedAt && !hasOperatorMessageSince(db, ctx.sessionId, st.outOfBandEscalatedAt);
+
     // A real supervisor never takes "done" on the agent's word. The critical "prove each acceptance
     // criterion" challenge must ACTUALLY REACH the agent before we'll verify -> sign off. `gateSentFp` is
     // the work-state we *delivered* the challenge for (sent=1); if a prior attempt was swallowed (no
@@ -2253,7 +2262,7 @@ export async function onTick(ctx) {
     // is file/commit-only, so the agent typing a reply doesn't churn it (no challenge loop) — only NEW
     // work does, which rightly earns a fresh challenge. observe-only can't send -> report-only verify.
     const gateRecentlySent = st.gateSentKey === gateKey && t - (st.gateSentAt || 0) < GATE_REPEAT_COOLDOWN_MS;
-    if (canSend(ctx, cfg, 'challenge') && st.gateSentFp !== fp.work && !gateRecentlySent) {
+    if (canSend(ctx, cfg, 'challenge') && st.gateSentFp !== fp.work && !gateRecentlySent && !outOfBandStanding) {
       const { sent } = await runGateChallenge(ctx, cfg, snapshot);
       applySupervisorState(ctx, { challengedWorkFp: fp.work, lastActionAt: now(), ...(sent ? { gateSentFp: fp.work, gateSentKey: gateKey, gateSentAt: now() } : {}) });
       return; // wait for the agent to answer the challenge before judging it
@@ -2333,16 +2342,27 @@ export async function onTick(ctx) {
     // the operator ONCE and stop re-challenging. This is what broke the s_e8b74301f6 repeat loop (project path
     // wasn't a git repo + login-gated preview -> 8× "provide git diff + authenticated screenshots").
     if (parsed.unverifiable !== 'none') {
+      // out_of_band is a PERSISTENT channel (served /review, committed artifacts, chat) — the identical proof
+      // re-appears every commit. Escalate it to the operator ONCE PER SESSION; if we already have (and the
+      // operator hasn't re-engaged), stay quiet on new work-states instead of re-notifying per deploy.
+      // (no_git/auth_wall stay per-work: they're fixable — point at the repo, fix the login — so new work
+      // rightly earns a fresh check.)
+      if (parsed.unverifiable === 'out_of_band' && outOfBandStanding) return;
       const blindN = (st.blindFp === fp.work ? (st.blindCount || 0) : 0) + 1;
       applySupervisorState(ctx, { blindFp: fp.work, blindCount: blindN });
       if (blindN >= BLIND_LIMIT && st.blindEscalatedFp !== fp.work) {
-        applySupervisorState(ctx, { blindEscalatedFp: fp.work });
+        applySupervisorState(ctx, { blindEscalatedFp: fp.work, ...(parsed.unverifiable === 'out_of_band' ? { outOfBandEscalatedAt: now() } : {}) });
         const msg = blindBlockerMessage(parsed.unverifiable, ctx);
         logIntervention(ctx, { kind: 'escalate', trigger: 'unverifiable', model, verdict: 'escalated', assessment: msg + ' — ' + clampLine(parsed.assessment, 600), message: '', sent: 0, screenshot, raw, error });
         ctx.notifyOperator("Can't verify — needs your input", clampLine(msg, 150));
         ctx.emit('review', { verdict: 'escalated', summary: "can't verify the work (" + parsed.unverifiable + ')' });
         return; // stop re-demanding evidence the agent structurally cannot supply
       }
+    } else if (st.outOfBandEscalatedAt) {
+      // A clean, git-verifiable verdict arrived — the channel is no longer blind. Clear the session flag so
+      // the completion gate re-engages normally from here.
+      applySupervisorState(ctx, { outOfBandEscalatedAt: null });
+      st = ctx.getState();
     }
     const gap = parsed.message || (parsed.unmet.length ? 'Not done yet — still unmet: ' + parsed.unmet.slice(0, 4).join('; ') : '');
     let sent = 0;
