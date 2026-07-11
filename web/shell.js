@@ -13,6 +13,60 @@ let onData = null; // per-page hook run after each data refresh (e.g. the inbox 
 
 export function getHome() { return home; }
 
+// The sidebar markup — the single source for pages that INJECT the shell (the system pages). Home and
+// session carry a static copy in their HTML for first-paint; this keeps injected pages identical to them.
+const SIDEBAR_HTML = `
+  <aside class="dk-side" id="dk-side" data-dk-sidebar>
+    <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span></div>
+    <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
+    <button class="dk-new" id="dk-new" data-dk-new>+ New session</button>
+    <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
+    <nav class="dk-nav">
+      <a class="dk-nav-item" data-nav="inbox" href="./">Inbox <span class="dk-badge warn" id="dk-inbox-badge" hidden></span></a>
+      <a class="dk-nav-item" data-nav="projects" href="projects">Projects <span class="dk-nav-plus" id="dk-proj-plus" title="Add project">+</span></a>
+    </nav>
+    <div class="dk-sec">SESSIONS</div>
+    <div class="dk-sessions" id="dk-sessions" data-dk-sessions></div>
+    <div class="dk-sec">SYSTEM</div>
+    <nav class="dk-nav">
+      <a class="dk-nav-item" href="decisions" data-nav="decisions">Decisions</a>
+      <a class="dk-nav-item" href="records" data-nav="records">Records</a>
+      <a class="dk-nav-item" href="usage" data-nav="usage">Usage</a>
+      <a class="dk-nav-item" href="health" data-nav="health">Health <span class="dk-dot warn" id="dk-health-dot" hidden></span></a>
+      <a class="dk-nav-item" href="settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="dk-foot" id="dk-foot"></div>
+    <a class="dk-classic" href="./?classic=1" title="The pre-redesign dashboard">classic view</a>
+  </aside>`;
+const OVERLAYS_HTML = `
+  <div id="dk-palette" class="dk-palette" data-dk-palette hidden><div class="dk-palette-box"><input id="dk-palette-q" placeholder="Jump to a screen, session, or action…" autocomplete="off" /><div id="dk-palette-list"></div></div></div>
+  <div id="dk-toast" class="dk-toast" hidden></div>`;
+
+// Wrap a standalone page in the shell: move its body into .dk-main beside the sidebar, add the overlays,
+// mount. DOM MOVE (not innerHTML) preserves the page's existing elements + listeners; the page's own
+// script keeps finding its ids, just nested one level deeper. Call once, before the page renders content.
+export function injectShell({ activeNav = '' } = {}) {
+  if (document.querySelector('.dk-side')) { mountShell({ activeNav }); return; }
+  const body = document.body;
+  const main = document.createElement('main');
+  main.className = 'dk-main';
+  main.id = 'dk-main';
+  // Move every non-script body child into .dk-main (DOM move preserves ids + listeners). Leave <script>
+  // nodes where they are — they've already run; the page's own script still finds its (moved) elements.
+  for (const n of [...body.childNodes]) {
+    if (n.nodeType === 1 && n.tagName === 'SCRIPT') continue;
+    body.removeChild(n);
+    main.appendChild(n);
+  }
+  const shell = document.createElement('div');
+  shell.className = 'dk-shell';
+  shell.innerHTML = SIDEBAR_HTML;
+  shell.appendChild(main);
+  body.insertBefore(shell, body.firstChild); // before the scripts
+  body.insertAdjacentHTML('beforeend', OVERLAYS_HTML);
+  mountShell({ activeNav });
+}
+
 export function agentChip(tool) {
   return `<span class="dk-agent" style="color:${AGENT_COLOR[tool] || '#9aa7b8'}">${esc(tool || 'cli')}</span>`;
 }

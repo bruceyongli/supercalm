@@ -17,13 +17,22 @@ area beside it. Production only mounts that shell on **home**; every other scree
 |---|---|---|
 | home (`/` → desktop.html) | ✅ yes | Matches the design shell (brand, counts, nav, footer). Reference impl. Now renders from the shared `web/shell.js`. |
 | **session** (`/session`) | ✅ FIXED | Now hosts the shared app-shell (`web/shell.js` `.dk-side`) + the green first-run banner, matching SS2/SS3. Center + right Agent panel untouched. (Phase 2 done.) |
-| projects | ❌ no | Standalone page, `← Projects` header, no shell. → Phase 3 |
-| decisions | ❌ no | Standalone `← Decisions` page. → Phase 3 |
-| records | ❌ no | Standalone `Records` page. → Phase 3 |
-| usage | ❌ no | Standalone `← Usage` page. → Phase 3 |
-| health | ❌ no | Standalone `← Health` page. → Phase 3 |
-| settings | ❌ no | Standalone `Settings` page. → Phase 3 |
-| onboarding | ≈ close | "Let's wire up this machine" welcome matches; step screens to diff in Phase 3. |
+| projects | ✅ FIXED | `injectShell({activeNav:'projects'})` — content in `.dk-main`, Projects nav active. |
+| decisions | ✅ FIXED | `injectShell` + scoped `doctrine-tab.js` legacy toggle to `.dk-main` (it hid `body>*` = the shell). |
+| records | ✅ FIXED | `injectShell({activeNav:'records'})`. |
+| usage | ✅ FIXED | `injectShell` + desktop.css. |
+| health | ✅ FIXED | `injectShell` + desktop.css. |
+| settings | ✅ FIXED | `injectShell({activeNav:'settings'})`. |
+| onboarding | ≈ close | Welcome matches; standalone by design (pre-shell). Left as-is this pass. |
+
+**Mechanism (Phase 3):** `web/shell.js` `injectShell()` wraps a standalone page — moves its body into
+`.dk-main` beside the shared `.dk-side`, adds the ⌘K palette + toast, mounts. One inline module per
+page (`import { injectShell } from './shell.js'; injectShell({activeNav})`). Verified headless: all six
+render `.dk-shell` grid, 236px sidebar, correct nav active, no errors.
+
+**Minor residual (noted, not blocking):** the three older pages (decisions/usage/health) keep their own
+`← Title` header inside `.dk-main` — the `←` back is now redundant with the sidebar. Cosmetic; can be
+trimmed in a follow-up.
 
 ## Hard constraint
 Right Agent panel (`#session-usage-panel`, `web/agents/*`) — **do not touch** this pass. Log any drift

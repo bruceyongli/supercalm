@@ -59,7 +59,11 @@ function wire() {
 
 // segmented: doctrine default; messages = the page's existing browser
 const seg = document.querySelectorAll('[data-dc-tab]');
-const legacy = [...document.querySelectorAll('body > *')].filter((el) => !el.matches('[data-dc-seg], #dc-doctrine, script, h1, header, .dc-seg'));
+// Scope the legacy-view toggle to the content container: when the page is wrapped in the shared
+// app-shell (web/shell.js), the decisions content lives in .dk-main, not directly under <body> (where
+// only the shell sits) — targeting body > * would hide the whole shell.
+const legacyRoot = document.querySelector('.dk-main') || document.body;
+const legacy = [...legacyRoot.children].filter((el) => !el.matches('[data-dc-seg], #dc-doctrine, script, h1, header, .dc-seg'));
 function setTab(t) {
   for (const b of seg) b.classList.toggle('on', b.dataset.dcTab === t);
   box.style.display = t === 'doctrine' ? '' : 'none';
