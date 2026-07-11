@@ -3,14 +3,50 @@
 // Locates the session's NATIVE transcript (not the tmux pipe log): codex rollout JSONL by cwd match,
 // claude project JSONL by cwd-slug + session time window. Cached by file mtime — a 200MB rollout is
 // only re-parsed when it actually grew.
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json } from './server.js';
 import { getSession, getProject } from './store.js';
 import { parseSessionLog } from './story.js';
 
-const cache = new Map(); // sid -> { file, mtimeMs, events, meta }
+const cache = new Map(); // key -> { file, mtimeMs, events, meta }
+
+// Instant load: transcripts run to 80–200 MB, and reading+parsing the whole thing on every open is
+// the slowness. Most users only need the recent conversation, so by default we read just the TAIL
+// and keep the last few OPERATOR rounds (a round = one operator message → everything until the next;
+// supervisor '[Supervisor] …' messages are shown but do NOT count as round boundaries). ?full=1
+// reads the whole file; ?rounds=N tunes the window.
+const DEFAULT_ROUNDS = 3;
+const FULL_PARSE_UNDER = 1_200_000; // small transcripts: parse whole (already instant)
+const TAIL_START_BYTES = 3_000_000;
+const TAIL_CAP_BYTES = 32_000_000; // never scan more than this for the recent view
+const SUPERVISOR_RX = /^\s*\[supervisor\]/i;
+
+function isOperatorYou(e) {
+  return e.kind === 'you' && !SUPERVISOR_RX.test(e.body || e.title || '');
+}
+// Keep events from the Nth-from-last operator message onward. Returns { events, trimmed }.
+function trimToRecentRounds(events, rounds) {
+  if (!rounds) return { events, trimmed: false };
+  const opIdx = [];
+  for (let i = 0; i < events.length; i++) if (isOperatorYou(events[i])) opIdx.push(i);
+  if (opIdx.length <= rounds) return { events, trimmed: false };
+  return { events: events.slice(opIdx[opIdx.length - rounds]), trimmed: true };
+}
+// Read the last `bytes` of a file, dropping the partial first line so parseSessionLog sees whole lines.
+async function readTailBytes(file, bytes, size) {
+  const fh = await open(file, 'r');
+  try {
+    const start = Math.max(0, size - bytes);
+    const len = size - start;
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, start);
+    let s = buf.toString('utf8');
+    if (start > 0) { const nl = s.indexOf('\n'); if (nl >= 0) s = s.slice(nl + 1); }
+    return s;
+  } finally { await fh.close(); }
+}
 
 async function readHead(file, bytes = 4096) {
   const fh = await (await import('node:fs/promises')).open(file, 'r');
@@ -102,7 +138,7 @@ function attachShots(text, events) {
   } catch {}
 }
 
-export async function storyFor(sid) {
+export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = {}) {
   const s = getSession(sid);
   if (!s) return { error: 'no such session' };
   const project = s.project_id ? getProject(s.project_id) : null;
@@ -110,20 +146,45 @@ export async function storyFor(sid) {
   const file = s.tool === 'codex' ? await findCodexLog(cwd, s) : await findClaudeLog(cwd, s);
   if (!file) return { events: [], meta: { file: null, note: 'no native transcript found for this session yet' } };
   const st = await stat(file);
-  const hit = cache.get(sid);
+  const key = `${sid}|${full ? 'full' : 'r' + rounds}`;
+  const hit = cache.get(key);
   if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs) return { events: hit.events, meta: hit.meta };
-  const text = await readFile(file, 'utf8');
-  const events = parseSessionLog(text);
-  attachShots(text, events); // the drop-in parser stays verbatim; thumbnails enrich here
-  const meta = { file, mtimeMs: st.mtimeMs, count: events.length };
-  cache.set(sid, { file, mtimeMs: st.mtimeMs, events, meta });
-  if (cache.size > 40) cache.delete(cache.keys().next().value);
+
+  let events, trimmed = false, scannedWhole = true;
+  if (full || st.size <= FULL_PARSE_UNDER) {
+    const text = await readFile(file, 'utf8');
+    events = parseSessionLog(text);
+    attachShots(text, events);
+    if (!full) ({ events, trimmed } = trimToRecentRounds(events, rounds));
+  } else {
+    // read a growing tail until it holds `rounds` operator messages (or we hit the cap / file start)
+    let bytes = TAIL_START_BYTES;
+    for (;;) {
+      const readWhole = bytes >= st.size;
+      const text = readWhole ? await readFile(file, 'utf8') : await readTailBytes(file, bytes, st.size);
+      const parsed = parseSessionLog(text);
+      attachShots(text, parsed);
+      const opCount = parsed.filter(isOperatorYou).length;
+      if (opCount >= rounds || readWhole || bytes >= TAIL_CAP_BYTES) {
+        ({ events, trimmed } = trimToRecentRounds(parsed, rounds));
+        scannedWhole = readWhole;
+        if (!readWhole) trimmed = true; // there is definitely older history we didn't read
+        break;
+      }
+      bytes *= 2;
+    }
+  }
+  const meta = { file, mtimeMs: st.mtimeMs, count: events.length, trimmed, full: full || scannedWhole, rounds };
+  cache.set(key, { file, mtimeMs: st.mtimeMs, events, meta });
+  if (cache.size > 60) cache.delete(cache.keys().next().value);
   return { events, meta };
 }
 
-route('GET', '/api/session/:id/story', async (req, res, { id: sid }) => {
+route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
   try {
-    const r = await storyFor(sid);
+    const full = url?.searchParams?.get('full') === '1';
+    const rounds = Math.max(1, Math.min(20, Number(url?.searchParams?.get('rounds')) || DEFAULT_ROUNDS));
+    const r = await storyFor(sid, { rounds, full });
     if (r.error) return json(res, 404, { error: r.error });
     json(res, 200, { ok: true, ...r });
   } catch (e) {

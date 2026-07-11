@@ -10,6 +10,8 @@ let sid = null;
 let panelEl = null;
 let events = [];
 let lastSig = '';
+let showFull = false; // instant load shows recent rounds; user can expand to the full story
+let trimmed = false;
 let openSteps = new Set(); // indices with the steps expander open
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -110,13 +112,15 @@ function render() {
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
-    <div class="story-feed">${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>`;
+    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
   if (feed) feed.scrollTop = feed.scrollHeight;
 }
 
 function wire() {
+  const earlier = panelEl.querySelector('[data-story-earlier]');
+  if (earlier) earlier.onclick = () => { showFull = true; lastSig = ''; refreshStory({ quiet: false }); };
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
     t.onclick = () => {
       // toggle IN PLACE — a full re-render would detach the element mid-interaction (verifier
@@ -161,8 +165,9 @@ function wire() {
 
 export async function refreshStory({ quiet = true } = {}) {
   try {
-    const r = await api(`api/session/${sid}/story`);
+    const r = await api(`api/session/${sid}/story${showFull ? '?full=1' : ''}`);
     events = r.events || [];
+    trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
     // re-render when anything user-visible changes: count, answers landing, or a
     // cluster/fail meta update on the last events (count alone left stale ✓/recovered states)
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)

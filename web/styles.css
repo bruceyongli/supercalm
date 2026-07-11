@@ -2339,3 +2339,6 @@ body.map-expanded-open { overflow: hidden; }
 .mini-dot { width: 26px; height: 26px; border-radius: 99px; border: 1px solid #232c38; display: flex; align-items: center; justify-content: center; }
 .mini-dot.me { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff55; }
 #mini-dots { display: flex; flex-direction: column; gap: 6px; }
+
+.story-earlier { display: block; width: 100%; margin: 0 0 14px; padding: 8px; background: #0d1219; border: 1px dashed #232c38; border-radius: 9px; color: #5c6675; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; cursor: pointer; }
+.story-earlier:hover { color: #8a95a5; border-color: #365a86; }
