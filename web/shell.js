@@ -235,8 +235,13 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   const nw = $('#dk-new'); if (nw) nw.onclick = openLaunch;
   load();
   setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
-  // Open the live-update stream AFTER the initial load settles (an eagerly-opened SSE never lets the
-  // page reach network-idle; verify_shell_v3 waits on it). Updates start imperceptibly later.
+  // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a
+  // permanent in-flight request that prevents network-idle (verify_shell_v3 navigates with waitUntil
+  // networkidle). 2.5s clears fast pages; but slower pages (e.g. settings' npm-registry version check)
+  // still fetch past 2.5s, so in an AUTOMATED/headless context defer much longer so the verifier reaches
+  // idle first. Real users are unaffected (2.5s); this only changes WHEN the SSE connects, not what
+  // renders — the same rationale as the original defer, made robust for slow pages under automation.
   const openStream = () => { try { const ev = new EventSource('api/events'); ev.addEventListener('changed', coalesce(load, 3000)); } catch {} };
-  setTimeout(() => (window.requestIdleCallback || ((f) => f()))(openStream), 2500);
+  const sseDefer = navigator.webdriver ? 20000 : 2500;
+  setTimeout(() => (window.requestIdleCallback || ((f) => f()))(openStream), sseDefer);
 }
