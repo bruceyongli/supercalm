@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <base href="/aios/" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0d1117" />
+    <meta name="theme-color" content="#0b0f16" />
     <title>Supercalm · health</title>
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -16,20 +16,30 @@
     <style>
       .health-wrap { max-width: 1180px; margin: 0 auto; padding: 14px; }
       .health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
-      .health-card { border: 1px solid #21262d; border-radius: 8px; padding: 13px; background: #0f141b; min-height: 92px; }
-      .health-card h2 { margin: 0 0 10px; font-size: 12px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.08em; }
-      .health-num { font-size: 30px; font-weight: 800; color: #e6edf3; line-height: 1; }
-      .health-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #1c2230; }
+      .health-card { border: 1px solid #232c38; border-radius: 8px; padding: 13px; background: #10151d; min-height: 92px; }
+      .health-card h2 { margin: 0 0 10px; font-size: 12px; color: #8a95a5; text-transform: uppercase; letter-spacing: 0.08em; }
+      .health-num { font-size: 30px; font-weight: 800; color: #e2e8f1; line-height: 1; }
+      .health-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #202a35; }
       .health-row:first-child { border-top: 0; }
-      .health-meta { color: #8b949e; font-size: 12px; }
-      .health-ok { color: #3fb950; }
-      .health-warn { color: #f85149; }
-      .health-info { color: #d29922; }
+      .health-meta { color: #8a95a5; font-size: 12px; }
+      .health-ok { color: #4ecb6c; }
+      .health-warn { color: #f2554d; }
+      .health-info { color: #e2b23e; }
       .health-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      .health-table th, .health-table td { border-top: 1px solid #1c2230; text-align: left; padding: 8px 6px; vertical-align: top; }
-      .health-table th { color: #8b949e; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-      .health-section { border: 1px solid #21262d; border-radius: 8px; background: #0f141b; padding: 13px; margin: 10px 0; }
+      .health-table th, .health-table td { border-top: 1px solid #202a35; text-align: left; padding: 8px 6px; vertical-align: top; }
+      .health-table th { color: #8a95a5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
+      .health-section { border: 1px solid #232c38; border-radius: 8px; background: #10151d; padding: 13px; margin: 10px 0; }
       .health-section h2 { margin: 0 0 8px; font-size: 14px; }
+      /* design's notice bar (replaces the "Issues" section): a subtle bordered callout with an area
+         chip + message + optional re-index action, shown only when there are live issues. */
+      .health-notice { display: flex; align-items: center; gap: 12px; border: 1px solid #3c3620; background: #14130d; border-radius: 8px; padding: 11px 13px; margin: 10px 0; }
+      .health-notice.warn { border-color: #4a2622; background: #171010; }
+      .health-notice .n-chip { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #e2b23e; border: 1px solid #4a3f22; background: #221d10; border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+      .health-notice.warn .n-chip { color: #f2554d; border-color: #4a2622; background: #221110; }
+      .health-notice .n-msg { flex: 1; min-width: 0; color: #e2e8f1; font-size: 13px; }
+      .health-notice button { background: #10151d; border: 1px solid #232c38; color: #e2e8f1; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+      .health-notice button:hover { border-color: #58a6ff; }
+      .health-notice button:disabled { opacity: 0.6; cursor: default; }
       @media (max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
     </style>
   </head>

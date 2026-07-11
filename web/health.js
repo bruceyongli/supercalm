@@ -20,9 +20,17 @@ function statusText(h) {
   return { cls: 'health-ok', text: 'Healthy' };
 }
 
-function renderIssues(issues = []) {
-  if (!issues.length) return '<div class="health-row"><span class="health-ok">No current issues</span></div>';
-  return issues.map((i) => `<div class="health-row"><span class="health-${esc(i.severity)}">${esc(i.area)}</span><span>${esc(i.message)}</span></div>`).join('');
+// Design's notice bars (yellow/red callout with an area chip + message + optional re-index),
+// shown only when there are live issues — replaces the old always-present "Issues" section.
+function renderNotices(issues = [], graphs = []) {
+  if (!issues.length) return '';
+  const canReindex = graphs.some((g) => g.stale && g.project_id);
+  return issues.map((i) => `
+    <div class="health-notice${i.severity === 'warn' ? ' warn' : ''}">
+      <span class="n-chip">${esc(i.area)}</span>
+      <span class="n-msg">${esc(i.message)}</span>
+      ${i.area === 'graph' && canReindex ? '<button data-reindex>re-index</button>' : ''}
+    </div>`).join('');
 }
 
 function renderAuth(auth, error) {
@@ -59,10 +67,18 @@ function render(h) {
       <div class="health-card"><h2>Live Sessions</h2><div class="health-num">${esc(s.live || 0)}</div><div class="health-meta">${esc(s.waiting || 0)} waiting · ${esc(s.working || 0)} working · ${esc(s.exited || 0)} exited</div></div>
       <div class="health-card"><h2>Projects</h2><div class="health-num">${esc(h.projects?.total || 0)}</div><div class="health-meta">${esc((h.graphs || []).filter((g) => g.ok).length)} graph indexes ready</div></div>
     </section>
-    <section class="health-section"><h2>Issues</h2>${renderIssues(h.issues || [])}</section>
+    ${renderNotices(h.issues || [], h.graphs || [])}
     <section class="health-section"><h2>Auth</h2>${renderAuth(h.auth, h.auth_error)}</section>
     <section class="health-section"><h2>Project Graphs</h2>${renderGraphs(h.graphs || [])}</section>
   `;
+  // Wire the design's re-index action: rebuild every stale project graph, then refresh.
+  root.querySelectorAll('[data-reindex]').forEach((btn) => btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 're-indexing…';
+    const stale = (h.graphs || []).filter((g) => g.stale && g.project_id);
+    await Promise.all(stale.map((g) => api(`api/project/${g.project_id}/graph/rebuild`, { method: 'POST' }).catch(() => {})));
+    load();
+  }));
 }
 
 async function load() {
