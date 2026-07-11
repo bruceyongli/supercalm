@@ -8,3 +8,4 @@ data/
 .vapid.json
 aios.sqlite
 test-results/
+*.r3bak

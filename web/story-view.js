@@ -9,7 +9,7 @@ const COLOR = { you: '#58a6ff', sys: '#3a4453', work: '#8a95a5', plan: '#79b8ff'
 let sid = null;
 let panelEl = null;
 let events = [];
-let lastCount = -1;
+let lastSig = '';
 let openSteps = new Set(); // indices with the steps expander open
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -69,7 +69,9 @@ function askHtml(ev) {
 
 function eventHtml(ev, i) {
   if (ev.kind === 'gap') {
-    return `<div class="story-gap" data-story-ev data-kind="gap"><span>${esc(ev.title || 'quiet stretch')}</span></div>`;
+    const mins = Math.max(1, Math.round((ev.durationMs || 0) / 60000));
+    const fallback = ev.durationMs ? `quiet for ${mins >= 60 ? Math.round(mins / 6) / 10 + ' hr' : mins + ' min'}` : 'quiet stretch';
+    return `<div class="story-gap" data-story-ev data-kind="gap"><span>${esc(ev.title || fallback)}</span></div>`;
   }
   const color = COLOR[ev.kind] || '#8a95a5';
   const isAsk = ev.kind === 'ask';
@@ -161,7 +163,11 @@ export async function refreshStory({ quiet = true } = {}) {
   try {
     const r = await api(`api/session/${sid}/story`);
     events = r.events || [];
-    if (events.length !== lastCount) { lastCount = events.length; render(); }
+    // re-render when anything user-visible changes: count, answers landing, or a
+    // cluster/fail meta update on the last events (count alone left stale ✓/recovered states)
+    const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
+      + ':' + events.slice(-3).map((e) => e.meta || '').join('|');
+    if (sig !== lastSig) { lastSig = sig; render(); }
   } catch (e) {
     if (!quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
   }
