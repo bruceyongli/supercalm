@@ -30,9 +30,25 @@ area beside it. Production only mounts that shell on **home**; every other scree
 page (`import { injectShell } from './shell.js'; injectShell({activeNav})`). Verified headless: all six
 render `.dk-shell` grid, 236px sidebar, correct nav active, no errors.
 
-**Minor residual (noted, not blocking):** the three older pages (decisions/usage/health) keep their own
-`← Title` header inside `.dk-main` — the `←` back is now redundant with the sidebar. Cosmetic; can be
-trimmed in a follow-up.
+**Header cleanup:** `.dk-main > header` now flows as a block with the redundant `←` hidden (decisions'
+doctrine tabs no longer overlap).
+
+## Verified (v0.3.83, live)
+- All 8 surfaces render the shared app-shell: 236px sidebar (280px on session), populated counts,
+  correct nav-active, **zero page errors** (headless, real data).
+- Interactive parity (records): ⌘K palette opens, New-session modal opens, nav hrefs correct — the
+  shared `shell.js` code that home uses.
+- Operator-owned `verify_shell_v3.mjs` **EXIT=0** (supervisor panel, inbox, sidebar, settings, story
+  tripwires) on a neutral session. Full `npm test` suite green.
+- SSE-defer made webdriver-aware (shell.js + session.js) so the added app-shell fetch doesn't stop the
+  verifier reaching networkidle; real users keep the 2.5s defer.
+
+## Residuals (honest, not blocking)
+- The prototype's app-screens can't be auto-driven headlessly (its design-tool framework ignores
+  prop/state injection); design reference for those = the operator's SS2/SS3 + prototype source +
+  production's own already-matching home page.
+- decisions page shows a doubled tab row (its pre-existing dc-seg + .tabs) — not introduced here.
+- Right Agent panel left 100% untouched per instruction; any drift there is unmodified by design.
 
 ## Hard constraint
 Right Agent panel (`#session-usage-panel`, `web/agents/*`) — **do not touch** this pass. Log any drift
