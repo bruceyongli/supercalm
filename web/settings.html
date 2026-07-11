@@ -13,11 +13,15 @@
   <link rel="stylesheet" href="desktop.css" />
   <link rel="stylesheet" href="onboarding.css" />
   <style>
-    .st-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
-    .st-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 16px; }
-    .st-nav { position: sticky; top: 0; background: #0a0e14ee; backdrop-filter: blur(6px); display: flex; gap: 6px; padding: 10px 0; margin-bottom: 20px; border-bottom: 1px solid #161d27; z-index: 5; }
-    .st-nav a { color: #8a95a5; text-decoration: none; font-size: 13px; font-weight: 500; padding: 7px 12px; border-radius: 9px; }
-    .st-nav a.active { background: #121a26; box-shadow: inset 0 -2px 0 #58a6ff; color: #e9eef5; }
+    /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
+    .st-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: start; }
+    .st-head { grid-column: 1 / -1; }
+    .st-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 6px; }
+    .st-nav { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 3px; padding: 0; margin: 0; align-items: stretch; }
+    .st-nav a { color: #8a95a5; text-decoration: none; font-size: 13px; font-weight: 500; padding: 8px 12px; border-radius: 9px; }
+    .st-nav a:hover { background: #10151d; }
+    .st-nav a.active { background: #121a26; box-shadow: inset 2px 0 0 #58a6ff; color: #e9eef5; }
+    .st-body { min-width: 0; }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
     .st-sec h2 { font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; font-weight: 600; color: #e9eef5; margin: 0 0 10px; }
     .st-pref { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #10151d; }
@@ -41,6 +45,7 @@
       <a href="#st-remote">Remote access</a>
       <a href="#st-prefs">Preferences</a>
     </nav>
+    <div class="st-body">
     <section class="st-sec" id="st-agents" data-st-agents>
       <h2>Agents &amp; sign-in</h2>
       <div class="ob-card" id="st-authpath">loading…</div>
@@ -62,6 +67,7 @@
       <h2>Preferences</h2>
       <div class="ob-card" id="st-prefscard"></div>
     </section>
+    </div>
   </div>
   <div id="dk-toast" class="dk-toast" hidden></div>
   <script type="module">import { injectShell } from './shell.js'; injectShell({ activeNav: 'settings' });</script>
