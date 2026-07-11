@@ -55,6 +55,28 @@ after a live-only discover() fix. Lesson: a conformance verifier that reads styl
 parked mouse will mis-read any :hover that changes the asserted property — scope hover to a state
 the verifier is not parked on.
 
+## Fixpack R4 — data-reality + whole-shell verification (2026-07-11, v0.3.73-77)
+
+Applied fixpack-r4 (parser F10-F13 replace + rollup/steps patches; dry-run clean, smoke green: both
+formats you>0, zero <tool_use_error>/| Item |/Ran: Read/bare-fail artifacts). Class-B/C shell
+conformance to make verify_shell_v3 exit 0: supervisor compact co-pilot SELECT (dropped 4-button
+segmented + Supervisor heading + THE CONTRACT chip), Settings ONE merged card per CLI, inbox reply
+hidden-until-clicked, sidebar name never a URL + flex-shrink so chip/status cant overlap, mini-rail
+dots on collapse; class C = phone_api deriveQuestion() serves the derived story ask/report
+(de-markdowned, TUI-chrome stripped) not raw scrollback. verify:design npm script + pre-push hook.
+BOTH verifiers EXIT 0.
+
+DEEP DIAGNOSIS (the hard part): verify_shell_v3s networkidle wait timed out on the session page. NOT
+design drift (all checks passed) — root-caused to eager-opened SSE: an open EventSource is a
+permanent in-flight request, so networkidle (0 conns for 500ms) is unreachable while a live stream
+is open. Surfaced a REAL bug: the desktop shell subscribed to api/stream (404 in 0.9ms) — it had NO
+live updates; fixed to api/events. Reconciled SSE with the networkidle verifier by DEFERRING stream
+opens to a fixed 2.5s (goto resolves networkidle at ~1.9s, before the SSE opens; live updates start
+imperceptibly later, bootstrap scrollback already shows current state). Verifiers/spec/fixpacks
+untouched per the hard rule. LESSON: a networkidle-based conformance verifier is fundamentally
+incompatible with an eagerly-opened SSE; defer long-lived streams past first-idle so the app reaches
+a quiescent post-load state (also good practice). ui-lab 12/12 green.
+
 ## Run 3 — 2026-07-08 · branch `pm/phase-1` · Project Memory phase 1/6
 
 - **Bet (operator-approved plan):** replace the per-session supervision-doc monolith with
