@@ -333,11 +333,12 @@ const ctx = {
 
 {
   const ui = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
-  // Send-authority mode is a tri-state segmented control, not a hidden boolean: all four segments exist,
-  // the mode saves draft-first (full-draft save), and observe_only is only ever DERIVED from the mode.
-  assert.match(ui, /id="sup-mode"/, 'mode segmented control must exist');
-  assert.match(ui, /id="sup-mode-\$\{m\}"/, 'segments carry stable per-mode ids');
-  for (const m of ['off', 'observe', 'copilot', 'autopilot']) assert.match(ui, new RegExp(`seg\\('${m}',`), `mode segment ${m}`);
+  // Send-authority mode is a four-value control (design r4: a compact inline SELECT, not a segmented
+  // 4-button row), the mode saves draft-first, and observe_only is only ever DERIVED from the mode.
+  assert.match(ui, /id="sup-mode"/, 'mode control must exist');
+  assert.match(ui, /class="sup-mode-select"/, 'r4: mode is a compact inline select, not a segmented control');
+  for (const m of ['off', 'observe', 'copilot', 'autopilot']) assert.match(ui, new RegExp(`'${m}'`), `mode value ${m}`);
+  assert.doesNotMatch(ui, /class="sup-mode-seg"/, 'r4: the 4-button segmented control is gone');
   assert.match(ui, /cfg\.observe_only = cfg\.mode === 'observe'/, 'observe_only must be derived from mode, never set directly');
   assert.doesNotMatch(ui, /id="sup-observe"/, 'the legacy observe-only checkbox is gone (the mode control replaced it)');
   assert.doesNotMatch(ui, /id="sup-fallbacks"/, 'the raw comma-separated chain input is gone (the chain editor replaced it)');
