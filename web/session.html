@@ -25,7 +25,9 @@
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <!-- app-shell sidebar styles (dk-*), loaded BEFORE styles.css so the session-specific layout wins on any global (*/body) conflict -->
+  <link rel="stylesheet" href="desktop.css" />
   <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="session-page">
@@ -43,21 +45,41 @@
       <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
     </header>
 
+    <!-- First-run reassurance banner (design: green strip under the header, dismissible). Kept OUTSIDE
+         the grid; session.js folds its height into --session-header-h so the shell never overflows. -->
+    <div class="session-banner" id="session-banner" hidden>
+      <span class="session-banner-ok">✓ first session running</span>
+      <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
+      <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
+    </div>
+
     <div class="session-shell" id="session-shell">
-      <aside class="session-rail" id="session-rail">
-        <div class="session-rail-inner">
-          <div class="rail-head">
-            <span class="rail-title">Sessions</span>
-            <button class="btn ghost sm" id="rail-collapse" type="button" title="Collapse to a 56px rail (⌘\\)" data-rail-collapse>⟨ collapse</button>
-          </div>
-          <div class="rail-mini-col" data-rail-mini hidden>
-            <button class="mini-btn" id="mini-peek" title="Peek the sidebar">≡</button>
-            <a class="mini-badge" id="mini-inbox" href="./" title="Inbox" hidden></a>
-            <div id="mini-dots"></div>
-            <a class="mini-btn" href="./" title="New session — opens the launch surface">+</a>
-          </div>
-          <div class="rail-list" id="session-rail-list"></div>
+      <!-- The shared app-shell sidebar (web/shell.js populates counters/sessions/foot). Same markup as
+           desktop.html's dk-side so the session lives inside the same shell as every other screen.
+           id="session-rail" is kept so the resize math (session.js railWidth) still finds the column. -->
+      <aside class="dk-side" id="session-rail" data-dk-sidebar>
+        <div class="dk-brand">
+          <span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span>
         </div>
+        <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
+        <button class="dk-new" id="dk-new" data-dk-new>+ New session</button>
+        <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
+        <nav class="dk-nav">
+          <a class="dk-nav-item" data-nav="inbox" href="./">Inbox <span class="dk-badge warn" id="dk-inbox-badge" hidden></span></a>
+          <a class="dk-nav-item" data-nav="projects" href="projects">Projects <span class="dk-nav-plus" id="dk-proj-plus" title="Add project">+</span></a>
+        </nav>
+        <div class="dk-sec">SESSIONS</div>
+        <div class="dk-sessions" id="dk-sessions" data-dk-sessions></div>
+        <div class="dk-sec">SYSTEM</div>
+        <nav class="dk-nav">
+          <a class="dk-nav-item" href="decisions" data-nav="decisions">Decisions</a>
+          <a class="dk-nav-item" href="records" data-nav="records">Records</a>
+          <a class="dk-nav-item" href="usage" data-nav="usage">Usage</a>
+          <a class="dk-nav-item" href="health" data-nav="health">Health <span class="dk-dot warn" id="dk-health-dot" hidden></span></a>
+          <a class="dk-nav-item" href="settings" data-nav="settings">Settings</a>
+        </nav>
+        <div class="dk-foot" id="dk-foot"></div>
+        <a class="dk-classic" href="./?classic=1" title="The pre-redesign dashboard">classic view</a>
       </aside>
 
       <main class="session-main">
@@ -144,6 +166,15 @@
         </div>
       </aside>
     </div>
+
+    <!-- app-shell overlays (⌘K palette + toast), body-level like desktop.html -->
+    <div id="dk-palette" class="dk-palette" data-dk-palette hidden>
+      <div class="dk-palette-box">
+        <input id="dk-palette-q" placeholder="Jump to a screen, session, or action…" autocomplete="off" />
+        <div id="dk-palette-list"></div>
+      </div>
+    </div>
+    <div id="dk-toast" class="dk-toast" hidden></div>
 
     <script src="vendor/xterm.js"></script>
     <script src="vendor/xterm-fit.js"></script>

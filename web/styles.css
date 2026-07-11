@@ -410,6 +410,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .session-title-input:focus { border-color: var(--blue); outline: none; }
 .session-title-input.error { border-color: var(--red); }
+/* First-run reassurance banner (design: green strip beneath the header). */
+.session-banner { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: rgba(63, 191, 95, .07); border-bottom: 1px solid #161d27; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; color: #b9c4d4; flex-shrink: 0; }
+.session-banner[hidden] { display: none; }
+.session-banner-ok { color: #4ecb6c; font-weight: 600; white-space: nowrap; }
+.session-banner-msg b { color: #e9eef5; }
+.session-banner-x { margin-left: auto; background: none; border: none; color: #5c6675; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
+.session-banner-x:hover { color: #b9c4d4; }
+
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: 280px;
@@ -423,9 +431,19 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell.rail-pinned {
   grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
 }
-.session-shell.conversation-mode,
-.session-shell.agent-mode,
-.session-shell.scrollback-mode {
+/* The session hosts the shared app-shell sidebar (web/shell.js `.dk-side`) in grid column 1. desktop.css
+   gives .dk-side height:100vh (overflows past the session header) and rounded-less chrome; fit it to the
+   shell height and the 8px-padded rounded shell so it reads like the home sidebar. Keep it in the
+   alternate view modes too so the sidebar never disappears mid-session. */
+.session-shell .dk-side { height: 100%; border-radius: 12px; }
+.session-shell.rail-pinned.conversation-mode,
+.session-shell.rail-pinned.agent-mode,
+.session-shell.rail-pinned.scrollback-mode {
+  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw));
+}
+.session-shell.conversation-mode:not(.rail-pinned),
+.session-shell.agent-mode:not(.rail-pinned),
+.session-shell.scrollback-mode:not(.rail-pinned) {
   grid-template-columns: minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw));
 }
 .session-shell.rail-pinned.conversation-mode,

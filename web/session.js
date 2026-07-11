@@ -1,5 +1,6 @@
 import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
+import { mountShell } from './shell.js';
 
 registerSW();
 const params = new URLSearchParams(location.search);
@@ -56,13 +57,29 @@ function automatedResizeClient() {
 }
 
 function syncHeaderHeight() {
-  const h = Math.ceil(document.querySelector('header')?.getBoundingClientRect().height || 52);
-  document.documentElement.style.setProperty('--session-header-h', `${h}px`);
+  const hh = document.querySelector('header')?.getBoundingClientRect().height || 52;
+  const bn = document.querySelector('#session-banner:not([hidden])')?.getBoundingClientRect().height || 0;
+  document.documentElement.style.setProperty('--session-header-h', `${Math.ceil(hh + bn)}px`);
 }
+// First-run reassurance banner: show once until the operator dismisses it (persisted).
+const BANNER_DISMISSED = 'aios.session.bannerDismissed';
+(() => {
+  const banner = document.getElementById('session-banner');
+  if (!banner) return;
+  try { if (localStorage.getItem(BANNER_DISMISSED) === '1') return; } catch {}
+  banner.hidden = false;
+  document.getElementById('session-banner-x')?.addEventListener('click', () => {
+    banner.hidden = true;
+    try { localStorage.setItem(BANNER_DISMISSED, '1'); } catch {}
+    syncHeaderHeight();
+  });
+})();
 syncHeaderHeight();
 if ('ResizeObserver' in window) {
   const headerObserver = new ResizeObserver(syncHeaderHeight);
   headerObserver.observe(document.querySelector('header'));
+  const bnr = document.getElementById('session-banner');
+  if (bnr) headerObserver.observe(bnr);
 }
 
 function railWidth() {
@@ -96,42 +113,10 @@ function setRailPinned(pinned, { save = true } = {}) {
 setRailPinned(true, { save: false });
 applyUsageWidth();
 
-// ---- 56px mini-rail + peek (design handoff session-view collapse model) ---------------------------
-// docked (rail-pinned) ⇄ mini (rail-mini): ⟨ collapse / ⌘\ toggles; the mini rail's ≡ PEEKS the full
-// sidebar as a fixed overlay (no terminal reflow); state persists until docked again.
-const PREF_RAIL_MODE = 'aios.session.railMode';
-function setRailMini(mini) {
-  shell.classList.toggle('rail-mini', mini);
-  document.querySelector('[data-rail-mini]').hidden = !mini;
-  rail.classList.toggle('mini', mini);
-  if (mini) setRailPinned(false, { save: false });
-  else { rail.classList.remove('peek'); setRailPinned(true, { save: false }); }
-  const rc = document.getElementById('rail-collapse');
-  if (rc) rc.textContent = mini ? 'dock' : '⟨ collapse';
-  renderMiniDots();
-  applyUsageWidth();
-}
-function renderMiniDots() {
-  const box = document.getElementById('mini-dots');
-  if (!box || !shell.classList.contains('rail-mini')) return;
-  const rows = [...document.querySelectorAll('#session-rail-list a[href*="session?id="]')].slice(0, 8);
-  box.innerHTML = rows.map((a) => {
-    const active = a.href.includes(id);
-    const working = /working/i.test(a.textContent);
-    return `<a class="mini-dot${active ? ' me' : ''}" href="${a.getAttribute('href')}" title="${(a.textContent || '').trim().slice(0, 60).replace(/"/g, '')}"><i class="dk-dot ${working ? 'ok' : 'warn'}"></i></a>`;
-  }).join('');
-}
-document.getElementById('rail-collapse').onclick = () => setRailMini(!shell.classList.contains('rail-mini'));
-document.getElementById('mini-peek').onclick = () => {
-  // peek: overlay the full rail, fixed — zero reflow; leaves on mouseout or dock
-  rail.classList.add('peek');
-  const close = (e) => { if (!rail.contains(e.relatedTarget)) { rail.classList.remove('peek'); rail.removeEventListener('mouseleave', close); } };
-  rail.addEventListener('mouseleave', close);
-};
-document.addEventListener('keydown', (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === '\\') { e.preventDefault(); setRailMini(!shell.classList.contains('rail-mini')); }
-});
-setInterval(renderMiniDots, 5000); // dots follow the live rail list (collapse is never restored across navigations — R2 T1)
+// The session now hosts the shared app-shell sidebar (web/shell.js) instead of the old bare rail, so
+// the 56px mini-rail/collapse/peek system was removed with its markup. The shell stays docked
+// (rail-pinned) so grid column 1 is the 280px sidebar and railWidth() keeps reporting it for the
+// center/right resize math.
 
 let resizeDrag = null;
 usageResizer.addEventListener('pointerdown', (e) => {
@@ -165,33 +150,12 @@ addEventListener('resize', () => {
   applyUsageWidth();
 });
 
-function renderSessionRail(sessions = []) {
-  const live = sessions
-    .filter((s) => s.status !== 'exited')
-    .sort((a, b) => (a.id === id ? -1 : b.id === id ? 1 : Number(b.last_activity || 0) - Number(a.last_activity || 0)));
-  $('#session-rail-list').innerHTML = live.length
-    ? live.map((s) => {
-        const project = s.project?.name || '(adhoc)';
-        const meta = [s.modelLabel || s.model, s.fastMode ? 'fast' : null, s.effort, s.autonomy, s.status].filter(Boolean).join(' · ');
-        return `
-          <a class="rail-session ${s.id === id ? 'active' : ''}" href="session?id=${encodeURIComponent(s.id)}" title="${escapeHtml(project + ' · ' + (s.title || ''))}">
-            <span class="dot ${escapeHtml(s.status || '')}"></span>
-            <span class="rail-session-body">
-              <span class="rail-session-title"><b>${escapeHtml(project)}</b><span class="badge" style="border-color:${escapeHtml(s.toolColor || '#30363d')}99;color:${escapeHtml(s.toolColor || '#8b949e')}">${escapeHtml(s.toolLabel || s.tool || '')}</span></span>
-              <span class="rail-session-task">${escapeHtml(s.title || '(interactive)')}</span>
-              <span class="rail-session-meta">${escapeHtml(meta)}</span>
-            </span>
-          </a>`;
-      }).join('')
-    : '<div class="rail-empty">No active sessions</div>';
-}
-async function loadSessionRail() {
-  try {
-    const st = await api('api/state');
-    renderSessionRail(st.sessions || []);
-  } catch {}
-}
-loadSessionRail();
+// The shared app-shell (web/shell.js) renders and live-refreshes the sidebar — counts, SESSIONS list
+// (current session marked active), foot, ⌘K palette, New-session launch, toast — replacing the old bare
+// session rail. mountShell runs its own data loop + SSE refresh, so loadSessionRail is now a no-op kept
+// only so its existing call sites (status transitions below) don't need editing.
+mountShell();
+function loadSessionRail() {}
 
 // ---- right panel: the agent host owns the tab bar + panels (web/agents/host.js) ------------
 // Built lazily near the SSE wiring (after loadMap/loadUsage + their state exist), since the host
