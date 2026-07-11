@@ -9,3 +9,4 @@ data/
 aios.sqlite
 test-results/
 *.r3bak
+*.r4bak

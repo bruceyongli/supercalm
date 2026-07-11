@@ -2,7 +2,7 @@
   "name": "supercalm",
   "version": "0.3.74",
   "type": "module",
-  "description": "Supercalm — a remote operating system to drive CLI coding agents (claude/codex/agy) on a Tailscale node, with a voice/text web console",
+  "description": "Supercalm \u2014 a remote operating system to drive CLI coding agents (claude/codex/agy) on a Tailscale node, with a voice/text web console",
   "license": "MIT",
   "keywords": [
     "coding-agents",
@@ -54,7 +54,8 @@
     "ui-lab": "node scripts/ui-lab.mjs",
     "gen-prices": "node scripts/gen-model-prices.mjs",
     "test:pricing": "node test/pricing.test.js",
-    "test:thrash": "node test/thrash.test.js"
+    "test:thrash": "node test/thrash.test.js",
+    "verify:design": "node verify_story_view.mjs $SESSION_URL && node fixpack-r4/verify_shell_v3.mjs $BASE_URL $SESSION_URL $SETTINGS_URL"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.56",

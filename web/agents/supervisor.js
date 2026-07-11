@@ -356,8 +356,9 @@ function renderHeader() {
   const chain = d.fallback_models?.length ? d.fallback_models : (data().modelChain || []);
   const primary = chain[0] || d.model || data().defaultModel || '';
   const lastUsed = data().latest?.model || '';
-  const seg = (m, label) =>
-    `<button type="button" class="sup-seg${cur === m ? ' on' : ''}" id="sup-mode-${m}" data-mode="${m}" ${busy ? 'disabled' : ''}>${label}</button>`;
+  // r4 4a: the send-authority axis is a compact inline select, not a 4-button segmented control.
+  const MODE_LABEL = { off: 'Off', observe: 'Observe', copilot: 'Co-pilot', autopilot: 'Autopilot' };
+  const modeSelect = `<select class="sup-mode-select" id="sup-mode" ${busy ? 'disabled' : ''} aria-label="Supervisor send authority">${['off', 'observe', 'copilot', 'autopilot'].map((m) => `<option value="${m}" ${cur === m ? 'selected' : ''}>${MODE_LABEL[m]}</option>`).join('')}</select>`;
   const visionWarn = models.length && chain.length && !chain.some((id) => models.find((mm) => mm.id === id)?.vision)
     ? '<div class="sup-hint sup-warn">Text-only chain: screenshots are captured but not shown to the reviewer.</div>' : '';
   const capAlert = capMissing
@@ -371,20 +372,17 @@ function renderHeader() {
     : '';
   hostEl.innerHTML = `
     <section class="su-card sup-head">
-      <h2><span>Supervisor</span>
-        <span class="sup-mode-seg" id="sup-mode" role="group" aria-label="Supervisor mode">
-          ${seg('off', 'Off')}${seg('observe', 'Observe')}${seg('copilot', 'Co-pilot')}${seg('autopilot', 'Autopilot')}
-        </span>
-      </h2>
-      <div class="sup-hint sup-mode-copy">${esc(MODE_COPY[cur] || '')}</div>
-      <div class="sup-head-row sup-model-row">
-        <span class="sup-model-line">Model <b>${esc(primary)}</b>${lastUsed && lastUsed !== primary ? ` <span class="muted">· last used ${esc(lastUsed)}</span>` : ''}
+      <div class="sup-head-row sup-mode-row">
+        ${modeSelect}
+        <span class="sup-model-line">model <b>${esc(primary)}</b>${lastUsed && lastUsed !== primary ? ` <span class="muted">· ${esc(lastUsed)}</span>` : ''}
           <button type="button" class="btn ghost sm" id="sup-chain-toggle">${chainOpen ? 'chain ▾' : 'chain ▸'}</button>
         </span>
-        <button class="btn ghost" id="sup-run" ${busy ? 'disabled' : ''}>${busy === 'run' ? 'Checking…' : 'Run check now'}</button>
+        ${on ? `<span class="sup-bg" id="sup-bg" title="${esc(BG_FULL)}"><span class="sup-bg-dot"></span> on server${bgExpanded ? ` <span class="sup-bg-more">— ${esc(BG_FULL)}</span>` : ''}</span>` : ''}
+        <button class="btn ghost sm" id="sup-run" ${busy ? 'disabled' : ''}>${busy === 'run' ? 'Checking…' : 'Run check'}</button>
       </div>
+      <div class="sup-hint sup-mode-copy">${esc(MODE_COPY[cur] || '')}</div>
       ${chainOpen ? chainEditorHtml(d, models, chain) : ''}
-      ${capAlert}${bgNote}${visionWarn}
+      ${capAlert}${visionWarn}
       <details class="sup-settings" ${settingsOpen ? 'open' : ''}>
         <summary>Settings</summary>
         <label class="sup-field">Review behavior
@@ -461,9 +459,7 @@ function wireHeader() {
   on('.sup-settings', 'ontoggle', (e) => {
     settingsOpen = e.target.open;
   });
-  host.querySelectorAll('#sup-mode .sup-seg').forEach((el) => {
-    el.onclick = () => setMode(el.dataset.mode);
-  });
+  on('#sup-mode', 'onchange', (e) => setMode(e.target.value)); // r4 4a: select drives the same setMode
   on('#sup-grant-send', 'onclick', () => setMode(draft.mode)); // re-selecting the mode re-grants the caps
   on('#sup-bg', 'onclick', () => {
     bgExpanded = !bgExpanded;
@@ -767,7 +763,7 @@ function renderTaskCard() {
     </div>` : ''; // no-card state is rendered by the pm-between block, not a second empty box
   return `
     <section class="su-card sup-doc-card">
-      <h2><span>Task card</span><span class="count" title="Project Memory: the supervisor judges against this card, not a prose doc">the contract</span></h2>
+      <h2><span>Task card</span></h2>
       <div class="sup-doc-tools"><button class="btn sm" id="pm-new">${pmForm ? 'New task ▾' : '+ New task'}</button></div>
       ${form}
       ${migBanner}

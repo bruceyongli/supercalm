@@ -34,7 +34,10 @@ function renderSide() {
 }
 
 function shortTitle(s) {
-  return (s.title || s.id).split(/\s+/).slice(0, 3).join(' ').slice(0, 22);
+  // r4 4d: a session titled with a URL must show the project name, never the URL
+  let t = String(s.title || '').trim();
+  if (!t || /^https?:\/\//i.test(t)) t = s.project || (s.id || '').replace(/^s_/, 'session ');
+  return t.split(/\s+/).slice(0, 3).join(' ').slice(0, 22);
 }
 
 function needsYou() {

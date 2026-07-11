@@ -12,21 +12,30 @@ async function loadAgents() {
       <button class="dk-reply-btn" id="st-recheck">Re-check proxy</button></div>
       <p class="ob-fine">Sessions auto-detect their auth: an external proxy if present, else Supercalm's own login via a local shim, else the CLI's own login.</p>`;
     $('#st-recheck').onclick = loadAgents;
-    const perCli = (st.providers || []).map((p) => `
-      <div class="ob-row"><b>${esc(p.id)}</b>
-        <span class="dk-chip" style="color:${p.loggedIn ? '#4ecb6c' : '#8a95a5'};border-color:currentColor">${p.loggedIn ? 'LOGGED IN' : 'NOT SIGNED IN'}</span>
-        <span class="ob-ver">${esc(p.account || '')}${p.expiresInSec ? ` · token ${Math.round(p.expiresInSec / 3600)}h` : ''}</span>
-        <a class="dk-reply-btn" href="auth">${p.loggedIn ? 'Re-login ▸' : 'Sign in ▸'}</a>
-      </div>`).join('');
-    let cliRows = '';
-    try {
-      const tv = await api('api/tools/versions');
-      cliRows = (tv.tools || []).map((t) => `
-        <div class="ob-row"><b>${esc(t.id)}</b><span class="ob-ver">${esc(t.version || 'not found')}</span>
-          ${t.latest && t.latest !== t.version ? `<span class="dk-chip" style="color:#e2b23e;border-color:#e2b23e55">${esc(t.latest)} AVAILABLE</span><button class="dk-reply-btn" data-up="${esc(t.id)}">Update</button>` : t.installed ? '<span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">LATEST</span>' : ''}
-          <span class="ob-msg" data-upmsg="${esc(t.id)}"></span></div>`).join('');
-    } catch {}
-    $('#st-clis').innerHTML = perCli + cliRows;
+    // r4 4b: ONE merged card per CLI — install/version state + login state together, never two rows.
+    let tools = [];
+    try { tools = (await api('api/tools/versions')).tools || []; } catch {}
+    const authAlias = { agy: 'antigravity' };
+    const authById = {};
+    for (const p of st.providers || []) authById[p.id] = p;
+    $('#st-clis').innerHTML = tools.map((t) => {
+      const a = authById[authAlias[t.id] || t.id] || {};
+      const login = a.loggedIn
+        ? '<span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">LOGGED IN</span>'
+        : '<span class="dk-chip" style="color:#8a95a5;border-color:currentColor">SIGNED OUT</span>';
+      const versionOrInstall = t.installed
+        ? `<span class="ob-ver">${esc(t.version || '')}</span>${t.latest && t.latest !== t.version ? `<span class="dk-chip" style="color:#e2b23e;border-color:#e2b23e55">${esc(t.latest)} AVAILABLE</span><button class="dk-reply-btn" data-up="${esc(t.id)}">Update</button>` : ''}`
+        : '<span class="ob-ver">not found</span><a class="dk-new sm" href="auth">Install</a>';
+      const expiry = a.expiresInSec ? `<span class="ob-ver">token ${Math.round(a.expiresInSec / 3600)}h</span>` : '';
+      return `
+      <div class="ob-row"><b>${esc(t.id)}</b>
+        ${versionOrInstall}
+        ${login}
+        ${expiry}
+        <a class="dk-reply-btn" href="auth">${a.loggedIn ? 'Re-login ▸' : 'Sign in ▸'}</a>
+        <span class="ob-msg" data-upmsg="${esc(t.id)}"></span>
+      </div>`;
+    }).join('');
     for (const b of document.querySelectorAll('[data-up]')) b.onclick = async () => {
       const m = document.querySelector(`[data-upmsg="${b.dataset.up}"]`);
       m.textContent = 'updating…';
@@ -42,7 +51,7 @@ async function loadProviders() {
     const builtin = (r.builtin || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">built-in · ${(p.models || []).length} models · key auto</span><span class="dk-chip" style="color:${p.enabled ? '#4ecb6c' : '#8a95a5'};border-color:currentColor">${p.enabled ? 'ON' : 'OFF'}</span></div>`).join('');
     const rows = (r.providers || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">${esc(p.kind)} · ${(p.models || []).length} models · ${p.key_set ? 'key set' : 'no key'}</span></div>`).join('');
     const pr = r.pricing || {};
-    $('#st-prov').innerHTML = `${builtin}${rows || '<p class="ob-fine">No API providers yet.</p>'}
+    $('#st-prov').innerHTML = `${builtin}${rows || (builtin ? '' : '<p class="ob-fine">No API providers yet.</p>')}
       <div class="ob-row"><b>Cost stats</b><span class="ob-ver">${pr.configured ? `✓ ${pr.count} priced models` : 'not configured (optional)'}</span><a class="dk-reply-btn" href="auth">Manage ▸</a></div>`;
   } catch (e) { $('#st-prov').textContent = 'unavailable: ' + (e.message || e); }
 }

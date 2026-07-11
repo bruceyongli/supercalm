@@ -24,17 +24,27 @@ function fmtClock(ts) {
 
 // Header rollup: active duration · files touched · worst check · unanswered asks (per README).
 function rollup(evs) {
-  const first = evs.find((e) => e.ts)?.ts, last = [...evs].reverse().find((e) => e.ts)?.ts;
-  const mins = first && last ? Math.max(1, Math.round((last - first) / 60000)) : 0;
+  // r4: "active" = sum of ≤10-min gaps between events (wall-clock age is not activity);
+  // snags/checks count only since the operator's last message (this round, not all history).
+  let active = 0, prev = 0;
+  for (const e of evs) {
+    if (!e.ts) continue;
+    if (prev && e.ts > prev && e.ts - prev <= 600000) active += e.ts - prev;
+    prev = e.ts;
+  }
+  const mins = Math.round(active / 60000);
+  const lastYou = evs.map((e) => e.kind).lastIndexOf('you');
+  const recent = evs.slice(lastYou + 1);
   const files = new Set();
-  for (const e of evs) if (e.kind === 'edit') for (const c of e.chips || []) files.add(String(c).split(' ')[0]);
-  const checks = evs.filter((e) => e.kind === 'check');
-  const fails = evs.filter((e) => e.kind === 'fail' && !/recovered/.test(e.meta || ''));
+  for (const e of recent) if (e.kind === 'edit') for (const c of e.chips || []) files.add(String(c).split(' ')[0]);
+  const fails = recent.filter((e) => e.kind === 'fail').length;
+  const checks = recent.filter((e) => e.kind === 'check').length;
   const asks = evs.filter((e) => e.kind === 'ask' && !e.answered);
   const parts = [];
-  if (mins) parts.push(mins >= 60 ? `${Math.round(mins / 6) / 10} hr active` : `${mins} min active`);
-  if (files.size) parts.push(`${files.size} file${files.size > 1 ? 's' : ''} touched`);
-  if (checks.length) parts.push(fails.length ? `${fails.length} unresolved fail${fails.length > 1 ? 's' : ''}` : 'tests green');
+  if (mins) parts.push(mins >= 90 ? `${Math.round(mins / 6) / 10} hr active` : `${mins} min active`);
+  if (files.size) parts.push(`${files.size} file${files.size > 1 ? 's' : ''} touched this round`);
+  if (fails) parts.push(`${fails} snag${fails > 1 ? 's' : ''} this round`);
+  else if (checks) parts.push('checks green');
   if (asks.length) parts.push(`${asks.length} question${asks.length > 1 ? 's' : ''} for you`);
   return parts.join(' · ') || (mins ? `${mins} min active · working` : 'session starting');
 }
@@ -49,7 +59,7 @@ function stepsHtml(ev, i) {
   if (!steps.length) return '';
   const open = openSteps.has(i);
   return `
-    <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length} step${steps.length > 1 ? 's' : ''}</div>
+    <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length > 1 ? steps.length + ' steps' : 'show the command'}</div>
     ${open ? stepsBodyHtml(steps) : ''}`;
 }
 

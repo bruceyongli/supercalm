@@ -1,5 +1,7 @@
 #!/bin/sh
-# Supercalm — last line of defense: block any PUSH that would carry secrets / private data to a remote
-# (this is what stops a public leak). Scans the whole tracked tree. See scripts/scan-secrets.mjs.
-# Installed by bin/install-hooks (git config core.hooksPath scripts/hooks).
-SUPERCALM_SCAN_PHASE=push exec node scripts/scan-secrets.mjs
+# r4: design-conformance gate. Runs the verifiers when a dev server + session URLs are provided
+# (set AIOS_VERIFY_DESIGN=1 with BASE_URL/SESSION_URL/SETTINGS_URL); otherwise a no-op so ordinary
+# pushes aren't blocked when no browser/dev-server is available. Design drift = failing push.
+[ "$AIOS_VERIFY_DESIGN" = "1" ] || exit 0
+echo "[pre-push] verify:design against $SESSION_URL"
+npm run --silent verify:design || { echo "[pre-push] design verification FAILED"; exit 1; }

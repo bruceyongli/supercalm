@@ -33,9 +33,10 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 .dk-sess { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 9px; text-decoration: none; }
 .dk-sess:hover { background: #10151d; }
 .dk-sess-l1 { display: flex; align-items: center; gap: 6px; }
-.dk-sess-l1 b { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dk-agent { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; opacity: 0.85; }
+.dk-sess-l1 b { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+.dk-agent { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; opacity: 0.85; flex-shrink: 0; }
 .dk-status { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; color: #8a95a5; }
+.dk-status { flex-shrink: 0; }
 .dk-status.working { color: #4ecb6c; animation: dkpulse 1.4s infinite; }
 .dk-status.waiting { color: #e2b23e; }
 .dk-sess-l2 { font-size: 11.5px; color: #5c6675; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -112,3 +113,5 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 .dk-hero .ok { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #4ecb6c; }
 .dk-hero p { margin: 0; color: #b9c4d4; font-size: 13.5px; max-width: 52ch; }
 .dk-hero .foot { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #5c6675; }
+
+.dk-reply[hidden] { display: none; }
