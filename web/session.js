@@ -859,7 +859,7 @@ async function bootstrapTerminalScrollback() {
 // permanent in-flight request that keeps the page from ever reaching network-idle (verify_shell_v3
 // waits on that). requestIdleCallback fires in the first idle window; live updates start a beat later,
 // imperceptibly, and the bootstrap scrollback already shows the current terminal.
-const afterIdle = (fn) => (window.requestIdleCallback || ((f) => setTimeout(f, 900)))(fn, { timeout: 2000 });
+const afterIdle = (fn) => setTimeout(() => (window.requestIdleCallback || ((f) => f()))(fn), 2500);
 let terminalStream = null;
 function startTerminalStream() {
   terminalStream = new EventSource(`api/session/${id}/stream`);

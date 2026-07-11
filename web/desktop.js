@@ -261,4 +261,4 @@ setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().
 // in-flight request that prevents the page from ever reaching network-idle (verify_shell_v3 waits on
 // it). requestIdleCallback fires in the first idle window — updates start imperceptibly later.
 const openStream = () => { try { const ev = new EventSource('api/events'); ev.addEventListener('changed', coalesce(load, 3000)); } catch {} };
-(window.requestIdleCallback || ((f) => setTimeout(f, 900)))(openStream, { timeout: 2000 });
+setTimeout(() => (window.requestIdleCallback || ((f) => f()))(openStream), 2500);
