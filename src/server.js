@@ -1,9 +1,9 @@
 import http from 'node:http';
 import { gzip as gzipCb } from 'node:zlib';
 import { promisify } from 'node:util';
-import { readFile } from 'node:fs/promises';
-import { extname } from 'node:path';
-import { PORT, HOST, WEB_DIR, VERSION, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
+import { readFile, readdir } from 'node:fs/promises';
+import { extname, join } from 'node:path';
+import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import { bus } from './bus.js';
 import * as store from './store.js';
 import { now, id } from './util.js';
@@ -261,6 +261,26 @@ async function serveStatic(req, res, url) {
   if (p === '/settings') p = '/settings.html';
   if (p === '/projects') p = '/projects.html';
   if (p === '/records') p = '/records.html';
+  // Design-review artifacts (side-by-side PNGs) — served read-only from the gitignored data dir so the
+  // visual-parity grid is openable at a tailnet URL (/aios/review) without committing binaries to the repo.
+  if (p === '/review' || p === '/review/') {
+    let files = [];
+    try { files = (await readdir(join(DATA_DIR, 'design-review'))).filter((f) => f.endsWith('.png')); } catch {}
+    files.sort((a, b) => (a.startsWith('SIDE') ? 0 : 1) - (b.startsWith('SIDE') ? 0 : 1) || a.localeCompare(b));
+    const html = `<!doctype html><meta charset="utf-8"><title>Design review</title><body style="background:#0a0e14;color:#e9eef5;font-family:system-ui,sans-serif;margin:0;padding:24px">`
+      + `<h1 style="font-size:20px">Design review — side-by-side (v${VERSION})</h1>`
+      + `<p style="color:#8a95a5;font-size:13px">Design (prototype renders) vs live production, per surface. Usage is a documented superset — flagged, not signed off.</p>`
+      + files.map((f) => `<h3 style="font-size:14px;color:#79b8ff;margin:22px 0 6px">${f}</h3><img src="review/${encodeURIComponent(f)}" style="max-width:100%;border:1px solid #232c38;border-radius:8px;display:block">`).join('')
+      + `</body>`;
+    return send(res, 200, html, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+  }
+  if (p.startsWith('/review/')) {
+    const rf = confinedPath(join(DATA_DIR, 'design-review'), p.slice('/review'.length) || '/');
+    if (!rf) return send(res, 403, 'forbidden');
+    try {
+      return send(res, 200, await readFile(rf), { 'content-type': TYPES[extname(rf)] || 'application/octet-stream', 'cache-control': 'no-store' });
+    } catch { return send(res, 404, 'not found'); }
+  }
   const file = confinedPath(WEB_DIR, p);
   if (!file) return send(res, 403, 'forbidden');
   try {
