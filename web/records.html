@@ -14,7 +14,10 @@
   <style>
     .rc-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
     .rc-wrap h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -.01em; color: #e9eef5; margin: 0 0 16px; }
-    .rc-filter { background: #10151d; border: 1px solid #1d2632; border-radius: 13px; padding: 13px 15px; display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+    .rc-filter { background: #10151d; border: 1px solid #1d2632; border-radius: 13px; padding: 13px 15px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+    .rc-filter-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .rc-filter-row2 { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .rc-filter-row2 input[type="search"] { flex: 1; min-width: 180px; }
     .rc-filter select, .rc-filter input { background: #0b0f16; border: 1px solid #232c38; border-radius: 10px; color: #e9eef5; font: inherit; font-size: 12.5px; padding: 7px 10px; }
     .rc-filter input[type="search"] { flex: 1; min-width: 160px; }
     .rc-card { background: #0d1219; border: 1px solid #161d27; border-radius: 11px; padding: 11px 14px; margin-bottom: 8px; }
@@ -29,11 +32,21 @@
   <div class="rc-wrap" data-rc>
     <h1>Records</h1>
     <div class="rc-filter" data-rc-filter>
-      <select id="rc-dir"><option value="">any direction</option><option value="in">in — to agent</option><option value="out">out — from agent</option></select>
-      <select id="rc-tool"><option value="">any tool</option><option>claude</option><option>codex</option><option>agy</option></select>
-      <input type="search" id="rc-q" placeholder="substring search…" />
-      <button class="dk-reply-btn" id="rc-clear">Clear</button>
-      <button class="dk-reply-btn" id="rc-export">Export JSON</button>
+      <div class="rc-filter-row">
+        <select id="rc-project"><option value="">project · all</option></select>
+        <select id="rc-session"><option value="">session · all</option></select>
+        <select id="rc-tool"><option value="">tool · all</option></select>
+        <select id="rc-model"><option value="">model · all</option></select>
+        <select id="rc-source"><option value="">source · all</option></select>
+        <select id="rc-dir"><option value="">direction · all</option><option value="in">in — to agent</option><option value="out">out — from agent</option></select>
+      </div>
+      <div class="rc-filter-row2">
+        <input type="date" id="rc-since" />
+        <input type="date" id="rc-until" />
+        <input type="search" id="rc-q" placeholder="substring of any message…" />
+        <button class="dk-reply-btn" id="rc-clear">Clear</button>
+        <button class="dk-reply-btn" id="rc-export">Export JSON</button>
+      </div>
     </div>
     <div id="rc-list">loading…</div>
     <div class="rc-more"><button class="dk-reply-btn" id="rc-more">Load more</button></div>
