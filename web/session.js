@@ -10,7 +10,7 @@ const resizeOff = params.get('resize') === 'off' || params.has('noresize');
 // ---- split layout -----------------------------------------------------------
 const shell = $('#session-shell');
 const rail = $('#session-rail');
-const railPin = $('#rail-pin');
+
 const usageResizer = $('#usage-resizer');
 const PREF_RAIL_PINNED = 'aios.session.railPinned';
 const PREF_USAGE_WIDTH = 'aios.session.usagePanelWidth';
@@ -88,25 +88,26 @@ function applyUsageWidth({ save = false } = {}) {
 function setRailPinned(pinned, { save = true } = {}) {
   shell.classList.toggle('rail-pinned', pinned);
   rail.classList.toggle('pinned', pinned);
-  railPin.textContent = pinned ? 'Unpin' : 'Pin';
-  railPin.title = pinned ? 'Unpin sessions panel' : 'Pin sessions panel';
   if (save) localStorage.setItem(PREF_RAIL_PINNED, pinned ? '1' : '0');
   applyUsageWidth(); // re-derive px from the fraction for the new available width (both panes shift)
 }
-setRailPinned(localStorage.getItem(PREF_RAIL_PINNED) === '1', { save: false });
+// R2 T1/T2: the sidebar is DOCKED on every session entry (the pin model is superseded); collapse
+// lasts only within the current page visit — a fresh navigation always restores the docked rail.
+setRailPinned(true, { save: false });
 applyUsageWidth();
-railPin.onclick = () => setRailPinned(!shell.classList.contains('rail-pinned'));
 
 // ---- 56px mini-rail + peek (design handoff session-view collapse model) ---------------------------
 // docked (rail-pinned) ⇄ mini (rail-mini): ⟨ collapse / ⌘\ toggles; the mini rail's ≡ PEEKS the full
 // sidebar as a fixed overlay (no terminal reflow); state persists until docked again.
 const PREF_RAIL_MODE = 'aios.session.railMode';
-function setRailMini(mini, { save = true } = {}) {
+function setRailMini(mini) {
   shell.classList.toggle('rail-mini', mini);
   document.querySelector('[data-rail-mini]').hidden = !mini;
   rail.classList.toggle('mini', mini);
   if (mini) setRailPinned(false, { save: false });
-  if (save) localStorage.setItem(PREF_RAIL_MODE, mini ? 'mini' : 'docked');
+  else { rail.classList.remove('peek'); setRailPinned(true, { save: false }); }
+  const rc = document.getElementById('rail-collapse');
+  if (rc) rc.textContent = mini ? 'dock' : '⟨ collapse';
   renderMiniDots();
   applyUsageWidth();
 }
@@ -120,7 +121,7 @@ function renderMiniDots() {
     return `<a class="mini-dot${active ? ' me' : ''}" href="${a.getAttribute('href')}" title="${(a.textContent || '').trim().slice(0, 60).replace(/"/g, '')}"><i class="dk-dot ${working ? 'ok' : 'warn'}"></i></a>`;
   }).join('');
 }
-document.getElementById('rail-collapse').onclick = () => setRailMini(true);
+document.getElementById('rail-collapse').onclick = () => setRailMini(!shell.classList.contains('rail-mini'));
 document.getElementById('mini-peek').onclick = () => {
   // peek: overlay the full rail, fixed — zero reflow; leaves on mouseout or dock
   rail.classList.add('peek');
@@ -130,8 +131,7 @@ document.getElementById('mini-peek').onclick = () => {
 document.addEventListener('keydown', (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === '\\') { e.preventDefault(); setRailMini(!shell.classList.contains('rail-mini')); }
 });
-if (localStorage.getItem(PREF_RAIL_MODE) === 'mini') setRailMini(true, { save: false });
-setInterval(renderMiniDots, 5000); // dots follow the live rail list
+setInterval(renderMiniDots, 5000); // dots follow the live rail list (collapse is never restored across navigations — R2 T1)
 
 let resizeDrag = null;
 usageResizer.addEventListener('pointerdown', (e) => {

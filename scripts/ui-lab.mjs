@@ -67,9 +67,7 @@ const PROBES = {
       await page.eval("localStorage.removeItem('aios.session.railMode')");
       await page.eval("document.querySelector('[data-story-toggle] [data-mode=terminal]')?.click()");
       await new Promise((r) => setTimeout(r, 1200));
-      // spec baseline: sidebar DOCKED (280px) -> mini (56px) must return space to the terminal
-      await page.eval("if (!document.querySelector('.session-shell').classList.contains('rail-pinned')) document.querySelector('#rail-pin')?.click()");
-      await new Promise((r) => setTimeout(r, 600));
+      // R2 T1: docked is the DEFAULT on every entry — no pin step needed (pin removed in T2)
       await page.eval("window.__termW1 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#rail-collapse')?.click()");
       await new Promise((r) => setTimeout(r, 900));
       await page.eval("window.__termW2 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#mini-peek')?.click()");
@@ -77,7 +75,9 @@ const PROBES = {
       await page.eval("window.__termW3 = document.querySelector('#term')?.getBoundingClientRect().width");
     },
     probes: [
+      ["docked by default on entry (R2 T1)", "window.__termW1 < innerWidth - 700"],
       ["mini rail column present", "!document.querySelector('[data-rail-mini]')?.hidden"],
+      ["pin button removed (R2 T2)", "!document.querySelector('#rail-pin')"],
       ["collapse returns space to the terminal (docked 280 → mini 56)", "window.__termW2 > window.__termW1 + 100"],
       ["peek overlays with ZERO terminal reflow", "Math.abs(window.__termW3 - window.__termW2) < 2"],
       ["peek shows the full rail list", "!!document.querySelector('.session-rail.peek .rail-list')"],

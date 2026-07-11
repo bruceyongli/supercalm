@@ -192,7 +192,18 @@ function parseSessionLog(jsonlText) {
   if (!lines.length) return [];
   const fmt = detectFormat(lines[0]);
   const atoms = fmt === 'codex' ? atomsFromCodex(lines) : atomsFromClaude(lines);
-  return buildStory(atoms);
+  const out = buildStory(atoms);
+  // R2 S7: an ask followed by any later operator input is ANSWERED — the server data must agree
+  // with the client's optimistic stamp, or the next refetch resurrects the buttons.
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].kind !== 'ask') continue;
+    const reply = out.slice(i + 1).find((e) => e.kind === 'you');
+    if (reply) {
+      out[i].answered = true;
+      out[i].answeredWith = String(reply.body || reply.title || '').split('\n')[0].slice(0, 60);
+    }
+  }
+  return out;
 }
 
 export { parseSessionLog, classifyCommand, humanizeCmd, buildStory, atomsFromCodex, atomsFromClaude };

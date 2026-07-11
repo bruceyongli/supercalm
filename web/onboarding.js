@@ -49,7 +49,7 @@ function welcomeHtml() {
     <p>Supercalm runs and supervises coding-agent sessions on this box, and lets you triage them from anywhere. Four short steps — two required, the rest skippable. Your first project and session start in the app itself.</p>
     <div class="ob-detected" id="ob-detected">detecting…</div>
     <button class="dk-new ob-cta" data-ob-go>Get started →</button>
-    <div class="ob-mins">about 3 minutes</div>
+    <div class="ob-mins">about 2 minutes</div>
   </div>`;
 }
 
@@ -92,7 +92,7 @@ function signinHtml() {
       <button class="dk-new sm" data-ob-provider>Test &amp; add</button><span class="ob-msg" id="ob-prov-msg"></span>
     </div>
   </div>
-  <div class="ob-foot"><button class="dk-new" data-ob-next ${credentialed ? '' : 'disabled'}>Continue →</button><span class="ob-gate" data-ob-gate>${credentialed ? '' : 'Sign in to one CLI or add one provider to continue'}</span></div>`;
+  <div class="ob-foot"><button class="dk-new" data-ob-next ${credentialed ? '' : 'disabled'}>Continue →</button><span class="ob-gate" data-ob-gate>${credentialed ? '' : 'Sign in to one CLI or add one provider to continue (0 credentials yet)'}</span></div>`;
 }
 
 function voiceHtml() {
@@ -119,7 +119,7 @@ function accessHtml() {
     <div class="ob-row" id="ob-ts">detecting tailscaled…</div>
     <p class="ob-fine">Phone: install Tailscale → join the same tailnet → open the URL → Add to Home Screen.</p>
   </div>
-  <div class="ob-foot"><button class="dk-new" data-ob-finish>▶ Start using Supercalm</button></div>`;
+  <div class="ob-foot"><button class="dk-new" data-ob-finish>Start using Supercalm →</button></div>`;
 }
 
 function render() {
@@ -190,6 +190,7 @@ function wire() {
   const prov = document.querySelector('[data-ob-provider]');
   if (prov) prov.onclick = async () => {
     const m = $('#ob-prov-msg');
+    if ($('#ob-kind').value === 'openai' && !$('#ob-base').value.trim()) { m.textContent = '⚠ base URL is required for OpenAI-compatible providers'; return; }
     m.textContent = 'testing…';
     try {
       const r = await api('api/models/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind: $('#ob-kind').value, name: $('#ob-kind').value === 'anthropic' ? 'Anthropic' : 'API', base_url: $('#ob-base').value.trim(), api_key: $('#ob-key').value }) });
@@ -203,6 +204,7 @@ function wire() {
   const vtest = document.querySelector('[data-ob-vtest]');
   if (vtest) vtest.onclick = async () => {
     const m = $('#ob-vmsg');
+    if (!$('#ob-vbase').value.trim()) { m.textContent = '⚠ enter a base URL first'; return; }
     m.textContent = 'testing…';
     try {
       const r = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ base_url: $('#ob-vbase').value.trim(), api_key: $('#ob-vkey').value }) });

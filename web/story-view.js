@@ -34,7 +34,7 @@ function rollup(evs) {
   if (files.size) parts.push(`${files.size} file${files.size > 1 ? 's' : ''} touched`);
   if (checks.length) parts.push(fails.length ? `${fails.length} unresolved fail${fails.length > 1 ? 's' : ''}` : 'tests green');
   if (asks.length) parts.push(`${asks.length} question${asks.length > 1 ? 's' : ''} for you`);
-  return parts.join(' · ') || 'session log';
+  return parts.join(' · ') || (mins ? `${mins} min active · working` : 'session starting');
 }
 
 function stepsBodyHtml(steps) {
@@ -51,12 +51,20 @@ function stepsHtml(ev, i) {
     ${open ? stepsBodyHtml(steps) : ''}`;
 }
 
+// S8: the agent-recommended / affirmative option is primary; else the first.
+export function primaryIndex(opts) {
+  let i = opts.findIndex((o) => /recommend/i.test(`${o.label || ''} ${o.spoken || ''}`));
+  if (i < 0) i = opts.findIndex((o) => /^y(es)?$/i.test(String(o.key || '')) || /^yes\b/i.test(String(o.label || '')));
+  return i < 0 ? 0 : i;
+}
+
 function askHtml(ev) {
   const opts = ev.options || [];
   if (ev.answered) return `<div class="story-answered">✓ answered${ev.answeredWith ? ` "${esc(ev.answeredWith)}"` : ''} — session resumed</div>`;
   if (!opts.length) return '';
+  const pi = primaryIndex(opts);
   return `<div class="story-ask-opts">${opts.map((o, j) => `
-    <button class="story-ask-opt${j === 0 ? ' primary' : ''}" data-story-ask-opt data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
+    <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
 }
 
 function eventHtml(ev, i) {
@@ -65,36 +73,36 @@ function eventHtml(ev, i) {
   }
   const color = COLOR[ev.kind] || '#8a95a5';
   const isAsk = ev.kind === 'ask';
+  const untitled = ['you', 'sys', 'note'].includes(ev.kind);
+  const metaCls = /recovered/.test(ev.meta || '') ? ' ok' : (isAsk && !ev.answered ? ' warn' : '');
   const body = ev.body ? `<div class="story-body">${esc(ev.body)}</div>` : '';
+  // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
+  // time in the block's top-right corner instead.
+  const head = untitled
+    ? `<span class="story-ts corner">${fmtClock(ev.ts)}</span>`
+    : `<div class="story-title-row" data-story-title-row>
+        <span class="story-title">${esc(ev.title || ev.kind)}</span>
+        ${ev.meta ? `<span class="story-meta${metaCls}">${esc(ev.meta)}</span>` : ''}
+        <span class="story-ts">${fmtClock(ev.ts)}</span>
+      </div>`;
   const inner = `
-    <div class="story-title">${esc(ev.title || ev.kind)}</div>
+    ${head}
     ${body}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
-    ${ev.shot ? `<img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" />` : ''}
+    ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
     ${stepsHtml(ev, i)}
-    ${isAsk ? askHtml(ev) : ''}
-    ${ev.meta ? `<div class="story-meta${/recovered/.test(ev.meta) ? ' ok' : ''}">${esc(ev.meta)}</div>` : ''}`;
+    ${isAsk ? askHtml(ev) : ''}`;
   return `
     <div class="story-ev${ev.indent ? ' sub-indent' : ''}" data-story-ev="${ev.kind}" data-kind="${ev.kind}">
-      <div class="story-icon" style="color:${color};border-color:${color}55">${GLYPH[ev.kind] || '·'}</div>
+      <div class="story-icon" style="color:${color};border-color:${color}44;background:${color}14">${GLYPH[ev.kind] || '·'}</div>
       <div class="story-main">
         ${isAsk ? `<div class="story-card">${inner}</div>` : inner}
-        <div class="story-ts">${fmtClock(ev.ts)}</div>
       </div>
     </div>`;
 }
 
-let seededOpen = false;
 function render() {
   if (!panelEl) return;
-  // First render: open the first steps-bearing cluster so the peek layer is visible (and style-
-  // verifiable) without a click; later renders respect the user's own open/close choices.
-  if (!seededOpen) {
-    seededOpen = true;
-    const idxs = events.map((e, i) => ((e.steps || []).length ? i : -1)).filter((i) => i >= 0);
-    if (idxs[1] != null) openSteps.add(idxs[1]); // second cluster: first stays closed for a natural first-click
-    else if (idxs[0] != null) openSteps.add(idxs[0]);
-  }
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
@@ -111,14 +119,14 @@ function wire() {
     t.onclick = () => {
       // toggle IN PLACE — a full re-render would detach the element mid-interaction (verifier
       // holds the handle across open/close, and a user double-click would misfire too)
+      // per-block, independent (spec): toggle ONLY this cluster, in place
       const i = Number(t.dataset.i);
       const open = openSteps.has(i);
-      // accordion: one peek open at a time — closing others keeps the timeline tidy and makes
-      // open/close state fully deterministic for tests and users alike
-      for (const other of panelEl.querySelectorAll('[data-story-steps]')) other.remove();
-      for (const ot of panelEl.querySelectorAll('[data-story-steps-toggle]')) ot.textContent = `▸ ${ot.textContent.replace(/^[▸▾]\s*/, '')}`;
-      openSteps.clear();
-      if (!open) {
+      if (open) {
+        openSteps.delete(i);
+        if (t.nextElementSibling?.matches('[data-story-steps]')) t.nextElementSibling.remove();
+        t.textContent = `▸ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
+      } else {
         openSteps.add(i);
         t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || []));
         t.textContent = `▾ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
@@ -135,7 +143,15 @@ function wire() {
     };
   }
   for (const img of panelEl.querySelectorAll('[data-story-shot]')) {
-    img.onclick = () => window.open(img.src, '_blank');
+    img.onclick = () => {
+      const lb = document.createElement('div');
+      lb.className = 'story-lightbox';
+      lb.innerHTML = `<img src="${img.src}" alt="screenshot" />`;
+      lb.onclick = () => lb.remove();
+      const esc2 = (e) => { if (e.key === 'Escape') { lb.remove(); document.removeEventListener('keydown', esc2); } };
+      document.addEventListener('keydown', esc2);
+      document.body.appendChild(lb);
+    };
   }
 }
 

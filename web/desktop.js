@@ -27,7 +27,7 @@ function renderSide() {
   const live = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting').slice(0, 7);
   $('#dk-sessions').innerHTML = live.map((s) => `
     <a class="dk-sess" href="session?id=${esc(s.id)}" data-dk-sess>
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
       <span class="dk-sess-l2">${esc((s.summary || s.title || '').slice(0, 64))}</span>
     </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
   $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><i class="dk-dot ok"></i><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
@@ -51,6 +51,13 @@ function optionsOf(s) {
   return opts.slice(0, 4);
 }
 
+// R2 S8: recommended/affirmative option is primary; else the first (matches the story view).
+function primaryOpt(opts) {
+  let i = opts.findIndex((o) => /recommend/i.test(o.label || ''));
+  if (i < 0) i = opts.findIndex((o) => /^y(es)?$/i.test(String(o.key || '')) || /^yes\b/i.test(String(o.label || '')));
+  return i < 0 ? 0 : i;
+}
+
 function renderInbox() {
   const cards = needsYou();
   const nc = $('#dk-needs-count');
@@ -68,18 +75,23 @@ function renderInbox() {
         <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
       </div>
       <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
-      ${opts.length ? `<div class="dk-card-opts">${opts.map((o, i) => `<button class="dk-opt${i === 0 ? ' primary' : ''}" data-dk-opt data-key="${esc(o.key)}">${esc(o.key)} — ${esc(o.label)}</button>`).join('')}</div>` : ''}
+      ${opts.length ? `<div class="dk-card-opts">${(() => { const pi = primaryOpt(opts); return opts.map((o, i) => `<button class="dk-opt${i === pi ? ' primary' : ''}" data-dk-opt data-key="${esc(o.key)}">${esc(o.key)} — ${esc(o.label)}</button>`).join(''); })()}</div>` : ''}
       <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><span class="dk-hint">${opts.length ? `${esc(opts.map((o) => o.key).join(' / '))} answers this` : ''}</span></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>`;
-  }).join('') || '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>';
+  }).join('') || ((home.sessions || []).length === 0
+    ? `<div class="dk-hero" data-dk-allclear><span class="ok">✓ setup complete — this box is yours</span>
+       <p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p>
+       <button class="dk-new" id="dk-hero-start">▶ Start first session</button>
+       <span class="foot">⌘K jumps anywhere · Settings keeps every setup step</span></div>`
+    : '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>');
   const rows = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting');
   $('#dk-rows').innerHTML = rows.map((s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}">
       <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i>${agentChip(s.tool)}
       <b class="dk-row-name">${esc(shortTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
-      <span class="dk-status">${s.status === 'working' ? 'Working' : 'Waiting'}</span>
+      <span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
     </a>`).join('');
   wireCards();
@@ -99,6 +111,8 @@ async function answer(card, text) {
 }
 
 function wireCards() {
+  const hero = document.getElementById('dk-hero-start');
+  if (hero) hero.onclick = openLaunch;
   for (const card of document.querySelectorAll('[data-dk-card]')) {
     for (const b of card.querySelectorAll('[data-dk-opt]')) b.onclick = () => answer(card, b.dataset.key);
     const replyBtn = card.querySelector('[data-dk-reply]');
@@ -129,7 +143,8 @@ function renderPalette() {
   const items = paletteItems(q);
   palSel = Math.min(palSel, Math.max(0, items.length - 1));
   $('#dk-palette-list').innerHTML = items.map((i, n) => `
-    <div class="dk-pal-item${n === palSel ? ' sel' : ''}" data-n="${n}"><span class="dk-pal-kind">${i.kind}</span><b>${esc(i.label)}</b>${i.sub ? `<span class="dk-pal-sub">${esc(i.sub)}</span>` : ''}</div>`).join('');
+    <div class="dk-pal-item${n === palSel ? ' sel' : ''}" data-n="${n}"><span class="dk-pal-kind">${i.kind}</span><b>${esc(i.label)}</b>${i.sub ? `<span class="dk-pal-sub">${esc(i.sub)}</span>` : ''}</div>`).join('')
+    + `<div class="dk-pal-foot">↑↓ navigate · ⏎ open · esc close · ⌘K anywhere</div>`;
   for (const el of document.querySelectorAll('.dk-pal-item')) el.onclick = () => { items[Number(el.dataset.n)]?.run(); closePalette(); };
   return items;
 }

@@ -4,7 +4,7 @@
    IBM Plex Sans for UI copy, JetBrains Mono for data, bg/card/row/chrome palette, 13-14px radii. */
 body { background: #0a0e14 !important; color: #b9c4d4; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 h1, h2, h3 { font-family: 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: -0.01em; color: #e9eef5; }
-h1 { font-size: 24px; font-weight: 600; }
+h1 { font-size: 19px; font-weight: 600; } /* K1: 24px is the onboarding welcome only */
 h2 { font-size: 17px; font-weight: 600; }
 code, pre, .mono, td, .path, .chip, .badge, .count { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .card, .su-card, section.card { background: #10151d !important; border: 1px solid #1d2632 !important; border-radius: 13px !important; }
@@ -41,6 +41,6 @@ tr, td { border-color: #10151d !important; }
 
 /* usage mini-stats (4 cells per the README) */
 .mini-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 16px; }
-.mini-stat { background: #0d1219; border: 1px solid #161d27; border-radius: 11px; padding: 9px 12px; }
+.mini-stat { background: #0d1219; border: 1px solid #161d27; border-radius: 9px; padding: 9px 12px; }
 .mini-stat .k { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; letter-spacing: 1px; text-transform: uppercase; color: #5c6675; }
-.mini-stat .v { font-family: 'JetBrains Mono', monospace; font-size: 17px; font-weight: 800; color: #e9eef5; margin-top: 3px; }
+.mini-stat .v { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 800; color: #e9eef5; margin-top: 3px; }

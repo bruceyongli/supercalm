@@ -28,7 +28,7 @@ async function load() {
       <button class="dk-new sm" data-pj-launch="${esc(p.path)}">+ session</button>
     </div>`;
   }).join('');
-  $('#pj-list').innerHTML = rows || '<div class="dk-allclear">No projects yet — launch a session on any path and the project appears here.</div>';
+  $('#pj-list').innerHTML = rows || '<div class="dk-allclear">No projects yet — start a session and type a new path; the project is created on the spot.</div>';
   for (const b of document.querySelectorAll('[data-pj-index]')) b.onclick = async () => {
     b.textContent = 'indexing…';
     try { await api(`api/project/${b.dataset.pjIndex}/graph?rebuild=1`); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
