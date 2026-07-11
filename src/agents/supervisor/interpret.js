@@ -3,7 +3,13 @@ const QUESTION_ONLY_WINDOW_MS = Number(process.env.AIOS_SUPERVISOR_QUESTION_ONLY
 export const OPERATOR_ACK_RX = /\b(ok|okay|confirmed?|i saw|looks good|works? now|working now|that's good|that is good|yes\b|approved?|ship it|move on|go ahead)\b/i;
 export const QUESTION_ONLY_RX = /\b(answer|explain|diagnose|tell me|why|what|where|which|whether|can you see|find)\b[^.!?\n]{0,160}\b(only|just answer|answer only|read-?only|no fix|don'?t fix|do not fix|without fixing|don'?t change|do not change|no code|don'?t implement|do not implement|don'?t deploy|do not deploy)\b|\b(not ask for fixing anything|not asking for fixing|not ask for a fix|answer my question only|just answer my question)\b/i;
 export const OPERATOR_WAIT_RX = /\b(wait|hold on|pause|stop|stand down|do nothing|don'?t do anything|do not do anything|don'?t send|do not send|leave it|no more messages|stay quiet)\b/i;
-export const OPERATOR_CONTINUE_RX = /\b(go ahead|move on|keep working|continue|proceed|do it|start it|implement|fix it|ship it|deploy it|be aggressive|don'?t stop|do not stop|keep going|fix (?:all|the|these|those)?[^.\n]{0,60}\bissues?\b|start using multiple sub-?agents|speed things up)\b/i;
+// A NEGATED "stop" ("no need to stop", "do not ever stop between tasks", "never stop") is a KEEP-GOING
+// directive, the opposite of a hold — but the bare word "stop" also matches OPERATOR_WAIT_RX below. Because
+// CONTINUE is tested BEFORE WAIT, catching every negated-stop form here (incl. words wedged between "not" and
+// "stop", e.g. "do not EVER stop") is what stops the classic inversion where "don't stop" reads as "stop /
+// wait" and the supervisor stands down (incident s_0e9e27b282: operator said "do not ever stop between tasks",
+// supervisor held). Genuine imperatives ("stop and wait for me") have no negation and still fall to WAIT.
+export const OPERATOR_CONTINUE_RX = /\b(go ahead|move on|keep working|continue|proceed|do it|start it|implement|fix it|ship it|deploy it|be aggressive|no need to stop|never stop|do(?:\s+not|n'?t)\s+(?:ever\s+|need\s+to\s+|want\s+to\s+|really\s+|you\s+dare\s+)?stop|keep going|fix (?:all|the|these|those)?[^.\n]{0,60}\bissues?\b|start using multiple sub-?agents|speed things up)\b/i;
 export const OPERATOR_CORRECTION_RX = /\b(no\b|wrong|incorrect|not what i asked|missed|ignored|fix that|bug|regression|dumb|blindly|should have|shouldn't have|do not repeat)\b/i;
 export const OPERATOR_SCOPE_RX = /\b(add|also|instead|change scope|new requirement|now do|next do|then do|remaining|what's left)\b/i;
 export const OPERATOR_STATUS_QUESTION_RX = /\b(what (?:are you|were you|is (?:the )?(?:agent|supervisor)) (?:working on|waiting for|doing)|why (?:is|did|didn'?t|does|doesn'?t) .*?(?:stop|stopped|idle|wait|waiting|ignore|ignored|miss|missed)|is (?:the )?(?:agent|supervisor|session) still (?:working|running)|status\??)\b/i;

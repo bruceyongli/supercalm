@@ -1970,7 +1970,11 @@ export async function onTick(ctx) {
   let gateKey = cfg.doc && cfg.doc.trim() ? gateScopeKey(cfg.doc) : '';
   let snapshot = snapshotFor(ctx, cfg, ev, st, fp, gateKey, operatorIntent, t);
   const policyPreview = decideSupervisorAction(snapshot, { allowIdleNudge: false });
-  if (operatorIntent?.kind === 'wait') {
+  // A per-message regex 'wait' must NEVER override an explicit DURABLE autopilot delegation. updateOperatorStance
+  // (semantic, LLM-driven) ran one line above; if it still reads autopilot after this very message, the operator
+  // did NOT ask to halt — a bare "stop" token (e.g. "do not ever stop") was misread. Deferring to the durable
+  // stance is the whole point of the stance system (incident s_0e9e27b282: supervisor stood down mid-autopilot).
+  if (operatorIntent?.kind === 'wait' && resolveStance(st.operatorStance) !== 'autopilot') {
     const waitKey = h32('wait|' + (operatorIntent.message?.ts || 0) + '|' + clampLine(operatorIntent.message?.text || '', 180));
     if (st.operatorWaitKey !== waitKey) {
       applySupervisorState(ctx, { operatorWaitKey: waitKey });
@@ -2928,4 +2932,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, checkThrash };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, checkThrash, onTick, latestOperatorIntent };

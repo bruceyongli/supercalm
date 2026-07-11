@@ -332,6 +332,11 @@ server.on('error', (e) => {
   console.error('[aios] server error:', e.message);
   if (e.code === 'EADDRINUSE') process.exit(1); // fatal: let the supervisor restart
 });
-server.listen(PORT, HOST, () => {
-  console.log(`[aios] listening on http://${HOST}:${PORT}`);
-});
+// AIOS_NO_LISTEN lets a unit test import a module whose transitive imports reach server.js (e.g.
+// detect.js → sessions.js → server.js) WITHOUT binding the port — otherwise the import races the live
+// service for 8793 and the test process dies on EADDRINUSE. Production never sets it.
+if (!process.env.AIOS_NO_LISTEN) {
+  server.listen(PORT, HOST, () => {
+    console.log(`[aios] listening on http://${HOST}:${PORT}`);
+  });
+}

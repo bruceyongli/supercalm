@@ -341,6 +341,20 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 15-fleet-thrash${ok ? '' : ' — ' + problems.join('; ')}`);
 }
 
+// 16. OPERATOR "DO NOT EVER STOP" (incident s_0e9e27b282, 2nd occurrence): the operator's keep-going
+// directive contains the bare word "stop", which once matched OPERATOR_WAIT_RX and stood the supervisor
+// down mid-autopilot — "a big failure" (operator). The db→intent path onTick reads (latestOperatorIntent)
+// must resolve this to a NON-wait intent, so the L1973 stand-down branch never fires.
+{
+  const sid = 's_lab_donotstop';
+  db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES (?, ?, 'in', 'text', ?)")
+    .run(sid, now - 30e3, 'No need to stop, do not ever stop between tasks again. Bad behavior');
+  const intent = __lab.latestOperatorIntent(sid, now);
+  const ok = !!intent && intent.kind !== 'wait';
+  results.push({ name: '16-operator-do-not-stop-not-a-hold', ok, problems: ok ? [] : [`intent.kind=${intent?.kind} (must not be 'wait' — it's a keep-going directive)`] });
+  console.log(`${ok ? '✓' : '✗'} 16-operator-do-not-stop-not-a-hold${ok ? '' : ' — read a keep-going directive as a hold'}`);
+}
+
 // ---- report -----------------------------------------------------------------------------------------
 const pass = results.filter((r) => r.ok).length;
 console.log(`\n${pass}/${results.length} scenarios green`);

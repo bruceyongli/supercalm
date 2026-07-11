@@ -186,7 +186,10 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     const rounds = Math.max(1, Math.min(20, Number(url?.searchParams?.get('rounds')) || DEFAULT_ROUNDS));
     const r = await storyFor(sid, { rounds, full });
     if (r.error) return json(res, 404, { error: r.error });
-    json(res, 200, { ok: true, ...r });
+    // Live session status (NOT baked into storyFor's cached meta — status changes far more often than
+    // the transcript) so the story view can show a calming "working" animation while the agent runs.
+    const s = getSession(sid);
+    json(res, 200, { ok: true, ...r, status: s?.status || null });
   } catch (e) {
     json(res, 500, { error: String(e.message || e).slice(0, 300) });
   }

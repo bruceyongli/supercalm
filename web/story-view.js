@@ -12,6 +12,7 @@ let events = [];
 let lastSig = '';
 let showFull = false; // instant load shows recent rounds; user can expand to the full story
 let trimmed = false;
+let working = false; // live session status — drives the calming "working" animation at the foot
 let openSteps = new Set(); // indices with the steps expander open
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -122,7 +123,8 @@ function render() {
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>`;
+    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    ${working ? '<div class="story-working" data-story-working><span class="story-working-dots"><i></i><i></i><i></i></span><span>the agent is working…</span></div>' : ''}`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
   if (feed) feed.scrollTop = feed.scrollHeight;
@@ -178,10 +180,11 @@ export async function refreshStory({ quiet = true } = {}) {
     const r = await api(`api/session/${sid}/story${showFull ? '?full=1' : ''}`);
     events = r.events || [];
     trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
-    // re-render when anything user-visible changes: count, answers landing, or a
-    // cluster/fail meta update on the last events (count alone left stale ✓/recovered states)
+    working = r.status === 'working';
+    // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
+    // on the last events (count alone left stale ✓/recovered states), or the working animation flipping.
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
-      + ':' + events.slice(-3).map((e) => e.meta || '').join('|');
+      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + (working ? 'w' : '');
     if (sig !== lastSig) { lastSig = sig; render(); }
   } catch (e) {
     if (!quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;

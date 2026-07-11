@@ -2343,6 +2343,15 @@ body.map-expanded-open { overflow: hidden; }
 .story-earlier { display: block; width: 100%; margin: 0 0 14px; padding: 8px; background: #0d1219; border: 1px dashed #232c38; border-radius: 9px; color: #5c6675; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; cursor: pointer; }
 .story-earlier:hover { color: #8a95a5; border-color: #365a86; }
 
+/* Calming "the agent is working" indicator, pinned below the feed while status === working. */
+.story-working { display: flex; align-items: center; gap: 10px; padding: 10px 26px; border-top: 1px solid #161d27; flex-shrink: 0; color: #8a95a5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; background: #0b0f16; }
+.story-working-dots { display: inline-flex; gap: 4px; }
+.story-working-dots i { width: 6px; height: 6px; border-radius: 50%; background: #2fd6be; opacity: 0.3; animation: story-work-pulse 1.2s ease-in-out infinite; }
+.story-working-dots i:nth-child(2) { animation-delay: 0.2s; }
+.story-working-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes story-work-pulse { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+@media (prefers-reduced-motion: reduce) { .story-working-dots i { animation: none; opacity: 0.7; } }
+
 /* r4 4a: compact supervisor mode select (replaces the 4-button segmented) */
 .sup-mode-select { background: transparent; border: none; color: #79b8ff; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; cursor: pointer; padding: 2px 4px; -webkit-appearance: none; appearance: none; }
 .sup-mode-select:focus { outline: none; }
