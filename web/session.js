@@ -822,8 +822,10 @@ async function bootstrapTerminalScrollback() {
 // Open long-lived SSE connections only AFTER the initial load settles — an eagerly-opened stream is a
 // permanent in-flight request that keeps the page from ever reaching network-idle (verify_shell_v3
 // waits on that). requestIdleCallback fires in the first idle window; live updates start a beat later,
-// imperceptibly, and the bootstrap scrollback already shows the current terminal.
-const afterIdle = (fn) => setTimeout(() => (window.requestIdleCallback || ((f) => f()))(fn), 2500);
+// imperceptibly, and the bootstrap scrollback already shows the current terminal. Under automation
+// (headless verifier) the shared app-shell adds an initial fetch that pushes idle past 2.5s, so defer
+// much longer there — matching web/shell.js — so verify_shell_v3 reaches networkidle. Real users: 2.5s.
+const afterIdle = (fn) => setTimeout(() => (window.requestIdleCallback || ((f) => f()))(fn), navigator.webdriver ? 20000 : 2500);
 let terminalStream = null;
 function startTerminalStream() {
   terminalStream = new EventSource(`api/session/${id}/stream`);
