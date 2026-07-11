@@ -79,6 +79,17 @@
       .event.summary { border-left: 3px solid var(--u-yellow); }
       .event .msg { color: var(--u-text); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
       .empty { color: var(--u-soft); font-size: 12px; border: 1px dashed var(--u-line); border-radius: 8px; padding: 12px; }
+      /* Summary/Detailed toggle + condensed summary view */
+      .u-viewtoggle { display: inline-flex; border: 1px solid var(--u-line); border-radius: 8px; overflow: hidden; margin-right: auto; }
+      .u-viewtoggle button { background: transparent; border: none; color: var(--u-soft); font: inherit; font-size: 12.5px; font-weight: 600; padding: 6px 14px; cursor: pointer; }
+      .u-viewtoggle button.on { background: #182230; color: #e9eef5; }
+      body.u-detailed #usage-summary { display: none; }
+      body:not(.u-detailed) #usage-detail { display: none; }
+      .sum-glance { display: grid; gap: 9px; }
+      .sum-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: baseline; padding-bottom: 8px; border-bottom: 1px solid #1a222c; }
+      .sum-row:last-child { border-bottom: 0; }
+      .sum-row .k { color: var(--u-soft); font-size: 13px; overflow-wrap: anywhere; }
+      .sum-row .v { color: var(--u-text); font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
       @media (max-width: 900px) {
         .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .overview, .panels, .rank-panels { grid-template-columns: 1fr; }
@@ -116,6 +127,10 @@
           <label>Search <input type="search" id="f-q" placeholder="project / model / message" /></label>
         </div>
         <div class="usage-actions">
+          <span class="u-viewtoggle" data-u-viewtoggle>
+            <button type="button" data-view="summary" class="on">Summary</button>
+            <button type="button" data-view="detailed">Detailed</button>
+          </span>
           <button class="btn ghost sm" id="refresh">Refresh</button>
           <button class="btn ghost sm" id="rescan">Rescan logs</button>
           <span class="hint" id="scan-msg"></span>
@@ -129,6 +144,14 @@
       <div class="mini-stats" id="mini-stats"></div>
       </section>
 
+      <!-- Condensed Summary view (default): a readable chart + at-a-glance table. The dense detail
+           sections below live under #usage-detail and show only in Detailed mode. -->
+      <section id="usage-summary" class="panels" style="grid-template-columns:minmax(0,1.3fr) minmax(0,1fr)">
+        <div class="panel"><div class="panel-head"><div class="section-title">Spend by model</div><span class="hint">top cost drivers</span></div><div id="sum-chart" class="rank-list"></div></div>
+        <div class="panel"><div class="panel-head"><div class="section-title">At a glance</div><span class="hint">switch to Detailed for everything</span></div><div id="sum-table"></div></div>
+      </section>
+
+      <div id="usage-detail">
       <div class="metric-row" id="cards"></div>
 
       <section class="panels rank-panels">
@@ -159,6 +182,7 @@
         <div class="panel-head"><div class="section-title">Recent Events</div><span class="hint" id="price-note"></span></div>
         <div id="recent" class="recent"></div>
       </section>
+      </div>
     </main>
     <script type="module">import { injectShell } from './shell.js'; injectShell({ activeNav: 'usage' });</script>
     <script type="module" src="usage.js"></script>

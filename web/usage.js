@@ -32,6 +32,8 @@ const el = {
   summaries: $('#summaries'),
   recent: $('#recent'),
   priceNote: $('#price-note'),
+  sumChart: $('#sum-chart'),
+  sumTable: $('#sum-table'),
 };
 
 let loading = false;
@@ -378,7 +380,29 @@ function priceNote(pricing) {
   return sources.map((s) => `<a class="rlink" href="${escapeHtml(s.url)}" target="_blank" rel="noreferrer">${escapeHtml(s.label)}</a>`).join(' / ');
 }
 
+// Condensed Summary view: a spend-by-model bar chart + a readable at-a-glance table. Reuses the same
+// data as the detailed view; it's a curated, low-noise subset (the operator found the full page hard to read).
+function renderSummary(data = {}) {
+  const t = data.totals || {};
+  if (el.sumChart) el.sumChart.innerHTML = rankList(data.byModel, { maxRows: 6 });
+  const topModel = (data.byModel || []).slice().sort((a, b) => n(b.estimated_cost_usd) - n(a.estimated_cost_usd))[0];
+  const topProject = data.byProject?.[0];
+  const cachedPct = t.total_tokens ? Math.round((100 * n(t.cached_input_tokens)) / (n(t.total_tokens) + n(t.cached_input_tokens))) : 0;
+  const rows = [
+    ['Estimated cost', money(t.estimated_cost_usd)],
+    ['Total tokens', short(t.total_tokens)],
+    ['Output tokens', short(t.output_tokens)],
+    ['Cached input', `${cachedPct}%`],
+    ['Events', fmt(t.events)],
+    ['Agent calls', short(data.quotaImpact?.totals?.agent_calls)],
+    ['Top model', topModel ? `${topModel.name} · ${money(topModel.estimated_cost_usd)}` : '—'],
+    ['Top project', topProject ? `${topProject.name} · ${money(topProject.estimated_cost_usd)}` : '—'],
+  ];
+  if (el.sumTable) el.sumTable.innerHTML = `<div class="sum-glance">${rows.map(([k, v]) => `<div class="sum-row"><span class="k">${escapeHtml(k)}</span><span class="v">${escapeHtml(String(v))}</span></div>`).join('')}</div>`;
+}
+
 function renderUsage(data) {
+  renderSummary(data);
   fillOptions(el.tool, data.options?.tools);
   fillOptions(el.source, data.options?.sources);
   fillOptions(el.model, data.options?.models);
@@ -403,6 +427,8 @@ function renderLoading() {
   el.quotaCard.innerHTML = metric('Quota status', 'loading', 'Checking subscription windows.');
   el.burnCard.innerHTML = metric('Top burner', 'loading', 'Ranking projects and models.');
   el.cards.innerHTML = ['Reported total', 'Cached input', 'Output', 'Input'].map((k) => metric(k, 'loading')).join('');
+  if (el.sumChart) el.sumChart.innerHTML = '<div class="empty">Loading spend by model...</div>';
+  if (el.sumTable) el.sumTable.innerHTML = '<div class="empty">Loading summary...</div>';
   el.topProjects.innerHTML = '<div class="empty">Loading project ranking...</div>';
   el.topModels.innerHTML = '<div class="empty">Loading model ranking...</div>';
   el.quotaImpact.innerHTML = '<div class="empty">Loading quota impact...</div>';
@@ -461,5 +487,20 @@ el.q.addEventListener('input', () => {
 });
 el.refresh.addEventListener('click', load);
 el.rescan.addEventListener('click', rescan);
+
+// Summary (default) / Detailed view toggle — persisted. Summary shows the condensed chart + at-a-glance
+// table; Detailed reveals the full breakdown (#usage-detail). The operator found the full page overloaded.
+const VIEW_KEY = 'aios.usage.view';
+function applyView(v) {
+  document.body.classList.toggle('u-detailed', v === 'detailed');
+  for (const b of document.querySelectorAll('[data-u-viewtoggle] button')) b.classList.toggle('on', b.dataset.view === v);
+}
+for (const b of document.querySelectorAll('[data-u-viewtoggle] button')) b.addEventListener('click', () => {
+  applyView(b.dataset.view);
+  try { localStorage.setItem(VIEW_KEY, b.dataset.view); } catch {}
+});
+let startView = 'summary';
+try { if (localStorage.getItem(VIEW_KEY) === 'detailed') startView = 'detailed'; } catch {}
+applyView(startView);
 
 load();
