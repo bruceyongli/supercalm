@@ -4,7 +4,7 @@
 HTTP gallery). Reference of truth: `Supercalm Desktop.dc.html` (R2 handoff) + the operator's session
 screenshots + `docs/MAIN-DESIGN-README.md` ("when the file and README disagree, the file wins"). Live
 side-by-side PNGs render at **`/aios/review`** and on disk at `data/design-review/PS-*.png` (gitignored —
-binaries; this doc is the readable index of them). Current build: **v0.3.95**.
+binaries; this doc is the readable index of them). Current build: **v0.3.98**.
 
 ## Per-surface verdict
 | Surface | Verdict | Evidence / what was done |
@@ -34,12 +34,26 @@ binaries; this doc is the readable index of them). Current build: **v0.3.95**.
 5. **Sidebar collapse (v0.3.95).** Restored the `‹ collapse` control the design shows in the brand row
    (removed with the mini-rail in R2). Hides the rail on both the shell grid and the session grid; a fixed
    left-edge `›` tab restores it. Tested clean on decisions + session (no h-scroll, main reflows, restores).
+6. **Story panel default font (v0.3.97).** `.story-panel` set no font-family, so it inherited the monospace
+   `body` font. Digested cards (.story-body/.story-title/.story-step) override to sans, but any text reaching
+   the panel WITHOUT one of those wrappers (undigested/transient/empty/working states) fell back to monospace —
+   the operator's "story renders as a terminal dump". Fix: `.story-panel` defaults to 'IBM Plex Sans'; the
+   intentional-mono elements (.story-cmd/.story-chip/.story-icon/.story-rollup) set JetBrains Mono explicitly
+   and are unaffected. Verified: raw prose in the panel → sans; nested `.story-cmd` → still mono.
+7. **Session layout: full-height sidebar (v0.3.98).** The `<header>` + first-run banner were full-width bars
+   ABOVE the shell grid, pushing the Supercalm brand down. Design: the left nav owns the full height (nothing
+   above the brand) and the header belongs to the content column, not a full-width bar. Moved header + banner
+   INTO `.session-shell` and gave the grid header·banner·body rows: sidebar spans all rows (`grid-row:1/-1`,
+   full-height column 1), header + banner occupy the content columns (`grid-column:2/-1`), main + agent panel
+   in the body row. Geometry-verified: brand at y≈24 with nothing above; header starts at x≈288 (right of the
+   280px sidebar); no h/v overflow; collapse still works; right Agent panel untouched.
 
 ## Corrected error (recorded honestly)
-- I claimed the session story rendered in **monospace** vs the design's sans. That was WRONG — **measured**
-  the `.story-body` glyph widths: `i`=35px vs `W`=125px → proportional; `document.fonts.check('IBM Plex Sans')`
-  = true. The story is already IBM Plex Sans in structured cards (27 events). No story change was needed.
-  Lesson: measure before claiming — both "it matches" and "it's broken".
+- I first claimed the story rendered in **monospace**, then "disproved" it by measuring a fully-digested
+  session (`.story-body` = proportional IBM Plex Sans) and wrongly reported "no change needed". BOTH were
+  incomplete: the digested path IS sans, but the **unwrapped** path (raw/transient text) inherited the panel's
+  monospace default — a real bug the operator kept seeing. Root-caused and fixed in v0.3.97 (fix #6 above).
+  Lesson: measure the FAILING path, not a passing one; "it matches" and "it's broken" both need verification.
 
 ## Verification (the gate — not a single artifact)
 - `verify_shell_v3.mjs` **✓** ("shell conforms — supervisor panel, inbox, sidebar, settings, story tripwires")
@@ -48,7 +62,7 @@ binaries; this doc is the readable index of them). Current build: **v0.3.95**.
   anti-gaming") on the rich fixture (`s_d2d6f4ed08`).
 - `npm test` **EXIT=0** (full suite).
 - Legacy-hex sweep across `desktop/session/decisions/records/usage/health/settings/projects` = **0**.
-- Live: `curl /api/version` → `0.3.95`; `/aios/review` serves 8 per-surface composites + the header/collapse
+- Live: `curl /api/version` → `0.3.98`; `/aios/review` serves 8 per-surface composites + the header/collapse
   before/after (`PS-Header-Collapse-BeforeAfter.png`), all HTTP 200.
 
 ## Hard constraint (held)
