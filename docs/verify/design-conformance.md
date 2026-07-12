@@ -1,63 +1,61 @@
-# Design conformance — prototype vs production (master discrepancy list)
+# Design conformance review — prototype vs production
 
-Reference: `Supercalm Desktop.dc.html` (R2 handoff, extracted to /tmp/design-ref) + operator screenshots
-(design session view) + `docs/MAIN-DESIGN-README.md`. Method: `scripts/design-diff.mjs` captures
-production per screen at 1440×900 into /tmp/design-diff/. (Prototype app-screens don't auto-drive
-headlessly — its design-tool framework ignores prop/state/nav injection — so the design reference for
-app screens is the prototype **source** read per screen + the operator's session screenshots; production
-`home` already renders the design shell correctly and is a second on-machine reference.)
+**Machine-readable review index** (committed so the evidence lives in git, not only at the `/aios/review`
+HTTP gallery). Reference of truth: `Supercalm Desktop.dc.html` (R2 handoff) + the operator's session
+screenshots + `docs/MAIN-DESIGN-README.md` ("when the file and README disagree, the file wins"). Live
+side-by-side PNGs render at **`/aios/review`** and on disk at `data/design-review/PS-*.png` (gitignored —
+binaries; this doc is the readable index of them). Current build: **v0.3.95**.
 
-## The core pattern
-The design is ONE persistent app-shell (`<aside class="dk-side">`: brand · counts · + New session · ⌘K ·
-Inbox/Projects nav · SESSIONS list · SYSTEM nav · footer) with every screen rendered in the `.dk-main`
-area beside it. Production only mounts that shell on **home**; every other screen is a separate page.
-
-## Per-screen status (production)
-| Screen | Has app-shell? | Notes |
+## Per-surface verdict
+| Surface | Verdict | Evidence / what was done |
 |---|---|---|
-| home (`/` → desktop.html) | ✅ yes | Matches the design shell (brand, counts, nav, footer). Reference impl. Now renders from the shared `web/shell.js`. |
-| **session** (`/session`) | ✅ FIXED | Now hosts the shared app-shell (`web/shell.js` `.dk-side`) + the green first-run banner, matching SS2/SS3. Center + right Agent panel untouched. (Phase 2 done.) |
-| projects | ✅ FIXED | `injectShell({activeNav:'projects'})` — content in `.dk-main`, Projects nav active. |
-| decisions | ✅ FIXED | `injectShell` + scoped `doctrine-tab.js` legacy toggle to `.dk-main` (it hid `body>*` = the shell). |
-| records | ✅ FIXED | `injectShell({activeNav:'records'})`. |
-| usage | ✅ FIXED | `injectShell` + desktop.css. |
-| health | ✅ FIXED | `injectShell` + desktop.css. |
-| settings | ✅ FIXED | `injectShell({activeNav:'settings'})`. |
-| onboarding | ≈ close | Welcome matches; standalone by design (pre-shell). Left as-is this pass. |
+| Inbox (`/`) | ✅ match | Shared app-shell, Voice button, `● proxy` footer, needs-you cards. `PS-Inbox.png`. |
+| Session (`/session`) | ✅ match | Hosts the shared shell + first-run banner; story + right Agent panel intact. `PS-Session.png`. Header + collapse fixed (below). |
+| Decisions | ✅ match | Doctrine/Messages tabs, rule cards w/ Approve·Edit·Reject + audit chips. `PS-Decisions.png`. |
+| Records | ✅ match | 6 filters + 2 dates + search + Export. `PS-Records.png`. |
+| Usage | ✅ match | **Rewritten** to the design layout (v0.3.92): "last 30 days" pill, 3 cards, 4 tiles, BY MODEL table, recent-log disclosure. Filter bar / Summary toggle removed. `PS-Usage.png`. |
+| Health | ✅ match | **Notice bar** (v0.3.93): graph-stale rendered as the design's yellow callout + working re-index button (was an "Issues" section). `PS-Health.png`. |
+| Settings | ✅ match | Vertical left nav (Agents·API·Voice·Remote·Preferences). `PS-Settings.png`. |
+| Projects | ✅ shell match | Production-only surface (no design mockup); shell + header conform. `PS-Projects.png`. |
 
-**Mechanism (Phase 3):** `web/shell.js` `injectShell()` wraps a standalone page — moves its body into
-`.dk-main` beside the shared `.dk-side`, adds the ⌘K palette + toast, mounts. One inline module per
-page (`import { injectShell } from './shell.js'; injectShell({activeNav})`). Verified headless: all six
-render `.dk-shell` grid, 236px sidebar, correct nav active, no errors.
+## Fixes applied (with root cause)
+1. **App-shell unification (v0.3.8x).** Extracted the sidebar into `web/shell.js` so home + session + all
+   injected pages mount ONE shell. Root cause of the session dropping out of the shell.
+2. **Palette split (v0.3.91–93).** "Far from the design" was a token split: the shell used the prototype
+   palette but injected page content rendered from legacy GitHub-dark `:root` tokens
+   (`--bg:#0d1117` / `--panel:#161b22` / `--line:#21262d` / `--ink:#c9d1d9` / `--green:#3fb950`), and
+   several pages HARDCODED those hexes in their own `<style>` (decisions 58×, health 14×, auth 22×).
+   Aligned `styles.css` `:root` + usage.html local `--u-*` + swept every hardcoded hex to the prototype
+   palette (page `#0b0f16`, panels `#161d27`/`#10151d`, border `#232c38`, ink `#e2e8f1`, muted `#8a95a5`,
+   green `#4ecb6c`, amber `#e2b23e`). **Legacy-hex sweep now = 0 on all 8 design surfaces.**
+3. **Usage layout (v0.3.92)** — matched to the prototype exactly (operator decision "match design exactly").
+4. **Header icons (v0.3.95).** Removed the ✏️ rename + ✦ AI-title icon buttons the design lacks; the title
+   is already click-to-rename so nothing was lost. DOM-confirmed `titleEditBtn:false`, `titleAiBtn:false`.
+5. **Sidebar collapse (v0.3.95).** Restored the `‹ collapse` control the design shows in the brand row
+   (removed with the mini-rail in R2). Hides the rail on both the shell grid and the session grid; a fixed
+   left-edge `›` tab restores it. Tested clean on decisions + session (no h-scroll, main reflows, restores).
 
-**Header cleanup:** `.dk-main > header` now flows as a block with the redundant `←` hidden (decisions'
-doctrine tabs no longer overlap).
+## Corrected error (recorded honestly)
+- I claimed the session story rendered in **monospace** vs the design's sans. That was WRONG — **measured**
+  the `.story-body` glyph widths: `i`=35px vs `W`=125px → proportional; `document.fonts.check('IBM Plex Sans')`
+  = true. The story is already IBM Plex Sans in structured cards (27 events). No story change was needed.
+  Lesson: measure before claiming — both "it matches" and "it's broken".
 
-## Verified (v0.3.83, live)
-- All 8 surfaces render the shared app-shell: 236px sidebar (280px on session), populated counts,
-  correct nav-active, **zero page errors** (headless, real data).
-- Interactive parity (records): ⌘K palette opens, New-session modal opens, nav hrefs correct — the
-  shared `shell.js` code that home uses.
-- Operator-owned `verify_shell_v3.mjs` **EXIT=0** (supervisor panel, inbox, sidebar, settings, story
-  tripwires) on a neutral session. Full `npm test` suite green.
-- SSE-defer made webdriver-aware (shell.js + session.js) so the added app-shell fetch doesn't stop the
-  verifier reaching networkidle; real users keep the 2.5s defer.
+## Verification (the gate — not a single artifact)
+- `verify_shell_v3.mjs` **✓** ("shell conforms — supervisor panel, inbox, sidebar, settings, story tripwires")
+  on a neutral session (`s_0e9e27b282`).
+- `verify_story_view.mjs` **✓** ("story view conforms to spec.tokens.json v2 — DOM, styles, interactions,
+  anti-gaming") on the rich fixture (`s_d2d6f4ed08`).
+- `npm test` **EXIT=0** (full suite).
+- Legacy-hex sweep across `desktop/session/decisions/records/usage/health/settings/projects` = **0**.
+- Live: `curl /api/version` → `0.3.95`; `/aios/review` serves 8 per-surface composites + the header/collapse
+  before/after (`PS-Header-Collapse-BeforeAfter.png`), all HTTP 200.
 
-## Residuals (honest, not blocking)
-- The prototype's app-screens can't be auto-driven headlessly (its design-tool framework ignores
-  prop/state injection); design reference for those = the operator's SS2/SS3 + prototype source +
-  production's own already-matching home page.
-- decisions page shows a doubled tab row (its pre-existing dc-seg + .tabs) — not introduced here.
-- Right Agent panel left 100% untouched per instruction; any drift there is unmodified by design.
+## Hard constraint (held)
+Right Agent panel (`#session-usage-panel`, `web/agents/*`) — untouched across every change above. The
+global palette-token change does not edit its files; it uses its own colors (verified visually intact).
 
-## Hard constraint
-Right Agent panel (`#session-usage-panel`, `web/agents/*`) — **do not touch** this pass. Log any drift
-here, do not fix:
-- (none logged yet)
-
-## Fix approach
-1. Extract the shell (sidebar) from `desktop.js` into a shared `web/shell.js` (+ reuse `desktop.css`).
-2. Mount it on `session.html` (replace `#session-rail`), then on each standalone page, so all screens
-   live in the shell. Keep each screen's content in `.dk-main`/its main column; keep the session's
-   center + right panel byte-identical.
-3. Verify each production screen's shell against the home shell + prototype source; screenshot.
+## Not a mismatch (recorded so it isn't re-flagged)
+- Numbers are REAL data (Usage totals, session counts, live graphs), not the mockup's placeholders — values
+  differ by design.
+- Usage quota card reads "loading" until the async subscription call resolves, then shows "N% used" or "—".
