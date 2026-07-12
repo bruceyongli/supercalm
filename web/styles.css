@@ -1287,10 +1287,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .session-usage-panel, .session-shell.rail-pinned .session-usage-panel {
     min-width: 0; height: auto; overflow: visible;
   }
-  .session-shell.rail-pinned .session-rail {
-    position: fixed; top: var(--session-header-h, 52px); width: 34px; height: calc(100dvh - var(--session-header-h, 52px));
-    border-radius: 0; border: 0; border-right: 1px solid var(--line);
-  }
+  /* Narrow screens stack the session (display:block above), so the full-height sidebar would bury the
+     story. Hide it here — the ← back returns to the dashboard's nav. NOTE: the prior rule targeted
+     `.session-rail`, but the shared-shell extraction renamed the sidebar to `.dk-side`, so it silently
+     stopped applying and the full sidebar had been stacking full-width and pushing the content off-screen
+     (operator-reported). The header/banner span full width on display:block, which is correct here. */
+  .session-shell > .dk-side { display: none; }
+  .session-shell > header, .session-shell.rail-pinned > header,
+  .session-shell > .session-banner, .session-shell.rail-pinned > .session-banner { grid-column: auto; }
 }
 
 @media (max-width: 600px) {
