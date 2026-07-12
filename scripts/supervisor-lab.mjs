@@ -277,6 +277,27 @@ await answerScenario('10-goal-doubt-hold', {
   console.log(`${ok ? '✓' : '✗'} 13-gate-between-tasks-stand-down${ok ? '' : ' — challenged without a contract'}`);
 }
 
+// 13b. ACTIVE contract: the completion gate must STAND DOWN on RE-challenge when the agent already
+// answered with evidence and NOTHING changed (no new commits, no operator ack since). The between-tasks
+// path has this backstop (gateBetweenHeldKey, #13); the active-contract path (supervisor.js runGateChallenge
+// ~2543) does NOT — it rebuilds+resends buildChallenge every fire, so it re-issued the identical "account
+// for the plan / prove before sign-off" challenge every tick. Witnessed 2026-07-12 on a meta-session: 4
+// verbatim re-demands against already-delivered + committed-recorded work; the loop only breaks on an
+// operator ack (buildChallenge line ~540). RED until the active-contract re-challenge backstop exists.
+{
+  const doc = '# Task\n\n## Goal\nShip the supervision-doc flash + sidebar stopped-sessions fix.\n\n## Acceptance criteria\n- [x] no doc→card flash (MutationObserver LOADING→CARD, no DOC frame)\n- [x] sidebar shows a STOPPED section\n- [x] regression test added + full suite green\n\n## Hard rules\n- Never push unverified work as complete.\n';
+  const ctx = makeCtx({ sid: 's_lab_gate_active', session: { category: 'review', summary: 'agent reported the fix shipped and committed a verify record' } });
+  ctx.__activeCard = { task: { id: 't_gate_active', title: 'Ship the fix', status: 'active', version: 1, project_id: 'p' }, criteria: [], hash: 'h' };
+  const cfg = baseCfg({ doc });
+  const snap = SNAPSHOT();
+  await __lab.runGateChallenge(ctx, cfg, snap); // 1st challenge is legitimate
+  const sendsAfter1 = ctx._sends.length;
+  await __lab.runGateChallenge(ctx, cfg, snap); // 2nd: identical state, no new work, no operator ack -> must stand down
+  const ok = sendsAfter1 >= 1 && ctx._sends.length === sendsAfter1; // guard: only meaningful once the gate has actually challenged
+  results.push({ name: '13b-gate-active-rechallenge-stand-down', ok, problems: ok ? [] : [`first-send=${sendsAfter1}, re-challenge brought total to ${ctx._sends.length} (want: no additional send on an unchanged evidenced state)`] });
+  console.log(`${ok ? '✓' : '✗'} 13b-gate-active-rechallenge-stand-down${ok ? '' : ' — re-issued the same challenge (no active-contract backstop)'}`);
+}
+
 // 14. Unstick must NOT push past an operator phase gate on a fabricated premise (it once nudged
 // "after Go Phase 1" when no such operator message existed — the agent was awaiting the gate)
 {
