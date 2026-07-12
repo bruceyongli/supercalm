@@ -101,6 +101,19 @@ function renderSide() {
   $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy"><i class="dk-dot ok"></i>proxy</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
 }
 
+// Hover prefetch: warm the story cache (sessionStorage; key shared with story-view.js) for a session the
+// operator is about to open, so the click paints instantly. Once per session per page; bounded to ~200 KB.
+const _prefetched = new Set();
+export function prefetchStory(id) {
+  if (!id || _prefetched.has(id)) return;
+  _prefetched.add(id);
+  api(`api/session/${id}/story`).then((r) => {
+    if (!r || !Array.isArray(r.events) || !r.events.length) return;
+    const payload = JSON.stringify({ events: r.events, trimmed: !!(r.meta && r.meta.trimmed), working: r.status === 'working', liveStatus: r.liveStatus || null });
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story_${id}`, payload); } catch {} }
+  }).catch(() => _prefetched.delete(id));
+}
+
 // ---- command palette (⌘K) -------------------------------------------------------------------------
 const SCREENS = [['Inbox', './'], ['Projects', 'projects'], ['Decisions', 'decisions'], ['Records', 'records'], ['Usage', 'usage'], ['Health', 'health'], ['Settings', 'settings']];
 function paletteItems(q) {
@@ -233,6 +246,12 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   const counters = $('#dk-counters'); if (counters) counters.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const sessPlus = $('#dk-sess-plus'); // the "+" on the Sessions nav opens the launcher (don't navigate)
   if (sessPlus) sessPlus.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openLaunch(); };
+  // Prefetch a session's story on hover so opening it paints instantly (delegated — the list re-renders).
+  const sessBox = $('#dk-sessions');
+  if (sessBox) sessBox.addEventListener('pointerover', (e) => {
+    const a = e.target.closest?.('[data-dk-sess]'); if (!a) return;
+    try { prefetchStory(new URL(a.href, location.href).searchParams.get('id')); } catch {}
+  });
   // Sidebar collapse (design: "‹ collapse" in the brand row). Toggles a body class that hides the rail on
   // both the shared-shell grid and the session grid; a left-edge tab restores it. Persisted per browser.
   const COLLAPSE_KEY = 'aios.rail.collapsed';
