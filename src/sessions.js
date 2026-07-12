@@ -28,6 +28,7 @@ import { getContext, setContext, generateContext, contextBlock } from './context
 import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js';
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
+import { rolloutUuidFromName, codexRolloutFiles } from './codex_rollouts.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { chatJson } from './llm.js';
@@ -339,27 +340,31 @@ async function readHead(path, max = 16384) {
   }
 }
 
-// Find the newest codex rollout (~/.codex/sessions/**/rollout-*.jsonl) whose session_meta
-// cwd matches the project dir, and return its conversation UUID — so `codex resume` continues
-// the right conversation for this project, not just the globally most-recent one.
+// Capture the codex conversation UUID for a FRESH launch by DIFFING the rollout set: the one new file that
+// appears after codex starts is this session's rollout, so we record its UUID (store.codex_uuid). This lets
+// the story + resume find the real transcript by UUID even when the rollout's cwd differs from the AIOS
+// project path (a sandboxed workspace) — the failure the operator hit. Fully fail-open + async: it never
+// blocks or breaks the launch, and if it can't tell unambiguously (0 or >1 new files, e.g. concurrent codex
+// launches) it leaves codex_uuid null and cwd-matching stays the fallback.
+async function captureCodexUuid(sid, beforeSet) {
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const fresh = (await codexRolloutFiles()).filter((f) => !beforeSet.has(f));
+      if (fresh.length === 1) {
+        const uuid = rolloutUuidFromName(fresh[0]);
+        if (uuid) { store.updateSession(sid, { codex_uuid: uuid }); store.addEvent(sid, 'codex-uuid', { uuid }); return; }
+      }
+      if (fresh.length > 1) return; // ambiguous — don't guess; cwd-fallback stays
+    }
+  } catch {}
+}
+
+// Find the codex rollout whose session_meta cwd matches the project dir, and return its conversation UUID
+// — so `codex resume` continues THIS project's conversation, not just the globally most-recent one.
 async function findCodexSession(cwd) {
   if (!cwd) return null;
-  const base = join(homedir(), '.codex', 'sessions');
-  const files = [];
-  async function walk(dir, depth) {
-    let ents;
-    try {
-      ents = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of ents) {
-      const p = join(dir, e.name);
-      if (e.isDirectory() && depth < 3) await walk(p, depth + 1);
-      else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) files.push(p);
-    }
-  }
-  await walk(base, 0);
+  const files = await codexRolloutFiles();
   files.sort().reverse(); // filename begins with an ISO timestamp -> lexical sort == chronological
   for (const f of files.slice(0, 80)) {
     const head = await readHead(f).catch(() => '');
@@ -478,6 +483,10 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
       console.error('[aios] lessons inject skipped (fail-open):', e?.message || e);
     }
   }
+  // codex only: snapshot the rollout set right before launch so captureCodexUuid can diff for the NEW
+  // rollout codex creates — recording its UUID (store.codex_uuid) makes the transcript/resume findable
+  // even when the rollout's cwd differs from the project path (the operator's cwd-mismatch failure).
+  const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles().catch(() => [])) : null;
   const name = await startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false });
   const s = store.createSession({
     id: sid,
@@ -495,6 +504,7 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
   store.addEvent(sid, 'launch', { tool, dir: project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration });
   if (task) store.addMessage(sid, 'in', 'task', task);
   register(s);
+  if (codexBefore) captureCodexUuid(sid, codexBefore); // fire-and-forget; async + fail-open, never blocks launch
   emitSessionStatus(s, { previousStatus: null, source: 'launch' });
   bus.emit('changed');
   bus.emit('event', { type: 'launch', session: sid, tool, project: project?.name });
@@ -517,8 +527,10 @@ export async function resume(sid, { force = false } = {}) {
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
   const project = s.project_id ? store.getProject(s.project_id) : null;
-  // codex resume is global-most-recent by default; pin it to THIS project's conversation
-  const resumeId = s.tool === 'codex' ? await findCodexSession(project?.path || process.env.HOME).catch(() => null) : null;
+  // codex resume is global-most-recent by default; pin it to THIS project's conversation — prefer the
+  // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup.
+  const resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(project?.path || process.env.HOME).catch(() => null))) : null;
+  if (s.tool === 'codex' && resumeId && !s.codex_uuid) store.updateSession(sid, { codex_uuid: resumeId }); // backfill so the story/next resume match by UUID
   const name = await startPane({
     sid,
     project,

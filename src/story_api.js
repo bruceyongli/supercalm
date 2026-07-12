@@ -10,6 +10,7 @@ import { route, json } from './server.js';
 import { getSession, getProject, db } from './store.js';
 import { parseSessionLog } from './story.js';
 import { snapshot } from './sessions.js';
+import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { stripAnsi } from './util.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
@@ -114,22 +115,20 @@ async function readHead(file, bytes = 4096) {
   } finally { await fh.close(); }
 }
 
-// codex: newest rollout whose session_meta cwd matches the project dir and whose file lifetime
-// overlaps the session (started_at .. ended_at|now). Same walk as sessions.js findCodexSession.
+// codex: locate this session's rollout. PREFER the UUID captured at launch (store.codex_uuid) — codex
+// names rollouts rollout-<ISO>-<uuid>.jsonl, so the UUID is the trailing filename component and matches
+// regardless of the rollout's recorded cwd (the operator's cwd-mismatch case, e.g. a sandboxed workspace
+// whose cwd ≠ the AIOS project path). FALL BACK to the newest rollout whose session_meta cwd matches the
+// project dir and whose lifetime overlaps the session (started_at .. ended_at|now); then the clean
+// fallback story upstream. Same walk as sessions.js findCodexSession.
 async function findCodexLog(cwd, s) {
-  const base = join(homedir(), '.codex', 'sessions');
-  const files = [];
-  async function walk(dir, depth) {
-    let ents;
-    try { ents = await readdir(dir, { withFileTypes: true }); } catch { return; }
-    for (const e of ents) {
-      const p = join(dir, e.name);
-      if (e.isDirectory() && depth < 3) await walk(p, depth + 1);
-      else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) files.push(p);
-    }
+  const files = (await codexRolloutFiles()).sort().reverse();
+  // 1) captured UUID — authoritative, cwd-independent. The UUID is the full trailing filename component.
+  if (s?.codex_uuid) {
+    const hit = pickRolloutByUuid(files, s.codex_uuid);
+    if (hit) return hit;
   }
-  await walk(base, 0);
-  files.sort().reverse();
+  // 2) cwd match (legacy path — sessions without a captured UUID, or whose workspace path lines up).
   for (const f of files.slice(0, 120)) {
     try {
       const st = await stat(f);
