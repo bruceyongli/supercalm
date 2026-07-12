@@ -13,6 +13,7 @@ let lastSig = '';
 let showFull = false; // instant load shows recent rounds; user can expand to the full story
 let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
+let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
 let openSteps = new Set(); // indices with the steps expander open
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -116,6 +117,19 @@ function eventHtml(ev, i) {
     </div>`;
 }
 
+// The calming foot-of-story working indicator. When the CLI exposes its own live status line (claude
+// "Roosting… (1m 57s · ↓ 6.8k tokens)", codex "Working (10s) · 5 background terminals running") show THAT,
+// styled to the story: gerund in sans, the elapsed/tokens detail as a mono chip, background count as a chip.
+function renderWorking() {
+  if (!working) return '';
+  const dots = '<span class="story-working-dots"><i></i><i></i><i></i></span>';
+  const ls = liveStatus;
+  if (!ls) return `<div class="story-working" data-story-working>${dots}<span class="story-working-verb">the agent is working…</span></div>`;
+  const detail = ls.detail ? `<span class="story-working-detail">${esc(ls.detail)}</span>` : '';
+  const bg = ls.bg ? `<span class="story-working-bg">${esc(ls.bg)}</span>` : '';
+  return `<div class="story-working" data-story-working>${dots}<span class="story-working-verb">${esc(ls.verb)}</span>${detail}${bg}</div>`;
+}
+
 function render() {
   if (!panelEl) return;
   panelEl.innerHTML = `
@@ -124,7 +138,7 @@ function render() {
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
     <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
-    ${working ? '<div class="story-working" data-story-working><span class="story-working-dots"><i></i><i></i><i></i></span><span>the agent is working…</span></div>' : ''}`;
+    ${renderWorking()}`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
   if (feed) feed.scrollTop = feed.scrollHeight;
@@ -181,10 +195,12 @@ export async function refreshStory({ quiet = true } = {}) {
     events = r.events || [];
     trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
     working = r.status === 'working';
+    liveStatus = r.liveStatus || null;
     // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
-    // on the last events (count alone left stale ✓/recovered states), or the working animation flipping.
+    // on the last events (count alone left stale ✓/recovered states), or the live status line changing.
+    const lsSig = working ? (liveStatus ? `${liveStatus.verb}|${liveStatus.detail}|${liveStatus.bg || ''}` : 'w') : '';
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
-      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + (working ? 'w' : '');
+      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig;
     if (sig !== lastSig) { lastSig = sig; render(); }
   } catch (e) {
     if (!quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;

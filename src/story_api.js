@@ -9,6 +9,40 @@ import { homedir } from 'node:os';
 import { route, json } from './server.js';
 import { getSession, getProject, db } from './store.js';
 import { parseSessionLog } from './story.js';
+import { snapshot } from './sessions.js';
+import { stripAnsi } from './util.js';
+
+// Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
+// instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
+// "Working (10s · esc to interrupt) · 5 background terminals running". Returns {verb, detail, bg} or null.
+function cleanDetail(d) {
+  return String(d || '')
+    .replace(/\besc(ape)?\s+to\s+interrupt\b/gi, '')
+    .replace(/·\s*·/g, '·')
+    .replace(/^[\s·|]+|[\s·|]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .slice(0, 60);
+}
+export function extractLiveStatus(snap) {
+  const lines = stripAnsi(String(snap || '')).split('\n').map((l) => l.trim()).filter(Boolean).slice(-16);
+  let verb = null, detail = null, bg = null;
+  for (const l of lines.reverse()) {
+    if (!verb) {
+      // claude: a Capitalized gerund + a parenthetical carrying an elapsed timer and/or a token count
+      let m = l.match(/([A-Z][a-z]{2,}…)\s*\(([^)]*(?:\d+\s*s|token)[^)]*)\)/);
+      // codex/claude: "Working (10s · esc to interrupt)" and friends
+      if (!m) m = l.match(/\b(Working|Thinking|Running|Generating|Reading|Editing|Applying|Planning|Compacting|Summarizing)\b[^(]{0,3}\((\s*\d+\s*s[^)]*)\)/i);
+      if (m) { verb = /…$/.test(m[1]) ? m[1] : m[1] + '…'; detail = cleanDetail(m[2]); }
+    }
+    if (!bg) {
+      const b = l.match(/(\d+)\s+background\s+terminals?\s+running/i);
+      if (b) bg = `${b[1]} bg ${b[1] === '1' ? 'terminal' : 'terminals'}`;
+    }
+    if (verb && bg) break;
+  }
+  if (!verb && !bg) return null;
+  return { verb: verb || 'Working…', detail: detail || '', bg };
+}
 
 // #132 guaranteed fallback: when no native transcript can be located, synthesize an honest minimal
 // story from aios's OWN event log (launch/input/agent-send/resume/exit). Texts aren't stored there
@@ -213,7 +247,13 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     // Live session status (NOT baked into storyFor's cached meta — status changes far more often than
     // the transcript) so the story view can show a calming "working" animation while the agent runs.
     const s = getSession(sid);
-    json(res, 200, { ok: true, ...r, status: s?.status || null });
+    // Live CLI status line (only while working; one cheap capture-pane, off the cache since it changes
+    // every second). Fail-open — a missing status just falls back to the generic working animation.
+    let liveStatus = null;
+    if (s?.status === 'working') {
+      try { liveStatus = extractLiveStatus(await snapshot(sid, 16)); } catch {}
+    }
+    json(res, 200, { ok: true, ...r, status: s?.status || null, liveStatus });
   } catch (e) {
     json(res, 500, { error: String(e.message || e).slice(0, 300) });
   }

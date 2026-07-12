@@ -2387,6 +2387,11 @@ body.map-expanded-open { overflow: hidden; }
 .story-working-dots i { width: 6px; height: 6px; border-radius: 50%; background: #2fd6be; opacity: 0.3; animation: story-work-pulse 1.2s ease-in-out infinite; }
 .story-working-dots i:nth-child(2) { animation-delay: 0.2s; }
 .story-working-dots i:nth-child(3) { animation-delay: 0.4s; }
+/* The CLI's OWN live status line, styled to the story: gerund in sans (brighter than the muted base),
+   the elapsed/tokens as a compact mono detail, the background-terminal count as a right-aligned mono chip. */
+.story-working-verb { color: #b9c4d4; font-weight: 500; }
+.story-working-detail { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: #5c6675; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.story-working-bg { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #161d27; border-radius: 999px; padding: 1px 8px; margin-left: auto; white-space: nowrap; }
 @keyframes story-work-pulse { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .story-working-dots i { animation: none; opacity: 0.7; } }
 
