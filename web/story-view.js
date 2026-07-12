@@ -15,6 +15,12 @@ let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
 let openSteps = new Set(); // indices with the steps expander open
+// Client-side memory of asks the operator has already answered here, keyed stably per question. The story
+// re-renders wholesale on every SSE 'changed' tick; without this, an answered question bounces back to its
+// selection UI on the next refresh because the server story still reports it pending until the transcript
+// catches up (operator report: "I chose the option card and it bounced back"). askKey survives re-renders.
+const answeredAsks = new Map(); // askKey -> chosen label
+function askKey(ev) { return `${ev.ts || 0}|${String(ev.body || ev.title || '').slice(0, 48)}`; }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -74,11 +80,16 @@ export function primaryIndex(opts) {
 
 function askHtml(ev) {
   const opts = ev.options || [];
-  if (ev.answered) return `<div class="story-answered">✓ answered${ev.answeredWith ? ` "${esc(ev.answeredWith)}"` : ''} — session resumed</div>`;
+  const local = answeredAsks.get(askKey(ev));
+  if (ev.answered || local != null) {
+    const w = ev.answeredWith || local || '';
+    return `<div class="story-answered">✓ answered${w ? ` "${esc(w)}"` : ''} — session resumed</div>`;
+  }
   if (!opts.length) return '';
   const pi = primaryIndex(opts);
+  const ak = esc(askKey(ev));
   return `<div class="story-ask-opts">${opts.map((o, j) => `
-    <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
+    <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-askkey="${ak}" data-label="${esc(o.label || o.spoken || o.key || '')}" data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
 }
 
 function eventHtml(ev, i) {
@@ -173,9 +184,11 @@ function wire() {
   for (const b of panelEl.querySelectorAll('[data-story-ask-opt]')) {
     b.onclick = async () => {
       const key = b.dataset.key || b.textContent.trim();
+      const label = b.dataset.label || key;
       try {
         await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: key, source: 'text' }) });
-        b.closest('.story-ask-opts')?.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${key}" — session resumed` }));
+        if (b.dataset.askkey) answeredAsks.set(b.dataset.askkey, label); // sticky: survives the next SSE re-render
+        b.closest('.story-ask-opts')?.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${label}" — session resumed` }));
       } catch (e) { b.textContent = '⚠ ' + (e.message || e); }
     };
   }

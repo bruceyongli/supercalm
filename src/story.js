@@ -94,6 +94,10 @@ function cleanUserText(raw) {
   // heuristic below would otherwise surface a QUOTED OLD MESSAGE from inside the summary as a fresh
   // operator bubble (seen live: June "request failed 405" texts rendered unattributed in July stories).
   if (/^\s*(This session is being continued from a previous conversation|<summary>|Caveat: the messages below were generated)/i.test(t)) return '';
+  // Hook-injected feedback (Claude Code Stop / PreToolUse / PostToolUse / UserPromptSubmit / … hooks) is
+  // delivered as a user-ROLE turn but is MACHINE content, not the operator — never render it as a "you"
+  // bubble. (Operator report: a "Stop hook feedback: …" task evaluation showed up as their own message.)
+  if (/^\s*(?:[A-Za-z][\w-]* )?hook feedback\b/i.test(t) || /^\s*<(?:user-prompt-submit-hook|hook)[\s>]/i.test(t)) return '';
   if (t.length > 600) {
     // long turns are usually context/scrollback echo with the real message as the LAST paragraph
     const paras = t.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);

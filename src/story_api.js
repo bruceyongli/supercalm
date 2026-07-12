@@ -7,10 +7,11 @@ import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json } from './server.js';
-import { getSession, getProject, db } from './store.js';
+import { getSession, getProject, db, messagesFor } from './store.js';
 import { parseSessionLog } from './story.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
+import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
@@ -45,26 +46,22 @@ export function extractLiveStatus(snap) {
   return { verb: verb || 'Working…', detail: detail || '', bg };
 }
 
-// #132 guaranteed fallback: when no native transcript can be located, synthesize an honest minimal
-// story from aios's OWN event log (launch/input/agent-send/resume/exit). Texts aren't stored there
-// (only {source,len}), so events are labeled placeholders — absent-not-faked — and the meta says so.
-const _fallbackEvents = db.prepare(
-  `SELECT ts, type, payload FROM events WHERE session_id = ? AND type IN ('launch','input','agent-send','resume','exit') ORDER BY ts ASC LIMIT 200`,
+// #132 guaranteed story: when no native CLI transcript can be located, reconstruct the story from AIOS's
+// OWN captured data. The REAL message text lives in the `messages` table (messagesFor), attributed by
+// `source` via story_spine.messageToEvent — so the operator's actual words show (not char-count
+// placeholders), detect terminal-snapshot noise is dropped, and agent/supervisor injections are labeled
+// instead of masquerading as operator bubbles. Session lifecycle markers come from the events table.
+const _lifecycleEvents = db.prepare(
+  `SELECT ts, type FROM events WHERE session_id = ? AND type IN ('launch','resume','exit') ORDER BY ts ASC LIMIT 50`,
 );
 function fallbackStory(sid) {
-  const rows = _fallbackEvents.all(sid);
-  const events = [];
-  for (const r of rows) {
-    let p = {}; try { p = JSON.parse(r.payload || '{}'); } catch {}
-    const ts = r.ts;
-    if (r.type === 'launch') events.push({ ts, kind: 'sys', text: 'Session launched.' });
-    else if (r.type === 'resume') events.push({ ts, kind: 'sys', text: 'Session resumed.' });
-    else if (r.type === 'exit') events.push({ ts, kind: 'sys', text: 'Session exited.' });
-    else if (r.type === 'input') events.push({ ts, kind: 'you', text: `You: message · ${p.len ?? '?'} chars${p.attachments ? ` · ${p.attachments} attachment${p.attachments === 1 ? '' : 's'}` : ''} (text isn't stored in the aios event log — the native transcript wasn't found)` });
-    // Supervisor nudges are machine steering, not story content — skip them in the fallback so it doesn't
-    // become a wall of "[supervisor] injected message" rows (operator report). Other agent injections stay.
-    else if (r.type === 'agent-send' && p.agent !== 'supervisor') events.push({ ts, kind: 'you', text: `[${p.agent || 'agent'}] injected message · ${p.len ?? '?'} chars` });
-  }
+  const life = _lifecycleEvents.all(sid).map((r) => ({
+    ts: r.ts,
+    kind: 'sys',
+    text: r.type === 'launch' ? 'Session launched.' : r.type === 'resume' ? 'Session resumed.' : 'Session exited.',
+  }));
+  const msgs = spineFromMessages(messagesFor(sid, 400));
+  const events = [...life, ...msgs].sort((a, b) => (a.ts || 0) - (b.ts || 0));
   return events;
 }
 
@@ -202,7 +199,7 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
   const file = s.tool === 'codex' ? await findCodexLog(cwd, s) : await findClaudeLog(cwd, s);
   if (!file) {
     const events = fallbackStory(sid);
-    return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'no native transcript found — minimal story from the aios event log (message texts not captured there)' : 'no native transcript found for this session yet' } };
+    return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
   }
   const st = await stat(file);
   const key = `${sid}|${full ? 'full' : 'r' + rounds}`;
