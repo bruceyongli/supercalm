@@ -2284,7 +2284,12 @@ body.map-expanded-open { overflow: hidden; }
 .story-toggle { display: inline-flex; gap: 5px; margin-right: 10px; }
 .story-toggle [data-mode] { height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid #232c38; background: transparent; color: #8a95a5; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; cursor: pointer; }
 .story-toggle [data-mode].active { border-color: rgba(88,166,255,.55); background: rgba(88,166,255,.08); color: #79b8ff; }
-.story-panel { background: #0c1118; border: 1px solid #1d2632; border-radius: 13px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+/* The story is a prose-first "plain language" view, so its DEFAULT font is sans — not the monospace body
+   font it used to inherit. The intentional-mono bits (.story-cmd/.story-chip/.story-icon/.story-rollup/
+   .story-shot-cap/.story-toggle) each set JetBrains Mono explicitly, so this only affects prose/raw text:
+   before this, any content reaching the panel without a .story-body/.story-title wrapper (undigested or
+   transient rendering) fell back to monospace — the operator's "story shows as a terminal dump". */
+.story-panel { background: #0c1118; border: 1px solid #1d2632; border-radius: 13px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 .story-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 20px; border-bottom: 1px solid #161d27; flex-shrink: 0; }
 .story-head-title { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; color: #b9c4d4; }
 .story-rollup { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: #5c6675; }
