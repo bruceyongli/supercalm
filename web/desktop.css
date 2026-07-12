@@ -88,6 +88,9 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-status { flex-shrink: 0; }
 .dk-status.working { color: #4ecb6c; } /* no blink — the operator asked the sidenav to stop pulsing */
 .dk-status.waiting { color: #e2b23e; }
+.dk-status.exited, .dk-status.stopped { color: #5c6675; } /* stopped/parked sessions — muted */
+.dk-sec-stopped { margin-top: 6px; }
+.dk-sess.active .dk-status { color: inherit; }
 .dk-sess-l2 { font-size: 11.5px; color: #5c6675; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* project tag on each session row so it's clear which session belongs to which project */
 .dk-sess-proj { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; padding: 1px 6px; margin-right: 6px; }

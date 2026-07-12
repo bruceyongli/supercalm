@@ -655,6 +655,9 @@ function docSummaryHtml(doc) {
 // operator's EXPLICIT controls (new task / edit / close) are the boundary mechanism. The legacy doc
 // UI stays for flag-off sessions. Data via GET api/session/:id/tasks (loadTasks below).
 let pmData = null; // {active, open, archived} | null = flag off / no project / not loaded
+let pmLoaded = false; // has loadTasks resolved at least once? Guards the doc↔card flash: until we
+// KNOW whether this session drives a card, renderDoc must paint neither the legacy doc nor the card
+// (else the first frame shows the retired doc, then re-renders to the card — the operator's "flash").
 let pmAt = 0;
 let pmForm = false; // "new task" inline form open
 let pmEdit = null; // inline editor state: {kind: 'goal'|'crit'|'done'|'abandon'|'satisfy', cid?}
@@ -675,6 +678,7 @@ async function loadTasks(force = false) {
     const r = await P.api(`api/session/${P.sessionId}/tasks`);
     pmData = r?.ok ? r : null;
   } catch { pmData = null; }
+  pmLoaded = true; // set on BOTH success and failure so the doc/card can finally paint (never hang on the skeleton)
   renderDoc();
 }
 
@@ -825,6 +829,13 @@ function wireTaskCard() {
 function renderDoc() {
   const hostEl = host.querySelector('#sup-doc');
   if (!hostEl) return;
+  if (!pmLoaded && !pmData) { // don't guess: paint a neutral loading state (not the doc, not the card)
+    // until the first loadTasks resolves, so the panel never shows the retired doc for one frame and
+    // then snaps to the card. Resolves in well under a second (local API); on failure pmLoaded flips
+    // true too, so this falls through to the legacy-doc surface rather than hanging here.
+    hostEl.innerHTML = '<section class="su-card sup-doc-card"><div class="sup-hint">Loading…</div></section>';
+    return;
+  }
   if (pmData) { // Project Memory is live: the card shell IS the primary surface (active card,
     // between-tasks strip, suggestions, open/paused, archive). The legacy doc — when one still
     // exists — collapses behind it as a relic: an LLM tick already treats the card as the
