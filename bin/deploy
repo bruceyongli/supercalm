@@ -58,6 +58,16 @@ if [ "$BR" != "main" ] && [ "${AIOS_ALLOW_BRANCH_DEPLOY:-}" != "1" ]; then
   exit 1
 fi
 
+# Security checkpoint (operator doctrine: before any push to the PUBLIC repo, scan for credentials, personal
+# data, or sensitive config). Run it EXPLICITLY here — independent of the git pre-commit hook (core.hooksPath),
+# which requires `bin/install-hooks` and can be bypassed — so a release can never ship a secret even from a
+# checkout without hooks installed. Aborts the deploy before anything is bumped, committed, or pushed.
+echo "==> security checkpoint (credentials / private-data scan)"
+if ! node scripts/scan-secrets.mjs; then
+  echo "error: security checkpoint FAILED — credentials/private data detected. Deploy aborted; nothing pushed." >&2
+  exit 1
+fi
+
 # Fast-forward to origin before bumping. Every deploy adds a release commit, so deploying from two
 # checkouts of the same branch would otherwise diverge and fail --ff-only. Deploy from ONE machine.
 echo "==> sync $BR with origin (fast-forward only)"
