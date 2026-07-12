@@ -265,6 +265,17 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     ex.onclick = () => setCollapsed(false);
     document.body.appendChild(ex);
   }
+  // Mobile-only "phone view" affordance: the desktop view is the default on phones now, so offer a
+  // discoverable one-tap route to the phone companion (mirrors the phone view's "Desktop site" link).
+  // Preserves the current URL (keeps ?id=…) so a session opens straight into phone#s/<sid>. Hidden on the
+  // session page (its bottom is the composer) — CSS handles visibility; there ?phone=1 / ← back still work.
+  if (!document.getElementById('dk-phone-toggle')) {
+    const pv = document.createElement('a');
+    pv.id = 'dk-phone-toggle'; pv.className = 'dk-phone-toggle'; pv.href = '?phone=1';
+    pv.textContent = '📱 phone view'; pv.title = 'Switch to the phone companion view';
+    pv.onclick = (e) => { e.preventDefault(); try { const u = new URL(location.href); u.searchParams.set('phone', '1'); location.href = u.toString(); } catch { location.href = '?phone=1'; } };
+    document.body.appendChild(pv);
+  }
   load();
   setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
   // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a
