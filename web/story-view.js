@@ -22,6 +22,33 @@ let openSteps = new Set(); // indices with the steps expander open
 const answeredAsks = new Map(); // askKey -> chosen label
 function askKey(ev) { return `${ev.ts || 0}|${String(ev.body || ev.title || '').slice(0, 48)}`; }
 
+// General atom key for the append-MERGE. Requirement: "those messages are already loaded, why clear them
+// out?" — a new send must APPEND, never re-window the story down to the newest message. ts is near-unique
+// per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
+// keys (so answered/meta updates land) and add new ones; already-loaded atoms with no incoming match are KEPT.
+function evKey(e) { return `${e.ts || 0}|${e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
+
+// The scroll position belongs to the USER, not to us. It is preserved across every re-render / refresh /
+// story-update / session-switch, and restored (persisted per session) on reopen. We NEVER auto-scroll to
+// the latest message — the ONLY thing that jumps to newest is the explicit "Latest" button (storyToLatest).
+let feedTop = 0;        // remembered .story-feed scrollTop for the current session
+let feedPersistT = 0;   // throttle timer for the per-session persist
+const SCROLL_KEY = (id) => `aios_story_scroll_${id}`;
+function persistScroll() { try { sessionStorage.setItem(SCROLL_KEY(sid), String(Math.round(feedTop))); } catch {} }
+function nearBottom(feed) { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 8; }
+function updateLatestBtn(feed) {
+  const btn = panelEl && panelEl.querySelector('[data-story-latest]');
+  if (btn && feed) btn.hidden = nearBottom(feed); // show it only when the user is NOT already at the newest
+}
+function storyToLatest() { // the ONE sanctioned jump-to-newest
+  const feed = panelEl && panelEl.querySelector('.story-feed');
+  if (!feed) return;
+  feed.scrollTop = feed.scrollHeight;
+  feedTop = feed.scrollTop;
+  persistScroll();
+  updateLatestBtn(feed);
+}
+
 // Cross-navigation story cache (sessionStorage): a hovered-then-clicked or previously-visited session's
 // 1-round story is kept so the NEXT open paints instantly, then refreshes live in the background. Shared
 // key with shell.js's hover prefetch. Bounded + default-view only (never the heavy ?full=1 story).
@@ -160,13 +187,26 @@ function render() {
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
     <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     ${renderWorking()}`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
-  if (feed) feed.scrollTop = feed.scrollHeight;
+  if (feed) {
+    // PRESERVE the user's position across this wholesale re-render (the .story-feed node is recreated by the
+    // innerHTML wipe above, so its scrollTop reset to 0 — restore it). Never jump to the bottom automatically.
+    feed.scrollTop = feedTop;
+    feed.addEventListener('scroll', () => {
+      feedTop = feed.scrollTop;
+      clearTimeout(feedPersistT); feedPersistT = setTimeout(persistScroll, 300);
+      updateLatestBtn(feed);
+    }, { passive: true });
+    updateLatestBtn(feed);
+  }
 }
 
 function wire() {
+  const latest = panelEl.querySelector('[data-story-latest]');
+  if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
   const earlier = panelEl.querySelector('[data-story-earlier]');
   if (earlier) earlier.onclick = () => { showFull = true; lastSig = ''; refreshStory({ quiet: false }); };
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
@@ -216,7 +256,17 @@ function wire() {
 export async function refreshStory({ quiet = true } = {}) {
   try {
     const r = await api(`api/session/${sid}/story${showFull ? '?full=1' : ''}`);
-    events = r.events || [];
+    const incoming = r.events || [];
+    if (!events.length) {
+      events = incoming; // first open of this session: adopt the windowed story loaded from source
+    } else if (incoming.length) {
+      // MERGE, don't replace: keep every already-loaded atom, let incoming overwrite matching keys (so
+      // answered/meta updates land) and append genuinely new ones. A new send appends — the server's
+      // 1-round window no longer clears the history the user already had loaded.
+      const byKey = new Map(events.map((e) => [evKey(e), e]));
+      for (const e of incoming) byKey.set(evKey(e), e);
+      events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    }
     trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
@@ -233,8 +283,14 @@ export async function refreshStory({ quiet = true } = {}) {
 }
 
 export function initStoryView({ sessionId, panel }) {
+  const switching = sid !== sessionId;
   sid = sessionId;
   panelEl = panel;
+  // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
+  if (switching) { events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; lastSig = ''; }
+  // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
+  // (its last user message), never auto-scrolled to the newest.
+  feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
   // Instant first paint from the cross-nav cache (hover-prefetched or last-visited), then refresh live.
   if (!showFull) {
     const cached = readStoryCache(sid);

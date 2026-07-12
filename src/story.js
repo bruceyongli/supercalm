@@ -107,15 +107,19 @@ function cleanUserText(raw) {
   t = t.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
   t = t.replace(/\[Image:\s*original\s+\d+x\d+[^\]]*\]/gi, '').trim();
   if (!t) return '';
-  if (t.length > 600) {
-    // long turns are usually context/scrollback echo with the real message as the LAST paragraph
+  // Only VERY long turns (thousands of chars) are context/scrollback echo with the real message as the
+  // last paragraph. A genuine multi-paragraph operator message (their side-nav + story requirements ran
+  // ~1.5k chars) must NOT be reduced to its last paragraph or clipped — operator report: "my message in
+  // the story was cut off." So the echo heuristic + the hard cap only kick in above a generous ceiling.
+  const CEIL = 4000;
+  if (t.length > CEIL) {
     const paras = t.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
     for (let i = paras.length - 1; i >= 0; i--) {
       const p = paras[i];
       if (p.length >= 8 && !/^[<✻✳❯│└─\s]/.test(p) && !/^\(\d\)/.test(p)) { t = p; break; }
     }
   }
-  if (t.length > 600) t = t.slice(0, 600) + '…';
+  if (t.length > CEIL) t = t.slice(0, CEIL) + '…';
   return t;
 }
 

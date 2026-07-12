@@ -7,6 +7,8 @@ import { startVoiceMode } from './voicemode.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const $ = (s) => document.querySelector(s);
+const STOPPED_SHOWN = 10; // how many stopped sessions to show before the "show all N" toggle
+let stoppedExpanded = false; // persists across SSE re-renders so the list doesn't collapse under the user
 
 // ---- inbox -----------------------------------------------------------------------------------------
 function optionsOf(s) {
@@ -65,8 +67,16 @@ function renderInbox(home) {
       <span class="dk-status ${s.status}">${sWord(s.status)}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
     </a>`;
+  // Bound the stopped list — showing all N (117, or 1000 later) is unreasonable. Show the most-recent few
+  // with a "show all N" toggle (collapsed by default; state kept in the module so SSE re-renders don't reset it).
+  const shownStopped = stoppedExpanded ? stopped : stopped.slice(0, STOPPED_SHOWN);
+  const stoppedToggle = stopped.length > STOPPED_SHOWN
+    ? `<button class="dk-show-more" data-dk-stopped-toggle>${stoppedExpanded ? 'show fewer' : `show all ${stopped.length} stopped`}</button>`
+    : '';
   $('#dk-rows').innerHTML = live.map(row).join('')
-    + (stopped.length ? `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>${stopped.map(row).join('')}` : '');
+    + (stopped.length ? `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>${shownStopped.map(row).join('')}${stoppedToggle}` : '');
+  const tog = $('[data-dk-stopped-toggle]');
+  if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
   wireCards();
 }
 

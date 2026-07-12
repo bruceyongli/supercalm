@@ -145,6 +145,8 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-row-name { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; }
 .dk-row-task { color: #8a95a5; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .dk-age { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #5c6675; }
+.dk-show-more { display: block; margin: 4px 0 2px; padding: 8px 12px; background: none; border: 1px dashed #232c38; border-radius: 9px; color: #5c6675; font-family: 'JetBrains Mono', monospace; font-size: 11px; cursor: pointer; }
+.dk-show-more:hover { color: #8a95a5; border-color: #365a86; }
 
 /* ---- palette ---- */
 .dk-palette { position: fixed; inset: 0; background: rgba(4,6,10,.72); display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; z-index: 50; }
