@@ -1,6 +1,6 @@
 # Verification checkpoint — story integrity + speed + supervisor + mobile default
 
-**Build: v0.3.110.** Committed review artifact for the operator's requests this round (story surface,
+**Build: v0.3.112.** Committed review artifact for the operator's requests this round (story surface,
 switching speed, supervisor task-flow, and the desktop story view as the mobile default). Rendered PNGs
 were captured to `/tmp/*.png` during verification (ephemeral binaries — not committed); this doc is the
 durable index of the fixes + the reproducible command/query evidence behind them.
@@ -13,6 +13,8 @@ durable index of the fixes + the reproducible command/query evidence behind them
 | "I already chose the option card, and it bounced back to the selection UI" | **FIXED** v0.3.105 | client-side sticky `answeredAsks` in `web/story-view.js` (survives the SSE re-render); source-locked in `test/story_spine.test.js`. |
 | "make our desktop story view the default for mobile, maybe a bit optimized" | **FIXED** v0.3.109 `d59d34a` + v0.3.110 `5b971ef` | Playwright: `default→DESKTOP-SESSION`, header `modelChipHidden:true`, `0 pageerrors`; `?phone=1→PHONE`, `?desktop=1→DESKTOP-SESSION`. Rendered `/tmp/mobile-final.png`. |
 | "compact the header … hide/shorten the model chip" | **FIXED** v0.3.110 | model·effort·autonomy `.badge` inside `#s-title` hidden at ≤600px (verified by `getComputedStyle`), title truncates, short status kept. |
+| "how to switch to mobile/phone view" (no discoverable control) | **FIXED** v0.3.111 | mobile-only "📱 phone view" pill (`web/shell.js` + `desktop.css`) + `?phone=1`, both preserving the current URL. |
+| Mobile dashboard cramped (desktop sidebar on a phone) → **Option A** | **FIXED** v0.3.112 `309870c` | dashboard→phone triage on mobile; session→desktop story; phone triage cards→desktop session (`web/{desktop,index,session}.html`, `web/phone.js`). Playwright: `dashboard→PHONE · tap-session→DESKTOP-STORY · direct-session→DESKTOP-STORY · ?phone=1→PHONE`. Screenshot `/tmp/aflow-dash.png`. |
 | Right panel collapsed on mobile | **DEFERRED** | `#session-usage-panel` / `web/agents/*` is a standing operator carve-out ("untouched"); needs the operator's direct word. Visual test showed it isn't hurting the story-first layout, so it's left stacked-below. |
 
 ## Story-load / source surface (the corrected mechanism)
