@@ -7,8 +7,29 @@ import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json } from './server.js';
-import { getSession, getProject } from './store.js';
+import { getSession, getProject, db } from './store.js';
 import { parseSessionLog } from './story.js';
+
+// #132 guaranteed fallback: when no native transcript can be located, synthesize an honest minimal
+// story from aios's OWN event log (launch/input/agent-send/resume/exit). Texts aren't stored there
+// (only {source,len}), so events are labeled placeholders — absent-not-faked — and the meta says so.
+const _fallbackEvents = db.prepare(
+  `SELECT ts, type, payload FROM events WHERE session_id = ? AND type IN ('launch','input','agent-send','resume','exit') ORDER BY ts ASC LIMIT 200`,
+);
+function fallbackStory(sid) {
+  const rows = _fallbackEvents.all(sid);
+  const events = [];
+  for (const r of rows) {
+    let p = {}; try { p = JSON.parse(r.payload || '{}'); } catch {}
+    const ts = r.ts;
+    if (r.type === 'launch') events.push({ ts, kind: 'sys', text: 'Session launched.' });
+    else if (r.type === 'resume') events.push({ ts, kind: 'sys', text: 'Session resumed.' });
+    else if (r.type === 'exit') events.push({ ts, kind: 'sys', text: 'Session exited.' });
+    else if (r.type === 'input') events.push({ ts, kind: 'you', text: `(operator message · ${p.len ?? '?'} chars${p.attachments ? ` · ${p.attachments} attachment${p.attachments === 1 ? '' : 's'}` : ''} — text not captured in the event log)` });
+    else if (r.type === 'agent-send') events.push({ ts, kind: 'you', text: `[${p.agent || 'agent'}] (injected message · ${p.len ?? '?'} chars — text not captured in the event log)` });
+  }
+  return events;
+}
 
 const cache = new Map(); // key -> { file, mtimeMs, events, meta }
 
@@ -17,7 +38,7 @@ const cache = new Map(); // key -> { file, mtimeMs, events, meta }
 // and keep the last few OPERATOR rounds (a round = one operator message → everything until the next;
 // supervisor '[Supervisor] …' messages are shown but do NOT count as round boundaries). ?full=1
 // reads the whole file; ?rounds=N tunes the window.
-const DEFAULT_ROUNDS = 3;
+const DEFAULT_ROUNDS = 1; // instant first paint: one round starting at the user's real message (?rounds=N for more)
 const FULL_PARSE_UNDER = 1_200_000; // small transcripts: parse whole (already instant)
 const TAIL_START_BYTES = 3_000_000;
 const TAIL_CAP_BYTES = 32_000_000; // never scan more than this for the recent view
@@ -144,7 +165,10 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
   const project = s.project_id ? getProject(s.project_id) : null;
   const cwd = project?.path || null;
   const file = s.tool === 'codex' ? await findCodexLog(cwd, s) : await findClaudeLog(cwd, s);
-  if (!file) return { events: [], meta: { file: null, note: 'no native transcript found for this session yet' } };
+  if (!file) {
+    const events = fallbackStory(sid);
+    return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'no native transcript found — minimal story from the aios event log (message texts not captured there)' : 'no native transcript found for this session yet' } };
+  }
   const st = await stat(file);
   const key = `${sid}|${full ? 'full' : 'r' + rounds}`;
   const hit = cache.get(key);
