@@ -257,6 +257,7 @@ async function serveStatic(req, res, url) {
   if (p === '/health') p = '/health.html';
   if (p === '/phone') p = '/phone.html';
   if (p === '/desktop') p = '/desktop.html';
+  if (p === '/app') p = '/app.html'; // single-shell SPA (built alongside the legacy pages; becomes the default once verified)
   if (p === '/onboarding') p = '/onboarding.html';
   if (p === '/settings') p = '/settings.html';
   if (p === '/projects') p = '/projects.html';

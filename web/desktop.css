@@ -104,8 +104,12 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-foot-sp { flex: 1; }
 .dk-foot-proxy { display: inline-flex; align-items: center; gap: 5px; color: #4ecb6c; }
 
+/* ---- SPA view container (router mounts each view here; grid column 2 of .dk-shell) ---- */
+.dk-view { min-width: 0; min-height: 100vh; display: flex; flex-direction: column; }
+.dk-view > .dk-main { flex: 1; }
+.view-loading { min-height: 40vh; }
 /* ---- main / inbox ---- */
-.dk-main { padding: 26px 32px 90px; max-width: 1080px; margin: 0 auto; }
+.dk-main { padding: 26px 32px 90px; max-width: 1080px; margin: 0 auto; width: 100%; }
 /* Injected system pages (decisions/usage/health) keep their own page <header> inside .dk-main. The
    sidebar is now the nav, so reset the header's pre-shell full-width-bar styling (flex row / fixed
    height) to a normal block that flows, and drop the now-redundant ← back link (the sidebar's Inbox

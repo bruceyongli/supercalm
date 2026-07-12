@@ -13,6 +13,12 @@ let onData = null; // per-page hook run after each data refresh (e.g. the inbox 
 
 export function getHome() { return home; }
 
+// SPA views subscribe to the shared home-data loop (the router calls mountShell ONCE for the app's life,
+// so a view can't use the single onData hook). Returns an unsubscribe fn; fires immediately with current
+// home so a freshly-mounted view paints without waiting for the next poll.
+const homeSubs = new Set();
+export function subscribeHome(cb) { homeSubs.add(cb); try { cb(home); } catch {} return () => homeSubs.delete(cb); }
+
 // The sidebar markup — the single source for pages that INJECT the shell (the system pages). Home and
 // session carry a static copy in their HTML for first-paint; this keeps injected pages identical to them.
 const SIDEBAR_HTML = `
@@ -224,7 +230,7 @@ export function toast(msg) {
 
 // ---- data loop + wiring ---------------------------------------------------------------------------
 async function load() {
-  try { const r = await api('api/phone/home'); home = r || home; renderSide(); onData?.(home); } catch {}
+  try { const r = await api('api/phone/home'); home = r || home; renderSide(); onData?.(home); for (const cb of homeSubs) { try { cb(home); } catch {} } } catch {}
 }
 
 // Mount the shell on the current page. `onData(home)` runs after each refresh (pages render their own
