@@ -48,9 +48,13 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.match(ph, /explicit/i, 'voice review requires explicit send');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
-  for (const page of ['../web/index.html', '../web/session.html']) {
-    assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_force_desktop/, page + ' carries the guarded phone redirect');
+  // Mobile-view contract (Option A): the dashboard pages default to the phone triage on a phone (opt into
+  // the desktop dashboard via ?desktop=1 → aios_dash); the session page defaults to the desktop STORY view
+  // at every width, with ?phone=1 opening the phone session. See web/{desktop,index,session}.html.
+  for (const page of ['../web/index.html', '../web/desktop.html']) {
+    assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\('phone'\)/, page + ' redirects a phone to the phone triage dashboard');
   }
+  assert.match(readFileSync(new URL('../web/session.html', import.meta.url), 'utf8'), /get\('phone'\)[\s\S]*?phone#s\//, 'session.html: ?phone=1 opens the phone session, desktop story otherwise');
 }
 
 console.log('phone_api.test ok');
