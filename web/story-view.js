@@ -91,7 +91,10 @@ function eventHtml(ev, i) {
   const isAsk = ev.kind === 'ask';
   const untitled = ['you', 'sys', 'note'].includes(ev.kind);
   const metaCls = /recovered/.test(ev.meta || '') ? ' ok' : (isAsk && !ev.answered ? ' warn' : '');
-  const body = ev.body ? `<div class="story-body">${esc(ev.body)}</div>` : '';
+  // ev.text is the fallback-story field (aios event log: "Session launched", "operator message · N chars…")
+  // — render it as the body too, else untitled you/sys fallback events showed as bare icon+timestamp rows.
+  const bodyText = ev.body || ev.text || '';
+  const body = bodyText ? `<div class="story-body">${esc(bodyText)}</div>` : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
   const head = untitled

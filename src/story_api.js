@@ -59,8 +59,10 @@ function fallbackStory(sid) {
     if (r.type === 'launch') events.push({ ts, kind: 'sys', text: 'Session launched.' });
     else if (r.type === 'resume') events.push({ ts, kind: 'sys', text: 'Session resumed.' });
     else if (r.type === 'exit') events.push({ ts, kind: 'sys', text: 'Session exited.' });
-    else if (r.type === 'input') events.push({ ts, kind: 'you', text: `(operator message · ${p.len ?? '?'} chars${p.attachments ? ` · ${p.attachments} attachment${p.attachments === 1 ? '' : 's'}` : ''} — text not captured in the event log)` });
-    else if (r.type === 'agent-send') events.push({ ts, kind: 'you', text: `[${p.agent || 'agent'}] (injected message · ${p.len ?? '?'} chars — text not captured in the event log)` });
+    else if (r.type === 'input') events.push({ ts, kind: 'you', text: `You: message · ${p.len ?? '?'} chars${p.attachments ? ` · ${p.attachments} attachment${p.attachments === 1 ? '' : 's'}` : ''} (text isn't stored in the aios event log — the native transcript wasn't found)` });
+    // Supervisor nudges are machine steering, not story content — skip them in the fallback so it doesn't
+    // become a wall of "[supervisor] injected message" rows (operator report). Other agent injections stay.
+    else if (r.type === 'agent-send' && p.agent !== 'supervisor') events.push({ ts, kind: 'you', text: `[${p.agent || 'agent'}] injected message · ${p.len ?? '?'} chars` });
   }
   return events;
 }
