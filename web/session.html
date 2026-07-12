@@ -31,32 +31,32 @@
   <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="session-page">
-    <header>
-      <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
-      <span class="title" id="s-title"></span>
-      <span class="status-txt" id="s-status"></span>
-      <div class="spacer"></div>
-      <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
-        <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
-        <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
-      </div>
-      <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
-      <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
-      <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
-    </header>
-
-    <!-- First-run reassurance banner (design: green strip under the header, dismissible). Kept OUTSIDE
-         the grid; session.js folds its height into --session-header-h so the shell never overflows. -->
-    <div class="session-banner" id="session-banner" hidden>
-      <span class="session-banner-ok">✓ first session running</span>
-      <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
-      <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
-    </div>
-
     <div class="session-shell" id="session-shell">
-      <!-- The shared app-shell sidebar (web/shell.js populates counters/sessions/foot). Same markup as
-           desktop.html's dk-side so the session lives inside the same shell as every other screen.
-           id="session-rail" is kept so the resize math (session.js railWidth) still finds the column. -->
+      <!-- Header + first-run banner live INSIDE the shell grid, in the content column (grid rows 1/2) to
+           the RIGHT of the sidebar — NOT a full-width bar. The sidebar owns the full-height left column
+           (design: nothing sits above the Supercalm brand). session.js still folds header+banner height
+           into --session-header-h for the usage-resizer's fixed position. -->
+      <header>
+        <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
+        <span class="title" id="s-title"></span>
+        <span class="status-txt" id="s-status"></span>
+        <div class="spacer"></div>
+        <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
+          <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
+          <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
+        </div>
+        <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
+        <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
+        <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
+      </header>
+
+      <div class="session-banner" id="session-banner" hidden>
+        <span class="session-banner-ok">✓ first session running</span>
+        <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
+        <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
+      </div>
+
+      <!-- The shared app-shell sidebar (web/shell.js populates counters/sessions/foot); full-height column 1. -->
       <aside class="dk-side" id="session-rail" data-dk-sidebar>
         <div class="dk-brand">
           <span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button>

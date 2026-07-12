@@ -427,11 +427,21 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   --session-rail-width: 280px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
-  height: calc(100dvh - var(--session-header-h, 52px));
+  /* rows: header · first-run banner (0 when hidden) · body. The header + banner live in the content
+     columns (rows 1/2); the sidebar spans all rows (full-height left column) — design: nothing above the
+     Supercalm brand, header belongs to the content area, not a full-width bar. */
+  grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100dvh;
   padding: 8px;
   gap: 0;
   overflow: hidden;
 }
+/* Sidebar owns the full-height left column. Header + banner sit in the content columns to its right. */
+.session-shell > .dk-side { grid-column: 1; grid-row: 1 / -1; }
+.session-shell > header { grid-column: 1 / -1; grid-row: 1; position: static; z-index: auto; border-radius: 12px 12px 0 0; margin: 0; }
+.session-shell.rail-pinned > header { grid-column: 2 / -1; }
+.session-shell > .session-banner { grid-column: 1 / -1; grid-row: 2; }
+.session-shell.rail-pinned > .session-banner { grid-column: 2 / -1; }
 .session-shell.rail-pinned {
   grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
 }
@@ -457,6 +467,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .session-main {
   grid-column: 1;
+  grid-row: 3; /* body row — the header (row 1) + banner (row 2) sit above, sidebar spans all rows */
   display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
   min-width: 0; min-height: 0; height: 100%; padding: 0; gap: 8px;
   max-width: none; margin: 0;
@@ -550,7 +561,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .usage-resizer:hover::before, .session-shell.resizing .usage-resizer::before { background: var(--blue); }
 .session-usage-panel {
-  grid-column: 3; min-width: 320px; min-height: 0; height: 100%; overflow: auto;
+  grid-column: 3; grid-row: 3; min-width: 320px; min-height: 0; height: 100%; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px;
 }
 .session-shell.rail-pinned .session-usage-panel { grid-column: 4; }
