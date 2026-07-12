@@ -276,6 +276,20 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     pv.onclick = (e) => { e.preventDefault(); try { const u = new URL(location.href); u.searchParams.set('phone', '1'); location.href = u.toString(); } catch { location.href = '?phone=1'; } };
     document.body.appendChild(pv);
   }
+  // Mobile drawer controls (SYSTEM pages / desktop dashboard on a phone): a ☰ button opens the off-canvas
+  // sidebar, a backdrop or any nav tap closes it. CSS gates visibility to ≤720px non-session pages.
+  if (!document.getElementById('dk-menu-btn')) {
+    const setDrawer = (v) => document.body.classList.toggle('dk-drawer', v);
+    const mb = document.createElement('button');
+    mb.id = 'dk-menu-btn'; mb.className = 'dk-menu-btn'; mb.type = 'button';
+    mb.setAttribute('aria-label', 'Open menu'); mb.textContent = '☰';
+    mb.onclick = () => setDrawer(!document.body.classList.contains('dk-drawer'));
+    const bd = document.createElement('div'); bd.className = 'dk-drawer-backdrop';
+    bd.onclick = () => setDrawer(false);
+    document.body.appendChild(mb); document.body.appendChild(bd);
+    document.querySelector('.dk-side')?.addEventListener('click', (e) => { if (e.target.closest('a,[data-nav]')) setDrawer(false); });
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
+  }
   load();
   setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
   // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a

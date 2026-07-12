@@ -22,6 +22,13 @@
     .st-nav a:hover { background: #10151d; }
     .st-nav a.active { background: #121a26; box-shadow: inset 2px 0 0 #58a6ff; color: #e9eef5; }
     .st-body { min-width: 0; }
+    /* Phone: stack the sub-nav over the content (full-width, readable) + clear the shell's ☰ menu button. */
+    @media (max-width: 720px) {
+      .st-wrap { grid-template-columns: 1fr; padding: 52px 14px 90px; gap: 14px; }
+      .st-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+      .st-nav a { border: 1px solid #232c38; border-radius: 999px; padding: 6px 11px; }
+      .st-nav a.active { box-shadow: none; border-color: #58a6ff; }
+    }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
     .st-sec h2 { font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; font-weight: 600; color: #e9eef5; margin: 0 0 10px; }
     .st-pref { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #10151d; }
