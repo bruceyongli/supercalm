@@ -51,15 +51,22 @@ function renderInbox(home) {
        <button class="dk-new" id="dk-hero-start">▶ Start first session</button>
        <span class="foot">⌘K jumps anywhere · Settings keeps every setup step</span></div>`
     : '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>');
-  const rows = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting');
-  $('#dk-rows').innerHTML = rows.map((s) => `
+  // Sessions list lives HERE in the page body (not the side rail): live sessions first, then a muted
+  // STOPPED section (operator: stopped sessions belong on the page, not crammed into the nav rail).
+  const all = home.sessions || [];
+  const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
+  const stopped = all.filter((s) => s.status !== 'working' && s.status !== 'waiting');
+  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : 'Stopped');
+  const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}">
-      <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i>${agentChip(s.tool)}
+      <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i>${agentChip(s.tool)}
       <b class="dk-row-name">${esc(shortTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
-      <span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span>
+      <span class="dk-status ${s.status}">${sWord(s.status)}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
-    </a>`).join('');
+    </a>`;
+  $('#dk-rows').innerHTML = live.map(row).join('')
+    + (stopped.length ? `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>${stopped.map(row).join('')}` : '');
   wireCards();
 }
 

@@ -98,6 +98,15 @@ function cleanUserText(raw) {
   // delivered as a user-ROLE turn but is MACHINE content, not the operator — never render it as a "you"
   // bubble. (Operator report: a "Stop hook feedback: …" task evaluation showed up as their own message.)
   if (/^\s*(?:[A-Za-z][\w-]* )?hook feedback\b/i.test(t) || /^\s*<(?:user-prompt-submit-hook|hook)[\s>]/i.test(t)) return '';
+  // CLI-harness attachment metadata rides along with an operator's image message but is TOOLING text,
+  // not their words: the "Attached files available locally…" manifest and the "[Image: original WxH,
+  // displayed at WxH. Multiply coordinates by N…]" dimension annotation. Rendered on its own, that
+  // annotation REPLACED the operator's actual message in the story (operator report: "what hack the
+  // message get rotated to this?"). Strip both so their real text shows (and an annotation-only turn
+  // collapses to empty → dropped, not surfaced as a "you" bubble).
+  t = t.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
+  t = t.replace(/\[Image:\s*original\s+\d+x\d+[^\]]*\]/gi, '').trim();
+  if (!t) return '';
   if (t.length > 600) {
     // long turns are usually context/scrollback echo with the real message as the LAST paragraph
     const paras = t.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);

@@ -92,18 +92,14 @@ function renderSide() {
   const badge = $('#dk-inbox-badge');
   if (badge) { const needs = needsYou().length; badge.hidden = !needs; badge.textContent = needs; }
   const cur = new URLSearchParams(location.search).get('id');
-  const all = home.sessions || [];
-  const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
-  const stopped = all.filter((s) => s.status !== 'working' && s.status !== 'waiting'); // exited/parked — operator: show these too
-  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : 'Stopped');
-  const sDot = (st) => (st === 'working' ? 'ok' : st === 'waiting' ? 'warn' : '');
-  const sessRow = (s) => `
+  // The rail lists only LIVE sessions (working/waiting) — a lean quick-nav. Stopped/parked sessions are
+  // browsed on the dashboard page body (desktop.js #dk-rows), not stuffed into the nav rail.
+  const live = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting');
+  $('#dk-sessions').innerHTML = live.map((s) => `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess>
-      <span class="dk-sess-l1"><i class="dk-dot ${sDot(s.status)}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${sWord(s.status)}</span></span>
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
       <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 54))}</span>
-    </a>`;
-  $('#dk-sessions').innerHTML = (live.map(sessRow).join('') || '<div class="dk-empty-side">no live sessions</div>')
-    + (stopped.length ? `<div class="dk-sec dk-sec-stopped">STOPPED</div>${stopped.slice(0, 25).map(sessRow).join('')}` : '');
+    </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
   $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy"><i class="dk-dot ok"></i>proxy</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
 }
 

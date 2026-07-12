@@ -424,7 +424,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 
 .session-shell {
   --usage-panel-width: 50vw;
-  --session-rail-width: 280px;
+  --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
   display: grid;
   grid-template-columns: minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
   /* rows: header · first-run banner (0 when hidden) · body. The header + banner live in the content

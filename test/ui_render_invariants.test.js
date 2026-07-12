@@ -36,14 +36,33 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 }
 
 // ---- Issue 2: the sidebar shows stopped sessions, not just live -------------------------------------
+// Stopped sessions belong in the PAGE BODY (desktop.js #dk-rows), NOT the side nav rail (operator
+// correction: "put stopped in the side menu instead of in the session page" — wrong surface). The rail
+// stays a lean live-only quick-nav.
 {
   const shell = read('shell.js');
   const rs = shell.indexOf('function renderSide()');
   assert.ok(rs > 0, 'renderSide exists');
-  const body = shell.slice(rs, rs + 1800);
-  assert.ok(/!== 'working'/.test(body) && /!== 'waiting'/.test(body), 'renderSide keeps a stopped bucket (status is neither working nor waiting)');
-  assert.ok(/STOPPED/.test(body), 'renderSide renders a labeled STOPPED section');
-  assert.ok(!/slice\(0, 7\)/.test(body), 'renderSide no longer caps to 7 LIVE sessions — that live-only cap is what dropped stopped sessions');
+  const rail = shell.slice(rs, rs + 1400);
+  assert.ok(!/STOPPED/.test(rail), 'the side rail must NOT render a STOPPED section — stopped go in the page body');
+
+  const desk = read('desktop.js');
+  const ri = desk.indexOf('function renderInbox');
+  assert.ok(ri > 0, 'renderInbox exists');
+  const inbox = desk.slice(ri, ri + 4200);
+  assert.ok(/!== 'working'/.test(inbox) && /!== 'waiting'/.test(inbox), 'renderInbox keeps a stopped bucket for the page body');
+  assert.ok(/STOPPED/.test(inbox), 'renderInbox renders a STOPPED section in the page body (#dk-rows)');
+  assert.ok(/dk-rows/.test(inbox), 'the STOPPED section targets the page-body #dk-rows list');
 }
 
-console.log('ui_render_invariants: supervisor no-flash guard + sidebar stopped-sessions present');
+// ONE unified sidebar width: both shells derive from a single --rail-width token so the dashboard and
+// session rails can't drift to two widths again (operator: "why maintain two sidebars … different width").
+{
+  const dcss = read('desktop.css');
+  assert.ok(/--rail-width\s*:/.test(dcss), 'desktop.css defines the shared --rail-width token');
+  assert.ok(/\.dk-shell\s*\{[^}]*grid-template-columns:\s*var\(--rail-width\)/.test(dcss), '.dk-shell rail width uses var(--rail-width)');
+  const scss = read('styles.css');
+  assert.ok(/--session-rail-width:\s*var\(--rail-width/.test(scss), 'the session shell derives its rail width from the shared --rail-width token');
+}
+
+console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width');
