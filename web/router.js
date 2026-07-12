@@ -21,7 +21,8 @@ const ROUTES = [
   { re: /^\/settings$/, load: () => import('./views/settings.js'), nav: 'settings' },
 ];
 
-let current = null;      // { teardown } of the mounted view
+let current = null;      // { teardown, update? } of the mounted view
+let currentRoute = null; // the ROUTES entry currently mounted (to detect same-route param changes)
 let navToken = 0;        // guards against a slow import landing after a newer navigation
 
 function appPath() {
@@ -41,17 +42,23 @@ async function render() {
   const p = appPath();
   const r = routeFor(p);
   const params = Object.fromEntries(new URLSearchParams(location.search));
-  // tear down the outgoing view (clears its intervals/streams/observers) then clear the container
-  try { current?.teardown?.(); } catch (e) { console.error('view teardown error:', e); }
-  current = null;
-  const host = view();
-  if (host) host.innerHTML = '<div class="view-loading"></div>';
   setActiveNav(r.nav);
   document.body.classList.toggle('session-page', p === '/session'); // the session view drives its own full-bleed layout
+  // Same view module + only params changed (session A → session B) AND the view supports in-place update:
+  // update WITHOUT tearing down/remounting, so the session switch stays a no-reload swap.
+  if (r === currentRoute && current && typeof current.update === 'function') {
+    try { current.update(params); } catch (e) { console.error('view update error:', e); }
+    return;
+  }
+  // tear down the outgoing view (clears its intervals/streams/observers) then clear the container
+  try { current?.teardown?.(); } catch (e) { console.error('view teardown error:', e); }
+  current = null; currentRoute = null;
+  const host = view();
+  if (host) host.innerHTML = '<div class="view-loading"></div>';
   let mod;
   try { mod = await r.load(); } catch (e) { if (token === navToken && host) host.innerHTML = `<div class="dk-allclear">Failed to load view: ${e.message || e}</div>`; return; }
   if (token !== navToken) return; // a newer navigation superseded this one mid-import
-  try { await mod.init(host, params); current = mod; } catch (e) { console.error('view init error:', e); if (host) host.innerHTML = `<div class="dk-allclear">View error: ${e.message || e}</div>`; }
+  try { await mod.init(host, params); current = mod; currentRoute = r; } catch (e) { console.error('view init error:', e); if (host) host.innerHTML = `<div class="dk-allclear">View error: ${e.message || e}</div>`; }
 }
 
 // Navigate without a reload. Same-route with different params (session?id=A -> session?id=B) still

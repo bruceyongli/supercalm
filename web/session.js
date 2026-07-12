@@ -7,6 +7,12 @@ const params = new URLSearchParams(location.search);
 let id = params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
 if (!id) location.href = document.baseURI;
 const resizeOff = params.get('resize') === 'off' || params.has('noresize');
+// EMBED mode: this page runs inside the SPA shell's #view iframe (web/views/session-view.js). The shell
+// owns the ONE persistent flush sidebar + its data loop/SSE, so we skip THIS page's own sidebar (mountShell)
+// and let the parent drive session→session via a postMessage → switchSession (kept in-place, no reload).
+// Guarded by ?embed=1, so the standalone legacy page (no flag) is completely unaffected.
+const embed = params.get('embed') === '1';
+if (embed) document.body.classList.add('embedded');
 
 // ---- split layout -----------------------------------------------------------
 const shell = $('#session-shell');
@@ -154,8 +160,15 @@ addEventListener('resize', () => {
 // (current session marked active), foot, ⌘K palette, New-session launch, toast — replacing the old bare
 // session rail. mountShell runs its own data loop + SSE refresh, so loadSessionRail is now a no-op kept
 // only so its existing call sites (status transitions below) don't need editing.
-mountShell();
+if (!embed) mountShell(); // embedded: the parent SPA shell already owns the sidebar + data loop/SSE
 function loadSessionRail() {}
+// Parent (SPA shell) drives session→session in-place: it postMessages the new id instead of remounting the
+// iframe, so switching sessions stays a no-reload swap. Same-origin guard; switchSession is defined below.
+if (embed) window.addEventListener('message', (e) => {
+  if (e.origin !== location.origin || !e.data || e.data.type !== 'aios-switch-session') return;
+  const nid = String(e.data.id || '');
+  if (nid && nid !== id) { try { switchSession(nid); } catch (err) { location.href = `session?id=${encodeURIComponent(nid)}&embed=1`; } }
+});
 
 // ---- right panel: the agent host owns the tab bar + panels (web/agents/host.js) ------------
 // Built lazily near the SSE wiring (after loadMap/loadUsage + their state exist), since the host
