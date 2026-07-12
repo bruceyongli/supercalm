@@ -521,14 +521,18 @@ function renderHome() {
     </div>`;
   }).join('');
 
-  const rows = live.filter((s) => !needs.includes(s)).map((s) => `
+  const sessRow = (s) => `
     <button class="sessrow" data-open="${esc(s.id)}">
       <span class="dot ${s.status === 'working' ? 'pulse' : ''}" style="background:${statusColor(s.status)}"></span>
       <span class="sessname">${esc(s.title || s.id)}</span>
       <span class="sesstask">${esc(s.summary || s.question || '')}</span>
       <span class="sessstatus" style="color:${statusColor(s.status)}">${statusWord(s.status)}</span>
       <span class="sesstime">${ago(s.last_activity)}</span>
-    </button>`).join('');
+    </button>`;
+  const rows = live.filter((s) => !needs.includes(s)).map(sessRow).join('');
+  // Every session, not just the live ones (operator: the mobile view must reach ALL sessions).
+  const others = sessions.filter((s) => !['working', 'waiting'].includes(s.status));
+  const otherRows = others.map(sessRow).join('');
 
   return `
   <div class="screen">
@@ -549,6 +553,15 @@ function renderHome() {
       ${stale.length ? `<div class="stale-strip">▸ ${stale.length} stale session${stale.length === 1 ? '' : 's'} waiting — no touch from you in days (replying re-heats)</div>` : ''}
       <div class="sec-label" style="padding-top:10px">SESSIONS</div>
       ${rows || '<div class="stale-strip">no other live sessions</div>'}
+      <div class="sec-label" style="padding-top:12px">SYSTEM</div>
+      <nav class="ph-sysnav">
+        <a href="decisions">Decisions</a>
+        <a href="records">Records</a>
+        <a href="usage">Usage</a>
+        <a href="health">Health</a>
+        <a href="settings">Settings</a>
+      </nav>
+      ${others.length ? `<div class="sec-label" style="padding-top:12px">ALL SESSIONS <span class="cnt neutral">${others.length}</span></div>${otherRows}` : ''}
       <a href="./?desktop=1" style="text-align:center;font-size:11px;color:var(--tx-faint);padding:16px 0 4px">Desktop site ›</a>
     </div>
   </div>`;

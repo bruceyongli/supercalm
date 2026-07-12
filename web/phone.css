@@ -72,6 +72,11 @@ a { color: var(--blue); text-decoration: none; }
 .allclear .t { font-size: 13px; color: var(--tx-mut); }
 .sessrow { display: flex; align-items: center; gap: 9px; background: var(--bg-row); border: 1px solid var(--bd-soft2); border-radius: 12px; padding: 12px; min-height: 44px; width: 100%; text-align: left; }
 .sessrow:active { background: #10161f; }
+/* System nav on the phone home (operator: a method to reach Decisions/Records/Usage/Health/Settings). */
+.ph-sysnav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ph-sysnav a { display: flex; align-items: center; justify-content: center; min-height: 46px; background: var(--bg-row); border: 1px solid var(--bd-soft2); border-radius: 12px; color: var(--tx); font-size: 13px; font-weight: 600; text-decoration: none; }
+.ph-sysnav a:active { background: #10161f; }
+.sec-label .cnt.neutral { background: rgba(120, 170, 255, .16); color: #79b8ff; }
 .dot { width: 8px; height: 8px; border-radius: 4px; flex-shrink: 0; }
 .dot.pulse { animation: scPulse 1.4s ease-in-out infinite; }
 .sessname { font-size: 12.5px; font-weight: 800; flex-shrink: 0; }
