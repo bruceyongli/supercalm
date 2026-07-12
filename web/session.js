@@ -1402,14 +1402,10 @@ function renderHeaderTitle(s) {
     <span class="session-title-wrap">
       <b>${escapeHtml(s.project?.name || '(adhoc)')}</b>
       <span class="session-title-value" id="session-title-value" role="button" tabindex="0" title="Rename session">${escapeHtml(s.title || '')}</span>
-      <span class="session-title-actions">
-        ${titleActionButton('session-title-edit', TITLE_ICON_EDIT, 'Rename session')}
-        ${titleActionButton('session-title-ai', TITLE_ICON_AI, 'Summarize title with cheap model', titleBusy ? 'loading' : '')}
-      </span>
       ${tags ? ` <span class="badge" title="model · effort · autonomy">${escapeHtml(tags)}</span>` : ''}
     </span>`;
-  $('#session-title-edit')?.addEventListener('click', startTitleEdit);
-  $('#session-title-ai')?.addEventListener('click', suggestAndApplyTitle);
+  // Design match: no visible rename/AI-title icon buttons in the header — the title itself is
+  // click-to-rename (session-title-value below), so the icons were redundant clutter the design omits.
   const value = $('#session-title-value');
   value?.addEventListener('click', startTitleEdit);
   value?.addEventListener('keydown', (e) => {

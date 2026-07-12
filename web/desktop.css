@@ -8,6 +8,17 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
 /* ---- sidebar (236px, chrome) ---- */
 .dk-side { background: #0c1017; border-right: 1px solid #161d27; padding: 16px 12px; display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
 .dk-brand { display: flex; align-items: baseline; gap: 7px; padding: 2px 6px; }
+/* Sidebar collapse (design "‹ collapse" in the brand row): hide the rail on BOTH the shared-shell grid and
+   the session grid; a fixed left-edge tab restores it (doesn't collide with the session header's back arrow). */
+.dk-collapse { margin-left: auto; align-self: center; background: none; border: 0; color: #4b5567; font: inherit; font-size: 10.5px; cursor: pointer; padding: 2px 5px; border-radius: 6px; white-space: nowrap; }
+.dk-collapse:hover { color: #8a95a5; background: #131a24; }
+.dk-expand { display: none; position: fixed; top: 50%; left: 0; transform: translateY(-50%); z-index: 60; width: 20px; height: 54px; border: 1px solid #232c38; border-left: 0; border-radius: 0 8px 8px 0; background: #0c1017; color: #8a95a5; cursor: pointer; align-items: center; justify-content: center; font-size: 15px; padding: 0; }
+.dk-expand:hover { color: #e2e8f1; background: #131a24; }
+body.dk-collapsed .dk-shell { grid-template-columns: 0 1fr; }
+body.dk-collapsed .dk-side { display: none; }
+body.dk-collapsed .dk-expand { display: flex; }
+body.dk-collapsed .session-shell { --session-rail-width: 0px; }
+body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-wordmark { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 15px; color: #e9eef5; }
 .dk-sub { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #5c6675; }
 .dk-counters { display: flex; gap: 12px; align-items: center; background: none; border: none; color: #8a95a5; font: inherit; font-size: 11.5px; padding: 2px 6px; cursor: pointer; text-align: left; }

@@ -17,7 +17,7 @@ export function getHome() { return home; }
 // session carry a static copy in their HTML for first-paint; this keeps injected pages identical to them.
 const SIDEBAR_HTML = `
   <aside class="dk-side" id="dk-side" data-dk-sidebar>
-    <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span></div>
+    <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button></div>
     <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
     <button class="dk-new" id="dk-new" data-dk-new>+ New session</button>
     <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
@@ -233,6 +233,19 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   const cmdk = $('#dk-cmdk-row'); if (cmdk) cmdk.onclick = openPalette;
   const counters = $('#dk-counters'); if (counters) counters.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const nw = $('#dk-new'); if (nw) nw.onclick = openLaunch;
+  // Sidebar collapse (design: "‹ collapse" in the brand row). Toggles a body class that hides the rail on
+  // both the shared-shell grid and the session grid; a left-edge tab restores it. Persisted per browser.
+  const COLLAPSE_KEY = 'aios.rail.collapsed';
+  const setCollapsed = (v) => { document.body.classList.toggle('dk-collapsed', v); try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
+  try { document.body.classList.toggle('dk-collapsed', localStorage.getItem(COLLAPSE_KEY) === '1'); } catch {}
+  for (const c of document.querySelectorAll('[data-dk-collapse]')) c.onclick = () => setCollapsed(true);
+  if (!document.getElementById('dk-expand')) {
+    const ex = document.createElement('button');
+    ex.id = 'dk-expand'; ex.className = 'dk-expand'; ex.type = 'button';
+    ex.title = 'Show sidebar'; ex.setAttribute('aria-label', 'Show sidebar'); ex.textContent = '›';
+    ex.onclick = () => setCollapsed(false);
+    document.body.appendChild(ex);
+  }
   load();
   setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
   // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a
