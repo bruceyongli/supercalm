@@ -13,7 +13,7 @@ export function init(host, params) {
   frame = document.createElement('iframe');
   frame.className = 'spa-session-frame';
   frame.setAttribute('title', 'session');
-  frame.src = `session?id=${encodeURIComponent(curId)}&embed=1`;
+  frame.src = `session.html?id=${encodeURIComponent(curId)}&embed=1`;
   host.appendChild(frame);
 }
 
@@ -24,7 +24,7 @@ export function update(params) {
   if (!nid || nid === curId) return;
   curId = nid;
   try { frame?.contentWindow?.postMessage({ type: 'aios-switch-session', id: nid }, location.origin); }
-  catch { if (frame) frame.src = `session?id=${encodeURIComponent(nid)}&embed=1`; }
+  catch { if (frame) frame.src = `session.html?id=${encodeURIComponent(nid)}&embed=1`; }
 }
 
 export function teardown() {
