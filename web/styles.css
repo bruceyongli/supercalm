@@ -1303,7 +1303,11 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 @media (max-width: 600px) {
   .session-main, .session-shell.rail-pinned .session-main { grid-template-rows: minmax(0, 60dvh) auto auto; }
   .session-banner { font-size: 11.5px; padding: 7px 10px; line-height: 1.35; gap: 6px; }
-  header .title { font-size: 13px; }
+  /* Compact the session header on phones: truncate the title (no wrap/push) and drop the model · effort ·
+     autonomy chip (it lives inside #s-title and is redundant with the composer's settings row), so the
+     header stays tight. The short status word + story/terminal toggle + Stop/Kill stay in place. */
+  header .title { font-size: 13px; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header #s-title .badge { display: none; }
 }
 
 @media (max-width: 600px) {
