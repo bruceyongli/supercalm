@@ -36,21 +36,27 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-nav-item { display: flex; align-items: center; gap: 8px; color: #b9c4d4; text-decoration: none; font-size: 13px; font-weight: 500; padding: 8px 10px; border-radius: 9px; }
 .dk-nav-item:hover { background: #10151d; }
 .dk-nav-item.active { background: #121a26; box-shadow: inset 2px 0 0 #58a6ff; color: #e9eef5; }
-.dk-nav-plus { margin-left: auto; color: #5c6675; font-weight: 600; }
+.dk-nav-plus { margin-left: auto; color: #5c6675; font-weight: 600; font-size: 15px; line-height: 1; padding: 0 5px; border-radius: 6px; cursor: pointer; }
+.dk-nav-plus:hover { color: #e2e8f1; background: #182230; }
 .dk-badge { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 800; border-radius: 999px; padding: 1px 7px; margin-left: auto; }
 .dk-badge.warn { background: rgba(226,178,62,.12); color: #e2b23e; border: 1px solid rgba(226,178,62,.4); }
 .dk-sec { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 1.5px; color: #5c6675; text-transform: uppercase; padding: 8px 6px 2px; }
 .dk-sessions { display: flex; flex-direction: column; gap: 3px; }
 .dk-sess { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 9px; text-decoration: none; }
 .dk-sess:hover { background: #10151d; }
+/* the session currently open highlights like an active nav item (bg + inset accent) */
+.dk-sess.active { background: #121a26; box-shadow: inset 2px 0 0 #58a6ff; }
+.dk-sess.active:hover { background: #131d2b; }
 .dk-sess-l1 { display: flex; align-items: center; gap: 6px; }
 .dk-sess-l1 b { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
 .dk-agent { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; opacity: 0.85; flex-shrink: 0; }
 .dk-status { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; color: #8a95a5; }
 .dk-status { flex-shrink: 0; }
-.dk-status.working { color: #4ecb6c; animation: dkpulse 1.4s infinite; }
+.dk-status.working { color: #4ecb6c; } /* no blink — the operator asked the sidenav to stop pulsing */
 .dk-status.waiting { color: #e2b23e; }
 .dk-sess-l2 { font-size: 11.5px; color: #5c6675; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* project tag on each session row so it's clear which session belongs to which project */
+.dk-sess-proj { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; padding: 1px 6px; margin-right: 6px; }
 .dk-empty-side { color: #3a4453; font-size: 12px; padding: 6px 9px; }
 .dk-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5c6675; padding: 8px 6px 2px; }
 .dk-foot-sp { flex: 1; }

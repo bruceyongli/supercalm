@@ -19,10 +19,9 @@ const SIDEBAR_HTML = `
   <aside class="dk-side" id="dk-side" data-dk-sidebar>
     <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button></div>
     <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
-    <button class="dk-new" id="dk-new" data-dk-new>+ New session</button>
     <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
     <nav class="dk-nav">
-      <a class="dk-nav-item" data-nav="inbox" href="./">Inbox <span class="dk-badge warn" id="dk-inbox-badge" hidden></span></a>
+      <a class="dk-nav-item" data-nav="inbox" href="./">Sessions <span class="dk-badge warn" id="dk-inbox-badge" hidden></span><span class="dk-nav-plus" id="dk-sess-plus" title="New session" role="button" tabindex="0">+</span></a>
       <a class="dk-nav-item" data-nav="projects" href="projects">Projects <span class="dk-nav-plus" id="dk-proj-plus" title="Add project">+</span></a>
     </nav>
     <div class="dk-sec">SESSIONS</div>
@@ -88,7 +87,7 @@ function renderSide() {
   const c = home.counts || {};
   $('#dk-counters').innerHTML = `
     <span class="dk-cnt"><i class="dk-dot warn"></i>${c.waiting || 0} waiting</span>
-    <span class="dk-cnt"><i class="dk-dot ok pulse"></i>${c.working || 0} working</span>
+    <span class="dk-cnt"><i class="dk-dot ok"></i>${c.working || 0} working</span>
     <span class="dk-cnt muted">${c.live || 0} live</span>`;
   const badge = $('#dk-inbox-badge');
   if (badge) { const needs = needsYou().length; badge.hidden = !needs; badge.textContent = needs; }
@@ -96,8 +95,8 @@ function renderSide() {
   const live = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting').slice(0, 7);
   $('#dk-sessions').innerHTML = live.map((s) => `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess>
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
-      <span class="dk-sess-l2">${esc((s.summary || s.title || '').slice(0, 64))}</span>
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
+      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 54))}</span>
     </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
   $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy"><i class="dk-dot ok"></i>proxy</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
 }
@@ -232,7 +231,8 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   $('#dk-palette')?.addEventListener('click', (e) => { if (e.target === $('#dk-palette')) closePalette(); });
   const cmdk = $('#dk-cmdk-row'); if (cmdk) cmdk.onclick = openPalette;
   const counters = $('#dk-counters'); if (counters) counters.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
-  const nw = $('#dk-new'); if (nw) nw.onclick = openLaunch;
+  const sessPlus = $('#dk-sess-plus'); // the "+" on the Sessions nav opens the launcher (don't navigate)
+  if (sessPlus) sessPlus.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openLaunch(); };
   // Sidebar collapse (design: "‹ collapse" in the brand row). Toggles a body class that hides the rail on
   // both the shared-shell grid and the session grid; a left-edge tab restores it. Persisted per browser.
   const COLLAPSE_KEY = 'aios.rail.collapsed';
