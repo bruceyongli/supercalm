@@ -4,7 +4,7 @@ import { mountShell } from './shell.js';
 
 registerSW();
 const params = new URLSearchParams(location.search);
-const id = params.get('id');
+let id = params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
 if (!id) location.href = document.baseURI;
 const resizeOff = params.get('resize') === 'off' || params.has('noresize');
 
@@ -1518,13 +1518,21 @@ loadInfo();
 
 // The agent host builds the side-panel tab bar + mounts agent panels. Map/Usage are driven as
 // "legacy" panels via their existing loaders; Supervisor/Builder/drop-ins are panel modules.
-agentPanel = initAgentPanel({
-  sessionId: id,
-  tabsEl: $('#side-tabs'),
-  panelsEl: $('#side-panels'),
-  legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
-  onTabChange: () => setTimeout(syncSize, 80),
-});
+// Mount (or re-mount, on an in-place session switch) the right-side agent panel for the current `id`.
+// Uses only the panel's PUBLIC API (initAgentPanel) — web/agents/* is a standing operator fence, so we
+// never edit it. On switch, switchSession() removes the previous panel's dynamic sections before calling
+// this; the one thing the public API can't reach is the old graph module's animation interval — see the
+// documented residual there.
+function mountAgentPanel() {
+  agentPanel = initAgentPanel({
+    sessionId: id,
+    tabsEl: $('#side-tabs'),
+    panelsEl: $('#side-panels'),
+    legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
+    onTabChange: () => setTimeout(syncSize, 80),
+  });
+}
+mountAgentPanel();
 
 // Deferred like the terminal stream (see afterIdle) so the page reaches network-idle after load.
 let events = null;
@@ -2803,8 +2811,8 @@ function syncPalette() {
 // localStorage on every keystroke, so a refresh/crash/tab-close never loses a single word. Recall only
 // fires when the "/" palette is closed and the caret sits on the first/last line, so multi-line editing and
 // the palette both keep working untouched. (cmdHistory — not `history` — to avoid shadowing window.history.)
-const DRAFT_KEY = `aios_draft_${id}`;
-const HIST_KEY = `aios_hist_${id}`;
+let DRAFT_KEY = `aios_draft_${id}`; // re-keyed per session by switchSession
+let HIST_KEY = `aios_hist_${id}`;
 const HIST_MAX = 200;
 let cmdHistory = [];
 let histIdx = null; // null = editing the live draft; otherwise an index into cmdHistory
@@ -2827,6 +2835,73 @@ function pushHistory(text) {
   histStash = '';
   try { localStorage.removeItem(DRAFT_KEY); } catch {}
 }
+
+// ---- in-place session switch (no full page reload) --------------------------------------------------
+// Switching sessions used to be a full navigation. switchSession re-points the page to another session
+// IN PLACE, re-running the same per-session loaders the SSE 'changed' handler already uses. ADDITIVE +
+// SAFE: the initial page load is byte-identical, modified clicks (new tab) pass through, and any failure
+// falls back to a real navigation — a hard failure is never worse than today. Keeps 2a's story cache.
+function switchSession(newId) {
+  if (!newId || newId === id) return true;
+  try {
+    id = newId;
+    latestSessionInfo = null; latestUsage = null; latestMap = null; // per-session caches
+    storyInited = false; // force the story view to re-init against the new id (2a cache paints it instantly)
+    // re-key composer draft + command history to the new session
+    DRAFT_KEY = `aios_draft_${id}`; HIST_KEY = `aios_hist_${id}`;
+    histIdx = null; histStash = '';
+    try { cmdHistory = (JSON.parse(localStorage.getItem(HIST_KEY) || '[]') || []).filter((x) => typeof x === 'string'); } catch { cmdHistory = []; }
+    try { if (reply) reply.value = localStorage.getItem(DRAFT_KEY) || ''; } catch {}
+    // sidebar active marker (the shared shell keys off location.search; update it now)
+    for (const a of document.querySelectorAll('[data-dk-sess]')) {
+      try { a.classList.toggle('active', new URL(a.href, location.href).searchParams.get('id') === newId); } catch {}
+    }
+    // terminal: drop the old per-session stream, reset the buffer, reconnect after re-bootstrapping scrollback
+    try { terminalStream?.close(); } catch {}
+    terminalStream = null;
+    try { term.reset(); } catch {}
+    // right panel: remove the previous panel's dynamic sections + re-mount for the new session via the
+    // PUBLIC API only (web/agents/* is a standing operator fence — never edited). RESIDUAL: the old graph
+    // module's 80ms animation interval (web/agents/graph.js) has no public teardown, so it is not cleared
+    // here — a bounded, CONDITIONAL leak (only while a graph/map tab was mounted with animating nodes),
+    // cleared on any full reload. The clean fix is a destroy() inside the fenced web/agents/host.js.
+    try { document.querySelectorAll('#side-panels [id^="s-agent-"]').forEach((el) => el.remove()); } catch {}
+    mountAgentPanel();
+    // re-run the content loaders (all read the live module-level id)
+    loadInfo();
+    loadStoryView();
+    loadUsage();
+    loadMap();
+    bootstrapTerminalScrollback().finally(() => startTerminalStream());
+    setTimeout(syncSize, 80);
+    return true;
+  } catch (e) {
+    console.error('[aios] in-place switch failed; falling back to navigation:', e);
+    return false;
+  }
+}
+
+// Intercept sidebar session-link clicks so switching stays in-place. Modified clicks (new tab / middle
+// click) pass through; a failed in-place switch falls back to a real navigation (never worse than today).
+document.addEventListener('click', (e) => {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest?.('[data-dk-sess]');
+  if (!a) return;
+  let newId = null;
+  try { newId = new URL(a.href, location.href).searchParams.get('id'); } catch {}
+  if (!newId) return;
+  e.preventDefault();
+  if (newId === id) return;
+  try { persistDraft(); } catch {}
+  if (switchSession(newId)) history.pushState({ sid: newId }, '', `session?id=${encodeURIComponent(newId)}`);
+  else location.href = a.href;
+}, true);
+
+// Back/forward: re-point in place to the URL's session (full reload only as a last resort).
+window.addEventListener('popstate', () => {
+  const target = new URLSearchParams(location.search).get('id');
+  if (target && target !== id && !switchSession(target)) location.reload();
+});
 function setComposer(val) {
   reply.value = val ?? '';
   autoExpandReply();
