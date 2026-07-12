@@ -792,8 +792,10 @@ function wire() {
     if (V.on) return voiceModeEnd('user');
     voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
   });
-  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => nav('session', el.dataset.open));
-  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); nav('session', el.dataset.open2); });
+  // A session tap opens the DESKTOP story view (operator: desktop story is the mobile default for sessions);
+  // the phone triage stays the mobile dashboard. ?phone=1 on a session still returns to the phone view.
+  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => { location.href = 'session?id=' + encodeURIComponent(el.dataset.open); });
+  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); location.href = 'session?id=' + encodeURIComponent(el.dataset.open2); });
   for (const el of app.querySelectorAll('[data-listen]')) el.addEventListener('click', (e) => {
     e.stopPropagation();
     const s = (S.home?.sessions || []).find((x) => x.id === el.dataset.listen);

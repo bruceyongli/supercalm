@@ -2,21 +2,12 @@
 <html lang="en">
   <head>
   <script>
-    // Desktop story view is the default at EVERY width (operator: make it the mobile default too).
-    // The phone companion (web/phone.html) is now OPT-IN: ?phone=1 routes there and is remembered;
-    // ?desktop=1 (the phone view's "Desktop site" link) clears it. No automatic small-screen redirect.
+    // The desktop STORY view is the session default at EVERY width (operator's ask). The mobile dashboard
+    // is the phone triage (desktop.html), and its session links open THIS desktop story view (phone.js) —
+    // so you browse in phone, read here. ?phone=1 opens the phone companion for this one session.
     (() => {
       const q = new URLSearchParams(location.search);
-      try {
-        if (q.get('desktop') === '1') localStorage.removeItem('aios_prefer_phone');
-        else if (q.get('phone') === '1') localStorage.setItem('aios_prefer_phone', '1');
-      } catch {}
-      let prefPhone = false;
-      try { prefPhone = localStorage.getItem('aios_prefer_phone') === '1'; } catch {}
-      if (!prefPhone) return;
-      const sid = q.get('id');
-      location.replace(location.pathname.endsWith('/session') || location.pathname.endsWith('session.html')
-        ? 'phone#s/' + (sid || '') : 'phone');
+      if (q.get('phone') === '1') { location.replace('phone#s/' + (q.get('id') || '')); }
     })();
   </script>
 

@@ -2,18 +2,20 @@
 <html lang="en">
 <head>
   <script>
-    // Desktop is the default at EVERY width (operator: make the desktop view the mobile default).
-    // Phone companion is OPT-IN: ?phone=1 routes there and is remembered; ?desktop=1 clears it.
-    // ?classic=1 still falls back to the pre-redesign dashboard (served by index.html).
+    // Mobile DASHBOARD = the phone triage view by default (it's the mobile-optimized dashboard). Opt into
+    // the desktop dashboard on a phone with ?desktop=1 (remembered); ?phone=1 clears it. Individual
+    // SESSIONS still open the desktop STORY view (see session.html + phone.js) — browse in phone, read in
+    // the desktop story. ?classic=1 still falls back to the pre-redesign dashboard (index.html).
     (() => {
       const q = new URLSearchParams(location.search);
       try {
-        if (q.get('desktop') === '1') localStorage.removeItem('aios_prefer_phone');
-        else if (q.get('phone') === '1') localStorage.setItem('aios_prefer_phone', '1');
+        if (q.get('desktop') === '1') localStorage.setItem('aios_dash', 'desktop');
+        else if (q.get('phone') === '1') localStorage.removeItem('aios_dash');
       } catch {}
-      let prefPhone = false;
-      try { prefPhone = localStorage.getItem('aios_prefer_phone') === '1'; } catch {}
-      if (prefPhone) location.replace('phone');
+      let dashDesktop = false;
+      try { dashDesktop = localStorage.getItem('aios_dash') === 'desktop'; } catch {}
+      if (dashDesktop) return;
+      if (Math.min(screen.width, innerWidth || 1e4) <= 720) location.replace('phone');
     })();
   </script>
   <meta charset="utf-8" />
