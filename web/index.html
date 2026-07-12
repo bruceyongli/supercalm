@@ -2,14 +2,17 @@
 <html lang="en">
   <head>
   <script>
-    // Phone companion view (web/phone.html): small screens get the triage-first layout. Explicit
-    // opt-out via ?desktop=1 (persisted) — the phone view links back with it. Desktop is untouched.
+    // Desktop is the default at EVERY width (operator: make the desktop view the mobile default).
+    // Phone companion (web/phone.html) is OPT-IN: ?phone=1 routes there and is remembered; ?desktop=1 clears it.
     (() => {
       const q = new URLSearchParams(location.search);
-      if (q.get('desktop') === '1') { try { localStorage.aios_force_desktop = '1'; } catch {} return; }
-      let forced = false;
-      try { forced = localStorage.aios_force_desktop === '1'; } catch {}
-      if (forced || Math.min(screen.width, innerWidth || 1e4) > 720) return;
+      try {
+        if (q.get('desktop') === '1') localStorage.removeItem('aios_prefer_phone');
+        else if (q.get('phone') === '1') localStorage.setItem('aios_prefer_phone', '1');
+      } catch {}
+      let prefPhone = false;
+      try { prefPhone = localStorage.getItem('aios_prefer_phone') === '1'; } catch {}
+      if (!prefPhone) return;
       const sid = q.get('id');
       location.replace(location.pathname.endsWith('/session') || location.pathname.endsWith('session.html')
         ? 'phone#s/' + (sid || '') : 'phone');

@@ -2,15 +2,18 @@
 <html lang="en">
 <head>
   <script>
-    // Same phone-redirect contract as the classic home: small screens -> phone view; ?desktop=1
-    // (persisted) opts out. ?classic=1 falls back to the pre-redesign dashboard (served by index.html).
+    // Desktop is the default at EVERY width (operator: make the desktop view the mobile default).
+    // Phone companion is OPT-IN: ?phone=1 routes there and is remembered; ?desktop=1 clears it.
+    // ?classic=1 still falls back to the pre-redesign dashboard (served by index.html).
     (() => {
       const q = new URLSearchParams(location.search);
-      if (q.get('desktop') === '1') { try { localStorage.aios_force_desktop = '1'; } catch {} return; }
-      let forced = false;
-      try { forced = localStorage.aios_force_desktop === '1'; } catch {}
-      if (forced || Math.min(screen.width, innerWidth || 1e4) > 720) return;
-      location.replace('phone');
+      try {
+        if (q.get('desktop') === '1') localStorage.removeItem('aios_prefer_phone');
+        else if (q.get('phone') === '1') localStorage.setItem('aios_prefer_phone', '1');
+      } catch {}
+      let prefPhone = false;
+      try { prefPhone = localStorage.getItem('aios_prefer_phone') === '1'; } catch {}
+      if (prefPhone) location.replace('phone');
     })();
   </script>
   <meta charset="utf-8" />
