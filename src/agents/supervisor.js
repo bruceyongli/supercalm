@@ -45,7 +45,7 @@ import {
 } from './supervisor/dispatch.js';
 import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
-import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, renderBetweenTasksMd, listEvents } from './supervisor/project_memory.js';
+import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, createTask as pmCreateTask, amendTask as pmAmendTask, renderBetweenTasksMd, listEvents } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
 import { userRoutes } from '../model_catalog.js';
 import { proposeMigration } from './supervisor/doc_migration.js';
@@ -74,6 +74,15 @@ const MAX_ANSWER_TRIES = Number(process.env.AIOS_SUPERVISOR_MAX_ANSWER_TRIES || 
 const KEEPWORKING_MAX_PER_FOCUS = Number(process.env.AIOS_SUPERVISOR_KEEPWORKING_MAX || 2); // idle keep-working pushes per distinct ## Now focus, then escalate once
 const KEEPWORKING_IDLE_MS = Number(process.env.AIOS_SUPERVISOR_KEEPWORKING_IDLE_MS || 40000); // idle grace before pushing a paused (waiting+working/idle) agent to resume
 const DOC_DEBOUNCE_MS = Number(process.env.AIOS_SUPERVISOR_DOC_DEBOUNCE_MS || 45000); // min gap between doc reconciles (don't hammer on rapid agent/operator changes)
+// Operator composer message → card task-flow (card mode). ON_MSG_CARDS = full auto (operator's explicit
+// choice): a genuine composer message is authoritative, so the supervisor may AMEND the active card or
+// START+ACTIVATE a new one to fit it — not just suggest. Scoped to the operator-message path in
+// maybeSuggestBoundary (work-derived detection stays suggestion-only). Kill-switch: set to 0.
+const ON_MSG_CARDS = process.env.AIOS_SUPERVISOR_ON_MESSAGE !== '0';
+const BOUNDARY_PROMPT_MS = Number(process.env.AIOS_SUPERVISOR_BOUNDARY_PROMPT_MS || 12000); // react within ~a tick of an operator message (vs the long doc_settle_sec) — the operator wants the card to track their words
+// Deploy safety: full-auto acts ONLY on operator messages sent after this build booted, so a restart
+// never retroactively reprocesses the whole backlog of every card-mode session's last message at once.
+const SUPERVISOR_BOOT_TS = now();
 const DOC_AUTOGEN_RETRY_MS = Number(process.env.AIOS_SUPERVISOR_DOC_AUTOGEN_RETRY_MS || 10 * 60 * 1000); // if doc generation fails, don't retry every tick
 const GATE_REPEAT_COOLDOWN_MS = Number(process.env.AIOS_SUPERVISOR_GATE_REPEAT_COOLDOWN_MS || 10 * 60 * 1000); // don't re-send the same completion challenge just because shared git state churned
 const PROXY_RECOVERY_REPEAT_MS = Number(process.env.AIOS_SUPERVISOR_PROXY_RECOVERY_REPEAT_MS || 10 * 60 * 1000); // keep pushing a recoverable model-proxy auth blocker if the agent stays wedged
@@ -1737,16 +1746,38 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
     }
     const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
     const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; the session is BETWEEN TASKS)';
-    // Path 1 — a fresh, settled operator message (the original trigger).
-    if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= settle) {
-      applySupervisorState(ctx, { boundaryCheckTs: lastOp });
+    // Path 1 — a fresh operator message. Operator's choice = FULL AUTO: react PROMPTLY (within ~a tick,
+    // not the long settle — the operator wants the card to track their words) and APPLY the classified
+    // change, because a genuine composer message is authoritative. Full auto is SCOPED to this
+    // operator-message path; Path 2 (work-derived, below) stays suggestion-only, and every non-message
+    // path keeps the operator-reserved guard. Kill-switch AIOS_SUPERVISOR_ON_MESSAGE=0 → legacy suggest.
+    const opGate = ON_MSG_CARDS ? BOUNDARY_PROMPT_MS : settle;
+    if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= opGate && (!ON_MSG_CARDS || lastOp > SUPERVISOR_BOOT_TS)) {
+      applySupervisorState(ctx, { boundaryCheckTs: lastOp }); // one action per operator message (dedup, set before the call so a failure doesn't churn)
       const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
       if (latest.trim() && latest.length >= 12) {
         const user = 'ACTIVE TASK CARD:\n' + cardMd.slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
         const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
         if (ctx.__betweenTasks && parsed?.fit === 'amend') parsed.fit = 'new'; // nothing to amend between tasks
-        if (parsed?.fit === 'new' && (parsed.title || parsed.goal)) {
-          applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
+        const projectId = ctx.session()?.project_id || ctx.__activeCard?.task?.project_id || null;
+        const title = clampLine(parsed?.title || '', 120), goal = clampLine(parsed?.goal || '', 300);
+        // actor 'operator' = the mutation is operator-authoritative (their composer message drove it; the
+        // pm_events.actor CHECK allows only operator/supervisor/maintainer/migration) — provenance rides in
+        // the summary. The pm primitives already emit their own 'opened'/'amended' audit events.
+        if (ON_MSG_CARDS && parsed?.fit === 'amend' && ctx.__activeCard) {
+          pmAmendTask(ctx.__activeCard.task.id, { title: title || undefined, goal: goal || undefined }, { actor: 'operator', summary: 'from operator message: ' + clampLine(parsed.reason || goal || latest, 180) });
+          ctx.emit('review', { verdict: 'amended', summary: 'updated the task card to fit your message' });
+        } else if (ON_MSG_CARDS && parsed?.fit === 'new' && (title || goal) && projectId) {
+          const card = pmCreateTask({ projectId, title: title || 'New task', goal, sessionId: ctx.sessionId, actor: 'operator' });
+          const tid = card?.task?.id;
+          if (tid) {
+            pmSetTaskStatus(tid, 'active', { actor: 'operator', sessionId: ctx.sessionId });
+            upsertRuntime(ctx.sessionId, { project_id: projectId, active_task_id: tid });
+            ctx.emit('review', { verdict: 'carded', summary: 'started a new task card from your message' });
+          }
+        } else if (parsed?.fit === 'new' && (title || goal)) {
+          // kill-switch off (or no project) → legacy suggestion the operator accepts in the panel
+          applySupervisorState(ctx, { pendingBoundary: { title, goal, reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
           ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
         }
         return;
