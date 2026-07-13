@@ -269,10 +269,12 @@ export async function sendText(name, text) {
     screen = await tmux('capture-pane', '-p', '-t', name);
   } catch {}
   // Claude's session-feedback survey ("How is Claude doing…? 1: Bad … 0: Dismiss") swallows
-  // keystrokes ahead of the composer — replies typed under it sat unsubmitted for hours. Dismiss
-  // it first, then re-capture so the menu check below sees the post-survey screen. The detect
-  // gate ('0' in CONFIRM_RULES) clears it on the poll loop too; this covers the race between polls.
-  if (CLAUDE_SURVEY_RX.test(stripAnsi(screen || ''))) {
+  // keystrokes ahead of the composer — replies typed under it sat unsubmitted for hours. If it's
+  // showing in the live tail (bottom lines ONLY — survey wording quoted higher up in a transcript
+  // must not trigger; an ambient detect-gate version of this typed 258 stray '0's into the session
+  // that quoted it), dismiss it, then re-capture for the menu check below. A false match here
+  // self-heals: the C-u below clears the input line before the real text is typed.
+  if (CLAUDE_SURVEY_RX.test(stripAnsi(screen || '').split('\n').slice(-12).join('\n'))) {
     await exec(TMUX, ['send-keys', '-t', name, '0'], X);
     await sleep(250);
     try {

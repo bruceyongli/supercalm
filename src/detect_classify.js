@@ -106,7 +106,13 @@ function questionFrom(text) {
   return q || 'Waiting for your input';
 }
 
-// claude's session-feedback survey — matched both as a gate below and by sendText() before typing.
+// claude's session-feedback survey ("● How is Claude doing this session? … 0: Dismiss") — used ONLY by
+// sendText()'s pre-dismiss, where a false match self-heals (the '0' is C-u'd away before the real text
+// is typed). It must NEVER be an ambient CONFIRM_RULES gate: gates key the pane on mere screen text, so
+// a session that merely DISPLAYS the survey wording — a report quoting it, a captured screen pasted into
+// a transcript — gets keys typed into it. The session that shipped that gate received 258 stray '0's
+// from its own quoted text (2026-07-13). Ambient auto-keying is reserved for prompts whose wording
+// cannot plausibly appear as displayed content (trust/bypass screens).
 export const CLAUDE_SURVEY_RX = /How is Claude doing this session\?[\s\S]{0,200}0:\s*Dismiss/i;
 
 // Known one-time gates that an autonomous (auto/full) session may auto-accept.
@@ -125,11 +131,6 @@ const CONFIRM_RULES = [
   // claude legacy API-key proxy path: "Detected a custom API key … Do you want to use this
   // API key? 1. Yes  ❯2. No". Pick "1. Yes" (Up + Enter).
   { rx: /detected a custom api key|do you want to use this api key/i, keys: ['up', 'enter'] },
-  // claude session-feedback survey: "● How is Claude doing this session? (optional)
-  // 1: Bad  2: Fine  3: Good  0: Dismiss". While it's up, replies typed into the composer stop
-  // submitting — operator messages sat unsent under it for hours. '0' dismisses; the rating is
-  // optional, so nothing is lost.
-  { rx: CLAUDE_SURVEY_RX, keys: ['0'] },
 ];
 function autoConfirmKeys(text) {
   for (const r of CONFIRM_RULES) if (r.rx.test(text)) return r.keys;
