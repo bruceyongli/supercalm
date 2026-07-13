@@ -45,6 +45,7 @@ const $ = (s) => document.querySelector(s);
 async function loadAgents() {
   try {
     const st = await api('api/auth/status');
+    if (!host) return; // torn down mid-fetch → $() would resolve to null
     $('#st-authpath').innerHTML = `
       <div class="ob-row"><b>Session auth path</b><span class="dk-chip" style="color:#79b8ff;border-color:#79b8ff55">${esc((st.mode || '?').toUpperCase())}</span>
       <span class="ob-ver">${st.proxyUp ? '● proxy reachable' : 'no local proxy'}</span>
@@ -54,6 +55,7 @@ async function loadAgents() {
     // r4 4b: ONE merged card per CLI — install/version state + login state together, never two rows.
     let tools = [];
     try { tools = (await api('api/tools/versions')).tools || []; } catch {}
+    if (!host) return; // second suspension point — re-check before touching #st-clis
     const authAlias = { agy: 'antigravity' };
     const authById = {};
     for (const p of st.providers || []) authById[p.id] = p;
@@ -80,30 +82,32 @@ async function loadAgents() {
       m.textContent = 'updating…';
       try { await api(`api/tools/${b.dataset.up}/update`, { method: 'POST' }); m.textContent = '✓'; loadAgents(); } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
     };
-  } catch (e) { $('#st-authpath').textContent = 'unavailable: ' + (e.message || e); }
+  } catch (e) { if (host) $('#st-authpath').textContent = 'unavailable: ' + (e.message || e); }
 }
 
 // ---- API providers -------------------------------------------------------------------------------
 async function loadProviders() {
   try {
     const r = await api('api/models/providers');
+    if (!host) return; // torn down mid-fetch
     const builtin = (r.builtin || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">built-in · ${(p.models || []).length} models · key auto</span><span class="dk-chip" style="color:${p.enabled ? '#4ecb6c' : '#8a95a5'};border-color:currentColor">${p.enabled ? 'ON' : 'OFF'}</span></div>`).join('');
     const rows = (r.providers || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">${esc(p.kind)} · ${(p.models || []).length} models · ${p.key_set ? 'key set' : 'no key'}</span></div>`).join('');
     const pr = r.pricing || {};
     $('#st-prov').innerHTML = `${builtin}${rows || (builtin ? '' : '<p class="ob-fine">No API providers yet.</p>')}
       <div class="ob-row"><b>Cost stats</b><span class="ob-ver">${pr.configured ? `✓ ${pr.count} priced models` : 'not configured (optional)'}</span><a class="dk-reply-btn" href="auth">Manage ▸</a></div>`;
-  } catch (e) { $('#st-prov').textContent = 'unavailable: ' + (e.message || e); }
+  } catch (e) { if (host) $('#st-prov').textContent = 'unavailable: ' + (e.message || e); }
 }
 
 // ---- Voice ---------------------------------------------------------------------------------------
 async function loadVoice() {
   try {
     const r = await api('api/models/providers');
+    if (!host) return; // torn down mid-fetch
     const sp = r.speech;
     $('#st-voicecard').innerHTML = sp?.base_url
       ? `<div class="ob-row"><b>${esc(sp.base_url)}</b><span class="ob-ver">STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')} · voice ${esc(sp.voice || '—')}</span><a class="dk-reply-btn" href="auth">Edit ▸</a></div>`
       : `<p class="ob-fine">Not configured — voice falls back to the browser's built-in speech. <a class="dk-reply-btn" href="auth">Configure ▸</a> or run onboarding step 3.</p>`;
-  } catch (e) { $('#st-voicecard').textContent = 'unavailable'; }
+  } catch (e) { if (host) $('#st-voicecard').textContent = 'unavailable'; }
 }
 
 // ---- Remote access -------------------------------------------------------------------------------

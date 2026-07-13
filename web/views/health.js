@@ -123,8 +123,11 @@ function render(h) {
 async function load() {
   if (!root || !pill) return;
   try {
-    render(await api('api/product/health'));
+    const data = await api('api/product/health');
+    if (!root || !pill) return; // torn down mid-fetch → sentinels nulled by teardown()
+    render(data);
   } catch (e) {
+    if (!root || !pill) return;
     pill.textContent = 'Error';
     pill.className = 'pill out';
     root.innerHTML = `<div class="empty">Health failed: ${esc(e.message)}</div>`;

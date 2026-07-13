@@ -117,9 +117,11 @@ function initMessages() {
   }
 
   async function load() {
+    if (!host) return; // view already torn down
     $('#results').innerHTML = '<div class="empty">loading…</div>';
     try {
       const res = await api('api/decisions?' + qs({ limit: PAGE, offset }));
+      if (!host) return; // left the view mid-fetch → #view cleared, $() now resolves to null
       total = res.total;
       render(res.records);
       $('#summary').textContent = `${total} decision${total === 1 ? '' : 's'}`;
@@ -129,7 +131,7 @@ function initMessages() {
       $('#prev').disabled = offset <= 0;
       $('#next').disabled = offset + PAGE >= total;
     } catch (e) {
-      $('#results').innerHTML = '<div class="empty">Failed to load: ' + escapeHtml(e.message || String(e)) + '</div>';
+      if (host) $('#results').innerHTML = '<div class="empty">Failed to load: ' + escapeHtml(e.message || String(e)) + '</div>';
     }
   }
 
@@ -176,6 +178,7 @@ function initMessages() {
 
   async function populate() {
     const st = await api('api/state');
+    if (!host) return; // torn down mid-fetch
     const fill = (sel, items) => {
       const el = $(sel);
       for (const it of items) {

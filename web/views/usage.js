@@ -179,18 +179,19 @@ async function load() {
   el.projectCard.innerHTML = metric('Top project', 'loading');
   try {
     const data = await api(`api/usage?${query()}`);
+    if (!el) return; // left the view mid-fetch → teardown() nulled el; never touch a dead DOM
     renderOverview(data);
     renderTiles(data);
     renderByModel(data.byModel);
     renderRecent(data);
     if (el.scanMsg) el.scanMsg.textContent = `updated ${fmtTime(Date.now())}`;
   } catch (e) {
-    if (el.scanMsg) el.scanMsg.textContent = `usage failed: ${e.message}`;
+    if (el?.scanMsg) el.scanMsg.textContent = `usage failed: ${e.message}`;
   } finally {
     loading = false;
   }
-  try { renderQuota(await api('api/usage/subscriptions')); }
-  catch { el.quotaCard.innerHTML = `<div class="k">Quota status</div><div class="v">—</div><div class="subtext">Subscription windows not reachable.</div>`; }
+  try { const q = await api('api/usage/subscriptions'); if (el) renderQuota(q); }
+  catch { if (el?.quotaCard) el.quotaCard.innerHTML = `<div class="k">Quota status</div><div class="v">—</div><div class="subtext">Subscription windows not reachable.</div>`; }
 }
 
 async function rescan() {
