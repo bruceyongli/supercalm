@@ -174,7 +174,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .composer[hidden] { display: none; }
 .reply-btn.on { color: var(--ink); border-color: var(--blue); background: #132338; }
-.mic { width: 40px; min-height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 16px; background: rgba(78, 203, 108, 0.12); border: 2px solid var(--green); color: var(--green); box-shadow: 0 0 0 3px rgba(78, 203, 108, 0.12); } /* voice-first: green-outline RING mic (design) */
+.mic { width: 40px; height: 40px; min-height: 40px; padding: 0; border-radius: 999px; display: grid; place-items: center; font-size: 16px; background: rgba(78, 203, 108, 0.12); border: 2px solid var(--green); color: var(--green); box-shadow: 0 0 0 3px rgba(78, 203, 108, 0.12); } /* voice-first: green-outline RING mic (design). padding:0 — .btn's 6px 12px was pushing the icon ~5px off-center */
 .mic:hover { background: rgba(78, 203, 108, 0.22); }
 .mic.rec { background: #10281a; border-color: var(--green); color: #a7f0c0; animation: pulse 1s infinite; } /* green while recording (design) */
 @keyframes pulse { 50% { opacity: 0.55; } }
@@ -302,6 +302,22 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .composer-options { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .composer-action-spacer { display: none; }
+/* The composer adapts to ITS OWN width, not the viewport (container query): when the agent drawer is
+   dragged wide and squeezes the stream, the composer stacks — actions on their own row — instead of the
+   settings colliding with the mic/send (gpt: fix narrow-width composer). Complements the ≤600px mobile
+   stacking, which only fires on a narrow VIEWPORT. */
+.message-box.footer-composer { container-type: inline-size; container-name: composer; }
+@container composer (max-width: 640px) {
+  .composer-bottom { flex-direction: column; align-items: stretch; gap: 6px; }
+  .composer-options { order: 2; width: 100%; }
+  .composer-hint { display: none; }
+  .composer-actions {
+    order: 1; width: 100%; margin-left: 0; gap: 6px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center;
+  }
+  .composer-actions .mic-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .settings.composer-settings { flex: none; display: flex; flex-wrap: wrap; gap: 5px 8px; }
+}
 .composer-settings { flex: 1 1 auto; min-width: 0; gap: 5px; align-items: center; }
 .composer-options .composer-settings { flex: 0 1 auto; }
 .composer-settings .setting { font-size: inherit; letter-spacing: 0; }
@@ -465,6 +481,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    drawer is a fixed overlay instead (below), so these stay 0 and the full-bleed log is never squeezed. */
 @media (min-width: 1195px) {
   .session-shell.dock-open { --dock-resizer-w: 8px; --dock-drawer-w: var(--usage-panel-width); }
+  /* the open drawer's minimum lives on the track (not the child) so the closed drawer stays 0-wide */
+  .session-shell.dock-open .session-usage-panel { min-width: 320px; border-radius: 0; border-right: 0; }
+  /* separate the rail from the open drawer so the two don't read as one crammed strip (gpt A) */
+  .session-shell.dock-open .agent-dock-rail { background: var(--bg); border-left: 1px solid var(--line); }
 }
 /* The session hosts the shared app-shell sidebar (web/shell.js `.dk-side`) in grid column 1. desktop.css
    gives .dk-side height:100vh (overflows past the session header) and rounded-less chrome; fit it to the
@@ -572,12 +592,25 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   grid-column: 2; cursor: col-resize; position: relative; min-width: 8px; height: 100%;
 }
 .session-shell.rail-pinned .usage-resizer { grid-column: 3; }
+/* No divider when the drawer is closed — its 8px min-width would otherwise sit (grip dots and all) on
+   top of the rail. It reappears, grippable, the moment a drawer opens. */
+.session-shell:not(.dock-open) .usage-resizer { display: none; }
 .usage-resizer::before {
   content: ""; position: absolute; inset: 0 3px; border-radius: 999px; background: var(--line);
 }
+/* centered 3-dot grip so the divider reads as draggable (operator: "you removed the adjustable width").
+   It only shows while a drawer is open — the resizer column is 0-wide when closed. */
+.usage-resizer::after {
+  content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
+  box-shadow: 0 -7px 0 var(--muted), 0 7px 0 var(--muted); pointer-events: none;
+}
 .usage-resizer:hover::before, .session-shell.resizing .usage-resizer::before { background: var(--blue); }
+.usage-resizer:hover::after, .session-shell.resizing .usage-resizer::after { background: var(--blue); box-shadow: 0 -7px 0 var(--blue), 0 7px 0 var(--blue); }
 .session-usage-panel {
-  grid-column: 3; grid-row: 3; min-width: 320px; min-height: 0; height: 100%; overflow: auto;
+  /* min-width:0 so the CLOSED drawer collapses to its 0px column instead of overflowing 320px onto the
+     rail (gpt: put the min on the OPEN track, not the child — see the dock-open rule in @media ≥1195). */
+  grid-column: 3; grid-row: 3; min-width: 0; min-height: 0; height: 100%; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px;
 }
 .session-shell.rail-pinned .session-usage-panel { grid-column: 4; }
