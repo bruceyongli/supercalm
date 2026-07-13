@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 import { DATA_DIR, SPARK } from './config.js';
+import { voiceConfig } from './tts.js';
 import { db } from './store.js';
 
 function readBody(req) {
@@ -29,6 +30,7 @@ route('GET', '/api/models/providers', (req, res) => {
     ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
     builtin: listBuiltinProviders(currentProviders(), byProxy),
     speech: getSpeech(), spark_configured: !!SPARK.ip,
+    spark: { configured: !!SPARK.ip, host: SPARK.host, port: SPARK.port, sttModel: getSpeech()?.stt_model || 'whisper-1', ...voiceConfig() },
     pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
   });
 });

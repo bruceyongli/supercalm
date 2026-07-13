@@ -23,6 +23,12 @@ const LOCAL_VOICE = process.env.AIOS_LOCAL_TTS_VOICE || 'alloy'; // safe alias f
 const TTS_BACKEND = (process.env.AIOS_TTS_BACKEND || 'spark').toLowerCase();
 const TTS_FORMATS = new Set(['mp3', 'wav', 'aac', 'aiff', 'flac', 'opus', 'pcm']);
 
+// The live TTS chain config, for Settings → Voice to SHOW what's actually active (developers were told
+// "Spark is configured" but saw an empty form — this surfaces the real service). All env-derived.
+export function voiceConfig() {
+  return { backend: TTS_BACKEND, ttsEngine: TTS_ENGINE, ttsVoice: TTS_VOICE, ttsInstruct: TTS_INSTRUCT, localTtsPort: TTS_PORT, localVoice: LOCAL_VOICE };
+}
+
 function normalizeEngine(engine) {
   const value = String(engine || '').trim().toLowerCase();
   if (value === 'qwen' || value === 'quality') return 'qwen';
