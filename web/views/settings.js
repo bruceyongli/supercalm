@@ -71,8 +71,8 @@ async function loadAgents() {
       const login = a.loggedIn
         ? '<span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">LOGGED IN</span>'
         : '<span class="dk-chip" style="color:#8a95a5;border-color:currentColor">SIGNED OUT</span>';
-      const versionOrInstall = t.installed
-        ? `<span class="ob-ver">${esc(t.version || '')}</span>${t.latest && t.latest !== t.version ? `<span class="dk-chip" style="color:#e2b23e;border-color:#e2b23e55">${esc(t.latest)} AVAILABLE</span><button class="dk-reply-btn" data-up="${esc(t.id)}">Update</button>` : ''}`
+      const versionOrInstall = t.current
+        ? `<span class="ob-ver">${esc(t.current)}</span>${t.latest && t.latest !== t.current ? `<span class="dk-chip" style="color:#e2b23e;border-color:#e2b23e55">${esc(t.latest)} AVAILABLE</span><button class="dk-reply-btn" data-up="${esc(t.id)}">Update</button>` : ''}`
         : '<span class="ob-ver">not found</span><a class="dk-new sm" href="auth">Install</a>';
       const expiry = a.expiresInSec ? `<span class="ob-ver">token ${Math.round(a.expiresInSec / 3600)}h</span>` : '';
       return `
@@ -199,7 +199,7 @@ async function loadVoice() {
     const path = sp?.base_url
       ? (spark ? 'Spark device is configured — it speaks first; this provider is the automatic fallback for both TTS and STT.'
                : 'No Spark device — this provider handles all TTS and STT automatically.')
-      : (spark ? 'Spark device handles voice. Add a provider as an automatic fallback (or for use away from the device).' : '');
+      : (spark ? 'Your Spark device (SPARK_IP / SPARK_HOST in data/aios.env) is the active TTS + STT server; macOS say on :17071 is the local TTS fallback. Add an OpenAI-compatible provider below only for a cloud fallback.' : '');
     $('#st-voicecard').innerHTML = `
       ${sp?.base_url ? `
       <div class="ob-row"><b>Speech provider</b>
@@ -208,7 +208,7 @@ async function loadVoice() {
         <button class="dk-reply-btn" id="st-sp-stt">Test STT</button>
         <button class="dk-reply-btn" id="st-sp-del">Remove</button>
         <span class="ob-msg" id="st-sp-rowmsg"></span>
-      </div>` : `<p class="ob-fine">Not configured — without a Spark device, voice falls back to the browser's built-in speech and server STT is unavailable. Add any OpenAI-compatible audio endpoint (OpenAI, Groq, local Kokoro-FastAPI / speaches).</p>`}
+      </div>` : (spark ? '' : `<p class="ob-fine">Not configured — no Spark device, so voice falls back to the browser's built-in speech and server STT is unavailable. Add any OpenAI-compatible audio endpoint (OpenAI, Groq, local Kokoro-FastAPI / speaches).</p>`)}
       ${path ? `<p class="ob-fine">${esc(path)}</p>` : ''}
       <div class="st-form">
         <input class="st-inp" id="st-sp-base" placeholder="Base URL (https://api.openai.com · http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
