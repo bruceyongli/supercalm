@@ -12,6 +12,15 @@
 import { $, api, escapeHtml, fmtAgo } from '../common.js';
 
 const DECISIONS_CSS = `
+      /* Scoped header layout for the SPA mount: the shell has no .dk-main, so the standalone's
+         .dk-main>header reset doesn't apply. Stack the header as blocks so the Doctrine/Messages
+         toggle + the #dc-doctrine content sit BELOW the title row instead of crammed into the
+         flex .brand line (they used to be nested inside .brand). */
+      .dc-head { display: block; max-width: 1100px; margin: 0 auto; padding: 12px 12px 0; }
+      .dc-head .brand { display: flex; align-items: baseline; gap: 10px; margin: 0 0 4px; }
+      .dc-head .brand .spacer { flex: 1; }
+      .dc-head .brand .count { color: #5c6675; font-size: 12px; }
+      .dc-head #dc-doctrine { display: block; }
       .rec-wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
       .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
       .filters label { display: flex; flex-direction: column; font-size: 11px; color: #8a95a5; gap: 3px; }
@@ -493,15 +502,13 @@ export function init(el) {
     document.head.appendChild(st);
   }
   host.innerHTML = `
-    <header>
-      <div class="brand"><a href="." class="rlink">←</a> <h1>Decisions</h1>
+    <header class="dc-head">
+      <div class="brand"><a href="." class="rlink">←</a> <h1>Decisions</h1><span class="spacer"></span><span class="count" id="summary"></span></div>
       <div class="dc-seg" data-dc-seg style="display:flex;gap:5px;margin:10px 0 16px">
         <button data-dc-tab="doctrine" class="on">Doctrine</button>
         <button data-dc-tab="messages">Messages</button>
       </div>
-      <div id="dc-doctrine" data-dc-doctrine></div></div>
-      <div class="spacer"></div>
-      <span class="count" id="summary"></span>
+      <div id="dc-doctrine" data-dc-doctrine></div>
     </header>
     <main class="rec-wrap">
       <section id="doctrine"></section>
