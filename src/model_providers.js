@@ -162,11 +162,14 @@ export function getSpeech({ redact = true } = {}) {
   return redact ? { ...sp, api_key: undefined, key_set: !!sp.api_key } : sp;
 }
 
-export function setSpeech({ base_url, api_key, stt_model, tts_model, tts_voice, tts_instructions, enabled = true } = {}) {
+export function setSpeech({ base_url, stt_base_url, api_key, stt_model, tts_model, tts_voice, tts_instructions, enabled = true } = {}) {
   const data = readAll();
   const cur = data.speech || {};
   const next = {
     base_url: normalizeBase(base_url ?? cur.base_url, 'openai'),
+    // Optional SEPARATE STT endpoint (the local Whisper + Kokoro combo runs two servers: Kokoro-
+    // FastAPI speaks, a whisper server listens). Blank = one server does both (base_url).
+    stt_base_url: (stt_base_url ?? cur.stt_base_url) ? normalizeBase(stt_base_url ?? cur.stt_base_url, 'openai') : '',
     api_key: api_key !== undefined && api_key !== '' ? String(api_key) : cur.api_key || '',
     stt_model: String(stt_model ?? cur.stt_model ?? 'whisper-1').slice(0, 80),
     tts_model: String(tts_model ?? cur.tts_model ?? 'tts-1').slice(0, 80),

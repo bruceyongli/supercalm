@@ -195,6 +195,15 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   setSpeech({ base_url: 'http://127.0.0.1:9997', tts_voice: 'bf_emma' });
   assert.equal(getSpeech().tts_instructions, 'calm colleague giving a status report', 'instructions survive partial updates');
 
+  // split endpoints (the local Whisper + Kokoro combo): stt_base_url stored, normalized, survives
+  // partial updates, and clears with '' — STT calls go to it; TTS stays on base_url
+  setSpeech({ base_url: 'http://127.0.0.1:9997', stt_base_url: 'http://127.0.0.1:9996/v1' });
+  assert.equal(getSpeech().stt_base_url, 'http://127.0.0.1:9996', 'stt_base_url normalized');
+  setSpeech({ base_url: 'http://127.0.0.1:9997', tts_voice: 'af_heart' });
+  assert.equal(getSpeech().stt_base_url, 'http://127.0.0.1:9996', 'stt_base_url survives partial update');
+  setSpeech({ base_url: 'http://127.0.0.1:9997', stt_base_url: '' });
+  assert.equal(getSpeech().stt_base_url, '', 'blank clears the split');
+
   // TTS route body shape (via the raw speak path in tts.js would need the server; assert protocol here)
   const r = await fetch('http://127.0.0.1:9997/v1/audio/speech', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer sk-sp' }, body: JSON.stringify({ model: 'kokoro', input: 'x', voice: 'af_heart', response_format: 'mp3' }) });
   assert.equal(r.status, 200);

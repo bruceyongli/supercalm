@@ -124,7 +124,7 @@ async function transcribeWithProvider(sp, { audio, contentType, language }) {
   const { body, contentType: multipartType } = buildMultipart(
     fields, 'file', audio, `speech.${ext}`, baseContentType(contentType) || 'application/octet-stream'
   );
-  const r = await fetch(sp.base_url + '/v1/audio/transcriptions', {
+  const r = await fetch((sp.stt_base_url || sp.base_url) + '/v1/audio/transcriptions', {
     method: 'POST',
     headers: { 'content-type': multipartType, ...(sp.api_key ? { authorization: `Bearer ${sp.api_key}` } : {}) },
     body,
