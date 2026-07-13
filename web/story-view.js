@@ -59,7 +59,9 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // Cross-navigation story cache (sessionStorage): a hovered-then-clicked or previously-visited session's
 // 1-round story is kept so the NEXT open paints instantly, then refreshes live in the background. Shared
 // key with shell.js's hover prefetch. Bounded + default-view only (never the heavy ?full=1 story).
-export const STORY_CACHE_KEY = (id) => `aios_story_${id}`;
+// v2: bumped to flush any story caches polluted by the pre-fix switch race (a session's cache could hold
+// another session's atoms; the merge-never-removes design would keep repainting them on reopen).
+export const STORY_CACHE_KEY = (id) => `aios_story2_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -340,8 +342,14 @@ function wire() {
 }
 
 export async function refreshStory({ quiet = true } = {}) {
+  const mySid = sid; // capture: a session switch DURING this await must not apply session A's story to B
   try {
-    const r = await api(`api/session/${sid}/story${showFull ? '?full=1' : ''}`);
+    const r = await api(`api/session/${mySid}/story${showFull ? '?full=1' : ''}`);
+    // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
+    // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
+    // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
+    // header, 2026-07-13). Discard it — B's own refreshStory already ran with the correct id.
+    if (sid !== mySid) return;
     const incoming = r.events || [];
     if (!events.length) {
       events = incoming; // first open of this session: adopt the windowed story loaded from source
@@ -362,9 +370,9 @@ export async function refreshStory({ quiet = true } = {}) {
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
       + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig;
     if (sig !== lastSig) { lastSig = sig; render(); }
-    if (!showFull) writeStoryCache(sid, { events, trimmed, working, liveStatus }); // warm cache for next open
+    if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus }); // warm THIS session's cache
   } catch (e) {
-    if (!quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
+    if (sid === mySid && !quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
   }
 }
 

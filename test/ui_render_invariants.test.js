@@ -65,4 +65,19 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(/--session-rail-width:\s*var\(--rail-width/.test(scss), 'the session shell derives its rail width from the shared --rail-width token');
 }
 
-console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width');
+// Story-view session-switch race: refreshStory() reads the module-level `sid` before AND after an
+// await; a fast session switch mid-fetch would apply session A's story to session B's feed + cache
+// (operator report 2026-07-13: a share/bb2 story rendered under the aios session's header). The fix
+// captures sid and bails if it changed after the await. This tripwire fails if that guard is removed.
+{
+  const sv = read('story-view.js');
+  const rs = sv.indexOf('export async function refreshStory');
+  assert.ok(rs > 0, 'refreshStory exists');
+  const body = sv.slice(rs, rs + 1400);
+  assert.ok(/const mySid\s*=\s*sid/.test(body), 'refreshStory captures the session id (mySid) before the await');
+  assert.ok(/api\(`api\/session\/\$\{mySid\}\/story/.test(body), 'refreshStory fetches with the captured mySid, not the live sid');
+  assert.ok(/if\s*\(\s*sid\s*!==\s*mySid\s*\)\s*return/.test(body), 'refreshStory discards a response once a switch has re-pointed sid (no cross-session leak)');
+  assert.ok(/writeStoryCache\(mySid/.test(body), 'refreshStory writes the cache under the captured session id');
+}
+
+console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard');
