@@ -33,10 +33,11 @@ route('GET', '/api/models/providers', (req, res) => {
     speech: getSpeech(), spark_configured: !!SPARK.ip,
     spark: (() => {
       const eff = effectiveSpark(); const vc = voiceConfig(); const overridden = Object.keys(getVoiceOverride()?.spark || {});
-      // ip is exposed ONLY when it's a UI override (the developer set it here); the env SPARK_IP stays
-      // server-side (private-infra posture) and surfaces just as the "blank inherits env" placeholder.
+      // Editor prefills the EFFECTIVE config (env or override) so "the info is there" (operator) — the
+      // Settings page is authenticated + it's the operator's own infra. `overridden` tells the UI which
+      // fields are a saved override vs inherited from data/aios.env (per-field FROM ENV / OVERRIDDEN badge).
       return { configured: !!eff.ip, enabled: sparkEnabled(), envHost: SPARK.host, host: eff.host,
-        ip: overridden.includes('ip') ? eff.ip : '', port: eff.port,
+        ip: eff.ip, port: eff.port,
         sttModel: getSpeech()?.stt_model || 'whisper-1', ttsEngine: vc.ttsEngine, ttsVoice: vc.ttsVoice, ttsInstruct: vc.ttsInstruct,
         localTtsPort: vc.localTtsPort, localVoice: vc.localVoice, backend: vc.backend,
         source: overridden.length ? 'override' : 'env', overridden };
