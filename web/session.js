@@ -96,8 +96,8 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
               <button class="btn ghost icon-btn attach-btn attach-mobile" id="attach" type="button" aria-label="Attach files/images">+</button>
               <span class="composer-action-spacer"></span>
               <span class="mic-status" id="mic-status"></span>
-              <button class="btn ghost mic" id="mic" type="button" aria-label="Dictate"></button>
-              <button class="btn send-btn" id="send" type="button" aria-label="Send">↑</button>
+              <button class="btn mic" id="mic" type="button" aria-label="Dictate"></button>
+              <button class="btn ghost send-btn" id="send" type="button" aria-label="Send">↑</button>
             </div>
           </div>
         </div>
@@ -3224,7 +3224,7 @@ installFileTarget(messageBox);
 installFileTarget(document.querySelector('.session-main'));
 addEventListener('resize', autoExpandReply, { signal: _sig });
 compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
-wireMic(micBtn, reply, $('#mic-status'));
+wireMic(micBtn, reply, $('#mic-status'), { hold: true }); // press-hold-release on touch (spec); desktop stays tap-toggle
 syncReplyPlaceholder();
 
 // Input routing. On desktop the terminal is interactive: clicking it focuses the terminal textarea and
@@ -3281,12 +3281,17 @@ const KEYS = [['Enter', 'enter'], ['Esc', 'esc'], ['↑', 'up'], ['↓', 'down']
 const keysBox = $('#keys');
 for (const [label, key] of KEYS) {
   const b = document.createElement('button');
-  b.className = 'btn ghost sm';
+  b.className = 'btn ghost sm key-btn';
   b.textContent = label;
   b.onclick = () =>
     api(`api/session/${id}/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) }).catch(() => {});
   keysBox.appendChild(b);
 }
+// caption (design): make it obvious these keys bypass the composer and go straight to the CLI TUI.
+const keysHint = document.createElement('span');
+keysHint.className = 'keys-hint';
+keysHint.textContent = 'keys go straight to the TUI';
+keysBox.appendChild(keysHint);
 
 // ---- actions ----------------------------------------------------------------
 // Flash transient feedback on a header action button. The old handlers swallowed every result

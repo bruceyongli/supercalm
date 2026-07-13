@@ -268,7 +268,10 @@ function setTextWithLivePreview(target, baseText, liveText) {
 // Tap-to-toggle dictation via Spark: tap to record, tap to stop -> transcribe.
 // One unified `click` handler avoids the mouse/touch double-firing that produced
 // empty clips. `statusEl` (optional) shows recording / transcribing stages.
-export function wireMic(btn, target, statusEl) {
+export function wireMic(btn, target, statusEl, { hold = false } = {}) {
+  // hold-to-talk (spec) applies on TOUCH only — press-hold-record, release-to-transcribe; desktop keeps
+  // tap-to-toggle. Default (no opt) is tap-to-toggle everywhere, so existing callers are unchanged.
+  const holdMode = hold && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   let rec = null,
     chunks = [],
     stream = null,
@@ -310,7 +313,7 @@ export function wireMic(btn, target, statusEl) {
       const blob = new Blob(chunks, { type: rec.mimeType || opts.mimeType || chunks[0]?.type || 'audio/webm' });
       if (blob.size < 1200 || elapsed < 400) {
         setState('idle');
-        alert('No audio captured — tap the mic, speak, then tap stop.');
+        if (!holdMode) alert('No audio captured — tap the mic, speak, then tap stop.'); // a too-short hold cancels silently
         return;
       }
       setState('busy');
@@ -346,10 +349,16 @@ export function wireMic(btn, target, statusEl) {
     live?.stop();
     if (rec && rec.state !== 'inactive') rec.stop();
   }
-  btn.addEventListener('click', (e) => {
-    e.preventDefault();
-    rec && rec.state === 'recording' ? stop() : start();
-  });
+  if (holdMode) {
+    // Press-and-hold to record; release (or slide off / cancel) to transcribe. Pointer capture keeps the
+    // release even if the finger drifts off the 40px target mid-utterance.
+    btn.addEventListener('pointerdown', (e) => { e.preventDefault(); if (rec && rec.state === 'recording') return; try { btn.setPointerCapture(e.pointerId); } catch {} start(); });
+    const end = () => { if (rec && rec.state === 'recording') stop(); };
+    btn.addEventListener('pointerup', end);
+    btn.addEventListener('pointercancel', end);
+  } else {
+    btn.addEventListener('click', (e) => { e.preventDefault(); rec && rec.state === 'recording' ? stop() : start(); });
+  }
 }
 
 // ---- push notifications (PWA) ----------------------------------------------

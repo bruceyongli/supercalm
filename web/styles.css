@@ -173,8 +173,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .composer[hidden] { display: none; }
 .reply-btn.on { color: var(--ink); border-color: var(--blue); background: #132338; }
-.mic { width: 40px; min-height: 40px; border-radius: 6px; display: grid; place-items: center; font-size: 16px; }
-.mic.rec { background: #3d1418; border-color: var(--red); color: #ffb3b3; animation: pulse 1s infinite; }
+.mic { width: 40px; min-height: 40px; border-radius: 999px; display: grid; place-items: center; font-size: 16px; background: #1a7f3c; border: 1px solid var(--green); color: #eafff1; box-shadow: 0 0 0 4px rgba(78, 203, 108, 0.14); } /* voice-first: prominent green mic (design) */
+.mic:hover { background: #1e9247; }
+.mic.rec { background: #10281a; border-color: var(--green); color: #a7f0c0; animation: pulse 1s infinite; } /* green while recording (design) */
 @keyframes pulse { 50% { opacity: 0.55; } }
 .message-box {
   display: grid; gap: 8px; align-content: start;
@@ -311,7 +312,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   width: 40px; min-width: 40px; min-height: 40px; padding: 0;
   display: grid; place-items: center;
 }
-.send-btn { border-radius: 999px; }
+.btn.send-btn { border-radius: 999px; background: transparent; border-color: var(--line2); color: var(--muted); } /* send = secondary/ghost; the green mic is the primary voice button (design) */
+.btn.send-btn:hover { background: #132338; border-color: var(--blue); color: var(--ink); }
 .footer-composer .attach-btn {
   background: transparent; border-color: transparent; color: var(--muted); border-radius: 7px;
 }
@@ -1250,7 +1252,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .map-step-time, .map-confidence { color: var(--dim); font-size: 11px; }
 .map-two { display: grid; grid-template-columns: 1fr; gap: 12px; }
 .session-tools { display: flex; align-items: flex-end; gap: 8px; min-width: 0; }
-.keys { flex: 1 1 auto; min-width: 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.keys { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.keys .key-btn { min-height: 38px; padding: 0 12px; font-size: 13px; border-radius: 8px; } /* prominent TUI quick-keys (design) */
+.keys-hint { margin-left: auto; align-self: center; color: var(--dim); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; white-space: nowrap; }
 .settings { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 .settings label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
 .settings select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 12px; text-transform: none; }
@@ -1490,7 +1494,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .composer-actions .mic-status {
     min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .btn.icon-btn, .send-btn, .mic { width: 36px; min-width: 36px; min-height: 36px; }
+  .btn.icon-btn, .send-btn, .mic { width: 40px; min-width: 40px; min-height: 40px; } /* ≥40px touch targets (design) */
   .attach-desktop { display: none !important; }
   .attach-mobile { display: grid !important; }
   .settings.composer-settings { flex: none; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
