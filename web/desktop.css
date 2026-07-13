@@ -114,6 +114,13 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 body.session-page #view.dk-view { position: fixed; top: 0; left: var(--rail-width); right: 0; bottom: 0; width: auto; height: 100dvh; min-height: 0; display: block; z-index: 1; }
 body.dk-collapsed.session-page #view.dk-view { left: 0; }
 body.session-page #view.dk-view > #session-root { height: 100%; }
+/* Mobile session route: hide the shell sidebar (the session's ← back navigates to the dashboard, matching
+   the pre-SPA session page which also hid its rail on phones) and let the session fill the full screen —
+   otherwise the 280px rail squishes the session into a sliver. */
+@media (max-width: 720px) {
+  body.session-page #shell > .dk-side { display: none; }
+  body.session-page #view.dk-view { left: 0; }
+}
 /* ---- main / inbox ---- */
 .dk-main { padding: 26px 32px 90px; max-width: 1080px; margin: 0 auto; width: 100%; }
 /* Injected system pages (decisions/usage/health) keep their own page <header> inside .dk-main. The
