@@ -264,7 +264,8 @@ function initDoctrineTab() {
 
   async function load() {
     let rules = [];
-    try { rules = (await api('api/doctrine')).rules || []; } catch (e) { box.innerHTML = `<p class="hint">doctrine unavailable: ${esc(e.message || e)}</p>`; return; }
+    try { rules = (await api('api/doctrine')).rules || []; } catch (e) { if (host) box.innerHTML = `<p class="hint">doctrine unavailable: ${esc(e.message || e)}</p>`; return; }
+    if (!host) return; // torn down mid-fetch → #dc-doctrine detached; box.innerHTML would strand #dc-triage for wire()
     const cands = rules.filter((r) => r.status === 'candidate');
     const live = rules.filter((r) => r.status === 'active');
     box.innerHTML = `
@@ -328,10 +329,11 @@ function initDoctrinePanel() {
     try {
       const r = await fetch('api/doctrine');
       const j = await r.json();
+      if (!host) return; // torn down mid-fetch
       rules = j.rules || [];
       render();
     } catch {
-      box.innerHTML = '<p class="count">doctrine unavailable</p>';
+      if (host) box.innerHTML = '<p class="count">doctrine unavailable</p>';
     }
   }
 
