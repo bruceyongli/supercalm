@@ -51,7 +51,7 @@ function mediaTypeForFormat(format) {
   }[normalizeFormat(format)] || 'audio/mpeg';
 }
 
-function sparkTtsBody(text, { engine = TTS_ENGINE, voice = defaultVoiceForEngine(engine), format = 'mp3', stream = false } = {}) {
+function sparkTtsBody(text, { engine = TTS_ENGINE, voice = defaultVoiceForEngine(engine), format = 'mp3', stream = false, instruct = '' } = {}) {
   const normalizedEngine = normalizeEngine(engine);
   const body = {
     input: text,
@@ -60,7 +60,9 @@ function sparkTtsBody(text, { engine = TTS_ENGINE, voice = defaultVoiceForEngine
     response_format: normalizeFormat(format),
   };
   if (stream) body.low_latency = false;
-  if (normalizedEngine === 'qwen' && TTS_INSTRUCT) body.instruct = TTS_INSTRUCT;
+  // Qwen CustomVoice style: per-request instruct (e.g. the voice-report persona) wins over env.
+  const style = String(instruct || TTS_INSTRUCT || '').slice(0, 300);
+  if (normalizedEngine === 'qwen' && style) body.instruct = style;
   return body;
 }
 
@@ -77,8 +79,8 @@ function proxyTtsHeaders(upstreamHeaders = {}, source = 'spark', format = 'mp3')
 }
 
 // Spark TTS -> full audio buffer (the client downloads the whole blob anyway).
-async function speakSpark(text, voice, engine, format) {
-  const body = sparkTtsBody(text, { voice, engine, format });
+async function speakSpark(text, voice, engine, format, instruct = '') {
+  const body = sparkTtsBody(text, { voice, engine, format, instruct });
   const payload = Buffer.from(JSON.stringify(body));
   const r = await sparkRequest('POST', '/v1/audio/speech', { body: payload, contentType: 'application/json', timeout: 60000 });
   if ((r.status || 0) >= 400) throw new Error(`spark tts ${r.status}: ${r.body.toString('utf8').slice(0, 200)}`);
@@ -137,7 +139,7 @@ route('POST', '/api/tts', async (req, res) => {
   let responseHeaders = null;
   if (wantSpark && SPARK.ip) {
     try {
-      const result = await speakSpark(text, voice, engine, format);
+      const result = await speakSpark(text, voice, engine, format, b.instruct);
       audio = result.audio;
       responseHeaders = proxyTtsHeaders(result.headers, 'spark', format);
     } catch (e) {
@@ -185,7 +187,7 @@ route('POST', '/api/tts/stream', async (req, res) => {
   if ((b.backend || TTS_BACKEND) !== 'spark') return json(res, 409, { error: 'streaming requires the spark backend' });
   const engine = normalizeEngine(b.engine || b.model || TTS_ENGINE);
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
-  const streamBody = sparkTtsBody(text, { engine, voice: b.voice || defaultVoiceForEngine(engine), format, stream: true });
+  const streamBody = sparkTtsBody(text, { engine, voice: b.voice || defaultVoiceForEngine(engine), format, stream: true, instruct: b.instruct });
   const payload = Buffer.from(JSON.stringify(streamBody));
   const up = https.request(
     { host: SPARK.ip, port: SPARK.port, path: '/v1/audio/speech/stream', method: 'POST', servername: SPARK.host,

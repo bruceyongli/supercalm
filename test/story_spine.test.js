@@ -47,6 +47,26 @@ const spine = spineFromMessages([
 ]);
 assert.deepEqual(spine.map((e) => e.text), ['start', 'next']);
 
+// ---- trailing agent reply → promoted to 'report' (mirrors buildStory), re-clipped at 4000 ----
+{
+  const long = 'All done. ' + 'x'.repeat(1200);
+  const s = spineFromMessages([
+    { ts: 1, direction: 'in', source: 'task', text: 'start' },
+    { ts: 2, direction: 'out', source: 'reply', text: 'working on it' },
+    { ts: 3, direction: 'out', source: 'detect', text: 'noise' },      // dropped — must not block promotion
+    { ts: 4, direction: 'out', source: 'reply', text: long },
+  ]);
+  assert.equal(s[s.length - 1].kind, 'report', 'last agent reply becomes the report');
+  assert.ok(s[s.length - 1].text.length > 700, 'report re-clipped at 4000, not the 600-char note stub');
+  assert.equal(s[1].kind, 'note', 'earlier replies stay notes');
+  // newest visible event is the operator's → nothing to promote
+  const s2 = spineFromMessages([
+    { ts: 1, direction: 'out', source: 'reply', text: 'done' },
+    { ts: 2, direction: 'in', source: 'text', text: 'thanks' },
+  ]);
+  assert.ok(s2.every((e) => e.kind !== 'report'), 'no promotion past an operator message');
+}
+
 // ---- source locks: the wiring the pure module can't observe ----
 const storyApi = readFileSync(new URL('../src/story_api.js', import.meta.url), 'utf8');
 assert.ok(/spineFromMessages\(messagesFor\(sid, \d+\)\)/.test(storyApi), 'fallbackStory builds the spine from messagesFor');

@@ -52,6 +52,18 @@ export function messageToEvent(m) {
 }
 
 // Build the attributed spine from message rows (already in ascending ts order).
+// The LAST agent reply is promoted to kind:'report' (mirrors buildStory's trailing note→report,
+// src/story.js) so fallback stories get the report treatment too — incl. the listen button. It is
+// re-derived from the ROW with a 4000-char clip: the 600-char note clip is a stub, not a listenable
+// report source.
 export function spineFromMessages(rows) {
-  return (rows || []).map(messageToEvent).filter(Boolean);
+  const list = rows || [];
+  const out = list.map(messageToEvent);
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (!out[i]) continue;
+    if (out[i].kind !== 'note') break; // newest visible event isn't an agent reply — nothing to promote
+    out[i] = { ts: list[i].ts, kind: 'report', text: clip(list[i].text, 4000) };
+    break;
+  }
+  return out.filter(Boolean);
 }

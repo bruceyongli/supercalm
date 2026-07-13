@@ -2424,6 +2424,15 @@ body.map-expanded-open { overflow: hidden; }
 .story-ask-opt.primary { background: #238636; border-color: #2ea043; color: #fff; }
 .story-ask-opt:hover { filter: brightness(1.12); }
 .story-answered { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #4ecb6c; margin-top: 8px; }
+/* "Listen to this report" pill — fixed-size states (no layout shift between idle/loading/playing,
+   which would move content under the restored scroll position). 28px min-height for touch. */
+.story-listen { display: inline-flex; align-items: center; min-height: 28px; min-width: 92px; justify-content: center; margin-top: 8px; padding: 3px 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #5c6675; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; cursor: pointer; user-select: none; }
+.story-listen:hover { color: #8a95a5; border-color: #365a86; }
+.story-listen.loading { color: #8a95a5; animation: story-listen-pulse 1.2s ease-in-out infinite; }
+@keyframes story-listen-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+.story-listen.playing { color: #2fd6be; border-color: rgba(47,214,190,.4); }
+.story-listen.error { color: #e2b23e; border-color: rgba(226,178,62,.4); }
+@media (prefers-reduced-motion: reduce) { .story-listen.loading { animation: none; opacity: .8; } }
 .story-meta { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; color: #5c6675; margin-top: 5px; }
 .story-meta.ok { color: #4ecb6c; }
 .story-ts { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; color: #3a4453; margin-top: 4px; }

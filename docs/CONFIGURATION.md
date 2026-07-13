@@ -123,6 +123,9 @@ everywhere regardless.
 | `AIOS_TTS_ENGINE` | `kokoro` \| `qwen`. |
 | `AIOS_TTS_VOICE` / `AIOS_LOCAL_TTS_VOICE` | TTS voice ids. |
 | `AIOS_STT_POLISH` | `false` (raw Whisper — best for code) \| `true` (grammar-cleaned). |
+| `AIOS_VOICE_REPORT_CHAIN` | `port:model,…` chain that rewrites a story-view report into a spoken script (listen button). Default is local/free-first; the configured API model providers are appended automatically. |
+| `AIOS_VOICE_REPORT_DEADLINE_MS` | `12000`. Polish race deadline — slower LLMs fail open to sanitized text (the late result is still cached). |
+| `AIOS_TTS_REPORT_ENGINE` / `AIOS_TTS_REPORT_VOICE` / `AIOS_TTS_REPORT_INSTRUCT` | Optional TTS overrides for voice reports only (e.g. `qwen` + a CustomVoice style instruction). Unset = the system voice config decides. |
 
 No voice device? Set `AIOS_TTS_BACKEND=local` for on-device macOS TTS, and the browser's built-in
 speech-recognition still lets you dictate; only the Whisper-quality STT needs Spark.
