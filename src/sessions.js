@@ -11,6 +11,7 @@ import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
+import { CLAUDE_SURVEY_RX } from './detect_classify.js';
 import { summarize } from './summarize.js';
 import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
@@ -267,6 +268,17 @@ export async function sendText(name, text) {
   try {
     screen = await tmux('capture-pane', '-p', '-t', name);
   } catch {}
+  // Claude's session-feedback survey ("How is Claude doing…? 1: Bad … 0: Dismiss") swallows
+  // keystrokes ahead of the composer — replies typed under it sat unsubmitted for hours. Dismiss
+  // it first, then re-capture so the menu check below sees the post-survey screen. The detect
+  // gate ('0' in CONFIRM_RULES) clears it on the poll loop too; this covers the race between polls.
+  if (CLAUDE_SURVEY_RX.test(stripAnsi(screen || ''))) {
+    await exec(TMUX, ['send-keys', '-t', name, '0'], X);
+    await sleep(250);
+    try {
+      screen = await tmux('capture-pane', '-p', '-t', name);
+    } catch {}
+  }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
     await exec(TMUX, ['send-keys', '-t', name, digit], X);

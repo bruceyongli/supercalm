@@ -11,9 +11,10 @@ input="$(cat 2>/dev/null || true)"
 event="$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null || true)"
 [ -n "$event" ] || exit 0
 msg="$(printf '%s' "$input" | jq -r '.message // .prompt // empty' 2>/dev/null || true)"
+transcript="$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null || true)"
 
-payload="$(jq -nc --arg session "$AIOS_SESSION_ID" --arg event "$event" --arg message "$msg" \
-  '{session:$session,event:$event,message:$message}' 2>/dev/null || true)"
+payload="$(jq -nc --arg session "$AIOS_SESSION_ID" --arg event "$event" --arg message "$msg" --arg transcript "$transcript" \
+  '{session:$session,event:$event,message:$message,transcript:$transcript}' 2>/dev/null || true)"
 [ -n "$payload" ] || exit 0
 
 curl -sS --connect-timeout 0.3 --max-time 1 -H 'content-type: application/json' \

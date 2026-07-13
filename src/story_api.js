@@ -7,7 +7,8 @@ import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json } from './server.js';
-import { getSession, getProject, db, messagesFor } from './store.js';
+import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
+import { findClaudeLog } from './claude_transcripts.js';
 import { parseSessionLog } from './story.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
@@ -138,26 +139,8 @@ async function findCodexLog(cwd, s) {
   return null;
 }
 
-// claude: ~/.claude/projects/<slugged-cwd>/<uuid>.jsonl — pick the transcript whose mtime overlaps
-// the session window; largest wins on ties (resumed conversations keep appending to one file).
-function claudeSlug(cwd) { return String(cwd || '').replace(/[/.]/g, '-'); }
-async function findClaudeLog(cwd, s) {
-  const dir = join(homedir(), '.claude', 'projects', claudeSlug(cwd));
-  let ents;
-  try { ents = await readdir(dir); } catch { return null; }
-  const cands = [];
-  for (const name of ents) {
-    if (!name.endsWith('.jsonl')) continue;
-    const p = join(dir, name);
-    try {
-      const st = await stat(p);
-      if (s?.started_at && st.mtimeMs < s.started_at - 120e3) continue;
-      cands.push({ p, size: st.size, mtimeMs: st.mtimeMs });
-    } catch {}
-  }
-  cands.sort((a, b) => b.size - a.size);
-  return cands[0]?.p || null;
-}
+// claude transcript location lives in claude_transcripts.js (hook-bound path first, heuristic after —
+// see that module for the multi-session-per-cwd story-bleed this replaced).
 
 // Screenshot thumbnails: claude transcripts embed image tool-results as base64. Attach the LAST
 // few as data-URLs to the nearest following check/edit/work event (payload-bounded: 4 shots max).
@@ -196,7 +179,9 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
   if (!s) return { error: 'no such session' };
   const project = s.project_id ? getProject(s.project_id) : null;
   const cwd = project?.path || null;
-  const file = s.tool === 'codex' ? await findCodexLog(cwd, s) : await findClaudeLog(cwd, s);
+  const file = s.tool === 'codex'
+    ? await findCodexLog(cwd, s)
+    : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid) });
   if (!file) {
     const events = fallbackStory(sid);
     return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
