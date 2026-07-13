@@ -6,7 +6,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SPARK, FFMPEG } from './config.js';
 import { route, json, readBody } from './server.js';
-import { getSpeech } from './model_providers.js';
+import { getSpeech, getVoiceOverride } from './model_providers.js';
+
+// Effective Spark connection = UI override (data/model_providers.json) merged over env (SPARK_IP/HOST),
+// read at REQUEST time so edits hot-reload without a restart. sparkEnabled() also honors the "use" mute.
+export function effectiveSpark() {
+  const o = getVoiceOverride()?.spark || {};
+  return { ip: o.ip || SPARK.ip, host: o.host || SPARK.host, port: SPARK.port };
+}
+export function sparkEnabled() {
+  return !!effectiveSpark().ip && !getVoiceOverride()?.sparkDisabled;
+}
 
 // Reuse TLS connections to Spark across requests (STT + TTS) so we don't pay a fresh
 // handshake each time. Measured small (~30ms) since latency is generation-bound, but free.
@@ -41,14 +51,15 @@ async function toWav(audio, ext) {
 // connect to the IP while overriding SNI + Host so the Tailscale-Serve TLS cert
 // and vhost routing match. rejectUnauthorized stays on (cert is valid for SPARK.host).
 export function sparkRequest(method, path, { body, contentType, timeout = 60000 } = {}) {
+  const spark = effectiveSpark();
   return new Promise((resolve, reject) => {
-    const headers = { Host: SPARK.host };
+    const headers = { Host: spark.host };
     if (body) {
       headers['content-type'] = contentType;
       headers['content-length'] = body.length;
     }
     const req = https.request(
-      { host: SPARK.ip, port: SPARK.port, path, method, servername: SPARK.host, headers, timeout, agent: sparkAgent },
+      { host: spark.ip, port: spark.port, path, method, servername: spark.host, headers, timeout, agent: sparkAgent },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
@@ -143,7 +154,7 @@ route('POST', '/api/transcribe', async (req, res) => {
   // ?backend=provider forces the speech-provider path (Settings → Voice) even when Spark is
   // configured — the Settings test button and ops checks prove the provider STT works end-to-end.
   const forceProvider = url.searchParams.get('backend') === 'provider';
-  const sparkConfigured = !!SPARK.ip && !forceProvider;
+  const sparkConfigured = sparkEnabled() && !forceProvider;
   if (!sparkConfigured && !providerConfigured) {
     return json(res, 502, { error: 'no speech-to-text configured — add a speech provider in Settings → Voice (or set SPARK_IP/SPARK_HOST)' });
   }
@@ -202,11 +213,12 @@ route('POST', '/api/transcribe', async (req, res) => {
 
 // Diagnostics: confirm Supercalm -> Spark reachability.
 route('GET', '/api/spark/health', async (req, res) => {
+  const spark = effectiveSpark();
   try {
     const r = await sparkRequest('GET', '/api/health', { timeout: 8000 });
-    json(res, r.status < 400 ? 200 : 502, { status: r.status, body: r.body.toString('utf8').slice(0, 300), via: `${SPARK.ip} (sni ${SPARK.host})` });
+    json(res, r.status < 400 ? 200 : 502, { status: r.status, body: r.body.toString('utf8').slice(0, 300), via: `${spark.ip} (sni ${spark.host})` });
   } catch (e) {
-    json(res, 502, { error: e.message, via: `${SPARK.ip}` });
+    json(res, 502, { error: e.message, via: `${spark.ip}` });
   }
 });
 

@@ -37,6 +37,7 @@ const SETTINGS_CSS = `
     .st-step button { width: 26px; height: 26px; border-radius: 8px; background: #0b0f16; border: 1px solid #232c38; color: #b9c4d4; cursor: pointer; }
     /* config forms (voice / API providers — migrated from the auth page) */
     .st-form { display: grid; gap: 8px; margin-top: 10px; }
+    .st-form[hidden] { display: none; } /* [hidden] UA rule loses to .st-form's explicit display — restore it so Edit/Add toggles work */
     .st-form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     .st-form-row .st-inp { flex: 1; min-width: 150px; }
     .st-inp, .st-sel { background: #0b0f16; border: 1px solid #232c38; border-radius: 8px; color: #dde5ee; font-size: 12.5px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', ui-monospace, monospace; }
@@ -190,6 +191,45 @@ async function loadProviders() {
 // One OpenAI-compatible audio endpoint covers GPT TTS + STT (or Groq/local Kokoro-FastAPI/speaches):
 // once saved, /api/tts and /api/transcribe use it AUTOMATICALLY (Spark device, when set, speaks
 // first; the provider is the fallback — and the only path on Spark-less installs).
+// Play the FULL TTS chain and report which backend spoke (reused by Spark + cloud rows).
+async function playTts(m, body = {}) {
+  m.textContent = 'synthesizing…';
+  try {
+    const r2 = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Voice check — this is how your reports will sound.', ...body }) });
+    if (!r2.ok) throw new Error('HTTP ' + r2.status);
+    const src = r2.headers.get('x-tts-backend') || r2.headers.get('x-aios-tts-source') || '?';
+    const a = new Audio(URL.createObjectURL(await r2.blob()));
+    a.onended = () => { m.textContent = `✓ spoke via ${src}`; };
+    m.textContent = `playing (via ${src})…`;
+    await a.play();
+  } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+}
+// Round-trip STT: synthesize a phrase, feed the audio back through STT (no mic needed).
+async function roundTripStt(m, backend) {
+  m.textContent = 'round-trip: synthesizing…';
+  try {
+    const q = backend ? `?backend=${backend}` : '';
+    const t = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'voice check one two three', ...(backend ? { backend } : {}) }) });
+    if (!t.ok) throw new Error('tts HTTP ' + t.status);
+    const audio = await t.blob();
+    m.textContent = 'round-trip: transcribing…';
+    const s = await fetch(`api/transcribe${q}${q ? '&' : '?'}polish=false`, { method: 'POST', headers: { 'content-type': audio.type || 'audio/mpeg' }, body: audio });
+    const j = await s.json().catch(() => ({}));
+    if (!s.ok) throw new Error(j.error || 'stt HTTP ' + s.status);
+    m.textContent = `✓ STT heard: “${(j.text || '').slice(0, 60)}”`;
+  } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+}
+// Two-click inline confirm (no modal): first click arms + shows a confirm label, second within 3s runs.
+function armConfirm(btn, confirmLabel, fn) {
+  if (!btn) return;
+  const orig = btn.textContent; let armed = false, t;
+  btn.onclick = () => {
+    if (armed) { clearTimeout(t); btn.textContent = orig; armed = false; fn(); return; }
+    armed = true; btn.textContent = confirmLabel;
+    t = setTimeout(() => { armed = false; btn.textContent = orig; }, 3000);
+  };
+}
+
 async function loadVoice() {
   try {
     const r = await api('api/models/providers');
@@ -197,26 +237,60 @@ async function loadVoice() {
     const sp = r.speech;
     const spk = r.spark || { configured: !!r.spark_configured };
     const spark = !!spk.configured;
+    const isOverride = spk.source === 'override';
+    const enabled = spk.enabled !== false;
+    const ov = (k) => spk.overridden?.includes(k);
     $('#st-voicecard').innerHTML = `
       ${spark ? `
       <div class="ob-row" id="st-spark-row"><b>Spark device</b>
-        <span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">ACTIVE · TTS + STT</span>
-        <span class="ob-ver">${esc(spk.host || 'spark')} · TTS ${esc(spk.ttsEngine || 'kokoro')}/${esc(spk.ttsVoice || 'af_heart')} · STT ${esc(spk.sttModel || 'whisper-1')} · local say fallback :${esc(String(spk.localTtsPort || 17071))}</span>
-        <button class="dk-reply-btn" id="st-spark-sample">▶ Play sample</button>
+        <span class="dk-chip" style="${enabled ? 'color:#4ecb6c;border-color:#4ecb6c55' : 'color:#8a95a5;border-color:currentColor'}">${enabled ? 'ACTIVE · TTS + STT' : 'MUTED'}</span>
+        <span class="ob-ver">${esc(spk.host || 'spark')} · TTS ${esc(spk.ttsEngine || 'kokoro')}/${esc(spk.ttsVoice || 'af_heart')} · STT ${esc(spk.sttModel || 'whisper')} · <span style="color:${isOverride ? '#e2b23e' : '#5c6675'}">${isOverride ? 'UI override' : 'from data/aios.env'}</span></span>
+        <button class="dk-reply-btn" id="st-spark-sample">▶ Play</button>
         <button class="dk-reply-btn" id="st-spark-stt">Test STT</button>
         <button class="dk-reply-btn" id="st-spark-health">Re-check</button>
+        <button class="dk-reply-btn" id="st-spark-edit-btn">Edit</button>
+        ${isOverride ? '<button class="dk-reply-btn" id="st-spark-reset" title="clear the UI override, fall back to data/aios.env" style="color:#e2b23e;border-color:#e2b23e55">Reset to env</button>' : ''}
         <span class="ob-msg" id="st-spark-msg"></span>
+        <label class="ob-ver" title="use Spark for voice (off = mute, keeps config)" style="margin-left:auto;cursor:pointer;display:inline-flex;align-items:center;gap:6px"><input type="checkbox" id="st-spark-use" ${enabled ? 'checked' : ''}/> use</label>
       </div>
-      <p class="ob-fine">Configured via SPARK_IP / SPARK_HOST in data/aios.env (read by config.js → spark.js / tts.js). The OpenAI-compatible provider below is an optional cloud fallback for both TTS and STT.</p>` : ''}
+      <div class="st-form" id="st-spark-edit" hidden>
+        <div class="st-form-row">
+          <input class="st-inp" id="st-spark-ip" placeholder="Spark IP — blank inherits env (SPARK_IP)" value="${esc(ov('ip') ? spk.ip : '')}" />
+          <input class="st-inp" id="st-spark-host" placeholder="Spark host / SNI — blank inherits env (${esc(spk.envHost || 'SPARK_HOST')})" value="${esc(ov('host') ? spk.host : '')}" />
+        </div>
+        <div class="st-form-row">
+          <input class="st-inp" id="st-spark-engine" placeholder="TTS engine (kokoro · qwen)" value="${esc(ov('ttsEngine') ? spk.ttsEngine : '')}" />
+          <input class="st-inp" id="st-spark-voice" placeholder="TTS voice (af_heart · am_michael · Ryan)" value="${esc(ov('ttsVoice') ? spk.ttsVoice : '')}" />
+        </div>
+        <input class="st-inp" id="st-spark-instr" placeholder="Speaking style, optional (qwen CustomVoice)" value="${esc(ov('ttsInstruct') ? spk.ttsInstruct : '')}" />
+        <p class="ob-fine">Saved as a local override in data/model_providers.json — takes precedence over data/aios.env, hot-reloaded (no restart). Leave a field blank to re-inherit env. (SPARK_IP stays in env.)</p>
+        <div class="st-form-row">
+          <button class="dk-reply-btn" id="st-spark-testdraft">Test draft</button>
+          <button class="dk-new sm" id="st-spark-save">Save</button>
+          <button class="dk-reply-btn" id="st-spark-cancel">Cancel</button>
+          <span class="ob-msg" id="st-spark-editmsg"></span>
+        </div>
+      </div>
+      <div class="ob-row"><b>Local say</b>
+        <span class="dk-chip" style="color:#8a95a5;border-color:currentColor">FALLBACK · TTS</span>
+        <span class="ob-ver">macOS say · 127.0.0.1:${esc(String(spk.localTtsPort || 17071))} · voice ${esc(spk.localVoice || 'alloy')} · built-in, used only if Spark is unreachable</span>
+      </div>` : ''}
       ${sp?.base_url ? `
-      <div class="ob-row"><b>${spark ? 'Cloud fallback provider' : 'Speech provider'}</b>
+      <div class="ob-row"><b>Cloud fallback</b>
+        <span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">READY · TTS + STT</span>
         <span class="ob-ver">${esc(sp.base_url)} · STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')}/${esc(sp.tts_voice || '—')}${sp.key_set ? '' : ' · no key'}</span>
-        <button class="dk-reply-btn" id="st-sp-sample">▶ Play sample</button>
+        <button class="dk-reply-btn" id="st-sp-sample">▶ Play</button>
         <button class="dk-reply-btn" id="st-sp-stt">Test STT</button>
-        <button class="dk-reply-btn" id="st-sp-del">Remove</button>
+        <button class="dk-reply-btn" id="st-sp-edit-btn">Edit</button>
+        <button class="dk-reply-btn" id="st-sp-del" style="color:#f2554d;border-color:#f2554d55">Remove</button>
         <span class="ob-msg" id="st-sp-rowmsg"></span>
-      </div>` : (spark ? '' : `<p class="ob-fine">Not configured — no Spark device, so voice falls back to the browser's built-in speech and server STT is unavailable. Add any OpenAI-compatible audio endpoint (OpenAI, Groq, local Kokoro-FastAPI / speaches).</p>`)}
-      <div class="st-form">
+      </div>` : `
+      <div class="ob-row"><b>Cloud fallback</b>
+        <span class="dk-chip" style="color:#8a95a5;border-color:currentColor">NOT CONFIGURED</span>
+        <span class="ob-ver">OpenAI-compatible TTS + STT (OpenAI · Groq · local Kokoro-FastAPI / speaches)${spark ? '' : ' — without it and without Spark, voice falls back to the browser'}</span>
+        <button class="dk-reply-btn" id="st-sp-add-btn">+ Add provider</button>
+      </div>`}
+      <div class="st-form" id="st-sp-form"${sp?.base_url ? ' hidden' : (spark ? ' hidden' : '')}>
         <input class="st-inp" id="st-sp-base" placeholder="Base URL (https://api.openai.com · http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
         <input class="st-inp" id="st-sp-key" type="password" placeholder="API key${sp?.key_set ? ' (saved — blank keeps it)' : ' (blank for local/open servers)'}" autocomplete="off" />
         <div class="st-form-row">
@@ -224,12 +298,44 @@ async function loadVoice() {
           <input class="st-inp" id="st-sp-ttsm" placeholder="TTS model (tts-1 · gpt-4o-mini-tts · kokoro)" value="${esc(sp?.tts_model || 'tts-1')}" />
           <input class="st-inp" id="st-sp-voice" placeholder="TTS voice (alloy · af_heart)" value="${esc(sp?.tts_voice || 'alloy')}" />
         </div>
-        <input class="st-inp" id="st-sp-instr" placeholder="Speaking style, optional (models like gpt-4o-mini-tts follow it — e.g. calm colleague giving a status report)" value="${esc(sp?.tts_instructions || '')}" />
-        <div class="st-form-row"><button class="dk-reply-btn" id="st-sp-save">Test &amp; save</button><span class="ob-msg" id="st-sp-msg"></span></div>
+        <input class="st-inp" id="st-sp-instr" placeholder="Speaking style, optional (gpt-4o-mini-tts follows it — e.g. calm colleague giving a status report)" value="${esc(sp?.tts_instructions || '')}" />
+        <div class="st-form-row"><button class="dk-new sm" id="st-sp-save">Test &amp; save</button><button class="dk-reply-btn" id="st-sp-cancel">Cancel</button><span class="ob-msg" id="st-sp-msg"></span></div>
       </div>`;
+
+    // ---- Spark service actions ----
+    if (spark) {
+      const m = $('#st-spark-msg');
+      $('#st-spark-sample').onclick = () => playTts(m);
+      $('#st-spark-stt').onclick = () => roundTripStt(m);
+      $('#st-spark-health').onclick = async () => {
+        m.textContent = 'checking…';
+        try { const j = await api('api/spark/health'); m.textContent = j.status && j.status < 400 ? `✓ reachable (${esc(j.via || 'spark')})` : `⚠ ${esc(j.error || 'unreachable')}`; }
+        catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+      };
+      $('#st-spark-edit-btn').onclick = () => { const f = $('#st-spark-edit'); f.hidden = !f.hidden; };
+      $('#st-spark-use').onchange = async (ev) => {
+        try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sparkDisabled: !ev.target.checked }) }); loadVoice(); }
+        catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+      };
+      const em = $('#st-spark-editmsg');
+      const draft = () => ({ ip: $('#st-spark-ip').value.trim(), host: $('#st-spark-host').value.trim(), ttsEngine: $('#st-spark-engine').value.trim(), ttsVoice: $('#st-spark-voice').value.trim(), ttsInstruct: $('#st-spark-instr').value.trim() });
+      $('#st-spark-testdraft').onclick = () => playTts(em, { engine: $('#st-spark-engine').value.trim() || undefined, voice: $('#st-spark-voice').value.trim() || undefined, instruct: $('#st-spark-instr').value.trim() || undefined });
+      $('#st-spark-save').onclick = async () => {
+        em.textContent = 'saving…';
+        try { const j = await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft()) }); if (!j.ok) throw new Error(j.error || 'failed'); em.textContent = '✓ saved'; loadVoice(); }
+        catch (e) { em.textContent = '⚠ ' + (e.message || e); }
+      };
+      $('#st-spark-cancel').onclick = () => { $('#st-spark-edit').hidden = true; };
+      armConfirm($('#st-spark-reset'), 'Confirm reset to env', async () => { await api('api/models/voice', { method: 'DELETE' }).catch(() => {}); loadVoice(); });
+    }
+
+    // ---- Cloud fallback provider actions ----
+    const showForm = () => { $('#st-sp-form').hidden = false; $('#st-sp-base')?.focus(); };
+    $('#st-sp-add-btn') && ($('#st-sp-add-btn').onclick = showForm);
+    $('#st-sp-edit-btn') && ($('#st-sp-edit-btn').onclick = () => { const f = $('#st-sp-form'); f.hidden = !f.hidden; });
+    $('#st-sp-cancel') && ($('#st-sp-cancel').onclick = () => { if (sp?.base_url || spark) $('#st-sp-form').hidden = true; });
     $('#st-sp-save').onclick = async () => {
-      const msg = $('#st-sp-msg');
-      msg.textContent = 'testing tts…';
+      const msg = $('#st-sp-msg'); msg.textContent = 'testing tts…';
       try {
         const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
           base_url: $('#st-sp-base').value.trim(), api_key: $('#st-sp-key').value,
@@ -237,79 +343,14 @@ async function loadVoice() {
           tts_voice: $('#st-sp-voice').value.trim(), tts_instructions: $('#st-sp-instr').value.trim(),
         }) });
         if (!j.ok) throw new Error(j.error || 'failed');
-        msg.textContent = '✓ saved';
-        loadVoice();
+        msg.textContent = '✓ saved'; loadVoice();
       } catch (e) { msg.textContent = '⚠ ' + (e.message || e); }
     };
     if (sp?.base_url) {
       const m = $('#st-sp-rowmsg');
-      $('#st-sp-del').onclick = async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadVoice(); };
-      // Hear what the SYSTEM will actually speak (full chain incl. Spark precedence) + name the backend.
-      $('#st-sp-sample').onclick = async () => {
-        m.textContent = 'synthesizing…';
-        try {
-          const r2 = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Voice check — this is how your reports will sound.' }) });
-          if (!r2.ok) throw new Error('HTTP ' + r2.status);
-          const src = r2.headers.get('x-tts-backend') || r2.headers.get('x-aios-tts-source') || '?';
-          const a = new Audio(URL.createObjectURL(await r2.blob()));
-          a.onended = () => { m.textContent = `✓ spoke via ${src}`; };
-          m.textContent = `playing (via ${src})…`;
-          await a.play();
-        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      };
-      // Round-trip: provider TTS a phrase, feed the audio back through provider STT — proves BOTH
-      // gpt tts + gpt stt work with the saved key, no microphone needed.
-      $('#st-sp-stt').onclick = async () => {
-        m.textContent = 'round-trip: synthesizing…';
-        try {
-          const t = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'voice check one two three', backend: 'provider' }) });
-          if (!t.ok) throw new Error('tts HTTP ' + t.status);
-          const audio = await t.blob();
-          m.textContent = 'round-trip: transcribing…';
-          const s = await fetch('api/transcribe?backend=provider&polish=false', { method: 'POST', headers: { 'content-type': audio.type || 'audio/mpeg' }, body: audio });
-          const j = await s.json().catch(() => ({}));
-          if (!s.ok) throw new Error(j.error || 'stt HTTP ' + s.status);
-          m.textContent = `✓ STT heard: “${(j.text || '').slice(0, 60)}”`;
-        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      };
-    }
-    if (spark) {
-      const m = $('#st-spark-msg');
-      // Play sample: the FULL TTS chain (Spark Kokoro first, macOS say fallback) — reports the backend used.
-      $('#st-spark-sample').onclick = async () => {
-        m.textContent = 'synthesizing…';
-        try {
-          const r2 = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Voice check — this is how your reports will sound.' }) });
-          if (!r2.ok) throw new Error('HTTP ' + r2.status);
-          const src = r2.headers.get('x-tts-backend') || r2.headers.get('x-aios-tts-source') || 'spark';
-          const a = new Audio(URL.createObjectURL(await r2.blob()));
-          a.onended = () => { m.textContent = `✓ spoke via ${src}`; };
-          m.textContent = `playing (via ${src})…`;
-          await a.play();
-        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      };
-      // Test STT: round-trip through the Spark chain — synthesize a phrase, transcribe it back.
-      $('#st-spark-stt').onclick = async () => {
-        m.textContent = 'round-trip: synthesizing…';
-        try {
-          const t = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'voice check one two three' }) });
-          if (!t.ok) throw new Error('tts HTTP ' + t.status);
-          const audio = await t.blob();
-          m.textContent = 'round-trip: transcribing…';
-          const s = await fetch('api/transcribe?polish=false', { method: 'POST', headers: { 'content-type': audio.type || 'audio/mpeg' }, body: audio });
-          const j = await s.json().catch(() => ({}));
-          if (!s.ok) throw new Error(j.error || 'stt HTTP ' + s.status);
-          m.textContent = `✓ STT heard: “${(j.text || '').slice(0, 60)}”`;
-        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      };
-      // Re-check: probe the Spark device's health endpoint (IP+SNI).
-      $('#st-spark-health').onclick = async () => {
-        m.textContent = 'checking…';
-        try {
-          const j = await api('api/spark/health');
-          m.textContent = j.status && j.status < 400 ? `✓ reachable (${esc(j.via || 'spark')})` : `⚠ ${esc(j.error || 'unreachable')}`;
-        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      };
+      $('#st-sp-sample').onclick = () => playTts(m, { backend: 'provider' });
+      $('#st-sp-stt').onclick = () => roundTripStt(m, 'provider');
+      armConfirm($('#st-sp-del'), 'Confirm remove', async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadVoice(); });
     }
   } catch (e) { if (host) $('#st-voicecard').textContent = 'unavailable'; }
 }

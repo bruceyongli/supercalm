@@ -1,9 +1,9 @@
 import http from 'node:http';
 import https from 'node:https';
 import { route, json, readJson } from './server.js';
-import { sparkRequest } from './spark.js';
+import { sparkRequest, sparkEnabled } from './spark.js';
 import { SPARK } from './config.js';
-import { getSpeech } from './model_providers.js';
+import { getSpeech, getVoiceOverride } from './model_providers.js';
 
 // TTS for the voice concierge. Two backends:
 //   'spark' (default) — Spark server TTS at /v1/audio/speech, reached via tailnet IP+SNI
@@ -26,7 +26,11 @@ const TTS_FORMATS = new Set(['mp3', 'wav', 'aac', 'aiff', 'flac', 'opus', 'pcm']
 // The live TTS chain config, for Settings → Voice to SHOW what's actually active (developers were told
 // "Spark is configured" but saw an empty form — this surfaces the real service). All env-derived.
 export function voiceConfig() {
-  return { backend: TTS_BACKEND, ttsEngine: TTS_ENGINE, ttsVoice: TTS_VOICE, ttsInstruct: TTS_INSTRUCT, localTtsPort: TTS_PORT, localVoice: LOCAL_VOICE };
+  const ov = getVoiceOverride();
+  const o = ov?.spark || {};
+  const ttsEngine = normalizeEngine(o.ttsEngine || TTS_ENGINE);
+  const ttsVoice = o.ttsVoice || (o.ttsEngine ? defaultVoiceForEngine(ttsEngine) : TTS_VOICE);
+  return { backend: TTS_BACKEND, ttsEngine, ttsVoice, ttsInstruct: (o.ttsInstruct ?? TTS_INSTRUCT), localTtsPort: TTS_PORT, localVoice: LOCAL_VOICE, sparkDisabled: !!ov?.sparkDisabled };
 }
 
 function normalizeEngine(engine) {
@@ -139,16 +143,17 @@ route('POST', '/api/tts', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   const text = String(b.text || '').slice(0, 4000);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  const engine = normalizeEngine(b.engine || b.model || TTS_ENGINE);
+  const vc = voiceConfig(); // effective TTS config (UI override merged over env) — so edits + disable apply
+  const engine = normalizeEngine(b.engine || b.model || vc.ttsEngine);
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
-  const voice = b.voice || defaultVoiceForEngine(engine);
-  const wantSpark = (b.backend || TTS_BACKEND) === 'spark';
+  const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
+  const wantSpark = (b.backend || vc.backend) === 'spark';
 
   let audio = null;
   let responseHeaders = null;
-  if (wantSpark && SPARK.ip) {
+  if (wantSpark && sparkEnabled()) {
     try {
-      const result = await speakSpark(text, voice, engine, format, b.instruct);
+      const result = await speakSpark(text, voice, engine, format, b.instruct ?? vc.ttsInstruct);
       audio = result.audio;
       responseHeaders = proxyTtsHeaders(result.headers, 'spark', format);
     } catch (e) {

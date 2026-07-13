@@ -190,6 +190,39 @@ export function clearSpeech() {
   writeAll(data);
 }
 
+// ---- voice override (edit the ACTIVE Spark TTS/STT config from the UI) ----------------------------
+// The env (data/aios.env: SPARK_IP/SPARK_HOST + AIOS_TTS_*) is the deployment default; this DB override
+// takes precedence at runtime and hot-reloads, so a developer can edit host/engine/voice/instructions
+// without hand-editing env + restarting (spark.js effectiveSpark() / tts.js voiceConfig() merge it over
+// env). Delete = clear the override → revert to env. Only overridden keys persist; `sparkDisabled` mutes
+// Spark (voice falls to the local/cloud/browser chain) without deleting the override.
+const VOICE_OVERRIDE_KEYS = ['ip', 'host', 'ttsEngine', 'ttsVoice', 'ttsInstruct'];
+export function getVoiceOverride() {
+  const v = readAll().voice || null;
+  if (!v) return null;
+  return { spark: v.spark || {}, sparkDisabled: !!v.sparkDisabled };
+}
+export function setVoiceOverride(patch = {}) {
+  const data = readAll();
+  const cur = data.voice || {};
+  const spark = { ...(cur.spark || {}) };
+  for (const k of VOICE_OVERRIDE_KEYS) {
+    if (patch[k] === undefined) continue;
+    const val = String(patch[k] ?? '').trim().slice(0, 200);
+    if (val) spark[k] = val; else delete spark[k]; // blank clears just that field → re-inherit env
+  }
+  const next = { ...cur, spark, updated_at: now() };
+  if (patch.sparkDisabled !== undefined) next.sparkDisabled = !!patch.sparkDisabled;
+  data.voice = next;
+  writeAll(data);
+  return getVoiceOverride();
+}
+export function clearVoiceOverride() {
+  const data = readAll();
+  delete data.voice;
+  writeAll(data);
+}
+
 // Probe: synthesize a one-word clip (the only check that proves TTS actually works; /v1/models is
 // optional on audio servers). Returns {ok, tts, contentType, error}.
 export async function probeSpeech({ base_url, api_key, tts_model = 'tts-1', tts_voice = 'alloy' } = {}) {

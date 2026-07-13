@@ -3,7 +3,7 @@
 // registered before any :id patterns (router matches in registration order).
 
 import { route, json } from './server.js';
-import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech, listBuiltinProviders, setBuiltinEnabled } from './model_providers.js';
+import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech, listBuiltinProviders, setBuiltinEnabled, getVoiceOverride, setVoiceOverride, clearVoiceOverride } from './model_providers.js';
 import { currentProviders, listProxyModels } from './model_catalog.js';
 import { pricingStatus, refreshPrices, clearPricing, SUPERCALM_PRICES_URL } from './pricing.js';
 import { bus } from './bus.js';
@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 import { DATA_DIR, SPARK } from './config.js';
 import { voiceConfig } from './tts.js';
+import { effectiveSpark, sparkEnabled } from './spark.js';
 import { db } from './store.js';
 
 function readBody(req) {
@@ -30,7 +31,16 @@ route('GET', '/api/models/providers', (req, res) => {
     ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
     builtin: listBuiltinProviders(currentProviders(), byProxy),
     speech: getSpeech(), spark_configured: !!SPARK.ip,
-    spark: { configured: !!SPARK.ip, host: SPARK.host, port: SPARK.port, sttModel: getSpeech()?.stt_model || 'whisper-1', ...voiceConfig() },
+    spark: (() => {
+      const eff = effectiveSpark(); const vc = voiceConfig(); const overridden = Object.keys(getVoiceOverride()?.spark || {});
+      // ip is exposed ONLY when it's a UI override (the developer set it here); the env SPARK_IP stays
+      // server-side (private-infra posture) and surfaces just as the "blank inherits env" placeholder.
+      return { configured: !!eff.ip, enabled: sparkEnabled(), envHost: SPARK.host, host: eff.host,
+        ip: overridden.includes('ip') ? eff.ip : '', port: eff.port,
+        sttModel: getSpeech()?.stt_model || 'whisper-1', ttsEngine: vc.ttsEngine, ttsVoice: vc.ttsVoice, ttsInstruct: vc.ttsInstruct,
+        localTtsPort: vc.localTtsPort, localVoice: vc.localVoice, backend: vc.backend,
+        source: overridden.length ? 'override' : 'env', overridden };
+    })(),
     pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
   });
 });
@@ -98,6 +108,24 @@ route('POST', '/api/models/speech', async (req, res) => {
 });
 route('DELETE', '/api/models/speech', (req, res) => {
   clearSpeech();
+  bus.emit('changed');
+  return json(res, 200, { ok: true });
+});
+
+// Voice override — edit the ACTIVE Spark config (host/engine/voice/instructions) or mute it ("use"),
+// hot-reloaded over the env defaults. DELETE clears the override → reverts to data/aios.env.
+route('POST', '/api/models/voice', async (req, res) => {
+  const b = await bodyJson(req);
+  try {
+    const ov = setVoiceOverride(b);
+    bus.emit('changed');
+    return json(res, 200, { ok: true, voice: ov });
+  } catch (e) {
+    return json(res, 400, { ok: false, error: String(e.message || e).slice(0, 200) });
+  }
+});
+route('DELETE', '/api/models/voice', (req, res) => {
+  clearVoiceOverride();
   bus.emit('changed');
   return json(res, 200, { ok: true });
 });

@@ -207,11 +207,11 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const sparkSrc = readFileSync(new URL('../src/spark.js', import.meta.url), 'utf8');
   assert.match(sparkSrc, /transcribeWithProvider/, 'STT provider path exists');
   assert.match(sparkSrc, /no speech-to-text configured/, 'helpful 502 when nothing is configured');
-  assert.match(sparkSrc, /import \{ getSpeech \} from '\.\/model_providers\.js'/, 'spark imports the store (a use-without-import once shipped)');
+  assert.match(sparkSrc, /import \{[^}]*\bgetSpeech\b[^}]*\} from '\.\/model_providers\.js'/, 'spark imports the store (a use-without-import once shipped; co-imports like getVoiceOverride are fine)');
   const ttsSrc = readFileSync(new URL('../src/tts.js', import.meta.url), 'utf8');
   assert.match(ttsSrc, /speakProvider/, 'TTS provider path exists');
-  assert.match(ttsSrc, /import \{ getSpeech \} from '\.\/model_providers\.js'/, 'tts imports the store');
-  assert.match(ttsSrc, /wantSpark && SPARK\.ip/, 'spark only attempted when configured');
+  assert.match(ttsSrc, /import \{[^}]*\bgetSpeech\b[^}]*\} from '\.\/model_providers\.js'/, 'tts imports the store');
+  assert.match(ttsSrc, /wantSpark && sparkEnabled\(\)/, 'spark only attempted when configured (and not muted)');
   const mapi = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(mapi, /api\/models\/speech/, 'speech config routes exist');
   assert.match(mapi, /spark_configured/, 'settings can tell whether a Spark device takes precedence');
