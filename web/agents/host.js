@@ -22,6 +22,17 @@ const GEAR_SVG =
 // Builder is the "create an agent" surface — reached from the Agents page, never a tab.
 const NON_TAB = new Set(['builder']);
 
+// Rail icons for the built-in agents (the design's dock rail is minimal line-icons, not letters).
+// Same stroke style as GEAR_SVG. Drop-in agents fall back to their first letter (glyphBtn).
+const SVG = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+const DOCK_ICON = {
+  map: SVG('<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.7 7.2 10.6 16M17.3 7.2 13.4 16"/>'), // Graph — connected nodes
+  supervisor: SVG('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>'), // Supervisor — eye
+  knowledge: SVG('<path d="M12 6.5C10 5 7 5 5 5.4v12C7 17 10 17 12 18.5 14 17 17 17 19 17.4v-12C17 5 14 5 12 6.5z"/><path d="M12 6.5v12"/>'), // Knowledge — book
+  usage: SVG('<path d="M4 20V11M10 20V4M16 20v-6"/><path d="M2.5 20h19"/>'), // Usage — bar chart
+  preflight: SVG('<path d="M21 14a2 2 0 0 1-2 2H8l-4 3.5V6a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>'), // Council — chat
+};
+
 export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTabChange = () => {}, dock = false }) {
   let agents = [];
   const sideTabParam = (() => { try { return new URLSearchParams(location.search).get('sideTab') || ''; } catch { return ''; } })();
@@ -76,8 +87,9 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   }
   function glyphBtn(a) {
     const label = a.ui?.tab || a.name;
-    const glyph = escapeHtml(String(a.ui?.glyph || label).trim().charAt(0).toUpperCase()); // first letter (icon field is future-proof)
-    return `<button class="mini-btn dock-glyph" data-tab="${escapeHtml(a.id)}" role="tab" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${glyph}${dotFor(a)}</button>`;
+    // Minimal line-icon per agent (design); drop-ins / unknown ids fall back to their first letter.
+    const icon = DOCK_ICON[a.id] || `<span class="dock-glyph-letter">${escapeHtml(String(a.ui?.glyph || label).trim().charAt(0).toUpperCase())}</span>`;
+    return `<button class="mini-btn dock-glyph" data-tab="${escapeHtml(a.id)}" role="tab" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${icon}${dotFor(a)}</button>`;
   }
   // Rail glyph click: toggle THIS agent's drawer (click the already-open one to close). Gear = manager.
   function onGlyphClick(id) {
