@@ -103,14 +103,15 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         </div>
       </main>
 
-      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize usage panel"></div>
+      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize agent drawer"></div>
       <aside class="session-usage-panel" id="session-usage-panel">
-        <div class="side-tabs" id="side-tabs" role="tablist" aria-label="Session agents"></div>
         <div id="side-panels">
           <section class="side-tab-panel" id="s-map" aria-live="polite" hidden></section>
           <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
         </div>
       </aside>
+      <nav class="agent-dock-rail" id="side-tabs" role="tablist" aria-label="Session agents"></nav>
+      <div class="agent-dock-scrim" id="agent-dock-scrim" hidden></div>
     </div>`;
 
 // The SPA/standalone contract this module exposes. mountSession() assigns these to the live instance; the
@@ -217,7 +218,7 @@ function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth());
+  return Math.max(640, window.innerWidth - railWidth() - 44); // -44px for the agent-dock rail column
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {
@@ -251,7 +252,7 @@ applyUsageWidth();
 
 let resizeDrag = null;
 usageResizer.addEventListener('pointerdown', (e) => {
-  if (matchMedia('(max-width: 1050px)').matches) return;
+  if (matchMedia('(max-width: 1194px)').matches) return; // drawer is a fixed overlay ≤1194px — no drag-resize
   resizeDrag = { x: e.clientX, startPx: usagePanelFraction * availableWidth() };
   usageResizer.setPointerCapture(e.pointerId);
   shell.classList.add('resizing');
@@ -1665,6 +1666,7 @@ function mountAgentPanel() {
     panelsEl: $('#side-panels'),
     legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
     onTabChange: () => setTimeout(syncSize, 80),
+    dock: true, // 44px rail + slide-over drawer (session view); phone.js keeps the classic tab strip
   });
 }
 mountAgentPanel();

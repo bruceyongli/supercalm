@@ -425,8 +425,11 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
+  --dock-rail-w: 44px;    /* always-visible agent-dock glyph rail (the last column) */
+  --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
+  --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
+  grid-template-columns: minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
   /* rows: header · first-run banner (0 when hidden) · body. The header + banner live in the content
      columns (rows 1/2); the sidebar spans all rows (full-height left column) — design: nothing above the
      Supercalm brand, header belongs to the content area, not a full-width bar. */
@@ -443,7 +446,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell > .session-banner { grid-column: 1 / -1; grid-row: 2; }
 .session-shell.rail-pinned > .session-banner { grid-column: 2 / -1; }
 .session-shell.rail-pinned {
-  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(320px, var(--usage-panel-width));
+  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
+}
+/* Desktop: opening a drawer gives its columns width (push + drag-resize via #usage-resizer). ≤1194px the
+   drawer is a fixed overlay instead (below), so these stay 0 and the full-bleed log is never squeezed. */
+@media (min-width: 1195px) {
+  .session-shell.dock-open { --dock-resizer-w: 8px; --dock-drawer-w: var(--usage-panel-width); }
 }
 /* The session hosts the shared app-shell sidebar (web/shell.js `.dk-side`) in grid column 1. desktop.css
    gives .dk-side height:100vh (overflows past the session header) and rounded-less chrome; fit it to the
@@ -457,21 +465,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    session ran in an iframe; now element-scoped so it never touches the surrounding shell.) */
 .session-shell.embedded { --session-rail-width: 0px; padding-left: 0; }
 .session-shell.embedded > .dk-side { display: none; }
-.session-shell.rail-pinned.conversation-mode,
-.session-shell.rail-pinned.agent-mode,
-.session-shell.rail-pinned.scrollback-mode {
-  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw));
-}
-.session-shell.conversation-mode:not(.rail-pinned),
-.session-shell.agent-mode:not(.rail-pinned),
-.session-shell.scrollback-mode:not(.rail-pinned) {
-  grid-template-columns: minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw));
-}
-.session-shell.rail-pinned.conversation-mode,
-.session-shell.rail-pinned.agent-mode,
-.session-shell.rail-pinned.scrollback-mode {
-  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) 8px minmax(340px, min(420px, 34vw));
-}
+/* (removed) per-mode grid-template-columns overrides that narrowed the always-open agent panel in
+   conversation/agent/scrollback modes — obsolete under the agent dock: the panel is now a drawer of
+   uniform, user-controlled width and the log is full-bleed in every main view. */
 .session-main {
   grid-column: 1;
   grid-row: 3; /* body row — the header (row 1) + banner (row 2) sit above, sidebar spans all rows */
@@ -602,6 +598,34 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .side-tab-btn.on { color: var(--ink); border-color: var(--blue); background: #132338; }
 .side-tab-panel { display: grid; gap: 8px; }
 .side-tab-panel[hidden] { display: none !important; }
+
+/* ---- Agent dock: 44px glyph rail (always visible) + one slide-over drawer ------------------------- */
+.agent-dock-rail {
+  grid-column: -2 / -1; grid-row: 3; align-self: stretch;
+  width: var(--dock-rail-w); min-width: var(--dock-rail-w);
+  display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; z-index: 6;
+}
+.agent-dock-rail .dock-glyphs { gap: 9px; padding: 0; }
+.agent-dock-rail .dock-glyph { position: relative; width: 34px; height: 34px; font-size: 14px; font-weight: 800; }
+.agent-dock-rail .dock-glyph.on { color: var(--ink); border-color: var(--blue); background: #132338; }
+.agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 2px; right: 2px; margin: 0; }
+.agent-dock-rail .dock-gear { width: 34px; height: 34px; }
+/* Drawer closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
+.session-shell:not(.dock-open) .session-usage-panel { padding: 0; border-width: 0; overflow: hidden; }
+/* Scrim + compact overlay (≤1194px): the drawer slides over the log, dim scrim, tap/esc/✕ closes. */
+.agent-dock-scrim { position: fixed; inset: 0; background: rgba(3, 6, 10, 0.55); z-index: 44; }
+.agent-dock-scrim[hidden] { display: none; }
+@media (min-width: 1195px) { .agent-dock-scrim { display: none !important; } } /* desktop pushes, no scrim */
+@media (max-width: 1194px) {
+  .usage-resizer { display: none; }
+  .session-shell.dock-open .session-usage-panel {
+    position: fixed; top: 62px; bottom: 8px; right: calc(var(--dock-rail-w) + 8px);
+    width: min(var(--usage-panel-width, 420px), calc(100vw - 140px));
+    padding: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: auto;
+    z-index: 45; box-shadow: -18px 0 48px rgba(1, 4, 9, 0.5);
+  }
+}
 .main-tabs {
   flex: none; display: inline-flex; align-items: center; gap: 2px;
   padding: 2px; border: 1px solid var(--line); border-radius: 999px;
@@ -1270,7 +1294,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .footer-composer { padding-bottom: env(safe-area-inset-bottom); }
 .footer-composer textarea { min-height: 42px; }
 
-@media (max-width: 1050px) {
+/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + 44px rail +
+   overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
+@media (max-width: 600px) {
   .session-shell, .session-shell.rail-pinned {
     display: block;
     overflow: auto;

@@ -22,13 +22,21 @@ const GEAR_SVG =
 // Builder is the "create an agent" surface — reached from the Agents page, never a tab.
 const NON_TAB = new Set(['builder']);
 
-export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTabChange = () => {} }) {
+export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTabChange = () => {}, dock = false }) {
   let agents = [];
   const sideTabParam = (() => { try { return new URLSearchParams(location.search).get('sideTab') || ''; } catch { return ''; } })();
   let active = sideTabParam || localStorage.getItem(PREF) || 'map';
   let homeEl = null;
   const modules = new Map(); // id -> { el, inst, papi, dirty }
   const base = document.baseURI;
+  // Agent dock (session view only, `dock:true`): a 44px rail is always visible; ONE drawer opens on
+  // demand, defaulting CLOSED so the log surface is full-width. Non-dock callers (the phone panels
+  // sheet) keep the classic always-open tab strip — `open` stays true so tabs highlight + refresh()
+  // renders the Agents home. `shellEl`/`scrimEl` are null off the session view; every use is guarded.
+  let open = !dock;
+  const shellEl = panelsEl.closest('.session-shell');
+  const scrimEl = $('#agent-dock-scrim');
+  const dockAc = new AbortController();
 
   const view = (id) => agents.find((a) => a.id === id);
   const tabbable = () => agents.filter((a) => a.active && !NON_TAB.has(a.id)).sort((a, b) => (a.ui?.order ?? 100) - (b.ui?.order ?? 100));
@@ -40,22 +48,57 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     if (r?.agents) agents = r.agents;
     renderTabs();
     if (!isView(active)) active = tabbable()[0]?.id || 'agents';
-    await activate(active);
+    if (dock) markActiveTab(); // dock defaults CLOSED — pick a default target but do NOT open a drawer
+    else await activate(active); // classic tab strip (phone): reveal the active panel on load
   }
 
   // ---- tabs ----------------------------------------------------------------
   function renderTabs() {
     const tabs = tabbable();
-    // tabs live in a responsive grid; the Agents (gear) button is pinned to the far-right corner and
-    // styled distinctly from the tabs — it opens the Agents page (activate / permissions / create).
-    tabsEl.innerHTML =
-      `<div class="side-tabs-grid">${tabs.map((a) => tabBtn(a.id, a.ui?.tab || a.name, dotFor(a))).join('')}</div>` +
-      `<button class="side-agents-btn" data-tab="agents" title="Agents — activate, permissions & create" aria-label="Agents">${GEAR_SVG}</button>`;
-    tabsEl.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => activate(b.dataset.tab)));
+    if (dock) {
+      // Agent dock: a 44px rail — one glyph per active agent (+ attention dot) with the gear pinned for
+      // the Agents manager. A glyph click toggles ITS drawer (see onGlyphClick).
+      tabsEl.innerHTML =
+        `<div class="rail-mini-col dock-glyphs">${tabs.map(glyphBtn).join('')}</div>` +
+        `<button class="side-agents-btn dock-gear" data-tab="agents" title="Agents — activate, permissions & create" aria-label="Agents">${GEAR_SVG}</button>`;
+      tabsEl.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => onGlyphClick(b.dataset.tab)));
+    } else {
+      // Classic tab strip (phone panels sheet): a tab per agent + the gear; a tab click reveals its panel.
+      tabsEl.innerHTML =
+        `<div class="side-tabs-grid">${tabs.map((a) => tabBtn(a.id, a.ui?.tab || a.name, dotFor(a))).join('')}</div>` +
+        `<button class="side-agents-btn" data-tab="agents" title="Agents — activate, permissions & create" aria-label="Agents">${GEAR_SVG}</button>`;
+      tabsEl.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => activate(b.dataset.tab)));
+    }
     markActiveTab();
   }
   function tabBtn(id, label, dot = '', title = '') {
     return `<button class="side-tab-btn" data-tab="${escapeHtml(id)}" role="tab" title="${escapeHtml(title || label)}">${escapeHtml(label)}${dot}</button>`;
+  }
+  function glyphBtn(a) {
+    const label = a.ui?.tab || a.name;
+    const glyph = escapeHtml(String(a.ui?.glyph || label).trim().charAt(0).toUpperCase()); // first letter (icon field is future-proof)
+    return `<button class="mini-btn dock-glyph" data-tab="${escapeHtml(a.id)}" role="tab" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${glyph}${dotFor(a)}</button>`;
+  }
+  // Rail glyph click: toggle THIS agent's drawer (click the already-open one to close). Gear = manager.
+  function onGlyphClick(id) {
+    const current = id === 'agents' ? active === 'agents' || active === 'builder' : active === id;
+    if (open && current) close();
+    else openDrawer(id);
+  }
+  async function openDrawer(id) {
+    open = true;
+    shellEl?.classList.add('dock-open');
+    if (scrimEl) scrimEl.hidden = false; // CSS reveals the scrim only ≤1194px (overlay); desktop pushes
+    await activate(id);
+    markActiveTab();
+  }
+  function close() {
+    if (!open || !dock) return;
+    open = false;
+    shellEl?.classList.remove('dock-open');
+    if (scrimEl) scrimEl.hidden = true;
+    markActiveTab();
+    onTabChange(); // syncSize: the log reclaims full width
   }
   function dotFor(a) {
     const v = a.data?.latest?.verdict;
@@ -65,7 +108,8 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function markActiveTab() {
     tabsEl.querySelectorAll('[data-tab]').forEach((b) => {
       // the gear lights up for both the Agents home and the Builder (both live "inside" Agents).
-      const on = b.classList.contains('side-agents-btn') ? active === 'agents' || active === 'builder' : b.dataset.tab === active;
+      const sel = b.classList.contains('side-agents-btn') ? active === 'agents' || active === 'builder' : b.dataset.tab === active;
+      const on = open && sel; // in the dock, a glyph is lit only while its drawer is open
       b.classList.toggle('on', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
     });
@@ -174,7 +218,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
             m.inst?.update?.(view(active));
           } catch {}
         }
-        if (active === 'agents') renderHome();
+        if (open && active === 'agents') renderHome(); // never render Home into a closed drawer
       })
       .catch(() => {});
   }
@@ -258,6 +302,10 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   // any without unmount() are simply removed. Called by the session's destroySession() and by the in-place
   // session switch before re-mounting for the next session.
   function destroy() {
+    try { dockAc.abort(); } catch {} // remove esc + scrim listeners
+    try { shellEl?.classList.remove('dock-open'); } catch {}
+    try { if (scrimEl) scrimEl.hidden = true; } catch {}
+    open = !dock;
     for (const [, m] of modules) {
       try { m.inst?.unmount?.(); } catch {}
       try { m.el?.remove(); } catch {}
@@ -267,6 +315,12 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     homeEl = null;
   }
 
+  if (dock) {
+    // esc closes the topmost drawer; a scrim tap (compact overlay) closes it. Both scoped to dock mode.
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }, { signal: dockAc.signal });
+    scrimEl?.addEventListener('click', () => close(), { signal: dockAc.signal });
+  }
+
   load();
-  return { refresh, activate, reload: load, destroy };
+  return { refresh, activate, reload: load, destroy, open: openDrawer, close, isOpen: () => open };
 }
