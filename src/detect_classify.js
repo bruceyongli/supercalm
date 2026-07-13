@@ -26,9 +26,16 @@ export function clearHookState(id) {
 const WORKING_RX = [
   /esc(ape)? to interrupt/i,
   /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏⣾⣽⣻⢿⡿⣟⣯⣷◐◓◑◒]/, // braille/circle spinners
-  /\(\s*\d+\s*s\b/, // codex elapsed timer e.g. "(12s · Esc to interrupt)"
   /\b(thinking|generating|working|running|searching|reading|editing|applying|planning|compacting|summarizing|loading)\b\s*…/i, // "Working…"
 ];
+// NB: codex's live elapsed timer ("(12s · Esc to interrupt)") is intentionally NOT a WORKING_RX pattern.
+// As a static regex, `/\(\s*\d+\s*s\b/` matched ANY parenthetical "(<n>s" the agent merely PRINTED — a
+// session analysing this very detector had "(9s TTL) …" in its own transcript and stuck at `working` for
+// minutes while idle (operator report, s_f54892ae6d, 2026-07-12). Per this block's own rule above, a real
+// timer TICKS, so a genuinely-working pane changes every second → idleMs stays < IDLE_WAIT_MS and the
+// step-4 default already returns `working`. A live timer is thus caught by "output changing (low idle)"; a
+// stale "(<n>s" on a long-idle pane is prose, not work, and must fall through to waiting. (esc-to-interrupt
+// and the spinner glyph stay: they appear ONLY while an agent is live, even on a stabilized-static pane.)
 
 // Background work is LIVE: the agent's footer reports one or more background terminals still running
 // ("· 2 background terminals running · /ps to view"). This is ongoing work even when the FOREGROUND

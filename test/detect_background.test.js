@@ -72,4 +72,36 @@ const INCIDENT_SNAP = [
   assert.equal(r.status, 'working', 'bg terminals within the hold window must still read as working');
 }
 
+// Operator report (s_f54892ae6d, 2026-07-12): an IDLE session was shown `working` everywhere because its
+// OWN transcript contained a parenthetical elapsed-time string — "(9s TTL) …" — which the codex live-timer
+// pattern `/\(\s*\d+\s*s\b/` matched as active processing. A printed "(<n>s" is not a ticking timer; on a
+// long-idle pane it must settle to waiting. (Condensed capture of the real pane: an ⏺ answer line quoting
+// the TTL, claude's DONE line "✻ Cooked for 3m 9s", the composer, and the bypass footer.)
+const TIMER_PROSE_SNAP = [
+  '⏺ Root-caused the flap: the hook override (9s TTL) and the pattern classifier can disagree,',
+  '  flapping status ~1/s for a few polls.',
+  '',
+  '✻ Cooked for 3m 9s',
+  '',
+  '❯ sign off on the 13b fix',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents  89% context used',
+].join('\n');
+{
+  const r = classify({ session: sess({ tool: 'claude' }), snap: TIMER_PROSE_SNAP, idleMs: IDLE, authGraceUntil: 0 });
+  assert.equal(r.status, 'waiting', 'a printed "(9s TTL)" in prose must NOT pin an idle session working — an elapsed timer is a LIVE-only signal');
+}
+// The principle, isolated: the SAME "(12s)" content reads working while the pane is live (changing, low
+// idle) and waiting once it has gone stale. A real timer ticks; a frozen one is just text.
+{
+  const snap = 'building the search index\n(12s)';
+  assert.equal(classify({ session: sess({ tool: 'codex' }), snap, idleMs: 800, authGraceUntil: 0 }).status, 'working', 'a recently-changed pane is working (live)');
+  assert.equal(classify({ session: sess({ tool: 'codex' }), snap, idleMs: IDLE, authGraceUntil: 0 }).status, 'waiting', 'the same "(12s)" gone stale is not work');
+}
+// Guard the genuine case: a real codex working line still reads working even when idle (its interrupt hint
+// + spinner glyph are live-only markers), so removing the bare timer did not weaken true-positive detection.
+{
+  const snap = '⣾ Working (12s · Esc to interrupt)';
+  assert.equal(classify({ session: sess({ tool: 'codex' }), snap, idleMs: IDLE, authGraceUntil: 0 }).status, 'working', 'esc-to-interrupt / spinner still detect live codex work');
+}
+
 console.log('detect_background.test ok');
