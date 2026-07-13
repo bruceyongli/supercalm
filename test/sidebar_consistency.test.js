@@ -12,6 +12,7 @@ const sidebarOf = (html) => (html.match(/<aside class="dk-side"[\s\S]*?<\/aside>
 const shellSidebar = (read('shell.js').match(/const SIDEBAR_HTML = `([\s\S]*?)`;/) || [, ''])[1];
 const copies = {
   'shell.js SIDEBAR_HTML': shellSidebar,
+  'app.html': sidebarOf(read('app.html')), // the LIVE sidebar after the SPA cutover — the one users actually see
   'desktop.html': sidebarOf(read('desktop.html')),
   'session.html': sidebarOf(read('session.html')),
 };
@@ -35,4 +36,4 @@ for (const [name, sb] of Object.entries(copies)) {
   assert.deepEqual(systemLabels(sb), ref, `${name}: SYSTEM nav matches the canonical`);
 }
 
-console.log('sidebar_consistency: all 3 sidebar copies match the canonical (no Inbox/+New drift)');
+console.log(`sidebar_consistency: all ${Object.keys(copies).length} sidebar copies match the canonical (incl. the live app.html; no Inbox/+New drift)`);

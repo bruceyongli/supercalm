@@ -243,25 +243,26 @@ const TYPES = {
 };
 async function serveStatic(req, res, url) {
   let p = decodeURIComponent(url.pathname);
+  // CUTOVER: the single-shell SPA (app.html + router.js) is now the default for every app route — one
+  // persistent flush sidebar, no page reload on any page/session switch. The old per-page documents are
+  // retired from the default routes (kept on disk + reachable via their explicit .html paths as a fallback,
+  // e.g. /session.html, /desktop.html). ?classic=1 still serves the pre-redesign dashboard.
   if (p === '/') {
-    // Home flip (design handoff): the redesigned shell is the home page; ?classic=1 serves the
-    // pre-redesign dashboard (bookmarkable escape hatch — no persistence server-side, the link in
-    // the shell footer always carries it).
-    p = url.searchParams.get('classic') === '1' ? '/index.html' : '/desktop.html';
+    p = url.searchParams.get('classic') === '1' ? '/index.html' : '/app.html';
   }
-  if (p === '/session') p = '/session.html';
-  if (p === '/records') p = '/records.html';
-  if (p === '/decisions') p = '/decisions.html';
+  if (p === '/session') p = '/app.html';
+  if (p === '/records') p = '/app.html';
+  if (p === '/decisions') p = '/app.html';
+  if (p === '/usage') p = '/app.html';
+  if (p === '/health') p = '/app.html';
+  if (p === '/settings') p = '/app.html';
+  if (p === '/projects') p = '/app.html';
+  if (p === '/app') p = '/app.html';
+  // Standalone pages NOT part of the SPA shell:
   if (p === '/auth') p = '/auth.html';
-  if (p === '/usage') p = '/usage.html';
-  if (p === '/health') p = '/health.html';
   if (p === '/phone') p = '/phone.html';
-  if (p === '/desktop') p = '/desktop.html';
-  if (p === '/app') p = '/app.html'; // single-shell SPA (built alongside the legacy pages; becomes the default once verified)
   if (p === '/onboarding') p = '/onboarding.html';
-  if (p === '/settings') p = '/settings.html';
-  if (p === '/projects') p = '/projects.html';
-  if (p === '/records') p = '/records.html';
+  if (p === '/desktop') p = '/desktop.html'; // pre-redesign dashboard, direct access
   // Design-review artifacts (side-by-side PNGs) — served read-only from the gitignored data dir so the
   // visual-parity grid is openable at a tailnet URL (/aios/review) without committing binaries to the repo.
   if (p === '/review' || p === '/review/') {
