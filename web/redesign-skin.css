@@ -11,8 +11,12 @@ code, pre, .mono, td, .path, .chip, .badge, .count { font-family: 'JetBrains Mon
 .btn { border-radius: 10px !important; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-weight: 600; }
 .btn:not(.ghost):not(.danger) { background: #238636 !important; border-color: #2ea043 !important; color: #fff !important; }
 .btn.ghost { background: transparent !important; border: 1px solid #232c38 !important; color: #8a95a5 !important; }
-input, select, textarea { background: #0b0f16 !important; border: 1px solid #232c38 !important; border-radius: 10px !important; color: #e9eef5 !important; }
-input:focus, select:focus, textarea:focus { border-color: #365a86 !important; outline: none; }
+/* Blanket control skin for the dashboard + system-page views — but NOT the session view (`.session-shell`),
+   which has its own composer/terminal control design in styles.css. Before the SPA cutover the session page
+   never loaded this skin; the app-shell now does, so scope it out to keep the composer's inline selects
+   (and every other session control) intact. */
+input:not(.session-shell *), select:not(.session-shell *), textarea:not(.session-shell *) { background: #0b0f16 !important; border: 1px solid #232c38 !important; border-radius: 10px !important; color: #e9eef5 !important; }
+input:not(.session-shell *):focus, select:not(.session-shell *):focus, textarea:not(.session-shell *):focus { border-color: #365a86 !important; outline: none; }
 table { border-color: #161d27 !important; }
 th { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 1.2px; text-transform: uppercase; color: #5c6675 !important; }
 tr, td { border-color: #10151d !important; }
