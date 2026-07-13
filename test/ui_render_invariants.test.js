@@ -73,7 +73,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const sv = read('story-view.js');
   const rs = sv.indexOf('export async function refreshStory');
   assert.ok(rs > 0, 'refreshStory exists');
-  const body = sv.slice(rs, rs + 1400);
+  const body = sv.slice(rs, rs + 2600);
   assert.ok(/const mySid\s*=\s*sid/.test(body), 'refreshStory captures the session id (mySid) before the await');
   assert.ok(/api\(`api\/session\/\$\{mySid\}\/story/.test(body), 'refreshStory fetches with the captured mySid, not the live sid');
   assert.ok(/if\s*\(\s*sid\s*!==\s*mySid\s*\)\s*return/.test(body), 'refreshStory discards a response once a switch has re-pointed sid (no cross-session leak)');
