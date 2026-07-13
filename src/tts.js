@@ -112,13 +112,16 @@ function speakLocal(text) {
   });
 }
 
-// OpenAI-compatible /v1/audio/speech (Auth & Models page speech provider): the no-Spark TTS path —
-// OpenAI/local Kokoro-FastAPI/openedai-speech/speaches all speak this shape.
-async function speakProvider(sp, text, format) {
+// OpenAI-compatible /v1/audio/speech (the Settings → Voice speech provider): the no-Spark TTS path —
+// OpenAI/local Kokoro-FastAPI/openedai-speech/speaches all speak this shape. Speaking-style
+// `instructions` (per-request instruct wins over the saved config) go out only when set: OpenAI's
+// newer TTS (gpt-4o-mini-tts+) honors them; servers that don't know the param never see it.
+async function speakProvider(sp, text, format, instruct = '') {
+  const style = String(instruct || sp.tts_instructions || '').slice(0, 300);
   const r = await fetch(sp.base_url + '/v1/audio/speech', {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(sp.api_key ? { authorization: `Bearer ${sp.api_key}` } : {}) },
-    body: JSON.stringify({ model: sp.tts_model || 'tts-1', input: text, voice: sp.tts_voice || 'alloy', response_format: format }),
+    body: JSON.stringify({ model: sp.tts_model || 'tts-1', input: text, voice: sp.tts_voice || 'alloy', response_format: format, ...(style ? { instructions: style } : {}) }),
     signal: AbortSignal.timeout(60000),
   });
   if (!r.ok) throw new Error(`provider tts ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
@@ -150,7 +153,7 @@ route('POST', '/api/tts', async (req, res) => {
     const speech = getSpeech({ redact: false });
     if (speech?.enabled && speech.base_url) {
       try {
-        const result = await speakProvider(speech, text, format);
+        const result = await speakProvider(speech, text, format, b.instruct);
         audio = result.audio;
         responseHeaders = proxyTtsHeaders({}, 'api', format);
         responseHeaders['x-tts-backend'] = 'api';

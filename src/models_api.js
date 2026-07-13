@@ -10,7 +10,7 @@ import { bus } from './bus.js';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, SPARK } from './config.js';
 import { db } from './store.js';
 
 function readBody(req) {
@@ -28,7 +28,8 @@ route('GET', '/api/models/providers', (req, res) => {
   json(res, 200, {
     ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
     builtin: listBuiltinProviders(currentProviders(), byProxy),
-    speech: getSpeech(), pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
+    speech: getSpeech(), spark_configured: !!SPARK.ip,
+    pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
   });
 });
 

@@ -39,8 +39,8 @@ source** — the [secret-scan hooks](#keeping-secrets-out-of-git) will block tha
 
 ## API model providers (no local proxy fleet)
 
-Most users don't run a localhost model-proxy fleet. Add your own API endpoints on the
-**Auth page → "API model providers"** card instead:
+Most users don't run a localhost model-proxy fleet. Add your own API endpoints in
+**Settings → "API providers"** instead (the voice STT/TTS provider lives in **Settings → Voice**):
 
 - **Anthropic API** (`https://api.anthropic.com` + your `sk-ant-…` key): models join every picker and
   power the supervisor/agents, **and claude sessions route through it automatically** (auth mode `API`)

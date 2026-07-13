@@ -78,7 +78,17 @@ document.addEventListener('click', (e) => {
   const a = e.target.closest('a[href]');
   if (!a || a.target === '_blank' || a.hasAttribute('download')) return;
   const href = a.getAttribute('href');
-  if (!href || href.startsWith('#') || /^[a-z]+:/i.test(href)) return; // hash or scheme (mailto:, http:) — leave it
+  if (!href) return;
+  if (href.startsWith('#')) {
+    // In-page anchor. The browser CANNOT be left to handle this: the app ships <base href="/aios/">,
+    // so a bare "#x" resolves against the BASE and really navigates to /aios/#x — the dashboard
+    // (observed: the settings sub-nav "redirected home"). Scroll in place instead.
+    e.preventDefault();
+    document.getElementById(href.slice(1))?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    history.replaceState({}, '', location.pathname + location.search + href);
+    return;
+  }
+  if (/^[a-z]+:/i.test(href)) return; // scheme (mailto:, http:) — leave it
   let url;
   try { url = new URL(href, location.href); } catch { return; }
   if (url.origin !== location.origin) return;

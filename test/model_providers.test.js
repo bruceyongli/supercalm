@@ -112,8 +112,14 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const api = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(api, /api\/models\/providers/, 'provider routes exist');
   assert.ok(api.indexOf("'/api/models/providers'") < api.indexOf('/api/models/providers/:id'), 'specific before :id (registration order)');
+  // MIGRATED (operator, 2026-07-13): provider + speech management left the auth page for Settings —
+  // auth keeps sign-in/CLI tooling and points at Settings; the forms live in web/views/settings.js.
   const ui = readFileSync(new URL('../web/auth.js', import.meta.url), 'utf8');
-  assert.match(ui, /apiProviders/, 'auth page carries the providers card');
+  assert.ok(!/apiProviders|speechProvider/.test(ui), 'auth page no longer carries the migrated cards');
+  const authHtml = readFileSync(new URL('../web/auth.html', import.meta.url), 'utf8');
+  assert.match(authHtml, /settings#st-voice/, 'auth points at Settings for voice config');
+  const st = readFileSync(new URL('../web/views/settings.js', import.meta.url), 'utf8');
+  assert.match(st, /api\/models\/providers\/builtin/, 'settings carries the providers management');
 }
 
 // ---- fleet-less brains: voice chain api entries + summarize fallback + supervisor chain tail --------
@@ -183,6 +189,12 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   setSpeech({ base_url: 'http://127.0.0.1:9997' }); // partial update keeps fields
   assert.equal(getSpeech().stt_model, 'whisper-large-v3');
 
+  // speaking-style instructions: stored, kept on partial update, and threaded into provider TTS
+  setSpeech({ base_url: 'http://127.0.0.1:9997', tts_instructions: 'calm colleague giving a status report' });
+  assert.equal(getSpeech().tts_instructions, 'calm colleague giving a status report');
+  setSpeech({ base_url: 'http://127.0.0.1:9997', tts_voice: 'bf_emma' });
+  assert.equal(getSpeech().tts_instructions, 'calm colleague giving a status report', 'instructions survive partial updates');
+
   // TTS route body shape (via the raw speak path in tts.js would need the server; assert protocol here)
   const r = await fetch('http://127.0.0.1:9997/v1/audio/speech', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer sk-sp' }, body: JSON.stringify({ model: 'kokoro', input: 'x', voice: 'af_heart', response_format: 'mp3' }) });
   assert.equal(r.status, 200);
@@ -202,6 +214,18 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(ttsSrc, /wantSpark && SPARK\.ip/, 'spark only attempted when configured');
   const mapi = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(mapi, /api\/models\/speech/, 'speech config routes exist');
+  assert.match(mapi, /spark_configured/, 'settings can tell whether a Spark device takes precedence');
+  // migration seams: config UIs live in Settings; the router keeps in-page anchors on the page
+  assert.match(ttsSrc, /instructions: style/, 'provider TTS threads speaking-style instructions');
+  assert.match(sparkSrc, /backend=provider|backend'\) === 'provider'|searchParams\.get\('backend'\)/, 'transcribe supports forcing the provider path');
+  const settingsSrc = readFileSync(new URL('../web/views/settings.js', import.meta.url), 'utf8');
+  assert.match(settingsSrc, /api\/models\/speech/, 'settings owns the speech form');
+  assert.match(settingsSrc, /tts_instructions/, 'settings edits speaking-style instructions');
+  // the migrated sections must manage in place (sign-in links to auth elsewhere are legitimate)
+  const managed = settingsSrc.slice(settingsSrc.indexOf('async function loadProviders'), settingsSrc.indexOf('async function loadRemote'));
+  assert.ok(managed.length > 100 && !/href="auth"/.test(managed), 'providers + voice sections never bounce to the auth page');
+  const routerSrc = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
+  assert.match(routerSrc, /scrollIntoView/, 'hash links scroll in place (base-tag would send them home)');
   await new Promise((ok) => mock3.close(ok));
 }
 

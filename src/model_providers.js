@@ -162,7 +162,7 @@ export function getSpeech({ redact = true } = {}) {
   return redact ? { ...sp, api_key: undefined, key_set: !!sp.api_key } : sp;
 }
 
-export function setSpeech({ base_url, api_key, stt_model, tts_model, tts_voice, enabled = true } = {}) {
+export function setSpeech({ base_url, api_key, stt_model, tts_model, tts_voice, tts_instructions, enabled = true } = {}) {
   const data = readAll();
   const cur = data.speech || {};
   const next = {
@@ -171,6 +171,9 @@ export function setSpeech({ base_url, api_key, stt_model, tts_model, tts_voice, 
     stt_model: String(stt_model ?? cur.stt_model ?? 'whisper-1').slice(0, 80),
     tts_model: String(tts_model ?? cur.tts_model ?? 'tts-1').slice(0, 80),
     tts_voice: String(tts_voice ?? cur.tts_voice ?? 'alloy').slice(0, 60),
+    // Optional speaking-style instructions (OpenAI gpt-4o-mini-tts and newer accept `instructions`);
+    // sent only when non-empty, so plain tts-1 / local servers never see an unknown param.
+    tts_instructions: String(tts_instructions ?? cur.tts_instructions ?? '').slice(0, 300),
     enabled: enabled !== false,
     updated_at: now(),
   };

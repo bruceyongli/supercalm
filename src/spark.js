@@ -104,7 +104,7 @@ async function transcribeWithSpark({ audio, contentType, language, polish }) {
   return sparkRequest('POST', '/v1/audio/transcriptions', { body, contentType: multipartType });
 }
 
-// OpenAI-compatible speech provider (Auth & Models page): the no-Spark STT path. Same multipart
+// OpenAI-compatible speech provider (Settings → Voice): the no-Spark STT path. Same multipart
 // shape as Spark; `language` omitted when 'auto' (OpenAI rejects it), bearer only when a key exists.
 async function transcribeWithProvider(sp, { audio, contentType, language }) {
   const ext = extFor(contentType);
@@ -138,11 +138,14 @@ route('POST', '/api/transcribe', async (req, res) => {
   if (audio.length < 500) return json(res, 400, { error: 'no audio captured — the recording was empty' });
   console.error('[aios] transcribe: ct=%s bytes=%d', ct, audio.length);
 
-  const sparkConfigured = !!SPARK.ip;
   const speech = getSpeech({ redact: false });
   const providerConfigured = !!(speech?.enabled && speech.base_url);
+  // ?backend=provider forces the speech-provider path (Settings → Voice) even when Spark is
+  // configured — the Settings test button and ops checks prove the provider STT works end-to-end.
+  const forceProvider = url.searchParams.get('backend') === 'provider';
+  const sparkConfigured = !!SPARK.ip && !forceProvider;
   if (!sparkConfigured && !providerConfigured) {
-    return json(res, 502, { error: 'no speech-to-text configured — add a speech provider on the Auth page (or set SPARK_IP/SPARK_HOST)' });
+    return json(res, 502, { error: 'no speech-to-text configured — add a speech provider in Settings → Voice (or set SPARK_IP/SPARK_HOST)' });
   }
   let r;
   let usedTranscode = false;

@@ -35,6 +35,13 @@ const SETTINGS_CSS = `
     .st-toggle.on::after { left: 19px; }
     .st-step { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #dde5ee; }
     .st-step button { width: 26px; height: 26px; border-radius: 8px; background: #0b0f16; border: 1px solid #232c38; color: #b9c4d4; cursor: pointer; }
+    /* config forms (voice / API providers — migrated from the auth page) */
+    .st-form { display: grid; gap: 8px; margin-top: 10px; }
+    .st-form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    .st-form-row .st-inp { flex: 1; min-width: 150px; }
+    .st-inp, .st-sel { background: #0b0f16; border: 1px solid #232c38; border-radius: 8px; color: #dde5ee; font-size: 12.5px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .st-inp::placeholder { color: #3f4856; }
+    .st-sel { width: auto; }
 `;
 
 let host = null;
@@ -85,28 +92,181 @@ async function loadAgents() {
   } catch (e) { if (host) $('#st-authpath').textContent = 'unavailable: ' + (e.message || e); }
 }
 
-// ---- API providers -------------------------------------------------------------------------------
+// ---- API providers (management migrated from the auth page — no bounce-out) -----------------------
 async function loadProviders() {
   try {
     const r = await api('api/models/providers');
     if (!host) return; // torn down mid-fetch
-    const builtin = (r.builtin || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">built-in · ${(p.models || []).length} models · key auto</span><span class="dk-chip" style="color:${p.enabled ? '#4ecb6c' : '#8a95a5'};border-color:currentColor">${p.enabled ? 'ON' : 'OFF'}</span></div>`).join('');
-    const rows = (r.providers || []).map((p) => `<div class="ob-row"><b>${esc(p.name)}</b><span class="ob-ver">${esc(p.kind)} · ${(p.models || []).length} models · ${p.key_set ? 'key set' : 'no key'}</span></div>`).join('');
+    const box = $('#st-prov');
+    const builtin = (r.builtin || []).map((p) => `
+      <div class="ob-row" data-proxy="${esc(p.id.replace('builtin:', ''))}"><b>${esc(p.name)}</b>
+        <span class="ob-ver">built-in · ${esc(p.base_url || '')} · ${(p.models || []).length} models · key auto</span>
+        <label class="ob-ver" style="margin-left:auto;cursor:pointer"><input type="checkbox" data-act="bi-toggle" ${p.enabled ? 'checked' : ''}/> use</label>
+      </div>`).join('');
+    const rows = (r.providers || []).map((p) => `
+      <div class="ob-row" data-id="${esc(p.id)}"><b>${esc(p.name)}</b>
+        <span class="ob-ver">${esc(p.kind)} · ${esc(p.base_url || '')} · ${(p.models || []).length} models · ${p.key_set ? 'key set' : 'no key'}</span>
+        <button class="dk-reply-btn" data-act="test">Test</button>
+        <button class="dk-reply-btn" data-act="del">Remove</button>
+        <span class="ob-msg" data-role="msg"></span>
+      </div>`).join('');
     const pr = r.pricing || {};
-    $('#st-prov').innerHTML = `${builtin}${rows || (builtin ? '' : '<p class="ob-fine">No API providers yet.</p>')}
-      <div class="ob-row"><b>Cost stats</b><span class="ob-ver">${pr.configured ? `✓ ${pr.count} priced models` : 'not configured (optional)'}</span><a class="dk-reply-btn" href="auth">Manage ▸</a></div>`;
+    box.innerHTML = `${builtin}${rows || (builtin ? '' : '<p class="ob-fine">No API providers yet — add one below to use API models without a local proxy fleet.</p>')}
+      <div class="st-form">
+        <div class="st-form-row">
+          <select class="st-sel" id="st-ap-kind">
+            <option value="anthropic">Anthropic API (serves claude sessions + agents)</option>
+            <option value="openai">OpenAI-compatible API (any /v1/chat/completions endpoint)</option>
+          </select>
+          <input class="st-inp" id="st-ap-name" placeholder="Name (e.g. Anthropic, OpenRouter)" />
+        </div>
+        <input class="st-inp" id="st-ap-base" placeholder="Base URL — blank = https://api.anthropic.com" />
+        <div class="st-form-row">
+          <input class="st-inp" id="st-ap-key" type="password" placeholder="API key (blank for open/local endpoints)" autocomplete="off" />
+          <input class="st-inp" id="st-ap-models" placeholder="Models (comma-separated; blank = auto-discover)" />
+          <button class="dk-reply-btn" id="st-ap-add">Test &amp; add</button>
+        </div>
+        <span class="ob-msg" id="st-ap-msg"></span>
+      </div>
+      <div class="ob-row" style="margin-top:10px"><b>Cost stats</b><span class="ob-ver">${pr.configured ? `✓ ${pr.count} priced models (${esc(pr.source_kind || '')})` : 'optional — point at a price manifest for $ estimates on Usage'}</span></div>
+      <div class="st-form-row">
+        <input class="st-inp" id="st-price-url" placeholder="Price manifest URL (Supercalm / LiteLLM shapes)" value="${esc(pr.configured ? pr.url : '')}" />
+        <button class="dk-reply-btn" id="st-price-set">Set</button>
+        <button class="dk-reply-btn" id="st-price-ours" title="${esc(pr.suggested_url || '')}">Use Supercalm's list</button>
+        ${pr.configured ? '<button class="dk-reply-btn" id="st-price-clear">Clear</button>' : ''}
+        <span class="ob-msg" id="st-price-msg"></span>
+      </div>`;
+    for (const row of box.querySelectorAll('[data-proxy]')) {
+      row.querySelector('[data-act="bi-toggle"]').onchange = async (e) => {
+        await api(`api/models/providers/builtin/${row.dataset.proxy}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch(() => {});
+        api('api/models/refresh', { method: 'POST' }).catch(() => {});
+      };
+    }
+    for (const row of box.querySelectorAll('[data-id]')) {
+      const id = row.dataset.id;
+      const m = row.querySelector('[data-role="msg"]');
+      row.querySelector('[data-act="test"]').onclick = async () => {
+        m.textContent = 'testing…';
+        try { const j = await api(`api/models/providers/${id}/test`, { method: 'POST' }); m.textContent = j.ok ? `✓ ${j.models.length} models` : '⚠ ' + j.error; }
+        catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+      };
+      row.querySelector('[data-act="del"]').onclick = async () => { await api(`api/models/providers/${id}`, { method: 'DELETE' }).catch(() => {}); loadProviders(); };
+    }
+    $('#st-ap-kind').onchange = () => {
+      $('#st-ap-base').placeholder = $('#st-ap-kind').value === 'anthropic' ? 'Base URL — blank = https://api.anthropic.com' : 'Base URL (e.g. https://api.openai.com or https://openrouter.ai/api)';
+    };
+    $('#st-ap-add').onclick = async () => {
+      const msg = $('#st-ap-msg');
+      msg.textContent = 'testing…';
+      try {
+        const body = {
+          kind: $('#st-ap-kind').value, name: $('#st-ap-name').value.trim(), base_url: $('#st-ap-base').value.trim(),
+          api_key: $('#st-ap-key').value, models: $('#st-ap-models').value.split(',').map((x) => x.trim()).filter(Boolean),
+        };
+        const j = await api('api/models/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+        if (!j.ok) throw new Error(j.error || 'failed');
+        msg.textContent = '✓ added';
+        loadProviders();
+      } catch (e) { msg.textContent = '⚠ ' + (e.message || e); }
+    };
+    const priceMsg = $('#st-price-msg');
+    const setPrice = async (u) => {
+      priceMsg.textContent = 'fetching…';
+      try {
+        const j = await api('api/models/pricing', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: u }) });
+        if (!j.ok) throw new Error(j.error || 'failed');
+        priceMsg.textContent = `✓ ${j.count} models`;
+        setTimeout(loadProviders, 600);
+      } catch (e) { priceMsg.textContent = '⚠ ' + (e.message || e); }
+    };
+    $('#st-price-set').onclick = () => setPrice($('#st-price-url').value.trim());
+    $('#st-price-ours').onclick = () => setPrice('');
+    const pc = $('#st-price-clear');
+    if (pc) pc.onclick = async () => { await api('api/models/pricing', { method: 'DELETE' }).catch(() => {}); loadProviders(); };
   } catch (e) { if (host) $('#st-prov').textContent = 'unavailable: ' + (e.message || e); }
 }
 
-// ---- Voice ---------------------------------------------------------------------------------------
+// ---- Voice — the FULL speech-provider config lives here now (migrated off the auth page). ---------
+// One OpenAI-compatible audio endpoint covers GPT TTS + STT (or Groq/local Kokoro-FastAPI/speaches):
+// once saved, /api/tts and /api/transcribe use it AUTOMATICALLY (Spark device, when set, speaks
+// first; the provider is the fallback — and the only path on Spark-less installs).
 async function loadVoice() {
   try {
     const r = await api('api/models/providers');
     if (!host) return; // torn down mid-fetch
     const sp = r.speech;
-    $('#st-voicecard').innerHTML = sp?.base_url
-      ? `<div class="ob-row"><b>${esc(sp.base_url)}</b><span class="ob-ver">STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')} · voice ${esc(sp.voice || '—')}</span><a class="dk-reply-btn" href="auth">Edit ▸</a></div>`
-      : `<p class="ob-fine">Not configured — voice falls back to the browser's built-in speech. <a class="dk-reply-btn" href="auth">Configure ▸</a> or run onboarding step 3.</p>`;
+    const spark = !!r.spark_configured;
+    const path = sp?.base_url
+      ? (spark ? 'Spark device is configured — it speaks first; this provider is the automatic fallback for both TTS and STT.'
+               : 'No Spark device — this provider handles all TTS and STT automatically.')
+      : (spark ? 'Spark device handles voice. Add a provider as an automatic fallback (or for use away from the device).' : '');
+    $('#st-voicecard').innerHTML = `
+      ${sp?.base_url ? `
+      <div class="ob-row"><b>Speech provider</b>
+        <span class="ob-ver">${esc(sp.base_url)} · STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')}/${esc(sp.tts_voice || '—')}${sp.key_set ? '' : ' · no key'}</span>
+        <button class="dk-reply-btn" id="st-sp-sample">▶ Play sample</button>
+        <button class="dk-reply-btn" id="st-sp-stt">Test STT</button>
+        <button class="dk-reply-btn" id="st-sp-del">Remove</button>
+        <span class="ob-msg" id="st-sp-rowmsg"></span>
+      </div>` : `<p class="ob-fine">Not configured — without a Spark device, voice falls back to the browser's built-in speech and server STT is unavailable. Add any OpenAI-compatible audio endpoint (OpenAI, Groq, local Kokoro-FastAPI / speaches).</p>`}
+      ${path ? `<p class="ob-fine">${esc(path)}</p>` : ''}
+      <div class="st-form">
+        <input class="st-inp" id="st-sp-base" placeholder="Base URL (https://api.openai.com · http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
+        <input class="st-inp" id="st-sp-key" type="password" placeholder="API key${sp?.key_set ? ' (saved — blank keeps it)' : ' (blank for local/open servers)'}" autocomplete="off" />
+        <div class="st-form-row">
+          <input class="st-inp" id="st-sp-sttm" placeholder="STT model (whisper-1 · gpt-4o-mini-transcribe)" value="${esc(sp?.stt_model || 'whisper-1')}" />
+          <input class="st-inp" id="st-sp-ttsm" placeholder="TTS model (tts-1 · gpt-4o-mini-tts · kokoro)" value="${esc(sp?.tts_model || 'tts-1')}" />
+          <input class="st-inp" id="st-sp-voice" placeholder="TTS voice (alloy · af_heart)" value="${esc(sp?.tts_voice || 'alloy')}" />
+        </div>
+        <input class="st-inp" id="st-sp-instr" placeholder="Speaking style, optional (models like gpt-4o-mini-tts follow it — e.g. calm colleague giving a status report)" value="${esc(sp?.tts_instructions || '')}" />
+        <div class="st-form-row"><button class="dk-reply-btn" id="st-sp-save">Test &amp; save</button><span class="ob-msg" id="st-sp-msg"></span></div>
+      </div>`;
+    $('#st-sp-save').onclick = async () => {
+      const msg = $('#st-sp-msg');
+      msg.textContent = 'testing tts…';
+      try {
+        const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+          base_url: $('#st-sp-base').value.trim(), api_key: $('#st-sp-key').value,
+          stt_model: $('#st-sp-sttm').value.trim(), tts_model: $('#st-sp-ttsm').value.trim(),
+          tts_voice: $('#st-sp-voice').value.trim(), tts_instructions: $('#st-sp-instr').value.trim(),
+        }) });
+        if (!j.ok) throw new Error(j.error || 'failed');
+        msg.textContent = '✓ saved';
+        loadVoice();
+      } catch (e) { msg.textContent = '⚠ ' + (e.message || e); }
+    };
+    if (sp?.base_url) {
+      const m = $('#st-sp-rowmsg');
+      $('#st-sp-del').onclick = async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadVoice(); };
+      // Hear what the SYSTEM will actually speak (full chain incl. Spark precedence) + name the backend.
+      $('#st-sp-sample').onclick = async () => {
+        m.textContent = 'synthesizing…';
+        try {
+          const r2 = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'Voice check — this is how your reports will sound.' }) });
+          if (!r2.ok) throw new Error('HTTP ' + r2.status);
+          const src = r2.headers.get('x-tts-backend') || r2.headers.get('x-aios-tts-source') || '?';
+          const a = new Audio(URL.createObjectURL(await r2.blob()));
+          a.onended = () => { m.textContent = `✓ spoke via ${src}`; };
+          m.textContent = `playing (via ${src})…`;
+          await a.play();
+        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+      };
+      // Round-trip: provider TTS a phrase, feed the audio back through provider STT — proves BOTH
+      // gpt tts + gpt stt work with the saved key, no microphone needed.
+      $('#st-sp-stt').onclick = async () => {
+        m.textContent = 'round-trip: synthesizing…';
+        try {
+          const t = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'voice check one two three', backend: 'provider' }) });
+          if (!t.ok) throw new Error('tts HTTP ' + t.status);
+          const audio = await t.blob();
+          m.textContent = 'round-trip: transcribing…';
+          const s = await fetch('api/transcribe?backend=provider&polish=false', { method: 'POST', headers: { 'content-type': audio.type || 'audio/mpeg' }, body: audio });
+          const j = await s.json().catch(() => ({}));
+          if (!s.ok) throw new Error(j.error || 'stt HTTP ' + s.status);
+          m.textContent = `✓ STT heard: “${(j.text || '').slice(0, 60)}”`;
+        } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+      };
+    }
   } catch (e) { if (host) $('#st-voicecard').textContent = 'unavailable'; }
 }
 
