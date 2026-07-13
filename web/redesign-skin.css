@@ -8,9 +8,12 @@ h1 { font-size: 19px; font-weight: 600; } /* K1: 24px is the onboarding welcome 
 h2 { font-size: 17px; font-weight: 600; }
 code, pre, .mono, td, .path, .chip, .badge, .count { font-family: 'JetBrains Mono', ui-monospace, monospace; }
 .card, .su-card, section.card { background: #10151d !important; border: 1px solid #1d2632 !important; border-radius: 13px !important; }
-.btn { border-radius: 10px !important; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-weight: 600; }
-.btn:not(.ghost):not(.danger) { background: #238636 !important; border-color: #2ea043 !important; color: #fff !important; }
-.btn.ghost { background: transparent !important; border: 1px solid #232c38 !important; color: #8a95a5 !important; }
+/* Scoped out of the session view (`.session-shell`) — the session has its OWN button design in styles.css
+   (green ring mic, ghost send, boxed back, outline Kill). Before this, these `!important` .btn rules bled
+   in and force-filled the composer mic green-square (operator/gpt-5.6-sol design review, 2026-07-13). */
+.btn:not(.session-shell *) { border-radius: 10px !important; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-weight: 600; }
+.btn:not(.ghost):not(.danger):not(.session-shell *) { background: #238636 !important; border-color: #2ea043 !important; color: #fff !important; }
+.btn.ghost:not(.session-shell *) { background: transparent !important; border: 1px solid #232c38 !important; color: #8a95a5 !important; }
 /* Blanket control skin for the dashboard + system-page views — but NOT the session view (`.session-shell`),
    which has its own composer/terminal control design in styles.css. Before the SPA cutover the session page
    never loaded this skin; the app-shell now does, so scope it out to keep the composer's inline selects

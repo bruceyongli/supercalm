@@ -111,7 +111,7 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 /* Session view = the real session view (web/session.js), mounted directly into #view (no iframe). Pin #view
    to the area right of the persistent rail with fixed positioning so the .session-shell (height:100dvh) fills
    it edge-to-edge regardless of the grid's 1fr track sizing. */
-body.session-page #view.dk-view { position: fixed; top: 0; left: var(--rail-width); right: 0; bottom: 0; width: auto; height: 100dvh; min-height: 0; display: block; z-index: 1; }
+body.session-page #view.dk-view { position: fixed; top: 0; left: var(--rail-width); right: 0; bottom: 0; width: auto; height: 100dvh; min-height: 0; display: block; padding: 0; z-index: 1; } /* padding:0 — #view is a <main>, and the generic `main{padding:14px 16px 60px}` was insetting the full-bleed session (design) */
 body.dk-collapsed.session-page #view.dk-view { left: 0; }
 body.session-page #view.dk-view > #session-root { height: 100%; }
 /* Compact/iPad session route (≤1194px): hide the shell sidebar so the redesigned session fills the full
