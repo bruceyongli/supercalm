@@ -59,11 +59,15 @@ export function messageToEvent(m) {
 export function spineFromMessages(rows) {
   const list = rows || [];
   const out = list.map(messageToEvent);
-  for (let i = out.length - 1; i >= 0; i--) {
-    if (!out[i]) continue;
-    if (out[i].kind !== 'note') break; // newest visible event isn't an agent reply — nothing to promote
-    out[i] = { ts: list[i].ts, kind: 'report', text: clip(list[i].text, 4000) };
-    break;
+  // Promote each agent turn's FINAL reply to 'report' (re-clipped to a full 4000 chars — the 600-char
+  // note is a stub, not a listenable source) so EVERY historical report gets the listen button, not just
+  // the newest (operator: "voice report should appear in all history reports"). A reply ends a turn when
+  // the next surviving event hands back to the operator ('you') or the story ends. Mirrors buildStory.
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i] || out[i].kind !== 'note') continue;
+    let j = i + 1;
+    while (j < out.length && !out[j]) j++; // skip dropped rows (detect noise)
+    if (j >= out.length || out[j].kind === 'you') out[i] = { ts: list[i].ts, kind: 'report', text: clip(list[i].text, 4000) };
   }
   return out.filter(Boolean);
 }

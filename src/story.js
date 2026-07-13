@@ -281,10 +281,17 @@ function buildStory(atoms) {
     }
   }
   for (const ev of out) if (ev.body && (ev.kind === 'note' || ev.kind === 'report' || ev.kind === 'sub' || ev.kind === 'fail')) ev.body = deMd(ev.body);
-  // promote the last trailing 'note' to 'report' (Claude final text / Codex already tagged)
-  for (let i = out.length - 1; i >= 0; i--) {
-    if (out[i].kind === 'note') { out[i].kind = 'report'; break; }
-    if (out[i].kind !== 'gap') break;
+  // Promote each agent turn's FINAL 'note' to 'report' so EVERY historical report gets the listen
+  // control, not just the newest (operator: "voice report should appear in all history reports").
+  // Claude emits ALL assistant text as notes (interleaved with tool calls); a note is that turn's
+  // report when the next non-gap event hands back to the operator ('you') or ends the story. Codex
+  // already tags phase:final as report. Short mid-turn narration that slips through is filtered by
+  // the story view's >200-char listen guard, so this only ever adds buttons to real reports.
+  for (let i = 0; i < out.length; i++) {
+    if (out[i].kind !== 'note') continue;
+    let j = i + 1;
+    while (j < out.length && out[j].kind === 'gap') j++;
+    if (j >= out.length || out[j].kind === 'you') out[i].kind = 'report';
   }
   return out;
 }

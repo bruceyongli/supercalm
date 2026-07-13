@@ -59,12 +59,28 @@ assert.deepEqual(spine.map((e) => e.text), ['start', 'next']);
   assert.equal(s[s.length - 1].kind, 'report', 'last agent reply becomes the report');
   assert.ok(s[s.length - 1].text.length > 700, 'report re-clipped at 4000, not the 600-char note stub');
   assert.equal(s[1].kind, 'note', 'earlier replies stay notes');
-  // newest visible event is the operator's → nothing to promote
+  // A completed agent reply BEFORE an operator message is still a historical report (operator: the voice
+  // report must appear on ALL history reports, not only the latest — this reply used to stay a note).
   const s2 = spineFromMessages([
     { ts: 1, direction: 'out', source: 'reply', text: 'done' },
     { ts: 2, direction: 'in', source: 'text', text: 'thanks' },
   ]);
-  assert.ok(s2.every((e) => e.kind !== 'report'), 'no promotion past an operator message');
+  assert.equal(s2[0].kind, 'report', 'a turn-final agent reply before an operator message is a report');
+
+  // The core of the request: MULTIPLE historical reports each get promoted, not just the last. Three
+  // turns, each an agent report answered by the operator (last one trailing) → all three are reports.
+  const rep = (n) => `Report ${n}: ` + 'x'.repeat(1200);
+  const s3 = spineFromMessages([
+    { ts: 1, direction: 'in', source: 'task', text: 'go' },
+    { ts: 2, direction: 'out', source: 'reply', text: rep('one') },
+    { ts: 3, direction: 'in', source: 'text', text: 'continue' },
+    { ts: 4, direction: 'out', source: 'reply', text: rep('two') },
+    { ts: 5, direction: 'in', source: 'text', text: 'continue' },
+    { ts: 6, direction: 'out', source: 'reply', text: rep('three') },
+  ]);
+  const reports = s3.filter((e) => e.kind === 'report');
+  assert.equal(reports.length, 3, 'every turn-final agent report is promoted, not just the latest');
+  assert.ok(reports.every((r) => r.text.length > 700), 'each promoted report is re-clipped to the full source, not the 600-char stub');
 }
 
 // ---- source locks: the wiring the pure module can't observe ----
