@@ -13,6 +13,7 @@ const { targetFor, extractAgentScript, splitParts, validateScript, buildScript, 
 assert.equal(targetFor(200).maxWords, 120);
 assert.equal(targetFor(3000).maxWords, 250);
 assert.equal(targetFor(9000).maxWords, 450);
+assert.equal(targetFor(9000, 'brief').maxWords, 80, 'brief = fixed ~30s digest regardless of size');
 assert.match(SYS_VOICE_REPORT, /SPOKEN report script/);
 assert.match(SYS_VOICE_REPORT, /never say URLs, absolute paths/i);
 assert.ok(PROMPT_VERSION, 'prompt version exists (cache-key component)');
@@ -30,13 +31,15 @@ assert.ok(PROMPT_VERSION, 'prompt version exists (cache-key component)');
 // ---- splitParts: transport chunks ≤ max, sentence-boundary, giant unbroken text hard-sliced ----
 {
   const sentences = Array.from({ length: 80 }, (_, i) => `Sentence number ${i} carries a bit of report substance.`).join(' ');
-  const parts = splitParts(sentences, 1800);
+  const parts = splitParts(sentences);
   assert.ok(parts.length > 1, 'long script splits');
-  for (const p of parts) assert.ok(p.length <= 1800, 'every part under the cap');
+  // default part cap must stay well under the client players' scaled caps (~45-60s of audio each) —
+  // 1800-char parts overran the old fixed 90s caps and caused the replay-from-the-top bug
+  for (const p of parts) assert.ok(p.length <= 900, 'every part under the default cap');
   for (const p of parts.slice(0, -1)) assert.match(p, /\.$/, 'parts end on sentence boundaries');
   assert.equal(splitParts('One short line.').length, 1);
-  const giant = splitParts('y'.repeat(5000), 1800);
-  assert.ok(giant.every((p) => p.length <= 1800), 'unbroken text is hard-sliced under the cap');
+  const giant = splitParts('y'.repeat(5000));
+  assert.ok(giant.every((p) => p.length <= 900), 'unbroken text is hard-sliced under the cap');
 }
 
 // ---- validateScript: fences stripped, markdown-heavy + runaway rejected ----
@@ -62,6 +65,8 @@ assert.ok(PROMPT_VERSION, 'prompt version exists (cache-key component)');
   const a = await buildScript('stuff\n## Voice report\nSpoken version straight from the agent, long enough to count as real.', 'full', { call: async () => { called = true; return { content: good }; } });
   assert.equal(a.source, 'agent');
   assert.equal(called, false, 'agent section skips the LLM');
+  const ab = await buildScript('stuff\n## Voice report\nSpoken version straight from the agent, long enough to count as real.', 'brief', { call: async () => ({ content: good, model: 'm' }) });
+  assert.equal(ab.source, 'llm', 'a brief request still polishes — the agent script serves the FULL listen only');
 
   const f = await buildScript('Report with a link https://x.co/y and /Users/bb1/aios/file.js in it. '.repeat(10), 'full', { call: async () => { throw new Error('down'); } });
   assert.equal(f.source, 'sanitized');

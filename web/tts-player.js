@@ -15,10 +15,20 @@ const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyL
 
 let player = null; // the one persistent, gesture-unlocked <audio> (never in the DOM — survives re-renders)
 
+const RATE_PRESETS = [1, 1.15, 1.25, 1.5, 1.75]; // shared with voicemode (same localStorage key)
 function ttsRate() {
   let v = 1;
   try { v = Number(localStorage.getItem('aios_tts_rate') || '1'); } catch {}
-  return [1, 1.15, 1.25, 1.5, 1.75].includes(v) ? v : 1;
+  return RATE_PRESETS.includes(v) ? v : 1;
+}
+export function currentRate() { return ttsRate(); }
+// Cycle the speech rate and apply it LIVE to whatever is playing (audio playbackRate is mutable
+// mid-clip; speechSynthesis picks it up on the next utterance). Persisted — voicemode shares it.
+export function cycleRate() {
+  const next = RATE_PRESETS[(RATE_PRESETS.indexOf(ttsRate()) + 1) % RATE_PRESETS.length];
+  try { localStorage.setItem('aios_tts_rate', String(next)); } catch {}
+  if (player) applyRate(player);
+  return next;
 }
 function applyRate(a) {
   if (!a) return;
@@ -119,13 +129,17 @@ function playUrl(url, h) {
 }
 
 // Streamed: play Spark's sentence chunks as they arrive (~1s to first audio for a long text).
+// The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
+// has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
+// re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
 function speakStream(text, h, extra = {}) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
     const urls = [];
     let readingDone = false, playing = false, finished = false, played = 0;
-    const cap = setTimeout(() => finish(new Error('tts stream timeout')), 90000);
+    const capMs = Math.max(90000, 20000 + (text.length * 130) / ttsRate());
+    const cap = setTimeout(() => finish(played ? undefined : new Error('tts stream timeout')), capMs);
     const finish = (err) => {
       if (finished) return;
       finished = true;
@@ -191,10 +205,12 @@ function speakStream(text, h, extra = {}) {
 }
 
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
+// Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
+// has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
 function speakSingle(text, h, extra = {}) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
-    let done = false, cap = null, stall = null;
+    let done = false, cap = null, stall = null, playedSome = false;
     const ctrl = new AbortController();
     const finish = (err) => {
       if (done) return;
@@ -203,10 +219,10 @@ function speakSingle(text, h, extra = {}) {
       if (stall) clearTimeout(stall);
       try { ctrl.abort(); } catch {}
       try { if (player) { player.onended = player.onerror = player.ontimeupdate = player.onplaying = player.onpause = null; player.pause(); } } catch {}
-      err && !h.stopped ? reject(err) : resolve();
+      err && !h.stopped && !playedSome ? reject(err) : resolve();
     };
     const armStall = (ms) => { if (stall) clearTimeout(stall); stall = setTimeout(finish, ms); };
-    cap = setTimeout(() => finish(new Error('tts timeout')), Math.min(90000, 8000 + text.length * 100));
+    cap = setTimeout(() => finish(new Error('tts timeout')), 12000 + (text.length * 130) / ttsRate());
     (async () => {
       try {
         const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text, extra)), signal: ctrl.signal });
@@ -217,7 +233,7 @@ function speakSingle(text, h, extra = {}) {
         const a = getPlayer();
         a.onended = () => { try { URL.revokeObjectURL(url); } catch {} finish(); };
         a.onerror = () => { try { URL.revokeObjectURL(url); } catch {} finish(new Error('audio playback failed')); };
-        a.onplaying = a.ontimeupdate = () => armStall(3500);
+        a.onplaying = a.ontimeupdate = () => { playedSome = true; armStall(3500); };
         a.onpause = () => { if (h.stopped) finish(); };
         a.src = url;
         try { a.currentTime = 0; } catch {}

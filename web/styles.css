@@ -2424,9 +2424,12 @@ body.map-expanded-open { overflow: hidden; }
 .story-ask-opt.primary { background: #238636; border-color: #2ea043; color: #fff; }
 .story-ask-opt:hover { filter: brightness(1.12); }
 .story-answered { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #4ecb6c; margin-top: 8px; }
-/* "Listen to this report" pill — fixed-size states (no layout shift between idle/loading/playing,
-   which would move content under the restored scroll position). 28px min-height for touch. */
-.story-listen { display: inline-flex; align-items: center; min-height: 28px; min-width: 92px; justify-content: center; margin-top: 8px; padding: 3px 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #5c6675; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; cursor: pointer; user-select: none; }
+/* "Listen to this report" pills — fixed-size states (no layout shift between idle/loading/playing,
+   which would move content under the restored scroll position). 28px min-height for touch.
+   The row keeps a constant height whether it holds listen / quick / the live rate chip. */
+.story-listen-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; min-height: 28px; }
+.story-listen { display: inline-flex; align-items: center; min-height: 28px; min-width: 92px; justify-content: center; padding: 3px 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #5c6675; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; cursor: pointer; user-select: none; }
+.story-listen.rate { min-width: 52px; padding: 3px 9px; color: #8a95a5; }
 .story-listen:hover { color: #8a95a5; border-color: #365a86; }
 .story-listen.loading { color: #8a95a5; animation: story-listen-pulse 1.2s ease-in-out infinite; }
 @keyframes story-listen-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }

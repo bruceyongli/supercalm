@@ -2,7 +2,7 @@
 // against the raw terminal. DOM contract + exact tokens from the handoff's spec.tokens.json;
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
 import { api } from './common.js';
-import { unlockAudio, newPlayback, speakSmart } from './tts-player.js';
+import { unlockAudio, newPlayback, speakSmart, cycleRate, currentRate } from './tts-player.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
 const COLOR = { you: '#58a6ff', sys: '#3a4453', work: '#8a95a5', plan: '#79b8ff', note: '#5c6675', sub: '#9aa7b8', edit: '#d9924e', fail: '#f2554d', check: '#4ecb6c', ship: '#2fd6be', report: '#b9c4d4', ask: '#e2b23e', stop: '#e2b23e' };
@@ -134,29 +134,40 @@ function askHtml(ev) {
     <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-askkey="${ak}" data-label="${esc(o.label || o.spoken || o.key || '')}" data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
 }
 
-function listenLabel(st) {
-  if (!st) return '▶ listen';
+function listenLabel(st, idleLabel) {
+  if (!st) return idleLabel;
   if (st.phase === 'loading') return '… preparing';
   if (st.phase === 'playing') return st.total > 1 ? `⏹ stop · ${st.part}/${st.total}` : '⏹ stop';
   if (st.phase === 'error') return '⚠ retry';
-  return '▶ listen';
+  return idleLabel;
 }
-// The listen pill on reports long enough to be worth hearing. Label re-derived from listenState on
-// every wholesale re-render; between renders paintListen() flips it in place (steps-toggle rule).
-function listenHtml(ev) {
+// The listen controls on reports long enough to be worth hearing: ▶ listen (full polished report),
+// ▶ quick (a ~30s digest, only on long sources), and a live speech-rate chip while playing.
+// Labels re-derive from listenState on every wholesale re-render; between renders paintListen()
+// repaints the row in place. Clicks are DELEGATED on panelEl (initStoryView), so repaints and
+// re-renders never need handler rebinding.
+function listenRowInner(key, srcLen) {
+  const st = listenState.get(key); // {phase, part, total, level}
+  const btn = (level, idleLabel, title) => {
+    const on = st && st.level === level;
+    return `<button class="story-listen${on ? ' ' + st.phase : ''}" data-story-listen data-evkey="${esc(key)}" data-level="${level}" title="${title}">${on ? listenLabel(st, idleLabel) : idleLabel}</button>`;
+  };
+  let html = btn('full', '▶ listen', 'Listen to this report');
+  if (srcLen > 2000) html += btn('brief', '▶ quick', 'Quick ~30-second version');
+  if (st && st.phase === 'playing') html += `<button class="story-listen rate" data-story-listen-rate title="Speech speed">${currentRate()}×</button>`;
+  return html;
+}
+function listenRowHtml(ev) {
   if (ev.kind !== 'report') return '';
   const text = String(ev.body || ev.text || '');
   if (text.length <= 200) return '';
   const key = evKey(ev);
-  const st = listenState.get(key);
-  return `<button class="story-listen${st ? ' ' + st.phase : ''}" data-story-listen data-evkey="${esc(key)}" title="Listen to this report">${listenLabel(st)}</button>`;
+  return `<div class="story-listen-row" data-story-listen-row data-evkey="${esc(key)}" data-srclen="${text.length}">${listenRowInner(key, text.length)}</div>`;
 }
 function paintListen(key) {
-  const b = panelEl && panelEl.querySelector(`[data-story-listen][data-evkey="${CSS.escape(key)}"]`);
-  if (!b) return; // scrolled/windowed out of the DOM — the state map still drives the next render
-  const st = listenState.get(key);
-  b.className = 'story-listen' + (st ? ' ' + st.phase : '');
-  b.textContent = listenLabel(st);
+  const row = panelEl && panelEl.querySelector(`[data-story-listen-row][data-evkey="${CSS.escape(key)}"]`);
+  if (!row) return; // scrolled/windowed out of the DOM — the state map still drives the next render
+  row.innerHTML = listenRowInner(key, Number(row.dataset.srclen) || 0);
 }
 function setListen(key, st) { listenState.set(key, st); paintListen(key); }
 function clearListen(key) { listenState.delete(key); paintListen(key); }
@@ -167,35 +178,35 @@ function stopListen() {
   try { handle.stop(); } catch {}
   clearListen(key);
 }
-async function onListenTap(key) {
-  if (listenActive && listenActive.key === key) return stopListen(); // tap while playing = stop
-  stopListen(); // one playback at a time — a new tap silences the previous report
+async function onListenTap(key, level = 'full') {
+  if (listenActive && listenActive.key === key && listenActive.level === level) return stopListen(); // tap while playing = stop
+  stopListen(); // one playback at a time — a new tap silences the previous one
   const ev = events.find((e) => evKey(e) === key);
   const text = String(ev?.body || ev?.text || ''); // captured NOW — survives later window trims
   if (!text) return;
   unlockAudio(); // synchronously inside the tap gesture (iOS) — before any await
   const handle = newPlayback();
-  listenActive = { key, handle };
-  setListen(key, { phase: 'loading' });
+  listenActive = { key, handle, level };
+  setListen(key, { phase: 'loading', level });
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 20000);
     const r = await fetch(`api/session/${sid}/voice-report`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, ts: ev.ts || 0 }), signal: ctrl.signal,
+      body: JSON.stringify({ text, ts: ev.ts || 0, level }), signal: ctrl.signal,
     }).finally(() => clearTimeout(t));
     if (!r.ok) throw new Error('voice-report ' + r.status);
     const vr = await r.json();
-    const parts = Array.isArray(vr.parts) && vr.parts.length && vr.parts[0] ? vr.parts : [text.slice(0, 1800)];
+    const parts = Array.isArray(vr.parts) && vr.parts.length && vr.parts[0] ? vr.parts : [text.slice(0, 900)];
     for (let i = 0; i < parts.length; i++) {
       if (handle.stopped) break;
-      setListen(key, { phase: 'playing', part: i + 1, total: parts.length });
+      setListen(key, { phase: 'playing', part: i + 1, total: parts.length, level });
       await speakSmart(parts[i], handle, { ttsExtra: vr.tts || {} });
     }
     clearListen(key);
   } catch {
     if (handle.stopped) clearListen(key);
-    else { setListen(key, { phase: 'error' }); setTimeout(() => { if (listenState.get(key)?.phase === 'error') clearListen(key); }, 2400); }
+    else { setListen(key, { phase: 'error', level }); setTimeout(() => { if (listenState.get(key)?.phase === 'error') clearListen(key); }, 2400); }
   } finally {
     if (listenActive && listenActive.key === key && listenActive.handle === handle) listenActive = null;
   }
@@ -227,7 +238,7 @@ function eventHtml(ev, i) {
   const inner = `
     ${head}
     ${body}
-    ${listenHtml(ev)}
+    ${listenRowHtml(ev)}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
     ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
     ${stepsHtml(ev, i)}
@@ -315,9 +326,6 @@ function wire() {
       } catch (e) { b.textContent = '⚠ ' + (e.message || e); }
     };
   }
-  for (const b of panelEl.querySelectorAll('[data-story-listen]')) {
-    b.onclick = () => onListenTap(b.dataset.evkey); // unlockAudio runs sync inside onListenTap
-  }
   for (const img of panelEl.querySelectorAll('[data-story-shot]')) {
     img.onclick = () => {
       const lb = document.createElement('div');
@@ -364,6 +372,23 @@ export function initStoryView({ sessionId, panel }) {
   const switching = sid !== sessionId;
   sid = sessionId;
   panelEl = panel;
+  // Listen controls use ONE delegated handler on the persistent panel (attached once per panel
+  // element): in-place row repaints and wholesale re-renders never need onclick rebinding, and
+  // unlockAudio still runs synchronously inside the tap gesture via onListenTap.
+  if (panel && !panel._listenWired) {
+    panel._listenWired = true;
+    panel.addEventListener('click', (e) => {
+      const rate = e.target.closest('[data-story-listen-rate]');
+      if (rate) {
+        cycleRate(); // applies live to the playing audio; persists (shared with voice mode)
+        const key = rate.closest('[data-story-listen-row]')?.dataset.evkey;
+        if (key) paintListen(key);
+        return;
+      }
+      const b = e.target.closest('[data-story-listen]');
+      if (b) onListenTap(b.dataset.evkey, b.dataset.level || 'full');
+    });
+  }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
   if (switching) { stopListen(); listenState.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; lastSig = ''; }
