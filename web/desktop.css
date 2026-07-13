@@ -108,12 +108,12 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-view { min-width: 0; min-height: 100vh; display: flex; flex-direction: column; }
 .dk-view > .dk-main { flex: 1; }
 .view-loading { min-height: 40vh; }
-/* Session view = the session page embedded in an iframe. Pin #view to the area right of the persistent rail
-   with fixed positioning: the iframe's intrinsic 300px default would otherwise collapse the grid's 1fr track
-   (a known iframe-in-grid sizing bug), which squished the session to ~300px. */
+/* Session view = the real session view (web/session.js), mounted directly into #view (no iframe). Pin #view
+   to the area right of the persistent rail with fixed positioning so the .session-shell (height:100dvh) fills
+   it edge-to-edge regardless of the grid's 1fr track sizing. */
 body.session-page #view.dk-view { position: fixed; top: 0; left: var(--rail-width); right: 0; bottom: 0; width: auto; height: 100dvh; min-height: 0; display: block; z-index: 1; }
 body.dk-collapsed.session-page #view.dk-view { left: 0; }
-.spa-session-frame { width: 100%; height: 100%; border: 0; display: block; background: #0a0e14; }
+body.session-page #view.dk-view > #session-root { height: 100%; }
 /* ---- main / inbox ---- */
 .dk-main { padding: 26px 32px 90px; max-width: 1080px; margin: 0 auto; width: 100%; }
 /* Injected system pages (decisions/usage/health) keep their own page <header> inside .dk-main. The

@@ -2,21 +2,145 @@ import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSe
 import { initAgentPanel } from './agents/host.js';
 import { mountShell } from './shell.js';
 
-registerSW();
-const params = new URLSearchParams(location.search);
-let id = params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
-if (!id) location.href = document.baseURI;
-const resizeOff = params.get('resize') === 'off' || params.has('noresize');
-// EMBED mode: this page runs inside the SPA shell's #view iframe (web/views/session-view.js). The shell
-// owns the ONE persistent flush sidebar + its data loop/SSE, so we skip THIS page's own sidebar (mountShell)
-// and let the parent drive session→session via a postMessage → switchSession (kept in-place, no reload).
-// Guarded by ?embed=1, so the standalone legacy page (no flag) is completely unaffected.
-const embed = params.get('embed') === '1';
-if (embed) document.body.classList.add('embedded');
+// The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
+// app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
+// straight into the SPA #view (no iframe), and reused by the standalone web/session.html. The
+// `.session-shell.embedded` class (added in mountSession) collapses the rail column to 0 — the shell has no
+// own sidebar in either mount.
+export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
+      <header>
+        <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
+        <span class="title" id="s-title"></span>
+        <span class="status-txt" id="s-status"></span>
+        <div class="spacer"></div>
+        <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
+          <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
+          <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
+        </div>
+        <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
+        <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
+        <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
+      </header>
+
+      <div class="session-banner" id="session-banner" hidden>
+        <span class="session-banner-ok">✓ first session running</span>
+        <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
+        <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
+      </div>
+
+      <main class="session-main">
+        <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
+        <section id="story-panel" class="story-panel main-view-panel" data-main-panel="story" data-story-panel hidden aria-live="polite"></section>
+        <section id="scrollback" class="scrollback-view main-view-panel" data-main-panel="scrollback" hidden aria-live="polite">
+          <div class="scrollback-head">
+            <span>Transcript</span>
+            <span id="scrollback-meta"></span>
+            <button class="btn ghost sm" id="scrollback-refresh" type="button">Refresh</button>
+            <button class="btn sm" id="scrollback-latest" type="button">Latest</button>
+          </div>
+          <pre id="scrollback-text" class="scrollback-text">Open Transcript to load the plain scrollback.</pre>
+        </section>
+        <section id="conversation" class="conversation-view main-view-panel" data-main-panel="conversation" hidden aria-live="polite">
+          <div class="timeline-empty">Open Conversation to load the rich session timeline.</div>
+        </section>
+        <section id="agent-view" class="agent-view main-view-panel" data-main-panel="agent" hidden aria-live="polite">
+          <div class="timeline-empty">Open Agent View to load request-level artifacts and events.</div>
+        </section>
+        <div class="session-tools">
+          <div class="keys" id="keys"></div>
+          <div class="main-tabs" role="tablist" aria-label="Session view">
+            <button class="on" data-main-view="terminal" role="tab" aria-selected="true" aria-label="Terminal view" title="Terminal view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M4 5.5h16v13H4z"></path>
+                <path d="m7 9 3 3-3 3"></path>
+                <path d="M12 15h5"></path>
+              </svg>
+            </button>
+            <button data-main-view="scrollback" role="tab" aria-selected="false" aria-label="Transcript view" title="Plain transcript">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 4.5h12v15H6z"></path>
+                <path d="M9 8h6"></path>
+                <path d="M9 11.5h6"></path>
+                <path d="M9 15h4"></path>
+              </svg>
+            </button>
+            <button data-main-view="conversation" role="tab" aria-selected="false" aria-label="Conversation view" title="Conversation view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 6.5h14v9H9l-4 3z"></path>
+                <path d="M8 10h8"></path>
+                <path d="M8 13h5"></path>
+              </svg>
+            </button>
+            <button data-main-view="agent" role="tab" aria-selected="false" aria-label="Agent view" title="Agent view">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 4.5h14v4H5z"></path>
+                <path d="M7 13h10"></path>
+                <path d="M7 17h7"></path>
+                <path d="M8 8.5v8.5"></path>
+                <path d="M16 8.5v4.5"></path>
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="message-box footer-composer" id="message-box" aria-label="Message composer">
+          <div class="attachment-list" id="attachments" hidden></div>
+          <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
+          <div class="composer-bottom">
+            <div class="composer-options">
+              <div class="settings composer-settings" id="s-settings"></div>
+              <button class="btn ghost icon-btn attach-btn attach-desktop" id="attach-desktop" type="button" aria-label="Attach files/images">+</button>
+              <input id="file-input" type="file" multiple hidden />
+            </div>
+            <button class="composer-hint" id="composer-hint" type="button" title="How Enter behaves — click to switch" hidden></button>
+            <div class="composer-actions">
+              <button class="btn ghost icon-btn attach-btn attach-mobile" id="attach" type="button" aria-label="Attach files/images">+</button>
+              <span class="composer-action-spacer"></span>
+              <span class="mic-status" id="mic-status"></span>
+              <button class="btn ghost mic" id="mic" type="button" aria-label="Dictate"></button>
+              <button class="btn send-btn" id="send" type="button" aria-label="Send">↑</button>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize usage panel"></div>
+      <aside class="session-usage-panel" id="session-usage-panel">
+        <div class="side-tabs" id="side-tabs" role="tablist" aria-label="Session agents"></div>
+        <div id="side-panels">
+          <section class="side-tab-panel" id="s-map" aria-live="polite" hidden></section>
+          <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
+        </div>
+      </aside>
+    </div>`;
+
+// The SPA/standalone contract this module exposes. mountSession() assigns these to the live instance; the
+// exported switchSession()/destroySession() wrappers at the bottom delegate to them.
+let _switchSession = null;
+let _destroy = null;
+
+// Mount the full session view into `hostEl`. `embedded` (default true, the SPA #view) skips the app-shell —
+// the parent SPA already owns the ONE sidebar + its data loop/SSE. embedded=false (standalone
+// web/session.html) mounts the shell here. Safe to call again after destroySession() (idempotent).
+export function mountSession(hostEl, { id: startId = '', embedded = true } = {}) {
+  registerSW();
+  const params = new URLSearchParams(location.search);
+  let id = startId || params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
+  if (!id) { location.href = document.baseURI; return; }
+  const resizeOff = params.get('resize') === 'off' || params.has('noresize');
+  // Ensure the markup is present: the SPA passes an empty #view (inject); the standalone page provides it.
+  if (hostEl && !document.getElementById('session-shell')) hostEl.innerHTML = SESSION_MARKUP;
+  // Teardown registry — destroySession() aborts/clears these so a re-mount starts clean (idempotent). The
+  // signal is attached to every window/document/media-query listener; element listeners are GC'd with the
+  // markup when #view is swapped.
+  const _ac = new AbortController();
+  const _sig = _ac.signal;
+  const _timers = [];
+  const _obs = [];
 
 // ---- split layout -----------------------------------------------------------
 const shell = $('#session-shell');
-const rail = $('#session-rail');
+const rail = $('#session-rail'); // null now: the sidebar is provided by the surrounding app-shell
+shell.classList.add('embedded'); // collapse the shell's own rail column to 0 (the sidebar lives outside it)
 
 const usageResizer = $('#usage-resizer');
 const PREF_RAIL_PINNED = 'aios.session.railPinned';
@@ -83,6 +207,7 @@ const BANNER_DISMISSED = 'aios.session.bannerDismissed';
 syncHeaderHeight();
 if ('ResizeObserver' in window) {
   const headerObserver = new ResizeObserver(syncHeaderHeight);
+  _obs.push(headerObserver);
   headerObserver.observe(document.querySelector('header'));
   const bnr = document.getElementById('session-banner');
   if (bnr) headerObserver.observe(bnr);
@@ -110,7 +235,7 @@ function applyUsageWidth({ save = false } = {}) {
 }
 function setRailPinned(pinned, { save = true } = {}) {
   shell.classList.toggle('rail-pinned', pinned);
-  rail.classList.toggle('pinned', pinned);
+  rail?.classList.toggle('pinned', pinned); // rail is null now (external sidebar) — guard it
   if (save) localStorage.setItem(PREF_RAIL_PINNED, pinned ? '1' : '0');
   applyUsageWidth(); // re-derive px from the fraction for the new available width (both panes shift)
 }
@@ -154,21 +279,16 @@ usageResizer.addEventListener('pointercancel', finishResize);
 addEventListener('resize', () => {
   syncHeaderHeight();
   applyUsageWidth();
-});
+}, { signal: _sig });
 
 // The shared app-shell (web/shell.js) renders and live-refreshes the sidebar — counts, SESSIONS list
 // (current session marked active), foot, ⌘K palette, New-session launch, toast — replacing the old bare
 // session rail. mountShell runs its own data loop + SSE refresh, so loadSessionRail is now a no-op kept
 // only so its existing call sites (status transitions below) don't need editing.
-if (!embed) mountShell(); // embedded: the parent SPA shell already owns the sidebar + data loop/SSE
+if (!embedded) mountShell(); // embedded (SPA): the parent shell already owns the sidebar + data loop/SSE
 function loadSessionRail() {}
-// Parent (SPA shell) drives session→session in-place: it postMessages the new id instead of remounting the
-// iframe, so switching sessions stays a no-reload swap. Same-origin guard; switchSession is defined below.
-if (embed) window.addEventListener('message', (e) => {
-  if (e.origin !== location.origin || !e.data || e.data.type !== 'aios-switch-session') return;
-  const nid = String(e.data.id || '');
-  if (nid && nid !== id) { try { switchSession(nid); } catch (err) { location.href = `session?id=${encodeURIComponent(nid)}&embed=1`; } }
-});
+// In the SPA the parent view module (web/views/session-view.js) drives session→session in-place by calling
+// the exported switchSession() directly (no postMessage, no iframe) — so no message listener is needed here.
 
 // ---- right panel: the agent host owns the tab bar + panels (web/agents/host.js) ------------
 // Built lazily near the SSE wiring (after loadMap/loadUsage + their state exist), since the host
@@ -661,9 +781,9 @@ function noteTrustedResizeActivity(e) {
   lastTrustedResizeActivity = Date.now();
   scheduleSyncSize(80);
 }
-addEventListener('pointerdown', noteTrustedResizeActivity, { capture: true, passive: true });
-addEventListener('touchstart', noteTrustedResizeActivity, { capture: true, passive: true });
-addEventListener('keydown', noteTrustedResizeActivity, { capture: true });
+addEventListener('pointerdown', noteTrustedResizeActivity, { capture: true, passive: true, signal: _sig });
+addEventListener('touchstart', noteTrustedResizeActivity, { capture: true, passive: true, signal: _sig });
+addEventListener('keydown', noteTrustedResizeActivity, { capture: true, signal: _sig });
 jumpLatest.onclick = scrollTerminalToLatest;
 let lastUserTermScroll = 0;
 const markUserTermScroll = () => {
@@ -721,33 +841,34 @@ term.onScroll(() => {
 });
 addEventListener('resize', () => {
   scheduleSyncSize(150);
-});
+}, { signal: _sig });
 addEventListener('orientationchange', () => {
   scheduleSyncSize(250);
-});
-addEventListener('focus', () => scheduleSyncSize(0));
+}, { signal: _sig });
+addEventListener('focus', () => scheduleSyncSize(0), { signal: _sig });
 document.addEventListener('visibilitychange', () => {
   reportResizePresence(!document.hidden); // drop out of / rejoin the shared-size pool immediately
   if (!document.hidden) scheduleSyncSize(0);
-});
-addEventListener('pagehide', () => reportResizePresence(false));
+}, { signal: _sig });
+addEventListener('pagehide', () => reportResizePresence(false), { signal: _sig });
 if ('ResizeObserver' in window) {
   const ro = new ResizeObserver(() => {
     scheduleSyncSize(120);
   });
+  _obs.push(ro);
   ro.observe(termEl);
   ro.observe(shell);
   ro.observe(document.querySelector('.session-main'));
 }
 if (document.fonts?.ready) document.fonts.ready.then(() => scheduleSyncSize(0)).catch(() => {});
 [0, 60, 250, 800, 1600].forEach((delay) => setTimeout(syncSize, delay));
-setInterval(healTerminalLayout, 1500);
+_timers.push(setInterval(healTerminalLayout, 1500));
 // The terminal sometimes becomes stale after async UI below it settles without a
 // browser ResizeObserver event. A light fit pass is cheap; API resize is still
 // guarded by lastDims, so this does not spam tmux unless dimensions really change.
-setInterval(() => {
+_timers.push(setInterval(() => {
   if (!document.hidden) scheduleSyncSize(0);
-}, 5000);
+}, 5000));
 window.__aiosTerminalMetrics = () => ({
   cols: term.cols,
   rows: term.rows,
@@ -841,6 +962,7 @@ async function bootstrapTerminalScrollback() {
 const afterIdle = (fn) => setTimeout(() => (window.requestIdleCallback || ((f) => f()))(fn), navigator.webdriver ? 20000 : 2500);
 let terminalStream = null;
 function startTerminalStream() {
+  if (_sig.aborted) return; // torn down before the deferred open fired — don't open a leaked stream
   terminalStream = new EventSource(`api/session/${id}/stream`);
   terminalStream.addEventListener('data', (e) => {
     writeTerminalBytes(b64bytes(e.data));
@@ -1550,6 +1672,7 @@ mountAgentPanel();
 // Deferred like the terminal stream (see afterIdle) so the page reaches network-idle after load.
 let events = null;
 afterIdle(() => {
+  if (_sig.aborted) return; // torn down before the deferred open fired — don't open a leaked stream
   events = new EventSource('api/events');
   events.addEventListener('session-status', (e) => {
     let payload = null;
@@ -1770,7 +1893,7 @@ async function loadUsage() {
   }
 }
 loadUsage();
-setInterval(loadUsage, 30000);
+_timers.push(setInterval(loadUsage, 30000));
 
 // ---- session map ------------------------------------------------------------
 
@@ -2516,7 +2639,7 @@ async function openFileViewer(rawPath) {
   document.body.appendChild(overlay);
 }
 // Let other panels (e.g. Knowledge "Files") open a file in this same viewer.
-window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileViewer(e.detail.path); });
+window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileViewer(e.detail.path); }, { signal: _sig });
 
 // Underline path-like tokens in the terminal and open the viewer on click. Works on the alt screen too.
 if (typeof term.registerLinkProvider === 'function') {
@@ -2701,7 +2824,7 @@ function installFileTarget(target) {
   });
 }
 
-window.addEventListener('aios:insert-reference', (e) => insertComposerReference(e.detail?.text || ''));
+window.addEventListener('aios:insert-reference', (e) => insertComposerReference(e.detail?.text || ''), { signal: _sig });
 
 async function sendInput() {
   const text = reply.value.trim();
@@ -2873,11 +2996,11 @@ function switchSession(newId) {
     try { terminalStream?.close(); } catch {}
     terminalStream = null;
     try { term.reset(); } catch {}
-    // right panel: remove the previous panel's dynamic sections + re-mount for the new session via the
-    // PUBLIC API only (web/agents/* is a standing operator fence — never edited). RESIDUAL: the old graph
-    // module's 80ms animation interval (web/agents/graph.js) has no public teardown, so it is not cleared
-    // here — a bounded, CONDITIONAL leak (only while a graph/map tab was mounted with animating nodes),
-    // cleared on any full reload. The clean fix is a destroy() inside the fenced web/agents/host.js.
+    // right panel: fully tear down the previous panel via its PUBLIC API (host.destroy() unmounts each
+    // module — the map's unmount clears web/agents/graph.js's 80ms animation interval, the residual that
+    // used to leak here — and removes the panel DOM), then re-mount for the new session. Belt-and-suspenders
+    // removal of any stray dynamic section the destroy missed.
+    try { agentPanel?.destroy?.(); } catch {}
     try { document.querySelectorAll('#side-panels [id^="s-agent-"]').forEach((el) => el.remove()); } catch {}
     mountAgentPanel();
     // re-run the content loaders (all read the live module-level id)
@@ -2896,7 +3019,9 @@ function switchSession(newId) {
 
 // Intercept sidebar session-link clicks so switching stays in-place. Modified clicks (new tab / middle
 // click) pass through; a failed in-place switch falls back to a real navigation (never worse than today).
-document.addEventListener('click', (e) => {
+// Only in standalone: in the SPA the router (web/router.js) owns navigation and drives session→session via
+// the exported switchSession(), so this page-level interceptor would double-handle.
+if (!embedded) document.addEventListener('click', (e) => {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const a = e.target.closest?.('[data-dk-sess]');
   if (!a) return;
@@ -2908,13 +3033,14 @@ document.addEventListener('click', (e) => {
   try { persistDraft(); } catch {}
   if (switchSession(newId)) history.pushState({ sid: newId }, '', `session?id=${encodeURIComponent(newId)}`);
   else location.href = a.href;
-}, true);
+}, { capture: true, signal: _sig });
 
-// Back/forward: re-point in place to the URL's session (full reload only as a last resort).
-window.addEventListener('popstate', () => {
+// Back/forward: re-point in place to the URL's session (full reload only as a last resort). SPA: the router
+// owns popstate, so skip it here.
+if (!embedded) window.addEventListener('popstate', () => {
   const target = new URLSearchParams(location.search).get('id');
   if (target && target !== id && !switchSession(target)) location.reload();
-});
+}, { signal: _sig });
 function setComposer(val) {
   reply.value = val ?? '';
   autoExpandReply();
@@ -2945,7 +3071,7 @@ try {
   const saved = localStorage.getItem(DRAFT_KEY);
   if (saved && !reply.value) { reply.value = saved; autoExpandReply(); }
 } catch {}
-addEventListener('pagehide', persistDraft);
+addEventListener('pagehide', persistDraft, { signal: _sig });
 
 // ---- composer parity: Enter-to-send, send-key hint, paste-to-file, saved snippets ----------------
 // Match the muscle memory of the Claude / ChatGPT composers so switching to Supercalm feels seamless.
@@ -3053,7 +3179,7 @@ function pingTyping() {
   lastTypingPing = t;
   fetch(`api/session/${id}/typing`, { method: 'POST' }).catch(() => {});
 }
-setInterval(() => { if (reply.value.trim() && document.activeElement === reply) pingTyping(); }, 3000);
+_timers.push(setInterval(() => { if (reply.value.trim() && document.activeElement === reply) pingTyping(); }, 3000));
 
 reply.addEventListener('input', () => {
   histIdx = null;
@@ -3094,8 +3220,8 @@ fileInput.onchange = () => {
 };
 installFileTarget(messageBox);
 installFileTarget(document.querySelector('.session-main'));
-addEventListener('resize', autoExpandReply);
-compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder);
+addEventListener('resize', autoExpandReply, { signal: _sig });
+compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
 wireMic(micBtn, reply, $('#mic-status'));
 syncReplyPlaceholder();
 
@@ -3107,7 +3233,7 @@ syncReplyPlaceholder();
 // fix for "the slash command sometimes doesn't work."
 const finePointer = matchMedia('(pointer: fine)');
 renderSendHint(); // now that finePointer exists: show the send-key hint (desktop) and reflect the toggle
-finePointer.addEventListener?.('change', renderSendHint);
+finePointer.addEventListener?.('change', renderSendHint, { signal: _sig });
 loadSnippets(); // populate the "/" palette's saved prompts
 let lastInputTerminal = false;
 reply.addEventListener('focus', () => { lastInputTerminal = false; });
@@ -3146,7 +3272,7 @@ addEventListener('keydown', (e) => {
   reply.value = reply.value.slice(0, start) + e.key + reply.value.slice(end);
   reply.setSelectionRange(start + 1, start + 1);
   reply.dispatchEvent(new Event('input', { bubbles: true }));
-});
+}, { signal: _sig });
 
 // ---- control keys -----------------------------------------------------------
 const KEYS = [['Enter', 'enter'], ['Esc', 'esc'], ['↑', 'up'], ['↓', 'down'], ['Tab', 'tab'], ['1', '1'], ['2', '2'], ['3', '3'], ['y', 'y'], ['n', 'n'], ['^C', 'ctrl-c']];
@@ -3215,3 +3341,35 @@ $('#b-kill').onclick = async () => {
     btn.disabled = false;
   }
 };
+
+  // ---- teardown -------------------------------------------------------------
+  // Full reset so a later mountSession() starts clean (the SPA re-mounts on every entry to /session). Aborts
+  // every window/document/media-query listener at once (the AbortController signal), disconnects the
+  // ResizeObservers, clears the heal/resize/usage/typing intervals + the pending timeouts, closes BOTH SSE
+  // streams (terminal + api/events), disposes xterm, tears down the agent host (which clears graph.js's
+  // animation interval via the map panel's unmount), and removes the body-level command palette.
+  function destroySession() {
+    try { _ac.abort(); } catch {}
+    for (const t of _timers) { try { clearInterval(t); } catch {} }
+    for (const o of _obs) { try { o.disconnect(); } catch {} }
+    try { clearTimeout(rzTimer); } catch {}
+    try { clearTimeout(typeTimer); } catch {}
+    try { clearTimeout(scrollbackTimer); } catch {}
+    try { clearTimeout(terminalControlFlushTimer); } catch {}
+    try { terminalStream?.close(); } catch {}
+    try { events?.close(); } catch {}
+    try { agentPanel?.destroy?.(); } catch {}
+    try { term?.dispose(); } catch {}
+    try { palette?.remove(); } catch {} // the "/" command palette is appended to document.body, not the host
+    _switchSession = null;
+    _destroy = null;
+  }
+
+  _switchSession = switchSession;
+  _destroy = destroySession;
+}
+
+// SPA contract wrappers (web/views/session-view.js): switchSession → in-place session→session (no reload);
+// destroySession → full teardown on leaving the view. Both delegate to the currently-mounted instance.
+export function switchSession(id) { return _switchSession ? _switchSession(id) : false; }
+export function destroySession() { const d = _destroy; return d ? d() : undefined; }

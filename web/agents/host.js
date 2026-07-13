@@ -252,6 +252,21 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     renderHome();
   }
 
+  // Full teardown: unmount every mounted panel module and remove its DOM. Each module's unmount() clears
+  // what it created — notably the Map panel's unmount() destroys its graph, which clears web/agents/graph.js's
+  // ~80ms node-animation interval (the documented residual leak). Knowledge/Preflight null their host refs;
+  // any without unmount() are simply removed. Called by the session's destroySession() and by the in-place
+  // session switch before re-mounting for the next session.
+  function destroy() {
+    for (const [, m] of modules) {
+      try { m.inst?.unmount?.(); } catch {}
+      try { m.el?.remove(); } catch {}
+    }
+    modules.clear();
+    try { homeEl?.remove(); } catch {}
+    homeEl = null;
+  }
+
   load();
-  return { refresh, activate, reload: load };
+  return { refresh, activate, reload: load, destroy };
 }

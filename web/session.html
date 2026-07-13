@@ -26,36 +26,14 @@
   <link rel="stylesheet" href="styles.css" />
   </head>
   <body class="session-page">
-    <div class="session-shell" id="session-shell">
-      <!-- Header + first-run banner live INSIDE the shell grid, in the content column (grid rows 1/2) to
-           the RIGHT of the sidebar — NOT a full-width bar. The sidebar owns the full-height left column
-           (design: nothing sits above the Supercalm brand). session.js still folds header+banner height
-           into --session-header-h for the usage-resizer's fixed position. -->
-      <header>
-        <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
-        <span class="title" id="s-title"></span>
-        <span class="status-txt" id="s-status"></span>
-        <div class="spacer"></div>
-        <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
-          <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
-          <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
-        </div>
-        <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
-        <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
-        <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
-      </header>
-
-      <div class="session-banner" id="session-banner" hidden>
-        <span class="session-banner-ok">✓ first session running</span>
-        <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
-        <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
-      </div>
-
-      <!-- The shared app-shell sidebar (web/shell.js populates counters/sessions/foot); full-height column 1. -->
-      <aside class="dk-side" id="session-rail" data-dk-sidebar>
-        <div class="dk-brand">
-          <span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button>
-        </div>
+    <!-- The standalone session page mirrors the SPA shell (web/app.html): the ONE persistent flush sidebar
+         + a #view that fixed-fills the area to its right. The session view itself (the .session-shell grid +
+         every panel) is provided by web/session.js: mountSession() injects SESSION_MARKUP into #session-root
+         below, and (embedded:false) mounts the shared sidebar's data loop/SSE via mountShell(). This keeps
+         the standalone visit on the same shared sidebar as the SPA — one source, no drift. -->
+    <div id="shell" class="dk-shell">
+      <aside class="dk-side" id="dk-side" data-dk-sidebar>
+        <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button></div>
         <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
         <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
         <nav class="dk-nav">
@@ -75,93 +53,12 @@
         <div class="dk-foot" id="dk-foot"></div>
         <a class="dk-classic" href="./?classic=1" title="The pre-redesign dashboard">classic view</a>
       </aside>
-
-      <main class="session-main">
-        <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
-        <section id="story-panel" class="story-panel main-view-panel" data-main-panel="story" data-story-panel hidden aria-live="polite"></section>
-        <section id="scrollback" class="scrollback-view main-view-panel" data-main-panel="scrollback" hidden aria-live="polite">
-          <div class="scrollback-head">
-            <span>Transcript</span>
-            <span id="scrollback-meta"></span>
-            <button class="btn ghost sm" id="scrollback-refresh" type="button">Refresh</button>
-            <button class="btn sm" id="scrollback-latest" type="button">Latest</button>
-          </div>
-          <pre id="scrollback-text" class="scrollback-text">Open Transcript to load the plain scrollback.</pre>
-        </section>
-        <section id="conversation" class="conversation-view main-view-panel" data-main-panel="conversation" hidden aria-live="polite">
-          <div class="timeline-empty">Open Conversation to load the rich session timeline.</div>
-        </section>
-        <section id="agent-view" class="agent-view main-view-panel" data-main-panel="agent" hidden aria-live="polite">
-          <div class="timeline-empty">Open Agent View to load request-level artifacts and events.</div>
-        </section>
-        <div class="session-tools">
-          <div class="keys" id="keys"></div>
-          <div class="main-tabs" role="tablist" aria-label="Session view">
-            <button class="on" data-main-view="terminal" role="tab" aria-selected="true" aria-label="Terminal view" title="Terminal view">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M4 5.5h16v13H4z"></path>
-                <path d="m7 9 3 3-3 3"></path>
-                <path d="M12 15h5"></path>
-              </svg>
-            </button>
-            <button data-main-view="scrollback" role="tab" aria-selected="false" aria-label="Transcript view" title="Plain transcript">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M6 4.5h12v15H6z"></path>
-                <path d="M9 8h6"></path>
-                <path d="M9 11.5h6"></path>
-                <path d="M9 15h4"></path>
-              </svg>
-            </button>
-            <button data-main-view="conversation" role="tab" aria-selected="false" aria-label="Conversation view" title="Conversation view">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 6.5h14v9H9l-4 3z"></path>
-                <path d="M8 10h8"></path>
-                <path d="M8 13h5"></path>
-              </svg>
-            </button>
-            <button data-main-view="agent" role="tab" aria-selected="false" aria-label="Agent view" title="Agent view">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 4.5h14v4H5z"></path>
-                <path d="M7 13h10"></path>
-                <path d="M7 17h7"></path>
-                <path d="M8 8.5v8.5"></path>
-                <path d="M16 8.5v4.5"></path>
-              </svg>
-            </button>
-          </div>
-        </div>
-        <div class="message-box footer-composer" id="message-box" aria-label="Message composer">
-          <div class="attachment-list" id="attachments" hidden></div>
-          <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
-          <div class="composer-bottom">
-            <div class="composer-options">
-              <div class="settings composer-settings" id="s-settings"></div>
-              <button class="btn ghost icon-btn attach-btn attach-desktop" id="attach-desktop" type="button" aria-label="Attach files/images">+</button>
-              <input id="file-input" type="file" multiple hidden />
-            </div>
-            <button class="composer-hint" id="composer-hint" type="button" title="How Enter behaves — click to switch" hidden></button>
-            <div class="composer-actions">
-              <button class="btn ghost icon-btn attach-btn attach-mobile" id="attach" type="button" aria-label="Attach files/images">+</button>
-              <span class="composer-action-spacer"></span>
-              <span class="mic-status" id="mic-status"></span>
-              <button class="btn ghost mic" id="mic" type="button" aria-label="Dictate"></button>
-              <button class="btn send-btn" id="send" type="button" aria-label="Send">↑</button>
-            </div>
-          </div>
-        </div>
+      <main class="dk-view" id="view">
+        <div id="session-root"></div>
       </main>
-
-      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize usage panel"></div>
-      <aside class="session-usage-panel" id="session-usage-panel">
-        <div class="side-tabs" id="side-tabs" role="tablist" aria-label="Session agents"></div>
-        <div id="side-panels">
-          <section class="side-tab-panel" id="s-map" aria-live="polite" hidden></section>
-          <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
-        </div>
-      </aside>
     </div>
 
-    <!-- app-shell overlays (⌘K palette + toast), body-level like desktop.html -->
+    <!-- app-shell overlays (⌘K palette + toast), body-level like app.html -->
     <div id="dk-palette" class="dk-palette" data-dk-palette hidden>
       <div class="dk-palette-box">
         <input id="dk-palette-q" placeholder="Jump to a screen, session, or action…" autocomplete="off" />
@@ -172,7 +69,11 @@
 
     <script src="vendor/xterm.js"></script>
     <script src="vendor/xterm-fit.js"></script>
-    <script type="module" src="session.js"></script>
+    <script type="module">
+      import { mountSession } from './session.js';
+      const id = new URLSearchParams(location.search).get('id');
+      mountSession(document.getElementById('session-root'), { id, embedded: false });
+    </script>
     <script type="module" src="version-badge.js"></script>
   </body>
 </html>
