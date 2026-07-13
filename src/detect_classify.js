@@ -33,11 +33,21 @@ const WORKING_RX = [
 // Background work is LIVE: the agent's footer reports one or more background terminals still running
 // ("· 2 background terminals running · /ps to view"). This is ongoing work even when the FOREGROUND
 // composer is idle, so the session must read as `working`, not settle to `waiting` and wrongly enter
-// the needs-you queue (operator report). The footer only shows while a bg process is alive and CLEARS
-// when it exits, so this is self-limiting — no risk of a session stuck `working` forever. Deliberately
-// NARROW: it must NOT match the always-present "ctrl+b to run in background" hint, nor the Bash
-// tool-result line "Command running in background with ID …" (there "running" precedes "background").
+// the needs-you queue (operator report). Deliberately NARROW: it must NOT match the always-present
+// "ctrl+b to run in background" hint, nor the Bash tool-result line "Command running in background
+// with ID …" (there "running" precedes "background").
+//
+// The hold is BOUNDED by BG_HOLD_MS of total pane stillness. The original "the footer clears when
+// the bg process exits, so this is self-limiting" assumption is FALSE: an agent that finishes and
+// deliberately leaves dev servers running ("No active task remains; awaiting the operator" + "5
+// background terminals running") keeps the footer up forever, and the unbounded rule pinned that
+// session `working` for ~20h — never surfacing in the needs-you queue, never getting supervisor
+// stop-reviews (incident s_8ea0dbf260, 2026-07-12). After BG_HOLD_MS with no pane change the idle
+// fall-through applies; the →waiting summarizer (which hides `working`-category false positives)
+// is the second-layer filter for a genuinely-busy quiet session, so long silent bg work still does
+// not spam the operator.
 const BACKGROUND_RX = /\b\d+\s+background\s+(?:terminal|process|task|shell|bash|command)s?\s+running\b|\/ps\s+to\s+view\b/i;
+const BG_HOLD_MS = Number(process.env.AIOS_BG_HOLD_MS || 10 * 60_000);
 
 // The agent is explicitly blocked on a decision (approval / confirmation / menu).
 const PROMPT_RX = [
@@ -151,8 +161,9 @@ export function classify({ session, snap, idleMs, authGraceUntil }) {
 
   // 3b) background work still running -> working (checked AFTER PROMPT_RX so a genuine approval
   //     prompt shown alongside a bg terminal still surfaces as waiting, but BEFORE the idle fall-through
-  //     so a quiet composer with live background terminals is not miscounted as needs-you).
-  if (BACKGROUND_RX.test(tailStr)) return { status: 'working', question: null };
+  //     so a quiet composer with live background terminals is not miscounted as needs-you). Bounded:
+  //     past BG_HOLD_MS of stillness the footer is servers-left-running, not work — fall through.
+  if (BACKGROUND_RX.test(tailStr) && !(idleMs > BG_HOLD_MS)) return { status: 'working', question: null };
 
   // 4) quiet for a while -> waiting
   if (idleMs > IDLE_WAIT_MS) return { status: 'waiting', question: questionFrom(text) };
