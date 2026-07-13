@@ -211,7 +211,9 @@ await answerScenario('8-dig-for-truth', {
   project: { id: 'p_lab_dig', path: projDig },
   session: { question: 'I cannot run the staging deploy: HR-1 in PRINCIPLES.md forbids deploys without operator approval. Waiting for approval.', summary: 'agent refuses citing HR-1', category: 'action' },
   evidence: { terminal_tail: 'Blocked: HR-1 (PRINCIPLES.md) forbids deploys without operator approval, so I stopped before staging deploy.\n> ', recent_messages: ['Blocked by HR-1 in PRINCIPLES.md — deploys need operator approval.'] },
-  expect: { action: 'answer', minSends: 1, must: [/HR-1|PERMITTED|staging/i], mustNot: [/wait for (the )?operator|cannot verify/i] },
+  // negation-aware: "do NOT wait for operator approval" is the IDEAL refutation, not a deferral —
+  // only an un-negated "wait for the operator" (an actual deferral) may fail this scenario.
+  expect: { action: 'answer', minSends: 1, must: [/HR-1|PERMITTED|staging/i], mustNot: [/(?<!\b(?:not|never|without|don'?t|needn'?t|no need to)\b[^.\n]{0,24})\bwait(?:ing)? for (?:the )?operator|cannot verify/i] },
 });
 
 // 9. Between tasks: verify must not inflate the repo spec into the contract
