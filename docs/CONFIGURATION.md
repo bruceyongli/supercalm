@@ -156,6 +156,7 @@ shows an **"Update available"** toast. On a clean git clone the toast is one-cli
 | `AIOS_CLAUDE_MODEL` / `AIOS_CODEX_MODEL` / `AIOS_AGY_MODEL` | `opus` / `gpt-5.5` / `gemini-pro-agent` |
 | `AIOS_PUSH_SUBJECT` | VAPID contact for web-push (a `mailto:` or `https:` URI) |
 | `AIOS_IDLE_WAIT` | `4500` ms before a quiet session is "waiting" |
+| `AIOS_BG_HOLD_MS` | `600000` ms a live background-terminals footer keeps a still session "working" before it settles to waiting |
 | `AIOS_SUBMIT_DELAY` | `320` ms pause before Enter after pasting into an agent TUI |
 
 There are ~130 further fine-tuning knobs (timeouts, limits, per-feature models) — all optional, all
