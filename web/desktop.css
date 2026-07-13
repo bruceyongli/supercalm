@@ -114,10 +114,12 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 body.session-page #view.dk-view { position: fixed; top: 0; left: var(--rail-width); right: 0; bottom: 0; width: auto; height: 100dvh; min-height: 0; display: block; z-index: 1; }
 body.dk-collapsed.session-page #view.dk-view { left: 0; }
 body.session-page #view.dk-view > #session-root { height: 100%; }
-/* Mobile session route: hide the shell sidebar (the session's ← back navigates to the dashboard, matching
-   the pre-SPA session page which also hid its rail on phones) and let the session fill the full screen —
-   otherwise the 280px rail squishes the session into a sliver. */
-@media (max-width: 720px) {
+/* Compact/iPad session route (≤1194px): hide the shell sidebar so the redesigned session fills the full
+   width (matching the design's full-bleed session) instead of the 280px rail squishing it. The session's
+   ← back navigates to the dashboard. (Was ≤720 phones-only; raised to 1194 for the iPad session redesign.
+   A richer 56px dots-mini-rail + peek — shown in the iPad mockups — would need shell.js changes and is a
+   follow-up.) */
+@media (max-width: 1194px) {
   body.session-page #shell > .dk-side { display: none; }
   body.session-page #view.dk-view { left: 0; }
 }
