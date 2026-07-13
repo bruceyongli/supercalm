@@ -621,7 +621,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .main-view-panel[hidden] { display: none !important; }
 .term {
   position: relative; min-height: 0; height: 100%; background: #0d1117;
-  border: 1px solid var(--line); border-radius: 8px; padding: 0; overflow: hidden;
+  border: 0; border-radius: 0; padding: 0; overflow: hidden; /* de-framed: full-bleed log — only the composer is framed (design) */
 }
 .term .xterm {
   height: 100%;
@@ -631,12 +631,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .agent-view {
   min-height: 0; height: 100%; overflow: auto; align-content: start;
   display: grid; gap: 8px; padding: 8px;
-  background: #0d1117; border: 1px solid var(--line); border-radius: 8px;
+  background: #0d1117; border: 0; border-radius: 0; /* de-framed full-bleed */
 }
 .scrollback-view {
   min-height: 0; height: 100%; overflow: auto; align-content: start;
   display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 0;
-  background: #0d1117; border: 1px solid var(--line); border-radius: 8px;
+  background: #0d1117; border: 0; border-radius: 0; /* de-framed full-bleed */
 }
 .scrollback-head {
   position: sticky; top: 0; z-index: 4;
@@ -2324,7 +2324,7 @@ body.map-expanded-open { overflow: hidden; }
    .story-shot-cap/.story-toggle) each set JetBrains Mono explicitly, so this only affects prose/raw text:
    before this, any content reaching the panel without a .story-body/.story-title wrapper (undigested or
    transient rendering) fell back to monospace — the operator's "story shows as a terminal dump". */
-.story-panel { position: relative; background: #0c1118; border: 1px solid #1d2632; border-radius: 13px; display: flex; flex-direction: column; min-height: 0; overflow: hidden; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+.story-panel { position: relative; background: #0c1118; border: 0; border-radius: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
 /* Floating "Latest" jump — the ONLY control that scrolls the story to the newest message (the view never
    auto-scrolls). Shown only when the user is scrolled away from the bottom. */
 .story-latest-btn { position: absolute; right: 22px; bottom: 18px; z-index: 6; display: inline-flex; align-items: center; gap: 5px; background: #1b2330; border: 1px solid #2a3442; color: #dbe4f0; border-radius: 999px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; font-weight: 700; padding: 7px 13px; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45); }
