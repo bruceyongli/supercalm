@@ -1,7 +1,34 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join, resolve, sep, basename } from 'node:path';
 import { DATA_DIR, LOG_DIR, DB_PATH } from './config.js';
 import { now } from './util.js';
+
+// Multi-session safety guard: a server booted from a LINKED git worktree (a scratch/dev instance) must
+// NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption. If
+// we're in a linked worktree (its `.git` is a FILE, not a directory) AND DB_PATH resolves OUTSIDE our own
+// checkout (i.e. the canonical main data/), refuse to boot. The live main service (`.git` is a directory)
+// and worktree instances that set their own AIOS_DATA are unaffected. Fail-SAFE: detection errors warn.
+try {
+  // realpath the LONGEST existing prefix + re-append the (maybe not-yet-created) tail, so a fresh DB path
+  // and the repo root are compared through the SAME symlink resolution (e.g. macOS /var → /private/var).
+  const realish = (p) => {
+    let cur = resolve(p); const tail = [];
+    while (!existsSync(cur) && dirname(cur) !== cur) { tail.unshift(basename(cur)); cur = dirname(cur); }
+    try { return tail.length ? join(realpathSync(cur), ...tail) : realpathSync(cur); } catch { return resolve(p); }
+  };
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url))); // src/store.js → src → repo root
+  const gitMarker = join(repoRoot, '.git');
+  if (existsSync(gitMarker) && statSync(gitMarker).isFile()) { // `.git` is a FILE only in a linked worktree
+    const dbReal = realish(DB_PATH);
+    const rootReal = realish(repoRoot);
+    if (dbReal !== rootReal && !dbReal.startsWith(rootReal + sep)) {
+      console.error(`[aios] REFUSING TO BOOT: running from a linked git worktree (${repoRoot}) with DB_PATH=${DB_PATH} (the canonical database). Set AIOS_DATA to a scratch dir for a worktree instance.`);
+      process.exit(1);
+    }
+  }
+} catch (e) { console.error('[aios] worktree DB guard skipped:', e?.message || e); }
 
 mkdirSync(LOG_DIR, { recursive: true });
 
@@ -90,7 +117,7 @@ db.exec(`
 `);
 
 // Migrations for DBs created before a column existed (ALTER errors if it already does).
-for (const col of ['autonomy TEXT', 'effort TEXT', 'model TEXT', 'fast_mode INTEGER NOT NULL DEFAULT 0', 'orchestration TEXT', 'summary TEXT', 'category TEXT', 'stage TEXT', 'codex_via_proxy INTEGER NOT NULL DEFAULT 0', 'codex_uuid TEXT', 'claude_transcript TEXT']) {
+for (const col of ['autonomy TEXT', 'effort TEXT', 'model TEXT', 'fast_mode INTEGER NOT NULL DEFAULT 0', 'orchestration TEXT', 'summary TEXT', 'category TEXT', 'stage TEXT', 'codex_via_proxy INTEGER NOT NULL DEFAULT 0', 'codex_uuid TEXT', 'claude_transcript TEXT', 'worktree_path TEXT', 'branch TEXT']) {
   try {
     db.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
   } catch {}
@@ -136,7 +163,7 @@ export const getSessionByTmux = (t) => _getSessionByTmux.get(t);
 export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
 
-const SESSION_FIELDS = ['project_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['project_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
   const keys = Object.keys(patch).filter((k) => SESSION_FIELDS.includes(k));
   if (!keys.length) return getSession(id);

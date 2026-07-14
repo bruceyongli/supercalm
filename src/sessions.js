@@ -34,6 +34,8 @@ import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
+import { gitOut } from './git.js';
+import { isGitRepo, ensureWorktree } from './worktrees.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -118,10 +120,12 @@ const FILE_VIEW_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_LIST_MAX = 200;
 const FILE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'vendor', '.aios', 'coverage', '.venv', '__pycache__']);
 
-// Root a session's files are confined to — the project cwd (same resolution startPane() uses).
+// Root a session's files are confined to — its isolated worktree if it has one, else the project cwd
+// (same resolution startPane() uses). Without the worktree_path fallback, an isolated session's file
+// browser + diffs would show the WRONG tree (the shared main checkout, not what the agent is editing).
 function projectFileRoot(s) {
   const project = s?.project_id ? store.getProject(s.project_id) : null;
-  return normalize(project?.path || process.env.HOME || '/');
+  return normalize(s?.worktree_path || project?.path || process.env.HOME || '/');
 }
 // Resolve a caller-supplied (relative or absolute) path and confine it to root — returns null on escape.
 function resolveInRoot(root, p) {
@@ -392,9 +396,12 @@ async function findCodexSession(cwd) {
 }
 
 // Create a fresh tmux pane and start (or resume) the tool in it. Returns the tmux name.
-async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy }) {
-  const dir = project?.path || process.env.HOME;
+async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, cwd }) {
+  // `cwd`, when set, is the session's isolated git worktree — it wins over project.path so concurrent
+  // sessions on one repo never share a working tree. project.path is NEVER mutated.
+  const dir = cwd || project?.path || process.env.HOME;
   if (!existsSync(dir)) throw new Error('path does not exist on host: ' + dir);
+  const isolated = !!cwd && cwd !== project?.path;
   const name = `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
   const logFile = join(LOG_DIR, sid + '.log');
   if (!resume) await writeFile(logFile, ''); // resume keeps appending to the same record
@@ -444,7 +451,11 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const baseEnv = tool === 'claude' ? (await resolveClaudeEnv({ model })).env : TOOLS[tool].env || {};
   const envMap = typeof baseEnv === 'function' ? baseEnv({ model, effort, autonomy, fastMode, resume, viaProxy }) : baseEnv;
   const toolEnv = Object.entries(envMap).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
-  const line = `export PATH="${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
+  // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
+  // canonical main checkout). A speed-bump, not a sandbox: the agent could `cd ~/aios && unset` it — real
+  // enforcement needs separate unix users/containers (out of scope). Integration is an operator-gated action.
+  const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
+  const line = `export PATH="${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
   // NEVER type the full launch line into the pane: a long task pushes it past the kernel's
   // canonical-mode line limit (MAX_CANON = 1024 on macOS) — the freshly-spawned shell hasn't
   // entered raw mode yet, so everything beyond 1KB is silently dropped and the truncated,
@@ -501,7 +512,16 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
   // rollout codex creates — recording its UUID (store.codex_uuid) makes the transcript/resume findable
   // even when the rollout's cwd differs from the project path (the operator's cwd-mismatch failure).
   const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles().catch(() => [])) : null;
-  const name = await startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false });
+  // Per-session worktree isolation (opt-in per project, #isolation helper). Concurrent sessions on one
+  // repo get their own worktree+branch so they never clobber each other. FAIL-OPEN: any error → the
+  // shared tree, and the launch line is byte-identical to before (the default-inert boundary).
+  let wt = null;
+  if (helperEnabled(project?.id, 'isolation') && project?.path) {
+    try {
+      if (await isGitRepo(project.path)) wt = await ensureWorktree({ repoPath: project.path, sid, project });
+    } catch (e) { console.error('[aios] worktree isolation skipped (fail-open):', e?.message || e); wt = null; }
+  }
+  const name = await startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false, cwd: wt?.path });
   const s = store.createSession({
     id: sid,
     project_id: project?.id || null,
@@ -515,7 +535,8 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
     fast_mode: activeFastMode ? 1 : 0,
     orchestration,
   });
-  store.addEvent(sid, 'launch', { tool, dir: project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration });
+  if (wt) store.updateSession(sid, { worktree_path: wt.path, branch: wt.branch }); // source of truth for confinement + resume
+  store.addEvent(sid, 'launch', { tool, dir: wt?.path || project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration, worktree: wt?.path || null, branch: wt?.branch || null });
   if (task) store.addMessage(sid, 'in', 'task', task);
   register(s);
   if (codexBefore) captureCodexUuid(sid, codexBefore); // fire-and-forget; async + fail-open, never blocks launch
@@ -541,9 +562,18 @@ export async function resume(sid, { force = false } = {}) {
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
   const project = s.project_id ? store.getProject(s.project_id) : null;
+  // Isolated session: reuse its worktree (re-`git worktree add` if the registration was pruned). Its
+  // cwd wins over project.path for the pane AND the codex rollout lookup. Fail-open to the shared tree.
+  let cwd = undefined;
+  if (s.worktree_path && project?.path) {
+    try {
+      const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
+      cwd = wt?.path;
+    } catch (e) { console.error('[aios] worktree resume reuse failed (fail-open):', e?.message || e); }
+  }
   // codex resume is global-most-recent by default; pin it to THIS project's conversation — prefer the
-  // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup.
-  const resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(project?.path || process.env.HOME).catch(() => null))) : null;
+  // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup (worktree-aware).
+  const resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(cwd || project?.path || process.env.HOME).catch(() => null))) : null;
   if (s.tool === 'codex' && resumeId && !s.codex_uuid) store.updateSession(sid, { codex_uuid: resumeId }); // backfill so the story/next resume match by UUID
   const name = await startPane({
     sid,
@@ -558,6 +588,7 @@ export async function resume(sid, { force = false } = {}) {
     viaProxy: !!s.codex_via_proxy,
     resume: true,
     resumeId,
+    cwd,
   });
   store.addEvent(sid, 'resume', { tmux: name, resumeId });
   const updated = store.updateSession(sid, { status: 'working', tmux: name, ended_at: null, exit_code: null, question: null, last_activity: now() });
@@ -1474,15 +1505,6 @@ function groupAttachmentBlocks(blocks) {
   return out;
 }
 
-async function gitOut(projectPath, args, { maxBuffer = 2 * 1024 * 1024, timeout = 4500 } = {}) {
-  try {
-    const r = await exec('git', ['-C', projectPath, ...args], { encoding: 'utf8', maxBuffer, timeout, killSignal: 'SIGKILL' });
-    return { text: String(r.stdout || '').trimEnd(), error: '' };
-  } catch (e) {
-    return { text: '', error: String(e.message || e) };
-  }
-}
-
 function parseNumstat(text) {
   const out = new Map();
   for (const line of String(text || '').split('\n')) {
@@ -1534,15 +1556,16 @@ function formatNumstatDeltas(rows) {
 async function projectCheckpoint(s) {
   const project = s.project_id ? store.getProject(s.project_id) : null;
   if (!project?.path) return null;
-  const inside = await gitOut(project.path, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: 2500 });
+  const wtRoot = s.worktree_path || project.path; // isolated session → its worktree, not the shared tree
+  const inside = await gitOut(wtRoot, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: 2500 });
   if (inside.text.trim() !== 'true') return null;
   const [root, status, numstat] = await Promise.all([
-    gitOut(project.path, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192 }),
-    gitOut(project.path, ['status', '--short'], { maxBuffer: 256 * 1024 }),
-    gitOut(project.path, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024 }),
+    gitOut(wtRoot, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192 }),
+    gitOut(wtRoot, ['status', '--short'], { maxBuffer: 256 * 1024 }),
+    gitOut(wtRoot, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024 }),
   ]);
   return {
-    root: root.text || project.path,
+    root: root.text || wtRoot,
     status: truncateText(status.text || '', 120000).text,
     numstat: truncateText(numstat.text || '', 120000).text,
   };
@@ -1551,18 +1574,19 @@ async function projectCheckpoint(s) {
 async function projectDiffBlock(s, checkpoint = null) {
   const project = s.project_id ? store.getProject(s.project_id) : null;
   if (!project?.path) return null;
-  const inside = await gitOut(project.path, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: 2500 });
+  const wtRoot = s.worktree_path || project.path; // isolated session → its worktree, not the shared tree
+  const inside = await gitOut(wtRoot, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: 2500 });
   if (inside.text.trim() !== 'true') return null;
   const [root, status, statOut, diffOut] = await Promise.all([
-    gitOut(project.path, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192 }),
-    gitOut(project.path, ['status', '--short'], { maxBuffer: 256 * 1024 }),
-    gitOut(project.path, ['diff', '--no-ext-diff', '--stat'], { maxBuffer: 512 * 1024 }),
-    gitOut(project.path, ['diff', '--no-ext-diff', '--find-renames', '--unified=60'], { maxBuffer: 2 * 1024 * 1024, timeout: 6500 }),
+    gitOut(wtRoot, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192 }),
+    gitOut(wtRoot, ['status', '--short'], { maxBuffer: 256 * 1024 }),
+    gitOut(wtRoot, ['diff', '--no-ext-diff', '--stat'], { maxBuffer: 512 * 1024 }),
+    gitOut(wtRoot, ['diff', '--no-ext-diff', '--find-renames', '--unified=60'], { maxBuffer: 2 * 1024 * 1024, timeout: 6500 }),
   ]);
   const changed = status.text.split('\n').filter((l) => l.trim());
   if (!changed.length && !statOut.text && !diffOut.text) return null;
   if (checkpoint?.numstat) {
-    const currentNumstat = await gitOut(project.path, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024 });
+    const currentNumstat = await gitOut(wtRoot, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024 });
     const deltas = numstatDeltas(checkpoint.numstat, currentNumstat.text || '');
     if (deltas.length) {
       return {
@@ -1573,7 +1597,7 @@ async function projectDiffBlock(s, checkpoint = null) {
         title: 'Request changes',
         summary: `${deltas.length} changed path${deltas.length === 1 ? '' : 's'} since this request started`,
         project: project.name || '',
-        root: root.text || project.path,
+        root: root.text || wtRoot,
         status: deltas.map((r) => r.path).join('\n'),
         stat: formatNumstatDeltas(deltas),
         diff: '',
@@ -1591,7 +1615,7 @@ async function projectDiffBlock(s, checkpoint = null) {
     title: 'Current project changes',
     summary: `${changed.length || 'No'} changed path${changed.length === 1 ? '' : 's'} in the working tree`,
     project: project.name || '',
-    root: root.text || project.path,
+    root: root.text || wtRoot,
     status: status.text,
     stat: statOut.text,
     diff: diff.text,

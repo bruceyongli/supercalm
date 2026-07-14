@@ -17,24 +17,26 @@ db.exec(`
     wiki_model      TEXT,
     lessons         INTEGER NOT NULL DEFAULT 0,
     lessons_model   TEXT,
+    isolation       INTEGER NOT NULL DEFAULT 0,
     updated_at      TEXT
   )
 `);
-// migrate existing installs (table predates the lessons columns)
-for (const col of ['lessons INTEGER NOT NULL DEFAULT 0', 'lessons_model TEXT']) {
+// migrate existing installs (table predates the lessons / isolation columns)
+for (const col of ['lessons INTEGER NOT NULL DEFAULT 0', 'lessons_model TEXT', 'isolation INTEGER NOT NULL DEFAULT 0']) {
   try { db.exec(`ALTER TABLE project_helpers ADD COLUMN ${col}`); } catch {}
 }
 
-const DEFAULTS = { context_inject: 0, context_model: null, preflight: 0, preflight_model: null, wiki_mcp: 0, wiki_model: null, lessons: 0, lessons_model: null };
-const BOOL_COLS = ['context_inject', 'preflight', 'wiki_mcp', 'lessons'];
+const DEFAULTS = { context_inject: 0, context_model: null, preflight: 0, preflight_model: null, wiki_mcp: 0, wiki_model: null, lessons: 0, lessons_model: null, isolation: 0 };
+const BOOL_COLS = ['context_inject', 'preflight', 'wiki_mcp', 'lessons', 'isolation'];
 const MODEL_COLS = ['context_model', 'preflight_model', 'wiki_model', 'lessons_model'];
 const _get = db.prepare('SELECT * FROM project_helpers WHERE project_id = ?');
 const _upsert = db.prepare(`INSERT INTO project_helpers
-  (project_id,context_inject,context_model,preflight,preflight_model,wiki_mcp,wiki_model,lessons,lessons_model,updated_at)
-  VALUES (?,?,?,?,?,?,?,?,?,?)
+  (project_id,context_inject,context_model,preflight,preflight_model,wiki_mcp,wiki_model,lessons,lessons_model,isolation,updated_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(project_id) DO UPDATE SET context_inject=excluded.context_inject,context_model=excluded.context_model,
     preflight=excluded.preflight,preflight_model=excluded.preflight_model,wiki_mcp=excluded.wiki_mcp,
-    wiki_model=excluded.wiki_model,lessons=excluded.lessons,lessons_model=excluded.lessons_model,updated_at=excluded.updated_at`);
+    wiki_model=excluded.wiki_model,lessons=excluded.lessons,lessons_model=excluded.lessons_model,
+    isolation=excluded.isolation,updated_at=excluded.updated_at`);
 
 export function getHelpers(pid) {
   return { ...DEFAULTS, ...(pid ? (_get.get(pid) || {}) : {}) };
@@ -45,7 +47,7 @@ export function setHelpers(pid, patch = {}) {
   const cur = { ...DEFAULTS, ...(_get.get(pid) || {}) };
   for (const k of BOOL_COLS) if (k in patch) cur[k] = patch[k] ? 1 : 0;
   for (const k of MODEL_COLS) if (k in patch) cur[k] = patch[k] ? String(patch[k]).slice(0, 80) : null;
-  _upsert.run(pid, cur.context_inject, cur.context_model, cur.preflight, cur.preflight_model, cur.wiki_mcp, cur.wiki_model, cur.lessons, cur.lessons_model, now());
+  _upsert.run(pid, cur.context_inject, cur.context_model, cur.preflight, cur.preflight_model, cur.wiki_mcp, cur.wiki_model, cur.lessons, cur.lessons_model, cur.isolation, now());
   return getHelpers(pid);
 }
 
@@ -55,6 +57,8 @@ const KEYS = {
   preflight: { col: 'preflight', env: 'AIOS_PREFLIGHT_GRILL' },
   wiki: { col: 'wiki_mcp', env: 'AIOS_WIKI' },
   lessons: { col: 'lessons', env: 'AIOS_LESSONS' },
+  // Per-session git-worktree isolation (multi-session collab). Default OFF; AIOS_ISOLATION kills/forces.
+  isolation: { col: 'isolation', env: 'AIOS_ISOLATION' },
 };
 
 function envState(name) {
