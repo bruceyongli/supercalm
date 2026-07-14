@@ -3,7 +3,7 @@ import { gzip as gzipCb } from 'node:zlib';
 import { promisify } from 'node:util';
 import { readFile, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, RELEASE_CHANNEL, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
+import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, RELEASE_CHANNEL, COMMIT_SHA, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import { bus } from './bus.js';
 import * as store from './store.js';
 import { now, id } from './util.js';
@@ -156,6 +156,7 @@ export function buildState() {
     ok: true,
     time: now(),
     version: VERSION,
+    commit: COMMIT_SHA,
     tools: TOOL_IDS.map((id) => ({
       id,
       label: TOOLS[id].label,
@@ -187,11 +188,11 @@ export function buildState() {
 // ---------------------------------------------------------------------------
 // core routes (more are registered by feature modules)
 // ---------------------------------------------------------------------------
-route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, time: now() }));
+route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, commit: COMMIT_SHA, time: now() }));
 route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
 // Release version (single source: package.json, read at boot). no-store so the new-version toast
 // (web/version-badge.js) always sees the live value rather than a heuristically-cached response.
-route('GET', '/api/version', (req, res) => { res.setHeader('cache-control', 'no-store'); json(res, 200, { version: VERSION, channel: RELEASE_CHANNEL }); });
+route('GET', '/api/version', (req, res) => { res.setHeader('cache-control', 'no-store'); json(res, 200, { version: VERSION, channel: RELEASE_CHANNEL, commit: COMMIT_SHA }); });
 
 // Feature-flag kill-switches (launch-path features default OFF). GET reports effective flags + which
 // are env-locked; POST persists a patch to data/feature_flags.json (env overrides still win on read).

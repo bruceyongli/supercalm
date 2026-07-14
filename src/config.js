@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { codexProviderArgs, isNativeModel, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,6 +54,15 @@ export const RELEASE_CHANNEL = (() => {
     const m = JSON.parse(readFileSync(join(DATA_DIR, 'release_channel.json'), 'utf8'));
     return m && m.version === VERSION && m.channel === 'stable' ? 'stable' : 'every';
   } catch { return 'every'; }
+})();
+
+// The exact git commit the running server was built from — served at /healthz + /api/version so an
+// autonomous deploy can PROVE "the server is now serving exactly the candidate SHA" (build provenance,
+// step 1 of docs/specs/autonomous-deploy-plan.md). Resolved once at boot via a bounded git call; null if
+// not a git checkout / git unavailable (never blocks boot).
+export const COMMIT_SHA = (() => {
+  try { return execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 2500, stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null; }
+  catch { return null; }
 })();
 
 // Resolve a system binary to an ABSOLUTE path (Supercalm may run under launchd/systemd with a minimal

@@ -81,16 +81,30 @@ if git rev-parse --verify --quiet "origin/$BR" >/dev/null; then
   }
 fi
 
-OLD="$(node -p "require('./package.json').version")"
-
-echo "==> bump release version ($LEVEL)"
-NEW="$(bin/version "$LEVEL")"
-if [ "$NEW" = "$OLD" ]; then
-  echo "error: deploy did not change the release version (still v$NEW)." >&2
-  echo "       Use patch/minor/major or a new explicit X.Y.Z; every deploy must move the served version." >&2
-  exit 1
+# Exact-SHA deploy (autonomous pipeline — docs/specs/autonomous-deploy-plan.md step 1). When AIOS_DEPLOY_SHA
+# is set, the caller (the integration state machine) already prepared + bumped + TESTED that exact candidate
+# commit; here we ONLY fast-forward main to it — NO re-bump, NO other mutation — then push + restart. The
+# candidate must be a fast-forward descendant of main (never a divergent/force move). Env-gated, so a normal
+# `bin/deploy` (no env) is byte-identical to before.
+if [ -n "${AIOS_DEPLOY_SHA:-}" ]; then
+  SHA="$AIOS_DEPLOY_SHA"
+  git rev-parse --verify --quiet "$SHA^{commit}" >/dev/null || { echo "error: AIOS_DEPLOY_SHA is not a commit: $SHA" >&2; exit 1; }
+  git merge-base --is-ancestor "$BR" "$SHA" 2>/dev/null || { echo "error: '$BR' is not an ancestor of $SHA — refusing a non-fast-forward exact deploy." >&2; exit 1; }
+  echo "==> exact-SHA deploy: fast-forwarding $BR to $(git rev-parse --short "$SHA")"
+  git merge --ff-only "$SHA"
+  NEW="$(node -p "require('./package.json').version")"
+  echo "    -> v$NEW ($(git rev-parse --short HEAD))"
+else
+  OLD="$(node -p "require('./package.json').version")"
+  echo "==> bump release version ($LEVEL)"
+  NEW="$(bin/version "$LEVEL")"
+  if [ "$NEW" = "$OLD" ]; then
+    echo "error: deploy did not change the release version (still v$NEW)." >&2
+    echo "       Use patch/minor/major or a new explicit X.Y.Z; every deploy must move the served version." >&2
+    exit 1
+  fi
+  echo "    -> v$NEW"
 fi
-echo "    -> v$NEW"
 
 # Headless GitHub auth — SELF-HEALING (2026-07-13). Agent shells have no terminal for a username
 # prompt and no usable keychain; the push authenticates via a repo-local credential helper that
