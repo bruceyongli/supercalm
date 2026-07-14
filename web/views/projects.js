@@ -18,6 +18,12 @@ const PROJECTS_CSS = `
     .pj-iso { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #8a95a5; cursor: pointer; margin-top: 3px; user-select: none; }
     .pj-iso input { accent-color: #2fd6be; margin: 0; }
     .pj-iso-hint { color: #5c6675; }
+    .pj-autopub { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 18px; padding: 10px 14px; border: 1px solid #2a3340; border-radius: 10px; background: #121722; }
+    .pj-autopub.on { border-color: #e2b23e88; background: #1c1a12; }
+    .pj-autopub-toggle { display: flex; align-items: center; gap: 7px; cursor: pointer; color: #e9eef5; font-size: 13px; white-space: nowrap; }
+    .pj-autopub-toggle input { accent-color: #e2b23e; margin: 0; }
+    .pj-autopub-desc { color: #8a95a5; font-size: 12px; flex: 1; min-width: 220px; }
+    .pj-autopub-note { color: #e2b23e; font-size: 12px; font-weight: 600; white-space: nowrap; }
 `;
 
 let host = null;
@@ -87,9 +93,35 @@ export function init(el) {
     <div class="pj-wrap" data-pj>
       <div class="pj-head"><h1>Projects</h1><a class="dk-new sm" href="desktop">+ Add via new session</a></div>
       <p class="pj-sub">Every repo Supercalm has worked in — with its code graph, freshness, and a one-click session.</p>
+      <div class="pj-autopub" id="pj-autopub-wrap" hidden>
+        <label class="pj-autopub-toggle"><input type="checkbox" id="pj-autopub"> <b>Autonomous deploy</b></label>
+        <span class="pj-autopub-desc">Auto-merge & deploy each session's <b>approved</b> work to the live service (deterministic gate → publish → sustained health, with auto-rollback). Applies only to projects with <b>multi-session isolation</b> on. Highest-risk — off by default.</span>
+        <span id="pj-autopub-note" class="pj-autopub-note"></span>
+      </div>
       <div id="pj-list">loading…</div>
     </div>`;
   load();
+  wireAutoPublish();
+}
+
+// Global "Autonomous deploy" capability — the autoPublish feature flag (POST /api/flags). Env-locked when
+// AIOS_AUTO_PUBLISH is set (the hard kill-switch); shown disabled with a note in that case.
+async function wireAutoPublish() {
+  let r; try { r = await api('api/flags'); } catch { return; }
+  const wrap = document.getElementById('pj-autopub-wrap');
+  const box = document.getElementById('pj-autopub');
+  const note = document.getElementById('pj-autopub-note');
+  if (!wrap || !box) return;
+  const paint = (on, locked) => {
+    box.checked = on; box.disabled = !!locked; wrap.hidden = false; wrap.classList.toggle('on', on);
+    note.textContent = locked ? '(locked by AIOS_AUTO_PUBLISH env)' : (on ? '● ON — approved branches deploy themselves' : '');
+  };
+  paint(!!(r.flags && r.flags.autoPublish), !!(r.locks && r.locks.autoPublish));
+  box.onchange = async () => {
+    const want = box.checked;
+    try { const rr = await api('api/flags', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ autoPublish: want }) }); paint(!!(rr.flags && rr.flags.autoPublish), !!(rr.locks && rr.locks.autoPublish)); }
+    catch { box.checked = !want; }
+  };
 }
 
 export function teardown() {

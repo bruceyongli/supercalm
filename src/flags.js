@@ -23,6 +23,7 @@ export const FLAG_DEFS = {
   gitGuardrails: { env: 'AIOS_GIT_GUARDRAILS', desc: 'Block irreversible git via a claude PreToolUse hook' },
   codexNotify: { env: 'AIOS_CODEX_NOTIFY', desc: 'Inject codex notify program for turn-complete reporting' },
   projectMemory: { env: 'AIOS_PROJECT_MEMORY', desc: 'Project Memory: task cards replace the supervision doc (docs/specs/project-memory-plan.md; behavior phases read this — the schema itself is always present)' },
+  autoPublish: { env: 'AIOS_AUTO_PUBLISH', desc: 'Autonomous deploy: auto-merge APPROVED integrations to main + deploy the LIVE service (highest-risk; also requires per-project multi-session isolation). The AIOS_AUTO_PUBLISH env stays a hard kill-switch.' },
 };
 export const FLAG_KEYS = Object.keys(FLAG_DEFS);
 

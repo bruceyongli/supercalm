@@ -29,6 +29,7 @@ import { now } from './util.js';
 import { db } from './store.js';
 import * as store from './store.js';
 import * as I from './integrations.js';
+import { flagOn } from './flags.js';
 
 // Thresholds (read once at load; tests set env before importing). Defaults leave generous room for the
 // restart to happen (RESTART_GRACE) plus a real soak (WINDOW); the deadline persisted on the row = both.
@@ -37,11 +38,11 @@ const SUCCESSES = Number(process.env.AIOS_VERIFY_SUCCESSES || 12);        // ~1m
 const WINDOW_MS = Number(process.env.AIOS_VERIFY_WINDOW_MS || 180000);    // soak budget after the server is up
 const RESTART_GRACE_MS = Number(process.env.AIOS_VERIFY_RESTART_MS || 300000); // budget for deploy+restart to serve the candidate
 
-// The capability switch. Off by default — nothing auto-deploys the live service until an operator turns
-// this on. (A future project-scope check will also require multi-session isolation to be enabled.)
+// The capability switch — the `autoPublish` feature flag (toggled in the UI / POST /api/flags, hot-reloaded),
+// with the AIOS_AUTO_PUBLISH env as a hard kill-switch/override (flags.js honors it). Off by default: nothing
+// auto-deploys the live service until an operator turns it on. Per-project isolation is checked at the trigger.
 export function publishEnabled() {
-  const v = String(process.env.AIOS_AUTO_PUBLISH || '').trim().toLowerCase();
-  return ['1', 'true', 'on', 'yes'].includes(v);
+  return flagOn('autoPublish');
 }
 
 const defaultServed = () => COMMIT_SHA;
