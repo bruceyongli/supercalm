@@ -16,6 +16,8 @@ import { gitOut } from './git.js';
 import { defaultBranch, worktreeRoot, sanitize } from './worktrees.js';
 import * as I from './integrations.js';
 import * as store from './store.js';
+import { flagOn } from './flags.js';
+import { reviewCandidate } from './deploy_reviewers.js';
 
 const exec = promisify(execFile);
 
@@ -75,7 +77,7 @@ async function runChecks(worktreePath, { testCmd } = {}) {
 // Drive a QUEUED integration through the deterministic gate → APPROVED or REJECTED (or HELD on a setup
 // error). Every step is a fenced state-machine transition; the checks_digest binds the verdict to the exact
 // rebased SHA + inputs. Returns the final integration row.
-export async function driveGate(integrationId, { fenceToken, testCmd } = {}) {
+export async function driveGate(integrationId, { fenceToken, testCmd, review } = {}) {
   const it = I.getIntegration(integrationId);
   if (!it) throw new Error('no such integration: ' + integrationId);
   const ft = fenceToken ?? it.fence_token;
@@ -102,6 +104,17 @@ export async function driveGate(integrationId, { fenceToken, testCmd } = {}) {
 
   if (protectedHits.length) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: dg, failure_code: 'protected_path' }, data: { protectedHits } });
   if (!checks.pass) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: dg, failure_code: 'checks_failed' }, data: { checks: checks.checks } });
+
+  // AI reviewer panel (step 7) — only when the aiReviewers flag is on. Independent adversarial reviewers read
+  // the candidate diff (as untrusted data); all must PASS with no high/critical finding, else REJECTED. The
+  // deterministic gate above already makes autonomous deploy safe; this is the "smart" layer on proven rails.
+  if (flagOn('aiReviewers')) {
+    const diffText = (await gitOut(repoPath, ['diff', `${base}..${prep.sha}`], { maxBuffer: 8 * 1024 * 1024 })).text;
+    const rv = await (review || reviewCandidate)({ diffText, files });
+    const rdg = digest({ sha: prep.sha, base, files, checks: checks.checks, reviews: rv.reviews });
+    if (!rv.pass) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: rdg, failure_code: 'ai_review_failed' }, data: { blocking: rv.blocking, reviews: rv.reviews } });
+    return I.transition(integrationId, 'APPROVED', { fenceToken: ft, patch: { checks_digest: rdg }, data: { checks: checks.checks, reviews: rv.reviews } });
+  }
   return I.transition(integrationId, 'APPROVED', { fenceToken: ft, patch: { checks_digest: dg }, data: { checks: checks.checks } });
 }
 

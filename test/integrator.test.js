@@ -69,6 +69,23 @@ assert.equal(r4.stage, 'REJECTED', 'rebase conflict → REJECTED');
 assert.equal(r4.failure_code, 'rebase_conflict', 'failure_code rebase_conflict');
 free(i4);
 
+// 5) AI reviewer panel (flag on): a failing panel → REJECTED ai_review_failed (checks passed, but review blocks)
+process.env.AIOS_AI_REVIEWERS = '1';
+const c5 = candidate('c5', { 'r.txt': 'hello\n' });
+const i5 = I.enqueue({ projectId: proj.id, sourceBranch: 'c5', candidateSha: c5 });
+const r5 = await driveGate(i5.id, { testCmd: 'true', review: async () => ({ pass: false, reviews: [{ lens: 'prod_failure', verdict: 'FAIL', severity: 'high' }], blocking: ['prod_failure'] }) });
+assert.equal(r5.stage, 'REJECTED', 'failing AI panel → REJECTED even with passing deterministic checks');
+assert.equal(r5.failure_code, 'ai_review_failed', 'failure_code ai_review_failed');
+free(i5);
+
+// 6) AI reviewer panel: a passing panel → APPROVED
+const c6 = candidate('c6', { 's.txt': 'hi\n' });
+const i6 = I.enqueue({ projectId: proj.id, sourceBranch: 'c6', candidateSha: c6 });
+const r6 = await driveGate(i6.id, { testCmd: 'true', review: async () => ({ pass: true, reviews: [{ lens: 'diff_risk', verdict: 'PASS', severity: 'none' }], blocking: [] }) });
+assert.equal(r6.stage, 'APPROVED', 'passing AI panel → APPROVED');
+free(i6);
+process.env.AIOS_AI_REVIEWERS = '';
+
 // the gate never left an integration occupying the pipeline
 assert.equal(I.occupiedBy(), null, 'pipeline free after all gate runs');
 

@@ -24,6 +24,7 @@ export const FLAG_DEFS = {
   codexNotify: { env: 'AIOS_CODEX_NOTIFY', desc: 'Inject codex notify program for turn-complete reporting' },
   projectMemory: { env: 'AIOS_PROJECT_MEMORY', desc: 'Project Memory: task cards replace the supervision doc (docs/specs/project-memory-plan.md; behavior phases read this — the schema itself is always present)' },
   autoPublish: { env: 'AIOS_AUTO_PUBLISH', desc: 'Autonomous deploy: auto-merge APPROVED integrations to main + deploy the LIVE service (highest-risk; also requires per-project multi-session isolation). The AIOS_AUTO_PUBLISH env stays a hard kill-switch.' },
+  aiReviewers: { env: 'AIOS_AI_REVIEWERS', desc: 'Autonomous deploy: run the adversarial AI reviewer panel (diff-risk, prod-failure, rollback-safety) as an EXTRA gate after the deterministic checks. Off = deterministic gate only (already safe).' },
 };
 export const FLAG_KEYS = Object.keys(FLAG_DEFS);
 
