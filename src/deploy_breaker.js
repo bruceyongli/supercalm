@@ -5,7 +5,6 @@
 // tripped breaker blocks the NEXT integration; it never auto-closes — a human must clear it.
 import { db } from './store.js';
 import { now } from './util.js';
-import { readRecentCommits, detectThrash } from './agents/supervisor/thrash.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS deploy_breaker (
   project_id TEXT PRIMARY KEY,
@@ -50,17 +49,17 @@ export function clearBreaker(projectId) {
   return breakerState(projectId);
 }
 
-// Evaluate the trip conditions; opens the breaker if tripped (idempotent — an already-open breaker stays open
-// until manually cleared). Returns the current state. The repo-thrash check is best-effort (fail-open).
-export async function evaluate(projectId, repoPath) {
+// Evaluate the trip condition; opens the breaker if tripped (idempotent — an already-open breaker stays open
+// until manually cleared). Returns the current state. The trip signal is DIRECT: post-publish failures/
+// rollbacks for THIS project in the window (a deploy→rollback→redeploy loop). We deliberately do NOT trip on
+// a commit-stream heuristic — a healthy release cadence (package.json bumped every deploy, a commit that just
+// mentions "revert") looks identical to thrash and would falsely block autonomous deploys forever.
+export async function evaluate(projectId, repoPath) { // eslint-disable-line no-unused-vars
   if (!projectId) return { project_id: projectId, open: 0 };
   const s = breakerState(projectId);
   if (s.open) return s;
   const fails = recentFailures(projectId);
   if (fails >= FAIL_THRESHOLD) return tripBreaker(projectId, `${fails} post-publish failures/rollbacks in ${Math.round(WINDOW_MS / 60000)}m`);
-  if (repoPath) {
-    try { const t = detectThrash(await readRecentCommits(repoPath)); if (t.thrash) return tripBreaker(projectId, `repo deploy thrash: ${t.kind} (${t.commits} commits)`); } catch { /* fail-open */ }
-  }
   return breakerState(projectId);
 }
 
