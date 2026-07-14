@@ -29,12 +29,6 @@ async function load() {
   try { home = await api('api/phone/home'); } catch {}
   const liveByPath = {};
   for (const s of home.sessions || []) if (s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
-  // Per-project multi-session isolation — a PROJECT-level switch surfaced here (always reachable) so it
-  // does NOT depend on the Knowledge panel being enabled. Writes the same project_helpers.isolation flag.
-  const isoById = {};
-  await Promise.all((health.graphs || []).map(async (p) => {
-    try { const r = await api(`api/project/${p.project_id}/helpers`); isoById[p.project_id] = !!(r?.helpers?.isolation); } catch {}
-  }));
   const rows = (health.graphs || []).map((p) => {
     const ready = p.status === 'ready';
     const counts = p.counts || {};
@@ -49,7 +43,7 @@ async function load() {
         <span class="pj-path">${esc(p.path)}</span>
         <span class="pj-counts">${ready ? `${counts.file || 0} files · ${counts.route || 0} routes · indexed ${fmtAgo(p.indexed_at)} ago` : 'no code graph yet'}</span>
         <label class="pj-iso" title="Give every session on this project its own git worktree + branch so concurrent agents never clobber each other's tree; changes reach the app by merging to main. Off (default) = shared tree, you own merge/deploy.">
-          <input type="checkbox" data-pj-iso="${esc(p.project_id)}" ${isoById[p.project_id] ? 'checked' : ''}> multi-session isolation
+          <input type="checkbox" data-pj-iso="${esc(p.project_id)}"> multi-session isolation
           <span class="pj-iso-hint">— own worktree + branch per session</span>
         </label>
       </div>
@@ -71,6 +65,14 @@ async function load() {
     try { await api(`api/project/${c.dataset.pjIso}/helpers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ isolation: c.checked }) }); }
     catch { c.checked = prev; } // revert the box if the write failed
   };
+  // Fill each project's isolation state AFTER the initial paint — don't block the list render on N
+  // helper calls (a checkbox unchecked-until-known is a fine transient).
+  for (const p of health.graphs || []) {
+    api(`api/project/${p.project_id}/helpers`).then((r) => {
+      const box = document.querySelector(`[data-pj-iso="${p.project_id}"]`);
+      if (box) box.checked = !!(r?.helpers?.isolation);
+    }).catch(() => {});
+  }
 }
 
 export function init(el) {
