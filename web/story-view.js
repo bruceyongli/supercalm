@@ -55,15 +55,23 @@ function reconcileEchoes() {
   if (readMarks.size > 100) { const k = readMarks.keys().next().value; readMarks.delete(k); } // bound page-life growth
   return changed || sendEchoes.length !== before;
 }
-// Called by session.js right after a successful composer POST — the instant-echo entry point.
+// Called by session.js AT the send click (before the POST resolves) — the instant-echo entry
+// point. Returns the echo handle so a failed send (409 stopped / error) can cancel the ghost.
 export function noteComposerSend(text) {
-  if (!sid || !normText(text)) return; // story not mounted / attachment-only send
+  if (!sid || !normText(text)) return null; // story not mounted / attachment-only send
   const feed = panelEl && panelEl.querySelector('.story-feed');
   const stick = feed ? nearBottom(feed) : false;
-  sendEchoes.push({ ts: Date.now(), text: String(text), state: 'pending' });
+  const echo = { ts: Date.now(), text: String(text), state: 'pending' };
+  sendEchoes.push(echo);
   if (sendEchoes.length > 20) sendEchoes = sendEchoes.slice(-20);
   render();
   if (stick) storyToLatest(); // keep them at the tail ONLY if they were already there (scroll rule)
+  return echo;
+}
+export function cancelComposerSend(echo) {
+  if (!echo) return;
+  sendEchoes = sendEchoes.filter((e) => e !== echo);
+  render();
 }
 
 // General atom key for the append-MERGE. Requirement: "those messages are already loaded, why clear them

@@ -2834,6 +2834,12 @@ async function sendInput() {
   if (!text && !uploaded.length) return;
   if (uploadsPending()) return alert('Wait for attachments to finish uploading first.');
   sendBtn.disabled = true;
+  // Instant story echo AT the click (not after the POST round-trip): the message appears in the
+  // story NOW with an unread chip, flips to ✓ read when the agent's transcript contains it
+  // (story-view.js reconciles), and is cancelled if the send actually fails.
+  let echo = null;
+  if (text && storyInited) { try { echo = (await import('./story-view.js')).noteComposerSend?.(text); } catch {} }
+  const cancelEcho = () => { if (echo) import('./story-view.js').then((m) => m.cancelComposerSend?.(echo)).catch(() => {}); };
   try {
     const r = await fetch(`api/session/${id}/input`, {
       method: 'POST',
@@ -2841,19 +2847,19 @@ async function sendInput() {
       body: JSON.stringify({ text, attachments: uploaded, source: uploaded.length ? 'text+attachments' : 'text' }),
     });
     if (r.status === 409) {
+      cancelEcho();
       showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
     } else if (!r.ok) {
+      cancelEcho();
       const j = await r.json().catch(() => ({}));
       alert('Send failed: ' + (j.error || r.status));
     } else {
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
       reply.value = '';
       clearAttachments();
-      // Instant story echo: the sent message appears in the story NOW with an unread chip, flipping
-      // to ✓ read when the agent's transcript actually contains it (story-view.js reconciles).
-      if (text) import('./story-view.js').then((m) => m.noteComposerSend?.(text)).catch(() => {});
     }
   } catch (e) {
+    cancelEcho();
     alert('Send failed: ' + e.message);
   } finally {
     updateSendState();
