@@ -105,12 +105,23 @@ deploys `REJECTED` until manually cleared. This is what stops a deploy→rollbac
 2. ✅ `integrations` state/events tables + fencing + boot recovery + FIFO lock. Survives self-restart; one deploy at a time. (`src/integrations.js`.)
 3. ✅ **Deterministic** gate + protected-path rejection — `APPROVED`/`REJECTED`, no publish. (`src/integrator.js` `driveGate`.)
 4. ✅ **The publisher + sustained health** — `APPROVED → GREEN` (`src/publisher.js`). See below.
-5. Forward-revert **auto-rollback** for schema-neutral changes (the safety net). ← *next.*
-6. Thrash circuit breaker.
-7. **Then** the multi-agent AI reviewers + migration-capable rollback.
+5. ✅ Forward-revert **auto-rollback** for schema-neutral changes (`src/publisher.js` `startRollback`, the safety net).
+6. ✅ Thrash **circuit breaker** (`src/deploy_breaker.js`) — trips on post-publish failures/rollbacks.
+7. ✅ The multi-agent **AI reviewer panel** (`src/deploy_reviewers.js`, behind `aiReviewers`).
 
-By step 4 any agent can deploy the live service autonomously + safely, gated by deterministic checks +
-sustained health; the AI review pipeline (step 7) is an enhancement on proven rails, not a prerequisite.
+**The pipeline is COMPLETE (v0.3.152).** The orchestrator (`src/deploy_orchestrator.js`) ties it together:
+QUEUED → breaker guard → deterministic gate → (AI panel, if on) → publish → the reborn server verifies →
+GREEN (or auto-rollback → ROLLED_BACK, or HELD). One integration at a time (single-active), FIFO.
+
+### The trigger + how to turn it on
+- **Trigger:** `POST /api/session/:id/integrate` (`src/deploy_api.js`) — requires the project's multi-session
+  **isolation** (so the session has its own worktree+branch). Enqueues from the branch HEAD; the orchestrator
+  picks it up. Callable by the session's agent, its supervisor, or the operator — nothing merges by hand.
+- **Master switch:** the **`autoPublish`** feature flag (Projects view → "Autonomous deploy", or `POST
+  /api/flags`; `AIOS_AUTO_PUBLISH` env = hard kill-switch). OFF by default → the orchestrator never dequeues.
+- **Extra gate (optional):** the **`aiReviewers`** flag adds the adversarial panel after the deterministic gate.
+- **Breaker:** per-project, opens after `AIOS_BREAKER_FAILS` (default 3) post-publish failures/rollbacks in the
+  window; clear via `POST /api/deploy/breaker/clear`. Audit at `GET /api/deploy/integrations`.
 
 ### The publisher (step 4 — `src/publisher.js`)
 - **`drivePublish(id)`**: `APPROVED → PUBLISHING → MAIN_PUBLISHED → RESTART_REQUESTED`, then spawns a

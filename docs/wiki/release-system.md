@@ -1,4 +1,4 @@
-# Release system — versioning, deploy, channels, and (forthcoming) autonomous deploy
+# Release system — versioning, deploy, channels, and autonomous deploy
 
 *How a change goes from a commit to the live service, how releases are versioned + notified, and the
 plan to let agents deploy themselves safely. Companion to [`CLAUDE.md`](../../CLAUDE.md) (the deploy
@@ -14,8 +14,8 @@ rules) and [[design-decisions]].*
   (default) · Every release · Off — so frequent auto-deploys don't spam the dashboard.
 - **Push works headless** via the `GITHUB_PAT_AIOS` credential helper (§4); never report agent pushes as
   broken.
-- 🔵 **Autonomous integrate-&-deploy** (agents ship their own branch, gated by a multi-agent check
-  pipeline + rollback) is designed + approved, being built MVP-first — spec:
+- 🟢 **Autonomous integrate-&-deploy** (agents ship their own branch, gated by a deterministic + AI check
+  pipeline, with auto-rollback + a circuit breaker) is **BUILT (v0.3.152, off by default)** — see §6 + spec:
   [`docs/specs/autonomous-deploy-plan.md`](../specs/autonomous-deploy-plan.md).
 
 ---
@@ -83,12 +83,18 @@ linked worktree, isolated launches carry `AIOS_NO_DEPLOY=1` (a speed-bump, not a
 `store.js` boot guard refuses to open the canonical 11 GB DB from a worktree. Integration to `main` is
 therefore the deliberate seam where parallel work converges — the subject of the autonomous pipeline.
 
-## 6. 🔵 Autonomous integrate-&-deploy (forthcoming)
-Goal: **any agent session ships its branch to `main` without a human doing the merge**, the human gate
-replaced by a strict procedure + a **multi-agent adversarial check pipeline**, with **rollback** as the
-mandatory safety net. Built as a **durable state machine** (survives the self-deploy restart via fencing
-+ boot recovery), MVP-first — *deterministic gates before AI reviewers, safe before smart*. Full design,
-stages, tables, and the 7-step build order: **[`docs/specs/autonomous-deploy-plan.md`](../specs/autonomous-deploy-plan.md)**.
+## 6. 🟢 Autonomous integrate-&-deploy (BUILT — v0.3.152, off by default)
+**Any agent session ships its branch to `main` without a human doing the merge**, the human gate replaced
+by a strict procedure + an adversarial check pipeline, with **auto-rollback** as the safety net. Built as a
+**durable state machine** (survives the self-deploy restart via fencing + boot recovery), MVP-first —
+*deterministic gates before AI reviewers, safe before smart*. Flow: `POST /api/session/:id/integrate` →
+orchestrator (single-active) → **breaker** guard → **deterministic gate** (rebase-onto-main + tests +
+secret-scan + protected-path sentinel) → optional **AI reviewer panel** → **publish** (detached exact-SHA
+deploy) → the reborn server runs **sustained health** verify → `GREEN` (or **auto-rollback** → `ROLLED_BACK`,
+or `HELD`). **Turn it on:** Projects view → *Autonomous deploy* (`autoPublish` flag) + per-project
+*multi-session isolation*; optional *aiReviewers*. Modules: `src/{integrations,integrator,publisher,
+deploy_breaker,deploy_orchestrator,deploy_reviewers,deploy_api}.js`. Full design + stages + the 7-step build
+order (all ✅): **[`docs/specs/autonomous-deploy-plan.md`](../specs/autonomous-deploy-plan.md)**.
 
 ## Quick reference
 - Deploy: `bin/deploy [patch|minor|major|X.Y.Z]` · Stable release: `bin/release [level]`
