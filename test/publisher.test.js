@@ -111,5 +111,30 @@ await assert.rejects(
 assert.equal(I.getIntegration(iD.id).stage, 'APPROVED', 'no partial transition under a stale fence');
 clear(iD.id);
 
+// E) forward publish that lands but can't sustain health → forward-revert AUTO-ROLLBACK → ROLLED_BACK.
+const mainBeforeE = g('rev-parse', 'main');           // the previous-green target
+const cE = candidateCommit('cE', 'e.txt');
+g('merge', '--ff-only', cE);                           // simulate the forward deploy landing (main → cE)
+const iE = I.enqueue({ projectId: proj.id, sourceBranch: 'cE', candidateSha: cE, baseSha: mainBeforeE });
+const ftE = iE.fence_token;
+I.transition(iE.id, 'PREPARING', { fenceToken: ftE });
+I.transition(iE.id, 'CHECKING', { fenceToken: ftE, patch: { candidate_sha: cE, base_sha: mainBeforeE } });
+I.transition(iE.id, 'APPROVED', { fenceToken: ftE });
+I.transition(iE.id, 'PUBLISHING', { fenceToken: ftE, patch: { deploy_started_at: 1, health_deadline: 1 } }); // deadline already past
+I.transition(iE.id, 'MAIN_PUBLISHED', { fenceToken: ftE, patch: { base_sha: mainBeforeE, previous_green_sha: mainBeforeE } });
+I.transition(iE.id, 'RESTART_REQUESTED', { fenceToken: ftE });
+I.transition(iE.id, 'VERIFYING', { fenceToken: ftE });
+// health probes fail (served != candidate) + deadline past → the forward episode auto-rolls-back
+P.verifyLoop(iE.id, { fenceToken: ftE, servedSha: () => WRONG, spawnDeploy: fakeDeploy });
+const rbE = await waitFor(iE.id, ['ROLLBACK_RESTART_REQUESTED', 'HELD', 'ROLLED_BACK'], 3000);
+assert.equal(rbE.stage, 'ROLLBACK_RESTART_REQUESTED', 'forward health failure → auto-rollback published+restart (got ' + rbE.stage + '/' + rbE.failure_code + ')');
+assert.ok(rbE.rollback_sha, 'rollback_sha recorded');
+assert.equal(g('cat-file', '-t', rbE.rollback_sha), 'commit', 'a forward-revert commit was created (never a reset)');
+// the reborn server now serves the rollback sha → ROLLBACK_VERIFYING → ROLLED_BACK
+await P.reconcile({ servedSha: () => rbE.rollback_sha, spawnDeploy: fakeDeploy });
+const doneE = await waitFor(iE.id, ['ROLLED_BACK', 'HELD', 'GREEN'], 3000);
+assert.equal(doneE.stage, 'ROLLED_BACK', 'rollback verified through the health window → ROLLED_BACK (got ' + doneE.stage + '/' + doneE.failure_code + ')');
+clear(iE.id);
+
 assert.equal(I.occupiedBy(), null, 'pipeline free after all publisher runs');
 console.log('publisher.test: all assertions passed');

@@ -30,6 +30,9 @@ import { db } from './store.js';
 import * as store from './store.js';
 import * as I from './integrations.js';
 import { flagOn } from './flags.js';
+import { PROTECTED } from './integrator.js';
+
+const short = (s, n = 300) => String(s || '').slice(-n);
 
 // Thresholds (read once at load; tests set env before importing). Defaults leave generous room for the
 // restart to happen (RESTART_GRACE) plus a real soak (WINDOW); the deadline persisted on the row = both.
@@ -105,7 +108,8 @@ export async function drivePublish(integrationId, opts = {}) {
   const ffOk = !!mainSha && !(await gitOut(repoPath, ['merge-base', '--is-ancestor', mainSha, candidate])).error;
   if (!ffOk) return safeHold(integrationId, ft, 'not_fast_forward', { base, mainSha, candidate });
 
-  I.transition(integrationId, 'MAIN_PUBLISHED', { fenceToken: ft, patch: { base_sha: mainSha }, data: { base, mainSha } });
+  // previous_green_sha = the main that was live before this deploy — the forward-revert target if we roll back.
+  I.transition(integrationId, 'MAIN_PUBLISHED', { fenceToken: ft, patch: { base_sha: mainSha, previous_green_sha: mainSha }, data: { base, mainSha } });
   I.transition(integrationId, 'RESTART_REQUESTED', { fenceToken: ft, data: { preBootId: BOOT_ID, candidate } });
 
   let pid = null;
@@ -115,37 +119,45 @@ export async function drivePublish(integrationId, opts = {}) {
   return I.getIntegration(integrationId);
 }
 
-// Walk the linear publish path forward to VERIFYING, one legal fenced step at a time (used when a boot
-// finds the reborn server already serving the candidate from an earlier stage). Re-reads the fence each
-// step; an illegal jump just stops the walk.
-function walkToVerifying(intId) {
-  const order = ['PUBLISHING', 'MAIN_PUBLISHED', 'RESTART_REQUESTED', 'VERIFYING'];
-  for (let guard = 0; guard < 6; guard++) {
+// The two deploy "episodes" share one shape (RESTART-like → VERIFYING-like → terminal), differing only in
+// which sha must be served + the stage names. Parameterizing lets ONE verifyLoop/reconcile drive both the
+// forward publish (→ GREEN) and the rollback (→ ROLLED_BACK).
+const FORWARD = { path: ['PUBLISHING', 'MAIN_PUBLISHED', 'RESTART_REQUESTED', 'VERIFYING'], verify: 'VERIFYING', success: 'GREEN', sha: (it) => it.candidate_sha, kind: 'forward' };
+const ROLLBACK = { path: ['ROLLING_BACK', 'ROLLBACK_PUBLISHED', 'ROLLBACK_RESTART_REQUESTED', 'ROLLBACK_VERIFYING'], verify: 'ROLLBACK_VERIFYING', success: 'ROLLED_BACK', sha: (it) => it.rollback_sha, kind: 'rollback' };
+function episodeOf(stage) { if (FORWARD.path.includes(stage)) return FORWARD; if (ROLLBACK.path.includes(stage)) return ROLLBACK; return null; }
+
+// Walk an episode's linear path forward to its verify stage, one legal fenced step at a time (used when a
+// boot finds the reborn server already serving the expected sha from an earlier stage). Re-reads the fence
+// each step; an illegal jump just stops the walk.
+function walkTo(intId, targetStage, path) {
+  for (let guard = 0; guard < 8; guard++) {
     const cur = I.getIntegration(intId);
-    if (!cur || cur.stage === 'VERIFYING') return cur;
-    const idx = order.indexOf(cur.stage);
-    if (idx < 0 || idx >= order.length - 1) return cur; // not on the publish path
-    try { I.transition(intId, order[idx + 1], { fenceToken: cur.fence_token, data: { reconcileWalk: true } }); }
+    if (!cur || cur.stage === targetStage) return cur;
+    const idx = path.indexOf(cur.stage), tgt = path.indexOf(targetStage);
+    if (idx < 0 || tgt < 0 || idx >= tgt) return cur;
+    try { I.transition(intId, path[idx + 1], { fenceToken: cur.fence_token, data: { walk: true } }); }
     catch { return I.getIntegration(intId); }
   }
   return I.getIntegration(intId);
 }
 
 const _verifying = new Set(); // one soak loop per integration
-// Sustained health. GREEN only after SUCCESSES CONSECUTIVE good probes (served-SHA===candidate AND DB
-// read→write→read) inside the persisted deadline. A stale fence (a newer boot took over) stops us.
-export function verifyLoop(intId, { fenceToken, servedSha = defaultServed } = {}) {
+// Sustained health for an episode. Its success stage only after SUCCESSES CONSECUTIVE good probes (served-SHA
+// === the episode's expected sha AND a read→write→read DB smoke) inside the persisted deadline. A stale fence
+// (a newer boot took over) stops us. On deadline: forward → auto-rollback (if safe) else HELD; rollback →
+// HELD (a rollback that can't go green needs a human).
+export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawnDeploy = defaultSpawnDeploy, episode = FORWARD } = {}) {
   if (_verifying.has(intId)) return;
   _verifying.add(intId);
   let consecutive = 0;
   const done = () => _verifying.delete(intId);
   const tick = async () => {
     const it = I.getIntegration(intId);
-    if (!it || it.stage !== 'VERIFYING') return done();
+    if (!it || it.stage !== episode.verify) return done();
     if (it.fence_token !== fenceToken) return done(); // fenced out — a boot recovery owns it now
     let ok = false, detail = '';
     try {
-      const servedOk = shaEq(servedSha(), it.candidate_sha);
+      const servedOk = shaEq(servedSha(), episode.sha(it));
       const dbOk = dbSmoke(intId);
       ok = servedOk && dbOk;
       detail = `served=${servedOk} db=${dbOk}`;
@@ -153,50 +165,90 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed } = {}
     I.recordProbe(intId, { bootId: BOOT_ID, servedSha: servedSha(), status: ok ? 'ok' : 'fail', detail });
     I.heartbeat(intId, fenceToken);
     consecutive = ok ? consecutive + 1 : 0;
-    if (consecutive >= SUCCESSES) { try { I.transition(intId, 'GREEN', { fenceToken, data: { probes: consecutive, detail } }); } catch (e) { console.error('[aios] publisher GREEN failed:', e?.message || e); } return done(); }
-    if (now() > it.health_deadline) { safeHold(intId, fenceToken, 'health_timeout', { consecutive, needed: SUCCESSES, detail }); return done(); }
+    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
+    if (now() > it.health_deadline) { await onVerifyFail(intId, fenceToken, episode, { consecutive, detail, servedSha, spawnDeploy }); return done(); }
     const t = setTimeout(() => { tick().catch(() => done()); }, PROBE_MS);
     if (t.unref) t.unref();
   };
   tick().catch(() => done());
 }
 
+async function onVerifyFail(intId, ft, episode, ctx) {
+  if (episode.kind === 'rollback') return safeHold(intId, ft, 'rollback_health_timeout', { consecutive: ctx.consecutive, detail: ctx.detail });
+  // Forward publish couldn't sustain health → forward-revert auto-rollback if the change is safe, else HELD.
+  try { await startRollback(intId, ft, ctx); }
+  catch (e) { console.error('[aios] startRollback error:', e?.message || e); safeHold(intId, ft, 'rollback_error', { error: String(e?.message || e) }); }
+}
+
+// Forward-revert auto-rollback (plan §5): create a revert commit on main (NEVER reset/force), redeploy the
+// previous-green state via the same exact-SHA path, and verify it through the SAME health window. Only for
+// protected-path-clean changes (an APPROVED candidate is one by construction — the gate rejects schema/
+// deploy/config edits); a protected diff, an empty diff, or a revert conflict → HELD for a human.
+async function startRollback(intId, ft, { servedSha = defaultServed, spawnDeploy = defaultSpawnDeploy } = {}) {
+  const it = I.getIntegration(intId);
+  const project = it.project_id ? store.getProject(it.project_id) : null;
+  const repoPath = project?.path;
+  const target = it.previous_green_sha || it.base_sha;
+  const candidate = it.candidate_sha;
+  if (!repoPath || !existsSync(repoPath) || !target || !candidate) return safeHold(intId, ft, 'rollback_no_target', { target, candidate });
+  const files = (await gitOut(repoPath, ['diff', '--name-only', `${target}..${candidate}`])).text.split('\n').filter(Boolean);
+  if (!files.length) return safeHold(intId, ft, 'rollback_empty', { note: 'nothing to revert (target === candidate)' });
+  if (files.some((f) => PROTECTED.some((rx) => rx.test(f)))) return safeHold(intId, ft, 'rollback_unsafe_protected', { files: files.slice(0, 20) });
+
+  I.transition(intId, 'ROLLING_BACK', { fenceToken: ft, patch: { previous_green_sha: target, health_deadline: now() + RESTART_GRACE_MS + WINDOW_MS }, data: { target, reverting: files.length } });
+  const base = await defaultBranch(repoPath);
+  await gitOut(repoPath, ['checkout', base]);
+  const rev = await gitOut(repoPath, ['revert', '--no-commit', `${target}..${candidate}`], { timeout: 30000 });
+  if (rev.error) { await gitOut(repoPath, ['revert', '--abort']).catch(() => {}); await gitOut(repoPath, ['reset', '--hard', 'HEAD']).catch(() => {}); return safeHold(intId, I.getIntegration(intId).fence_token, 'rollback_conflict', { detail: short(rev.error) }); }
+  const commit = await gitOut(repoPath, ['commit', '-m', `rollback: integration ${intId} not green — forward-revert to ${target.slice(0, 12)}`], { timeout: 15000 });
+  if (commit.error) { await gitOut(repoPath, ['reset', '--hard', 'HEAD']).catch(() => {}); return safeHold(intId, I.getIntegration(intId).fence_token, 'rollback_commit_failed', { detail: short(commit.error) }); }
+  const rollbackSha = (await gitOut(repoPath, ['rev-parse', 'HEAD'])).text.trim();
+  I.transition(intId, 'ROLLBACK_PUBLISHED', { fenceToken: I.getIntegration(intId).fence_token, patch: { rollback_sha: rollbackSha }, data: { rollbackSha } });
+  I.transition(intId, 'ROLLBACK_RESTART_REQUESTED', { fenceToken: I.getIntegration(intId).fence_token, data: { preBootId: BOOT_ID, rollbackSha } });
+  let pid = null;
+  try { pid = spawnDeploy(repoPath, rollbackSha); }
+  catch (e) { return safeHold(intId, I.getIntegration(intId).fence_token, 'rollback_deploy_spawn_failed', { error: String(e?.message || e) }); }
+  I.recordProbe(intId, { bootId: BOOT_ID, servedSha: servedSha(), status: 'rollback_deploy_spawned', detail: 'pid=' + pid });
+  return I.getIntegration(intId);
+}
+
 let _ticker = null;
-function scheduleTicker(servedSha) {
+function scheduleTicker(opts) {
   if (_ticker) return;
-  _ticker = setTimeout(() => { _ticker = null; reconcile({ servedSha }).catch((e) => console.error('[aios] publisher ticker:', e?.message || e)); }, PROBE_MS);
+  _ticker = setTimeout(() => { _ticker = null; reconcile(opts).catch((e) => console.error('[aios] publisher ticker:', e?.message || e)); }, PROBE_MS);
   if (_ticker.unref) _ticker.unref();
 }
 
-// Resume an in-flight publish after a (re)boot. integrations.js recoverOnBoot has already bumped the
-// fence + stamped this boot as owner; here we decide, from the SERVED sha, whether the deploy took
-// effect. Only touches the publish/verify stages (rollback = step 5, gate = integrator.js).
+// Resume an in-flight publish OR rollback after a (re)boot. integrations.js recoverOnBoot has already bumped
+// the fence + stamped this boot owner; here we decide, from the SERVED sha, whether the (forward or rollback)
+// deploy took effect. Only touches the publish/rollback stages (gate = integrator.js).
 export async function reconcile(opts = {}) {
-  const { servedSha = defaultServed } = opts;
+  const { servedSha = defaultServed, spawnDeploy = defaultSpawnDeploy } = opts;
   const it = I.occupiedBy();
   if (!it) return { integration: null };
-  if (!['PUBLISHING', 'MAIN_PUBLISHED', 'RESTART_REQUESTED', 'VERIFYING'].includes(it.stage)) return { integration: it, skipped: it.stage };
+  const episode = episodeOf(it.stage);
+  if (!episode) return { integration: it, skipped: it.stage };
   const ft = it.fence_token;
 
-  if (it.stage === 'VERIFYING') { verifyLoop(it.id, { fenceToken: ft, servedSha }); return { integration: it, resumed: 'VERIFYING' }; }
+  if (it.stage === episode.verify) { verifyLoop(it.id, { fenceToken: ft, servedSha, spawnDeploy, episode }); return { integration: it, resumed: episode.verify }; }
 
-  if (shaEq(servedSha(), it.candidate_sha)) {
-    // The reborn server IS the candidate — the deploy landed. Soak it before calling it green.
-    walkToVerifying(it.id);
+  if (shaEq(servedSha(), episode.sha(it))) {
+    // The reborn server IS the expected sha — the deploy landed. Soak it before calling it done.
+    walkTo(it.id, episode.verify, episode.path);
     const cur = I.getIntegration(it.id);
-    if (cur.stage === 'VERIFYING') verifyLoop(it.id, { fenceToken: cur.fence_token, servedSha });
-    return { integration: I.getIntegration(it.id), resumed: 'served->VERIFYING' };
+    if (cur.stage === episode.verify) verifyLoop(it.id, { fenceToken: cur.fence_token, servedSha, spawnDeploy, episode });
+    return { integration: I.getIntegration(it.id), resumed: 'served->' + episode.verify };
   }
-  // Not serving the candidate yet: deploy still running, or it failed before restarting. Past deadline →
-  // HELD (no false green — a deploy that never served the candidate is a failure). Else re-check soon.
-  if (now() > it.health_deadline) { safeHold(it.id, ft, 'deploy_not_served', { served: servedSha(), candidate: it.candidate_sha }); return { integration: I.getIntegration(it.id), held: true }; }
-  scheduleTicker(servedSha);
+  // Not serving the expected sha yet: deploy still running, or it failed before restarting. Past deadline →
+  // HELD (no false green — a deploy that never served its target is a failure; ambiguous, so a human looks).
+  if (now() > it.health_deadline) { safeHold(it.id, ft, episode.kind === 'forward' ? 'deploy_not_served' : 'rollback_deploy_not_served', { served: servedSha(), expected: episode.sha(it) }); return { integration: I.getIntegration(it.id), held: true }; }
+  scheduleTicker({ servedSha, spawnDeploy });
   return { integration: it, waiting: true };
 }
 
 export { shaEq };
 
-// On boot (every deploy restarts us), resume any in-flight publish. Deferred so listen/store settle;
+// On boot (every deploy restarts us), resume any in-flight publish/rollback. Deferred so listen/store settle;
 // skipped under AIOS_NO_LISTEN (unit tests drive reconcile() explicitly). Fail-safe: never block boot.
 if (!process.env.AIOS_NO_LISTEN) {
   const t = setTimeout(() => { reconcile().catch((e) => console.error('[aios] publisher boot reconcile:', e?.message || e)); }, 1500);
