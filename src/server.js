@@ -3,7 +3,7 @@ import { gzip as gzipCb } from 'node:zlib';
 import { promisify } from 'node:util';
 import { readFile, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, RELEASE_CHANNEL, COMMIT_SHA, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
+import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, RELEASE_CHANNEL, COMMIT_SHA, BOOT_ID, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import { bus } from './bus.js';
 import * as store from './store.js';
 import { now, id } from './util.js';
@@ -188,7 +188,7 @@ export function buildState() {
 // ---------------------------------------------------------------------------
 // core routes (more are registered by feature modules)
 // ---------------------------------------------------------------------------
-route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, commit: COMMIT_SHA, time: now() }));
+route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, commit: COMMIT_SHA, boot: BOOT_ID, time: now() }));
 route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
 // Release version (single source: package.json, read at boot). no-store so the new-version toast
 // (web/version-badge.js) always sees the live value rather than a heuristically-cached response.
@@ -339,7 +339,7 @@ const server = http.createServer(async (req, res) => {
 // Fire-and-forget (NOT top-level await) AFTER `routes` is initialized: this
 // avoids a hang in any one module's async boot from blocking server.listen,
 // and avoids "unsettled top-level await" tearing the process down.
-for (const mod of ['./sessions.js', './detect.js', './spark.js', './push.js', './hooks.js', './mcp.js', './project_graph.js', './lessons.js', './playbook_api.js', './doctrine_api.js', './update_check.js', './agents/supervisor/project_memory.js', './pm_api.js', './models_api.js', './phone_api.js', './snippets.js', './tts.js', './voice.js', './voice_report_api.js', './records.js', './story_api.js', './authapi.js', './usage.js', './model_proxy.js', './model_scan.js', './tool_updates.js', './product_health.js', './agents/host.js']) {
+for (const mod of ['./sessions.js', './detect.js', './spark.js', './push.js', './hooks.js', './mcp.js', './project_graph.js', './lessons.js', './playbook_api.js', './doctrine_api.js', './update_check.js', './agents/supervisor/project_memory.js', './pm_api.js', './models_api.js', './phone_api.js', './snippets.js', './tts.js', './voice.js', './voice_report_api.js', './records.js', './story_api.js', './authapi.js', './usage.js', './model_proxy.js', './model_scan.js', './tool_updates.js', './product_health.js', './integrations.js', './agents/host.js']) {
   import(mod).catch((e) => console.error(`[aios] ${mod} not loaded:`, e.message));
 }
 

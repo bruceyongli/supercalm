@@ -65,6 +65,11 @@ export const COMMIT_SHA = (() => {
   catch { return null; }
 })();
 
+// A unique id per PROCESS start. The autonomous-deploy health check confirms a real restart by seeing a NEW
+// boot_id at /healthz (a config change that didn't restart the process keeps the old one), and boot recovery
+// stamps it as the new fence owner. Random + time-based; changes on every boot.
+export const BOOT_ID = `boot_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
 // Resolve a system binary to an ABSOLUTE path (Supercalm may run under launchd/systemd with a minimal
 // PATH where a bare name won't resolve). Checks the common install locations across macOS-ARM (homebrew),
 // macOS-Intel/Linux (/usr/local, /usr/bin), then falls back to the bare name for a PATH lookup at exec
