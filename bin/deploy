@@ -92,6 +92,16 @@ if [ "$NEW" = "$OLD" ]; then
 fi
 echo "    -> v$NEW"
 
+# Headless GitHub auth — SELF-HEALING (2026-07-13). Agent shells have no terminal for a username
+# prompt and no usable keychain; the push authenticates via a repo-local credential helper that
+# reads GITHUB_PAT_AIOS from ~/.dev.vars at push time. If the helper is missing (fresh clone,
+# stripped .git/config), re-install it here so a plain `git push` NEVER regresses to "Device not
+# configured". Agents: a push failure here means the TOKEN is bad — not that pushing is impossible.
+if ! printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | grep -q '^password=.'; then
+  echo "==> installing repo-local GitHub credential helper (reads GITHUB_PAT_AIOS from ~/.dev.vars)"
+  git config credential.helper '!f() { test "$1" = get || return 0; printf "username=x-access-token\npassword=%s\n" "$(sed -n "s/^\(export \)\{0,1\}GITHUB_PAT_AIOS=//p" "$HOME/.dev.vars" | head -1 | tr -d \")"; }; f'
+fi
+
 echo "==> git push origin $BR (with tags)"
 git push origin "$BR" --follow-tags
 
