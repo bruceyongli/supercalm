@@ -101,16 +101,44 @@ green** only when dequeued. Logical ownership held through health/rollback. `thr
 deploys `REJECTED` until manually cleared. This is what stops a deploy→rollback→redeploy loop.
 
 ## 7. Build order (MVP-first — safe before smart)
-1. **Exact-SHA `bin/deploy` + served-SHA `/health`.** ← *building now.* Provenance + a real health signal.
-2. `integrations` state/events tables + fencing + boot recovery + FIFO lock. Survives self-restart; one deploy at a time.
-3. **Deterministic** gates + protected-path rejection. "Everyone can deploy" **safely**, no AI yet.
-4. Sustained health verification (no false green).
-5. Forward-revert **auto-rollback** for schema-neutral changes (the safety net).
+1. ✅ **Exact-SHA `bin/deploy` + served-SHA `/health`.** Provenance + a real health signal. (`config.js` `COMMIT_SHA`/`BOOT_ID`; `bin/deploy AIOS_DEPLOY_SHA`.)
+2. ✅ `integrations` state/events tables + fencing + boot recovery + FIFO lock. Survives self-restart; one deploy at a time. (`src/integrations.js`.)
+3. ✅ **Deterministic** gate + protected-path rejection — `APPROVED`/`REJECTED`, no publish. (`src/integrator.js` `driveGate`.)
+4. ✅ **The publisher + sustained health** — `APPROVED → GREEN` (`src/publisher.js`). See below.
+5. Forward-revert **auto-rollback** for schema-neutral changes (the safety net). ← *next.*
 6. Thrash circuit breaker.
 7. **Then** the multi-agent AI reviewers + migration-capable rollback.
 
-By step 3 any agent can deploy autonomously + safely, gated by deterministic checks; the AI review
-pipeline (step 7) is an enhancement on proven rails, not a prerequisite.
+By step 4 any agent can deploy the live service autonomously + safely, gated by deterministic checks +
+sustained health; the AI review pipeline (step 7) is an enhancement on proven rails, not a prerequisite.
+
+### The publisher (step 4 — `src/publisher.js`)
+- **`drivePublish(id)`**: `APPROVED → PUBLISHING → MAIN_PUBLISHED → RESTART_REQUESTED`, then spawns a
+  **detached** exact-SHA `bin/deploy` and returns. The deploy ff's `main → candidate`, pushes, and
+  restarts the server — killing the publisher. Intent is persisted BEFORE the irreversible push; the
+  detached child is only the *mechanism*, never the owner of truth.
+- **`reconcile()`** runs in the **reborn** process on boot (after `integrations.js` `recoverOnBoot` bumps
+  the fence). If this newly-deployed server now serves the candidate → walk to `VERIFYING`; if it never
+  serves it by the persisted deadline → `HELD` (never a false green).
+- **`verifyLoop()`**: `VERIFYING → GREEN` only after **N consecutive** healthy probes (served-SHA ===
+  candidate AND a read→write→read DB smoke) inside the deadline. One success is never green. A stale fence
+  stops the loop. Thresholds via `AIOS_VERIFY_{PROBE_MS,SUCCESSES,WINDOW_MS,RESTART_MS}`.
+- **Capability gate:** the whole path is inert unless **`AIOS_AUTO_PUBLISH`** is on (default OFF) —
+  auto-deploying the live service is the highest-risk action, so it ships proven-but-off. `servedSha`/
+  `spawnDeploy` are injectable, so `test/publisher.test.js` exercises the full flow (GREEN / HELD /
+  refused / fenced) without touching the live service.
+
+**MVP decisions (documented for the follow-ups):**
+- **Exact-SHA, no re-bump** (respects step 1's design). Because the served commit === the candidate
+  exactly, `VERIFYING` uses the **strongest** check: served `COMMIT_SHA` === `candidate_sha`. The cost:
+  an autonomous deploy whose candidate didn't bump `package.json` won't move the served version (no
+  new-version toast). Wiring a pre-check version bump into the candidate (+ auto-promoting the release
+  channel on soaked-green — [[release-system]] §3) is a **follow-up**, not a correctness gap.
+- **`HELD`, not auto-rollback, after a failed publish** — step 5 turns a post-publish failure into a
+  forward-revert auto-rollback; until then a failed/timed-out publish parks as `HELD` for a human. Safe,
+  just not yet self-healing.
+- **Trigger not auto-wired.** `drivePublish` is only invoked explicitly (a test today; the session's
+  operator-granted `integrate` capability next). Nothing fires it on its own yet.
 
 ## Open decisions
 - **Test command source** for "test the rebased commit" (revive `pm_session_runtime.test_cmd` / per-project config).
