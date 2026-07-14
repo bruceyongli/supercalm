@@ -52,11 +52,11 @@
     return el;
   }
 
-  // Release-channel filter: "stable only" (default) users skip the reload toast for routine every-release
-  // auto-deploys and only get it for a blessed STABLE release; "every release" gets every bump (the old
-  // behavior). Stored in localStorage by Settings → Preferences (aios_stable_only), default ON.
-  function stableOnly() {
-    try { const v = localStorage.getItem('aios_stable_only'); return v == null ? true : v === '1'; } catch { return true; }
+  // Release-notification mode (Settings → Preferences, aios_release_notify): 'stable' (default) toasts only
+  // for a blessed stable release; 'every' toasts every deploy (old behavior); 'off' silences the release
+  // system entirely (no reload nudge, no upstream nudge).
+  function releaseNotify() {
+    try { return localStorage.getItem('aios_release_notify') || 'stable'; } catch { return 'stable'; }
   }
 
   // Local: this server moved to a newer build than the page — reload to pick it up.
@@ -139,10 +139,12 @@
     const version = v?.version || null;
     if (!version) return;
     if (baseline == null) baseline = version; // first read = the running build
+    const mode = releaseNotify();
+    if (mode === 'off') return; // release notifications disabled entirely — no reload nudge, no upstream nudge
     if (version !== baseline) {
-      // Skip the toast for a routine every-release bump when the user is on "stable only" — they stay put
-      // until a blessed stable release lands (channel === 'stable'). "every release" users always see it.
-      const gated = stableOnly() && v?.channel && v.channel !== 'stable';
+      // Skip the toast for a routine every-release bump when on "stable only" — the user stays put until a
+      // blessed stable release lands (channel === 'stable'). "every release" always shows it.
+      const gated = mode === 'stable' && v?.channel && v.channel !== 'stable';
       if (!gated && shown !== 'reload:' + version) showReloadToast(version, v?.channel === 'stable'); // local reload wins
       return;
     }

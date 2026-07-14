@@ -561,7 +561,7 @@ const PREFS = [
   { key: 'aios_autoplay', label: 'Auto-play unread on open', sub: 'phone: play the unread queue when the app opens', type: 'toggle' },
   { key: 'aios_voice_rate', label: 'Voice rate', sub: 'read-out speed for TTS surfaces', type: 'step', min: 0.5, max: 2, step: 0.1, dflt: 1 },
   { key: 'aios_quickkeys', label: 'Quick-key chips', sub: 'terminal view: Enter/Esc/arrows/y/n row', type: 'toggle', dflt: true },
-  { key: 'aios_stable_only', label: 'Only notify me about stable releases', sub: 'skip the reload toast for routine auto-deploys; still nudges on blessed (stable) releases', type: 'toggle', dflt: true },
+  { key: 'aios_release_notify', label: 'Release notifications', sub: 'reload nudge when a new version deploys. Stable only skips routine auto-deploys; Off silences them entirely.', type: 'select', options: [['stable', 'Stable only'], ['every', 'Every release'], ['off', 'Off']], dflt: 'stable' },
 ];
 function renderPrefs() {
   $('#st-prefscard').innerHTML = PREFS.map((p) => {
@@ -569,10 +569,16 @@ function renderPrefs() {
       const on = localStorage.getItem(p.key) == null ? !!p.dflt : localStorage.getItem(p.key) === '1';
       return `<div class="st-pref"><div><b>${esc(p.label)}</b><div class="sub">${esc(p.sub)}</div></div><button class="st-toggle${on ? ' on' : ''}" data-pref="${p.key}" role="switch" aria-checked="${on}"></button></div>`;
     }
+    if (p.type === 'select') {
+      const cur = localStorage.getItem(p.key) || p.dflt;
+      const opts = p.options.map(([v, lbl]) => `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(lbl)}</option>`).join('');
+      return `<div class="st-pref"><div><b>${esc(p.label)}</b><div class="sub">${esc(p.sub)}</div></div><select class="st-sel" data-pref-sel="${p.key}">${opts}</select></div>`;
+    }
     const v = Number(localStorage.getItem(p.key) || p.dflt);
     return `<div class="st-pref"><div><b>${esc(p.label)}</b><div class="sub">${esc(p.sub)}</div></div><span class="st-step"><button data-dec="${p.key}">−</button>${v.toFixed(1)}×<button data-inc="${p.key}">+</button></span></div>`;
   }).join('');
   for (const b of document.querySelectorAll('[data-pref]')) b.onclick = () => { const on = b.classList.toggle('on'); localStorage.setItem(b.dataset.pref, on ? '1' : '0'); b.setAttribute('aria-checked', on); };
+  for (const s of document.querySelectorAll('[data-pref-sel]')) s.onchange = () => localStorage.setItem(s.dataset.prefSel, s.value);
   for (const b of document.querySelectorAll('[data-dec],[data-inc]')) b.onclick = () => {
     const key = b.dataset.dec || b.dataset.inc;
     const p = PREFS.find((x) => x.key === key);
