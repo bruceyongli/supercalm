@@ -2849,6 +2849,9 @@ async function sendInput() {
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
       reply.value = '';
       clearAttachments();
+      // Instant story echo: the sent message appears in the story NOW with an unread chip, flipping
+      // to ✓ read when the agent's transcript actually contains it (story-view.js reconciles).
+      if (text) import('./story-view.js').then((m) => m.noteComposerSend?.(text)).catch(() => {});
     }
   } catch (e) {
     alert('Send failed: ' + e.message);

@@ -29,6 +29,43 @@ function askKey(ev) { return `${ev.ts || 0}|${String(ev.body || ev.title || '').
 const listenState = new Map(); // evKey -> {phase:'loading'|'playing'|'error', part, total}
 let listenActive = null; // {key, handle} — one playback at a time
 
+// Composer echoes — a send appears in the story INSTANTLY (optimistic 'you' bubble) with a read
+// lifecycle: '⏳ queued · unread' while it sits in the agent's input queue, '✓ read' once the CLI
+// transcript (the story's primary source) contains it — transcript arrival IS the agent consuming
+// the message, so the flip is true "the agent has read this", not merely "the server stored it".
+// Module state (openSteps rule: survives the wholesale innerHTML re-render every SSE tick).
+let sendEchoes = []; // {ts, text, state:'pending'|'read'} — bounded; read ones expire
+const readMarks = new Map(); // evKey(server 'you' event) -> true → renders the ✓ read chip
+const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+// Match a pending echo to an arriving server 'you' event: same text prefix (the server may append
+// the attachments note; the spine clips at 800 chars) and not earlier than the send (the consume
+// time is AT or AFTER the send — minus 20s of clock slack).
+function reconcileEchoes() {
+  if (!sendEchoes.length) return false;
+  let changed = false;
+  for (const e of sendEchoes) {
+    if (e.state !== 'pending') continue;
+    const n = normText(e.text).slice(0, 60);
+    const hit = events.find((ev) => ev.kind === 'you' && (ev.ts || 0) >= e.ts - 20000 && !readMarks.has(evKey(ev))
+      && (normText(ev.body || ev.text).startsWith(n) || n.startsWith(normText(ev.body || ev.text).slice(0, 60))));
+    if (hit) { e.state = 'read'; readMarks.set(evKey(hit), true); changed = true; }
+  }
+  const before = sendEchoes.length;
+  sendEchoes = sendEchoes.filter((e) => e.state === 'pending' || Date.now() - e.ts < 600000).slice(-20);
+  if (readMarks.size > 100) { const k = readMarks.keys().next().value; readMarks.delete(k); } // bound page-life growth
+  return changed || sendEchoes.length !== before;
+}
+// Called by session.js right after a successful composer POST — the instant-echo entry point.
+export function noteComposerSend(text) {
+  if (!sid || !normText(text)) return; // story not mounted / attachment-only send
+  const feed = panelEl && panelEl.querySelector('.story-feed');
+  const stick = feed ? nearBottom(feed) : false;
+  sendEchoes.push({ ts: Date.now(), text: String(text), state: 'pending' });
+  if (sendEchoes.length > 20) sendEchoes = sendEchoes.slice(-20);
+  render();
+  if (stick) storyToLatest(); // keep them at the tail ONLY if they were already there (scroll rule)
+}
+
 // General atom key for the append-MERGE. Requirement: "those messages are already loaded, why clear them
 // out?" — a new send must APPEND, never re-window the story down to the newest message. ts is near-unique
 // per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
@@ -237,9 +274,16 @@ function eventHtml(ev, i) {
         ${ev.meta ? `<span class="story-meta${metaCls}">${esc(ev.meta)}</span>` : ''}
         <span class="story-ts">${fmtClock(ev.ts)}</span>
       </div>`;
+  // Send-state chip on the operator's own messages from THIS page view: pending echo → unread/queued,
+  // reconciled transcript event → ✓ read. Historical bubbles (no local echo) stay chip-free.
+  const sendState = ev.kind !== 'you' ? null : (ev._echo ? 'pending' : (readMarks.has(evKey(ev)) ? 'read' : null));
+  const stateChip = sendState
+    ? `<span class="story-sendstate ${sendState}" data-story-sendstate="${sendState}">${sendState === 'pending' ? (working ? '⏳ queued · unread' : '⏳ delivering…') : '✓ read'}</span>`
+    : '';
   const inner = `
     ${head}
     ${body}
+    ${stateChip}
     ${listenRowHtml(ev)}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
     ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
@@ -267,6 +311,14 @@ function renderWorking() {
   return `<div class="story-working" data-story-working>${dots}<span class="story-working-verb">${esc(ls.verb)}</span>${detail}${bg}</div>`;
 }
 
+// The rendered feed = server events + still-pending composer echoes (as 'you' bubbles at their send
+// time — echoes are newest, so this rarely reorders anything). Read echoes vanish: the real
+// transcript event replaced them and carries the ✓ read chip via readMarks.
+function feedList() {
+  const pend = sendEchoes.filter((e) => e.state === 'pending').map((e) => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
+  return pend.length ? [...events, ...pend].sort((a, b) => (a.ts || 0) - (b.ts || 0)) : events;
+}
+
 function render() {
   if (!panelEl) return;
   panelEl.innerHTML = `
@@ -274,7 +326,7 @@ function render() {
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${events.map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
     <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     ${renderWorking()}`;
   wire();
@@ -364,11 +416,14 @@ export async function refreshStory({ quiet = true } = {}) {
     trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
+    reconcileEchoes(); // pending sends whose transcript event just arrived flip to ✓ read
     // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
-    // on the last events (count alone left stale ✓/recovered states), or the live status line changing.
+    // on the last events (count alone left stale ✓/recovered states), the live status line changing,
+    // or a composer echo's unread→read state moving.
     const lsSig = working ? (liveStatus ? `${liveStatus.verb}|${liveStatus.detail}|${liveStatus.bg || ''}` : 'w') : '';
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
-      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig;
+      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig
+      + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size;
     if (sig !== lastSig) { lastSig = sig; render(); }
     if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus }); // warm THIS session's cache
   } catch (e) {
@@ -399,7 +454,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
