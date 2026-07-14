@@ -4,7 +4,10 @@
 import { route, json, readJson } from './server.js';
 import * as store from './store.js';
 import * as I from './integrations.js';
+import { gitOut } from './git.js';
+import { helperEnabled } from './project_helpers.js';
 import { breakerState, clearBreaker, evaluate } from './deploy_breaker.js';
+import { kick } from './deploy_orchestrator.js';
 
 // Recent integrations (audit): stage, failure_code, shas, timestamps. Newest first.
 route('GET', '/api/deploy/integrations', (req, res, params, url) => {
@@ -33,4 +36,22 @@ route('POST', '/api/deploy/breaker/clear', async (req, res) => {
   const pid = b.project;
   if (!pid) return json(res, 400, { error: 'project required' });
   json(res, 200, { ok: true, breaker: clearBreaker(pid) });
+});
+
+// The TRIGGER: request that a session's isolated branch be integrated + (if autoPublish is on) deployed.
+// Requires the project's multi-session isolation (so the session has its own worktree + branch to ship).
+// Enqueues an integration from the branch HEAD; the orchestrator picks it up. Callable by the session's
+// agent, its supervisor, or the operator — nothing merges by hand.
+route('POST', '/api/session/:id/integrate', async (req, res, { id }) => {
+  const s = store.getSession(id);
+  if (!s) return json(res, 404, { error: 'no such session' });
+  if (!s.project_id || !helperEnabled(s.project_id, 'isolation')) return json(res, 400, { error: 'session project is not isolated — enable multi-session collaboration first' });
+  if (!s.branch || !s.worktree_path) return json(res, 400, { error: 'session has no worktree branch to integrate' });
+  const proj = store.getProject(s.project_id);
+  const candidateSha = (await gitOut(s.worktree_path, ['rev-parse', 'HEAD'])).text.trim();
+  const baseSha = (await gitOut(proj?.path || s.worktree_path, ['rev-parse', 'HEAD'])).text.trim();
+  if (!candidateSha) return json(res, 400, { error: 'could not resolve the session branch HEAD' });
+  const it = I.enqueue({ projectId: s.project_id, sessionId: id, sourceBranch: s.branch, sourceSha: candidateSha, candidateSha, baseSha });
+  kick();
+  json(res, 201, { ok: true, integration: it });
 });
