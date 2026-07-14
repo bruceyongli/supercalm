@@ -345,6 +345,13 @@ function render() {
         <ul class="kn-lessons" style="list-style:none;padding:0;margin:0">${(data.lessons || []).map(lessonRow).join('') || '<li class="kn-note">(none yet — they appear as sessions in this project close)</li>'}</ul>
         <div class="kn-row"><label class="kn-meta">model ${modelSelect('kn-les-model', data.models, h.lessons_model)}</label></div>
       </section>
+
+      <section class="kn-sec">
+        <div class="kn-sec-head"><h3>Multi-session collaboration</h3>
+          <label class="kn-toggle"><input type="checkbox" id="kn-iso-on" ${h.isolation ? 'checked' : ''}> isolate each session</label>
+        </div>
+        <p class="kn-note">Give every session on this project its own git <b>worktree + branch</b>, so concurrent agents never clobber each other's working tree; changes reach the live app by merging to main. <b>Off (default)</b> = sessions share one working tree and <b>you own merge/deploy</b> — leave it off if you have your own multi-session workflow. AIOS's autonomous integrate-&-deploy (when enabled) also requires this switch on.</p>
+      </section>
     </div>`;
   wire();
 }
@@ -361,6 +368,7 @@ function wire() {
   onChg('kn-wiki-model', (e) => setHelper({ wiki_model: e.target.value }));
   onChg('kn-les-on', (e) => setHelper({ lessons: e.target.checked }));
   onChg('kn-les-model', (e) => setHelper({ lessons_model: e.target.value }));
+  onChg('kn-iso-on', (e) => setHelper({ isolation: e.target.checked })); // per-project multi-session master switch
   onChg('kn-file-type', (e) => { uploadFilterType = e.target.value || ''; render(); });
   const fileFilter = $('#kn-file-filter');
   if (fileFilter) fileFilter.oninput = (e) => updateUploadFilter(e.target.value);
