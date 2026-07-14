@@ -561,6 +561,7 @@ const PREFS = [
   { key: 'aios_autoplay', label: 'Auto-play unread on open', sub: 'phone: play the unread queue when the app opens', type: 'toggle' },
   { key: 'aios_voice_rate', label: 'Voice rate', sub: 'read-out speed for TTS surfaces', type: 'step', min: 0.5, max: 2, step: 0.1, dflt: 1 },
   { key: 'aios_quickkeys', label: 'Quick-key chips', sub: 'terminal view: Enter/Esc/arrows/y/n row', type: 'toggle', dflt: true },
+  { key: 'aios_stable_only', label: 'Only notify me about stable releases', sub: 'skip the reload toast for routine auto-deploys; still nudges on blessed (stable) releases', type: 'toggle', dflt: true },
 ];
 function renderPrefs() {
   $('#st-prefscard').innerHTML = PREFS.map((p) => {

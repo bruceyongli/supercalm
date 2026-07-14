@@ -52,15 +52,22 @@
     return el;
   }
 
+  // Release-channel filter: "stable only" (default) users skip the reload toast for routine every-release
+  // auto-deploys and only get it for a blessed STABLE release; "every release" gets every bump (the old
+  // behavior). Stored in localStorage by Settings → Preferences (aios_stable_only), default ON.
+  function stableOnly() {
+    try { const v = localStorage.getItem('aios_stable_only'); return v == null ? true : v === '1'; } catch { return true; }
+  }
+
   // Local: this server moved to a newer build than the page — reload to pick it up.
-  function showReloadToast(version) {
+  function showReloadToast(version, isStable) {
     shown = 'reload:' + version;
     const el = toastEl();
     el.title = 'Reload to load the new version';
     el.onclick = () => location.reload();
     el.innerHTML =
       `<span class="vt-up">↑</span>` +
-      `<span class="vt-text"><span class="vt-line">New version <b>v${version}</b></span>` +
+      `<span class="vt-text"><span class="vt-line">New ${isStable ? 'stable ' : ''}version <b>v${version}</b></span>` +
       `<span class="vt-sub">Reload to update</span></span>` +
       `<span class="vt-icon">⟳</span>`;
     requestAnimationFrame(() => el.classList.add('in'));
@@ -133,7 +140,10 @@
     if (!version) return;
     if (baseline == null) baseline = version; // first read = the running build
     if (version !== baseline) {
-      if (shown !== 'reload:' + version) showReloadToast(version); // local reload always wins
+      // Skip the toast for a routine every-release bump when the user is on "stable only" — they stay put
+      // until a blessed stable release lands (channel === 'stable'). "every release" users always see it.
+      const gated = stableOnly() && v?.channel && v.channel !== 'stable';
+      if (!gated && shown !== 'reload:' + version) showReloadToast(version, v?.channel === 'stable'); // local reload wins
       return;
     }
     if (upstream && shown == null) {

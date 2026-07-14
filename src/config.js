@@ -42,6 +42,19 @@ export const LOG_DIR = join(DATA_DIR, 'logs');
 export const DB_PATH = join(DATA_DIR, 'aios.db');
 export const WEB_DIR = join(ROOT, 'web');
 
+// Release channel of the CURRENTLY-RUNNING version, for the new-version toast's channel filter. A release
+// is 'stable' only if bin/release blessed THIS exact version (it writes data/release_channel.json); routine
+// bin/deploy every-releases leave it 'every'. Read once at boot (every deploy restarts the server). Future:
+// the auto-deploy health system can promote a soaked-green release to 'stable' by writing the same marker.
+// Falls back to 'every' on any missing/mismatched/unreadable marker (so a stable-only user is never starved
+// by a bad file — worst case they see a routine-release toast).
+export const RELEASE_CHANNEL = (() => {
+  try {
+    const m = JSON.parse(readFileSync(join(DATA_DIR, 'release_channel.json'), 'utf8'));
+    return m && m.version === VERSION && m.channel === 'stable' ? 'stable' : 'every';
+  } catch { return 'every'; }
+})();
+
 // Resolve a system binary to an ABSOLUTE path (Supercalm may run under launchd/systemd with a minimal
 // PATH where a bare name won't resolve). Checks the common install locations across macOS-ARM (homebrew),
 // macOS-Intel/Linux (/usr/local, /usr/bin), then falls back to the bare name for a PATH lookup at exec
