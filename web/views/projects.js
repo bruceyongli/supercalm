@@ -15,6 +15,9 @@ const PROJECTS_CSS = `
     .pj-l1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .pj-path { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: #5c6675; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pj-counts { font-size: 11.5px; color: #8a95a5; }
+    .pj-iso { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: #8a95a5; cursor: pointer; margin-top: 3px; user-select: none; }
+    .pj-iso input { accent-color: #2fd6be; margin: 0; }
+    .pj-iso-hint { color: #5c6675; }
 `;
 
 let host = null;
@@ -26,6 +29,12 @@ async function load() {
   try { home = await api('api/phone/home'); } catch {}
   const liveByPath = {};
   for (const s of home.sessions || []) if (s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
+  // Per-project multi-session isolation — a PROJECT-level switch surfaced here (always reachable) so it
+  // does NOT depend on the Knowledge panel being enabled. Writes the same project_helpers.isolation flag.
+  const isoById = {};
+  await Promise.all((health.graphs || []).map(async (p) => {
+    try { const r = await api(`api/project/${p.project_id}/helpers`); isoById[p.project_id] = !!(r?.helpers?.isolation); } catch {}
+  }));
   const rows = (health.graphs || []).map((p) => {
     const ready = p.status === 'ready';
     const counts = p.counts || {};
@@ -39,6 +48,10 @@ async function load() {
         </span>
         <span class="pj-path">${esc(p.path)}</span>
         <span class="pj-counts">${ready ? `${counts.file || 0} files · ${counts.route || 0} routes · indexed ${fmtAgo(p.indexed_at)} ago` : 'no code graph yet'}</span>
+        <label class="pj-iso" title="Give every session on this project its own git worktree + branch so concurrent agents never clobber each other's tree; changes reach the app by merging to main. Off (default) = shared tree, you own merge/deploy.">
+          <input type="checkbox" data-pj-iso="${esc(p.project_id)}" ${isoById[p.project_id] ? 'checked' : ''}> multi-session isolation
+          <span class="pj-iso-hint">— own worktree + branch per session</span>
+        </label>
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
       <button class="dk-new sm" data-pj-launch="${esc(p.path)}">+ session</button>
@@ -53,6 +66,11 @@ async function load() {
     catch (e) { b.textContent = '⚠ ' + (e.message || e).slice(0, 30); }
   };
   for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => (location.href = `desktop#launch=${encodeURIComponent(b.dataset.pjLaunch)}`);
+  for (const c of document.querySelectorAll('[data-pj-iso]')) c.onchange = async () => {
+    const prev = !c.checked;
+    try { await api(`api/project/${c.dataset.pjIso}/helpers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ isolation: c.checked }) }); }
+    catch { c.checked = prev; } // revert the box if the write failed
+  };
 }
 
 export function init(el) {
