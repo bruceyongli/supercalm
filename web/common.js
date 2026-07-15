@@ -359,6 +359,18 @@ export function wireMic(btn, target, statusEl, { hold = false } = {}) {
   } else {
     btn.addEventListener('click', (e) => { e.preventDefault(); rec && rec.state === 'recording' ? stop() : start(); });
   }
+  // Handle for hosts that can disappear mid-recording (e.g. the launch modal): abort() discards the
+  // take without transcribing and releases the mic, so closing the host never leaves the mic live.
+  return {
+    stop,
+    abort() {
+      try { if (rec) { rec.ondataavailable = null; rec.onstop = null; if (rec.state !== 'inactive') rec.stop(); } } catch {}
+      try { stream?.getTracks().forEach((t) => t.stop()); } catch {}
+      live?.abort();
+      live = null;
+      setState('idle');
+    },
+  };
 }
 
 // ---- push notifications (PWA) ----------------------------------------------

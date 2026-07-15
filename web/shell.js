@@ -3,7 +3,7 @@
 // toast + the live data loop. Extracted from desktop.js so EVERY page that shows the shell renders the
 // SAME sidebar from ONE source — the home page and the session page had diverged (session dropped the
 // shell entirely), which is exactly the drift this module exists to prevent. Mount with mountShell().
-import { api, coalesce, escapeHtml as esc, fmtAgo } from './common.js';
+import { api, coalesce, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -178,7 +178,13 @@ export async function openLaunch() {
         <label class="dk-field">Model<select id="nl-model"></select></label>
         <label class="dk-field">Autonomy<select id="nl-auto"><option value="full">full — hands-off</option><option value="auto">auto</option><option value="ask">ask</option></select></label>
       </div>
-      <label class="dk-field">Task<textarea id="nl-task" rows="4" placeholder="What should the agent do? Be concrete — repo, goal, done-when."></textarea></label>
+      <div class="dk-field">Task
+        <span class="dk-task-wrap">
+          <textarea id="nl-task" rows="4" placeholder="What should the agent do? Be concrete — repo, goal, done-when."></textarea>
+          <button type="button" id="nl-mic" class="dk-mic" aria-label="Dictate the task"></button>
+        </span>
+        <span class="dk-mic-status" id="nl-mic-status" aria-live="polite"></span>
+      </div>
       <div class="dk-launch-foot">
         <button class="dk-reply-btn" id="nl-example">use an example</button>
         <span class="dk-hint" id="nl-gate"></span>
@@ -198,8 +204,10 @@ export async function openLaunch() {
   q('#nl-project').onchange = () => { q('#nl-newproj').hidden = q('#nl-project').value !== '__new'; };
   q('#nl-path')?.addEventListener('input', () => { const seg = q('#nl-path').value.split('/').filter(Boolean).pop() || ''; if (!q('#nl-name').value) q('#nl-name').placeholder = seg || 'auto from path'; });
   q('#nl-example').onclick = () => { q('#nl-task').value = 'Read the failing tests, fix the root cause they expose, run the full suite, and summarize the change for review.'; };
-  q('#nl-cancel').onclick = () => m.remove();
-  m.addEventListener('click', (e) => { if (e.target === m) m.remove(); });
+  const mic = wireMic(q('#nl-mic'), q('#nl-task'), q('#nl-mic-status')); // speak the task instead of typing it
+  const closeLaunch = () => { try { mic.abort(); } catch {} m.remove(); }; // never leave the mic live behind a closed modal
+  q('#nl-cancel').onclick = closeLaunch;
+  m.addEventListener('click', (e) => { if (e.target === m) closeLaunch(); });
   q('#nl-go').onclick = async () => {
     const isNew = q('#nl-project').value === '__new';
     const task = q('#nl-task').value.trim();

@@ -452,6 +452,7 @@ async function loadOpenCards() {
     label.hidden = sel.hidden = false;
   } catch {}
 }
+wireMic($('#ns-mic'), $('#ns-task'), $('#ns-mic-status')); // dictate the initial task
 $('#ns-go').onclick = async () => {
   const body = {
     project_id: $('#ns-project').value || undefined,
