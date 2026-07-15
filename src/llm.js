@@ -27,18 +27,20 @@ export const VOICE_CHAIN = (process.env.AIOS_VOICE_CHAIN ||
 
 // No fleet? The voice/summary brains still need to think: user API providers (Auth & Models page)
 // ride as the chain's tail, resolved at CALL time so providers added later are picked up live.
+// Deduplicated against models already in the chain (a tail twin would double latency + spend).
 function withUserTail(chain) {
   if (chain !== VOICE_CHAIN) return chain; // explicit chains are the caller's business
-  const tail = userRoutes().slice(0, 2).map((r) => ({ api: true, model: r.id }));
+  const have = new Set(chain.map((e) => e.model));
+  const tail = userRoutes().slice(0, 2).map((r) => ({ api: true, model: r.id })).filter((e) => !have.has(e.model));
   return tail.length ? [...chain, ...tail] : chain;
 }
 
-async function once(port, model, messages, { temperature = 0.3, max_tokens = 700 } = {}) {
+async function once(port, model, messages, { temperature = 0.3, max_tokens = 700, timeout_ms = 45000, signal } = {}) {
   const key = await fleetKey(); // the proxy fleet rejects keyless calls
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify({ model, messages, temperature, max_tokens }));
     const req = http.request(
-      { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}` }, timeout: 45000 },
+      { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}` }, timeout: timeout_ms },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
@@ -55,29 +57,41 @@ async function once(port, model, messages, { temperature = 0.3, max_tokens = 700
       }
     );
     req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('llm timeout')));
+    req.on('timeout', () => req.destroy(new Error('llm timeout'))); // socket-inactivity bound, NOT a total deadline — callers with a hard budget pass `signal`
+    if (signal) {
+      const onAbort = () => req.destroy(new Error('llm aborted (budget)'));
+      signal.aborted ? onAbort() : signal.addEventListener('abort', onAbort, { once: true });
+    }
     req.write(data);
     req.end();
   });
 }
 
+// Try ONE chain entry: fleet port → once(); user API provider → its catalog route. The single
+// dispatch point both chat() and chatJson() share — chatJson used to destructure {port,model} and
+// silently sent api entries to port undefined. NB callProxyModel has no abort signal; api-tail
+// attempts are bounded only by their own internal timeouts.
+async function callEntry(entry, messages, opts = {}) {
+  if (entry.api) {
+    const r = routeForModel(entry.model);
+    if (!r?.base) throw new Error('no API route for ' + entry.model);
+    const out = await callProxyModel(r, messages, { temperature: opts.temperature ?? 0.3, maxTokens: opts.max_tokens ?? 700, retries: 0 });
+    return out.content;
+  }
+  return once(entry.port, entry.model, messages, opts);
+}
+
 // Try each model in the chain until one returns content. Returns { content, model }.
-export async function chat(messages, opts = {}, chain = VOICE_CHAIN) {
+// `callFn` is a test seam (defaults to the real dispatcher).
+export async function chat(messages, opts = {}, chain = VOICE_CHAIN, callFn = callEntry) {
   let lastErr;
   for (const entry of withUserTail(chain)) {
-    const { port, model, api } = entry;
     try {
-      if (api) {
-        const r = routeForModel(model);
-        if (!r?.base) throw new Error('no API route for ' + model);
-        const out = await callProxyModel(r, messages, { temperature: opts.temperature ?? 0.3, maxTokens: opts.max_tokens ?? 700, retries: 0 });
-        return { content: out.content, model };
-      }
-      const content = await once(port, model, messages, opts);
-      return { content, model };
+      return { content: await callFn(entry, messages, opts), model: entry.model };
     } catch (e) {
       lastErr = e;
-      console.error(`[aios] llm ${model}@${api ? 'api' : port} failed: ${e.message}`);
+      console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port} failed: ${e.message}`);
+      if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain
     }
   }
   throw lastErr || new Error('no models available');
@@ -126,15 +140,17 @@ export function parseJson(content) {
 
 // Like chat(), but requires valid JSON — falls through the chain if a model returns
 // junk, so an unreliable primary can't break the flow. Returns { obj, model }.
-export async function chatJson(messages, opts = {}, chain = VOICE_CHAIN) {
+// Same dispatcher as chat(): api entries and the user-provider tail work here too.
+export async function chatJson(messages, opts = {}, chain = VOICE_CHAIN, callFn = callEntry) {
   let lastErr;
-  for (const { port, model } of chain) {
+  for (const entry of withUserTail(chain)) {
     try {
-      const content = await once(port, model, messages, opts);
-      return { obj: parseJson(content), model };
+      const content = await callFn(entry, messages, opts);
+      return { obj: parseJson(content), model: entry.model };
     } catch (e) {
       lastErr = e;
-      console.error(`[aios] llm ${model}@${port}: ${e.message}`);
+      console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port}: ${e.message}`);
+      if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain
     }
   }
   throw lastErr || new Error('no models available');
