@@ -1,30 +1,23 @@
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { mkdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve, sep, basename } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DATA_DIR, LOG_DIR, DB_PATH } from './config.js';
+import { worktreeDbVerdict } from './db_guard.js';
 import { now } from './util.js';
 
 // Multi-session safety guard: a server booted from a LINKED git worktree (a scratch/dev instance) must
-// NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption. If
-// we're in a linked worktree (its `.git` is a FILE, not a directory) AND DB_PATH resolves OUTSIDE our own
-// checkout (i.e. the canonical main data/), refuse to boot. The live main service (`.git` is a directory)
-// and worktree instances that set their own AIOS_DATA are unaffected. Fail-SAFE: detection errors warn.
+// NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption.
+// Refuse ONLY when DB_PATH sits inside the main checkout's data/ (resolved from the worktree's `.git`
+// pointer — see db_guard.js); scratch dirs anywhere (tmpdir tests, explicit AIOS_DATA) are fine. The
+// live main service (`.git` is a directory) is unaffected. Fail-SAFE: detection errors warn.
 try {
-  // realpath the LONGEST existing prefix + re-append the (maybe not-yet-created) tail, so a fresh DB path
-  // and the repo root are compared through the SAME symlink resolution (e.g. macOS /var → /private/var).
-  const realish = (p) => {
-    let cur = resolve(p); const tail = [];
-    while (!existsSync(cur) && dirname(cur) !== cur) { tail.unshift(basename(cur)); cur = dirname(cur); }
-    try { return tail.length ? join(realpathSync(cur), ...tail) : realpathSync(cur); } catch { return resolve(p); }
-  };
   const repoRoot = dirname(dirname(fileURLToPath(import.meta.url))); // src/store.js → src → repo root
   const gitMarker = join(repoRoot, '.git');
   if (existsSync(gitMarker) && statSync(gitMarker).isFile()) { // `.git` is a FILE only in a linked worktree
-    const dbReal = realish(DB_PATH);
-    const rootReal = realish(repoRoot);
-    if (dbReal !== rootReal && !dbReal.startsWith(rootReal + sep)) {
-      console.error(`[aios] REFUSING TO BOOT: running from a linked git worktree (${repoRoot}) with DB_PATH=${DB_PATH} (the canonical database). Set AIOS_DATA to a scratch dir for a worktree instance.`);
+    const verdict = worktreeDbVerdict({ gitMarkerContent: readFileSync(gitMarker, 'utf8'), dbPath: DB_PATH, repoRoot });
+    if (verdict.refuse) {
+      console.error(`[aios] REFUSING TO BOOT: running from a linked git worktree (${repoRoot}) with DB_PATH=${DB_PATH} inside the canonical live data dir (${verdict.canonicalData}). Point AIOS_DATA at a scratch dir for a worktree instance.`);
       process.exit(1);
     }
   }
