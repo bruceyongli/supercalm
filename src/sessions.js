@@ -2062,30 +2062,44 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
   json(res, 201, { ok: true, attachment, maxBytes: ATTACHMENT_MAX_BYTES });
 });
 
-route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
+// Deliver an operator/assistant reply into a session's pane with full bookkeeping — the ONE shared
+// path for the /input route and the voice concierge (voice used to re-implement a subset by hand:
+// no liveness check, no checkpoint — drift that made it type into dead panes and claim success).
+// Returns { ok:true } | { stopped:true } | { missing:true }; throws only when tmux delivery itself
+// fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
+// not re-announce the reply as failed — the caller would re-deliver it.
+export async function deliverReply(sid, text, { source = 'text', attachments = 0 } = {}) {
   const s = store.getSession(sid);
-  if (!s) return json(res, 404, { error: 'no such session' });
-  const b = await readJson(req);
-  const attachments = normalizeAttachmentMeta(b.attachments);
-  const text = textWithAttachmentBlock(b.text, attachments);
-  if (!text.trim()) return json(res, 400, { error: 'text required' });
-  // graceful when the pane is gone (stopped/killed) — tell the client to resume
+  if (!s) return { missing: true };
+  // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
   if (!(await tmuxOk('has-session', '-t', s.tmux))) {
     if (s.status !== 'exited') {
       const updated = store.updateSession(sid, { status: 'exited', ended_at: now() });
       emitSessionStatus(updated, { previousStatus: s.status, source: 'stopped-input' });
       bus.emit('changed');
     }
-    return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+    return { stopped: true };
   }
   const checkpoint = await projectCheckpoint(s).catch(() => null);
   await sendText(s.tmux, text);
-  store.addMessage(sid, 'in', b.source || 'text', text);
-  if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint);
-  store.answerPendingDecision(sid, { response: text, response_source: b.source || 'text' }); // link to the open ask, if any
-  store.addEvent(sid, 'input', { source: b.source || 'text', len: text.length, attachments: attachments.length });
-  bus.emit('event', { type: 'input', session: sid, source: b.source || 'text' }); // doctrine distiller listens (fire-and-forget)
-  noteReply(sid); // -> working, clear question/summary, reset idle timer, broadcast
+  try { store.addMessage(sid, 'in', source, text); } catch {}
+  try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
+  try { store.answerPendingDecision(sid, { response: text, response_source: source }); } catch {} // link to the open ask, if any
+  try { store.addEvent(sid, 'input', { source, len: text.length, attachments }); } catch {}
+  try { bus.emit('event', { type: 'input', session: sid, source }); } catch {} // doctrine distiller listens (fire-and-forget)
+  try { noteReply(sid); } catch {} // -> working, clear question/summary, reset idle timer, broadcast
+  return { ok: true };
+}
+
+route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
+  if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });
+  const b = await readJson(req);
+  const attachments = normalizeAttachmentMeta(b.attachments);
+  const text = textWithAttachmentBlock(b.text, attachments);
+  if (!text.trim()) return json(res, 400, { error: 'text required' });
+  const r = await deliverReply(sid, text, { source: b.source || 'text', attachments: attachments.length });
+  if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+  if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });
 });
 

@@ -21,6 +21,9 @@ const TTS_RATE_PRESETS = [1, 1.15, 1.25, 1.5, 1.75];
 // programmatic play() calls are allowed no matter how long generation took.
 const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyLjEyLjEwMAAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAABQAAAqAAbW1tbW1tbW1tbW1tbW1tbW1tbZKSkpKSkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2tra2tra2trbb29vb29vb29vb29vb29vb29vb2///////////////////////////AAAAAExhdmM2Mi4yOAAAAAAAAAAAAAAAACQEUAAAAAAAAAKgvT/qZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExFMAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKYAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
 let player = null; // the one persistent, gesture-unlocked <audio>, reused for every line
+let vadCtx = null; // ONE gesture-unlocked AudioContext for every turn's VAD analyser — a per-turn
+// context created after the first turn is outside any gesture, so iOS starts it 'suspended': the
+// analyser reads flat, "silence" never ends, and recording was force-cut at the 8s no-speech grace.
 function getPlayer() {
   if (!player) player = new Audio();
   applyAudioRate(player);
@@ -32,6 +35,11 @@ function unlockAudio() {
     a.src = SILENT_MP3;
     const p = a.play();
     if (p && p.then) p.then(() => { try { a.pause(); a.currentTime = 0; } catch {} }).catch(() => {});
+  } catch {}
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    vadCtx = vadCtx || new AC();
+    if (vadCtx.state !== 'running') vadCtx.resume().catch(() => {});
   } catch {}
   try { speechSynthesis.getVoices(); const u = new SpeechSynthesisUtterance(''); u.volume = 0; speechSynthesis.speak(u); } catch {} // warm voices + unlock on-device TTS
 }
@@ -67,11 +75,18 @@ export async function startVoiceMode() {
           live.stop();
           setState('thinking');
           text = (await transcribe(blob)) || live.getText();
-        } catch {
+        } catch (e) {
+          // Mic permission/device failures would otherwise loop forever: capture fails instantly,
+          // an empty turn is posted, the server politely re-asks, repeat. Name the cause and stop.
+          if (/NotAllowed|PermissionDenied|NotFound|NotReadable|Security/i.test(e?.name || '')) {
+            setState('error', 'Microphone blocked — allow mic access for this site, then tap Voice again.');
+            await sleep(2800);
+            break;
+          }
         } finally {
           live?.abort();
         }
-        if (text) ui.heard.textContent = '“' + text + '”';
+        if (text && ui?.heard) ui.heard.textContent = '“' + text + '”';
         state = await post('api/voice/turn', { voiceId, userText: text });
       } else {
         setState('thinking');
@@ -173,7 +188,10 @@ async function speak(text) {
   if (ttsMode() === 'neural') {
     clearTtsNotice();
     try {
-      return shouldStreamTts(text) ? await speakStream(text).catch(() => speakSingle(text)) : await speakSingle(text);
+      // A stream that produced NOTHING falls back to pipelined per-sentence synthesis (speakParts) —
+      // single-shotting the whole text re-pays the exact first-audio latency the pipeline exists to cut.
+      // (A partially-played stream resolves rather than rejects, so nothing is ever spoken twice.)
+      return shouldStreamTts(text) ? await speakStream(text).catch(() => speakParts(splitSentences(text))) : await speakSingle(text);
     } catch (e) {
       showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest of this conversation too.', { offerDevice: true });
       return speakBrowser(text);
@@ -565,46 +583,69 @@ function recorderOptions() {
 }
 
 // ---- record until silence (energy VAD) ----
+// getUserMedia rejections (NotAllowedError…) propagate TYPED to the caller — the loop names the
+// cause and stops instead of nagging forever. Everything after acquisition is try/finally so a
+// constructor failure can never leak the mic.
 async function recordUntilSilence({ maxMs = 90000, silenceMs = 1800, graceMs = 8000 } = {}) {
   const stream = await navigator.mediaDevices.getUserMedia(microphoneConstraints());
   const opts = recorderOptions();
-  const rec = new MediaRecorder(stream, opts);
   const chunks = [];
-  rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-  const AC = window.AudioContext || window.webkitAudioContext;
-  const ac = new AC();
-  const an = ac.createAnalyser();
-  an.fftSize = 1024;
-  ac.createMediaStreamSource(stream).connect(an);
-  const buf = new Uint8Array(an.fftSize);
-  rec.start(250);
-  const t0 = Date.now();
-  let lastVoice = t0;
-  let spoke = false;
-  await new Promise((resolve) => {
-    const tick = () => {
-      if (stopFlag) return resolve();
-      an.getByteTimeDomainData(buf);
-      let sum = 0;
-      for (let i = 0; i < buf.length; i++) {
-        const d = (buf[i] - 128) / 128;
-        sum += d * d;
-      }
-      const rms = Math.sqrt(sum / buf.length);
-      const t = Date.now();
-      if (rms > 0.045) { lastVoice = t; spoke = true; }
-      if (ui && ui.orb) ui.orb.style.transform = `scale(${(1 + Math.min(rms * 4, 1)).toFixed(2)})`;
-      const done = t - t0 > maxMs || (spoke && t - lastVoice > silenceMs) || (!spoke && t - t0 > graceMs);
-      done ? resolve() : requestAnimationFrame(tick);
-    };
-    tick();
-  });
-  try { rec.stop(); } catch {}
-  await new Promise((r) => { rec.onstop = r; setTimeout(r, 500); });
-  stream.getTracks().forEach((t) => t.stop());
-  try { await ac.close(); } catch {}
-  if (ui && ui.orb) ui.orb.style.transform = 'scale(1)';
-  return new Blob(chunks, { type: rec.mimeType || opts.mimeType || chunks[0]?.type || 'audio/webm' });
+  let rec = null, src = null, privateCtx = null;
+  try {
+    rec = new MediaRecorder(stream, opts);
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    // Analyser on the shared gesture-unlocked context (see unlockAudio); private context as belt.
+    let an = null, buf = null, ac = null;
+    try {
+      ac = vadCtx;
+      if (!ac) { const AC = window.AudioContext || window.webkitAudioContext; ac = privateCtx = new AC(); }
+      if (ac.state !== 'running') await ac.resume().catch(() => {});
+      an = ac.createAnalyser();
+      an.fftSize = 1024;
+      src = ac.createMediaStreamSource(stream);
+      src.connect(an);
+      buf = new Uint8Array(an.fftSize);
+    } catch { an = null; }
+    // If the analyser can't actually hear (still-suspended context), silence detection can't fire —
+    // don't cut the reply at the 8s "nobody spoke" grace; give a longer bounded window instead.
+    const vadDead = !an || ac.state !== 'running';
+    const grace = vadDead ? Math.max(graceMs, 15000) : graceMs;
+    rec.start(250);
+    const t0 = Date.now();
+    let lastVoice = t0;
+    let spoke = false;
+    await new Promise((resolve) => {
+      const tick = () => {
+        if (stopFlag) return resolve();
+        let rms = 0;
+        if (an) {
+          an.getByteTimeDomainData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) {
+            const d = (buf[i] - 128) / 128;
+            sum += d * d;
+          }
+          rms = Math.sqrt(sum / buf.length);
+        }
+        const t = Date.now();
+        if (rms > 0.045) { lastVoice = t; spoke = true; }
+        if (ui && ui.orb) ui.orb.style.transform = `scale(${(1 + Math.min(rms * 4, 1)).toFixed(2)})`;
+        const done = t - t0 > maxMs || (spoke && t - lastVoice > silenceMs) || (!spoke && t - t0 > grace);
+        done ? resolve() : setTimeout(tick, 100); // NOT rAF — background tabs freeze rAF and wedge the loop here
+      };
+      tick();
+    });
+    const stopped = new Promise((r) => { rec.onstop = r; }); // installed BEFORE stop() so the event can't be missed
+    try { rec.stop(); } catch {}
+    await Promise.race([stopped, sleep(600)]);
+  } finally {
+    try { if (rec && rec.state !== 'inactive') rec.stop(); } catch {}
+    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
+    try { src?.disconnect(); } catch {}
+    if (privateCtx) { try { await privateCtx.close(); } catch {} }
+    if (ui && ui.orb) ui.orb.style.transform = 'scale(1)';
+  }
+  return new Blob(chunks, { type: rec?.mimeType || opts.mimeType || chunks[0]?.type || 'audio/webm' });
 }
 
 // ---- overlay UI ----

@@ -1,5 +1,9 @@
 # Voice module hardening — plan (2026-07-15)
 
+**Status: implemented 2026-07-15** (sections A–E as amended by the critique below; E folded into A/C).
+Deferred, needs its own operator-reviewed change (test/ + package.json are protected paths): unit tests
+for the llm.js dispatcher seam (`callFn`).
+
 A code review of the voice concierge stack (`src/voice.js`, `web/voicemode.js`, `src/tts.js`,
 `src/spark.js`, `src/llm.js`, `src/voice_brief.js`) surfaced 14 issues. This plan groups the ones worth
 fixing into five changes, each grounded in the module's architecture rather than point-patched.

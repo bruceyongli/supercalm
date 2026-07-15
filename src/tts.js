@@ -1,8 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import { route, json, readJson } from './server.js';
-import { sparkRequest, sparkEnabled } from './spark.js';
-import { SPARK } from './config.js';
+import { sparkRequest, sparkEnabled, effectiveSpark } from './spark.js';
 import { getSpeech, getVoiceOverride } from './model_providers.js';
 
 // TTS for the voice concierge. Two backends:
@@ -89,10 +88,12 @@ function proxyTtsHeaders(upstreamHeaders = {}, source = 'spark', format = 'mp3')
 }
 
 // Spark TTS -> full audio buffer (the client downloads the whole blob anyway).
+// 25s bound (was 60s): the browser aborts single-shot TTS at ~60s total, so a slow Spark must fail
+// early enough for the provider (25s) / local-say (20s) fallbacks to still land inside that window.
 async function speakSpark(text, voice, engine, format, instruct = '') {
   const body = sparkTtsBody(text, { voice, engine, format, instruct });
   const payload = Buffer.from(JSON.stringify(body));
-  const r = await sparkRequest('POST', '/v1/audio/speech', { body: payload, contentType: 'application/json', timeout: 60000 });
+  const r = await sparkRequest('POST', '/v1/audio/speech', { body: payload, contentType: 'application/json', timeout: 25000 });
   if ((r.status || 0) >= 400) throw new Error(`spark tts ${r.status}: ${r.body.toString('utf8').slice(0, 200)}`);
   if (!r.body || r.body.length < 200) throw new Error('spark tts returned empty audio');
   return { audio: r.body, headers: r.headers || {} };
@@ -104,7 +105,7 @@ function speakLocal(text) {
   return new Promise((resolve, reject) => {
     const payload = Buffer.from(JSON.stringify({ model: 'tts-local', voice: LOCAL_VOICE, input: text, response_format: 'mp3', speed: 1.0 }));
     const up = http.request(
-      { host: '127.0.0.1', port: TTS_PORT, path: '/v1/audio/speech', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': payload.length }, timeout: 60000 },
+      { host: '127.0.0.1', port: TTS_PORT, path: '/v1/audio/speech', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': payload.length }, timeout: 20000 },
       (r) => {
         const ch = [];
         r.on('data', (c) => ch.push(c));
@@ -132,7 +133,7 @@ async function speakProvider(sp, text, format, instruct = '') {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(sp.api_key ? { authorization: `Bearer ${sp.api_key}` } : {}) },
     body: JSON.stringify({ model: sp.tts_model || 'tts-1', input: text, voice: sp.tts_voice || 'alloy', response_format: format, ...(style ? { instructions: style } : {}) }),
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(25000),
   });
   if (!r.ok) throw new Error(`provider tts ${r.status}: ${(await r.text().catch(() => '')).slice(0, 160)}`);
   return { audio: Buffer.from(await r.arrayBuffer()), contentType: r.headers.get('content-type') || '' };
@@ -198,14 +199,20 @@ route('POST', '/api/tts/stream', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   const text = String(b.text || '').slice(0, 4000);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  if ((b.backend || TTS_BACKEND) !== 'spark') return json(res, 409, { error: 'streaming requires the spark backend' });
-  const engine = normalizeEngine(b.engine || b.model || TTS_ENGINE);
+  // Same effective config as /api/tts (Settings → Voice override merged over env) — streams used to
+  // read raw env only, so a UI-configured voice/engine/IP/mute applied to short lines but not long ones.
+  // A muted Spark 409s like a non-spark backend; the client falls back to single-shot /api/tts.
+  const vc = voiceConfig();
+  if ((b.backend || vc.backend) !== 'spark' || !sparkEnabled()) return json(res, 409, { error: 'streaming requires the spark backend' });
+  const engine = normalizeEngine(b.engine || b.model || vc.ttsEngine);
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
-  const streamBody = sparkTtsBody(text, { engine, voice: b.voice || defaultVoiceForEngine(engine), format, stream: true, instruct: b.instruct });
+  const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
+  const streamBody = sparkTtsBody(text, { engine, voice, format, stream: true, instruct: b.instruct ?? vc.ttsInstruct });
   const payload = Buffer.from(JSON.stringify(streamBody));
+  const spark = effectiveSpark();
   const up = https.request(
-    { host: SPARK.ip, port: SPARK.port, path: '/v1/audio/speech/stream', method: 'POST', servername: SPARK.host,
-      headers: { Host: SPARK.host, 'content-type': 'application/json', 'content-length': payload.length, accept: 'text/event-stream' }, timeout: 60000 },
+    { host: spark.ip, port: spark.port, path: '/v1/audio/speech/stream', method: 'POST', servername: spark.host,
+      headers: { Host: spark.host, 'content-type': 'application/json', 'content-length': payload.length, accept: 'text/event-stream' }, timeout: 60000 },
     (r) => {
       if ((r.statusCode || 0) >= 400) {
         const ch = [];
@@ -220,7 +227,9 @@ route('POST', '/api/tts/stream', async (req, res) => {
   );
   up.on('error', (e) => { if (!res.headersSent) json(res, 502, { error: 'spark stream unreachable: ' + e.message }); });
   up.on('timeout', () => up.destroy(new Error('spark stream timeout')));
-  req.on('close', () => { try { up.destroy(); } catch {} }); // client hung up -> stop pulling from Spark
+  // client hung up mid-stream -> stop pulling from Spark. 'close' also fires after a COMPLETED
+  // request on some Node versions — only tear the upstream down if we hadn't finished responding.
+  req.on('close', () => { if (!res.writableEnded) { try { up.destroy(); } catch {} } });
   up.write(payload);
   up.end();
 });
@@ -239,11 +248,12 @@ function localHealth() {
 }
 
 route('GET', '/api/tts/health', async (req, res) => {
-  if (TTS_BACKEND === 'spark') {
+  const vc = voiceConfig(); // effective config, not raw env — health must describe what /api/tts actually does
+  if (vc.backend === 'spark' && sparkEnabled()) {
     try {
       const r = await sparkRequest('GET', '/api/health', { timeout: 8000 });
       const h = JSON.parse(r.body.toString('utf8'));
-      return json(res, 200, { ok: true, backend: 'spark', engine: TTS_ENGINE, voice: TTS_VOICE, tts_available: !!h.tts_available, tts_base_url: h.tts_base_url });
+      return json(res, 200, { ok: true, backend: 'spark', engine: vc.ttsEngine, voice: vc.ttsVoice, tts_available: !!h.tts_available, tts_base_url: h.tts_base_url });
     } catch (e) {
       return json(res, 502, { ok: false, backend: 'spark', error: e.message });
     }

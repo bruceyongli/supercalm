@@ -158,21 +158,29 @@ route('POST', '/api/transcribe', async (req, res) => {
   if (!sparkConfigured && !providerConfigured) {
     return json(res, 502, { error: 'no speech-to-text configured — add a speech provider in Settings → Voice (or set SPARK_IP/SPARK_HOST)' });
   }
-  let r;
+  let r = null;
   let usedTranscode = false;
   let backend = sparkConfigured ? 'spark' : 'provider';
   try {
     if (sparkConfigured) {
-      if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) {
-        r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+      try {
+        if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) {
+          r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+        }
+        if (!r || r.status >= 400) {
+          if (r && r.status >= 400) console.error('[aios] transcribe direct spark failed:', r.status, r.body.toString('utf8').slice(0, 180));
+          const wav = await toWav(audio, extFor(ct));
+          usedTranscode = true;
+          r = await transcribeWithSpark({ audio: wav, contentType: 'audio/wav', language, polish });
+        }
+      } catch (e) {
+        // Network-level Spark failure (unreachable host, ffmpeg missing) — only HTTP >=400 used to
+        // fall through here, so a healthy configured provider was skipped and the caller got a 502.
+        if (!providerConfigured) throw e;
+        console.error('[aios] spark stt attempt failed, provider carries it:', e.message);
+        r = null;
       }
-      if (!r || r.status >= 400) {
-        if (r && r.status >= 400) console.error('[aios] transcribe direct spark failed:', r.status, r.body.toString('utf8').slice(0, 180));
-        const wav = await toWav(audio, extFor(ct));
-        usedTranscode = true;
-        r = await transcribeWithSpark({ audio: wav, contentType: 'audio/wav', language, polish });
-      }
-      if (r.status >= 400 && providerConfigured) { r = null; backend = 'provider'; } // Spark down -> provider carries it
+      if ((!r || r.status >= 400) && providerConfigured) { r = null; usedTranscode = false; backend = 'provider'; } // Spark down -> provider, with the ORIGINAL audio
     }
     if (!r && providerConfigured) {
       r = await transcribeWithProvider(speech, { audio, contentType: ct, language });
