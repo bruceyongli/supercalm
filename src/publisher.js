@@ -29,7 +29,7 @@ import { now } from './util.js';
 import { db } from './store.js';
 import * as store from './store.js';
 import * as I from './integrations.js';
-import { flagOn } from './flags.js';
+import { helperEnabled } from './project_helpers.js';
 import { PROTECTED } from './integrator.js';
 
 const short = (s, n = 300) => String(s || '').slice(-n);
@@ -41,11 +41,11 @@ const SUCCESSES = Number(process.env.AIOS_VERIFY_SUCCESSES || 12);        // ~1m
 const WINDOW_MS = Number(process.env.AIOS_VERIFY_WINDOW_MS || 180000);    // soak budget after the server is up
 const RESTART_GRACE_MS = Number(process.env.AIOS_VERIFY_RESTART_MS || 300000); // budget for deploy+restart to serve the candidate
 
-// The capability switch — the `autoPublish` feature flag (toggled in the UI / POST /api/flags, hot-reloaded),
-// with the AIOS_AUTO_PUBLISH env as a hard kill-switch/override (flags.js honors it). Off by default: nothing
-// auto-deploys the live service until an operator turns it on. Per-project isolation is checked at the trigger.
-export function publishEnabled() {
-  return flagOn('autoPublish');
+// The capability switch — PER-PROJECT (project_helpers.auto_publish, toggled in the Projects view), with the
+// AIOS_AUTO_PUBLISH env as a fleet-wide hard kill-switch/override (helperEnabled honors it). Off by default:
+// no project auto-deploys the live service until an operator turns it on for THAT project.
+export function publishEnabled(projectId) {
+  return helperEnabled(projectId, 'autoPublish');
 }
 
 const defaultServed = () => COMMIT_SHA;
@@ -90,8 +90,9 @@ export async function drivePublish(integrationId, opts = {}) {
   if (it.stage !== 'APPROVED') throw new Error('drivePublish requires APPROVED (got ' + it.stage + ')');
   const ft = fenceToken ?? it.fence_token;
 
-  // Capability gate — refuse (park as HELD so it's visible, never silently deploy) when off.
-  if (!publishEnabled()) return I.transition(integrationId, 'HELD', { fenceToken: ft, patch: { failure_code: 'publish_disabled' }, data: { note: 'AIOS_AUTO_PUBLISH is off — autonomous publish refused' } });
+  // Capability gate — refuse (park as HELD so it's visible, never silently deploy) when this PROJECT's
+  // autonomous deploy is off.
+  if (!publishEnabled(it.project_id)) return I.transition(integrationId, 'HELD', { fenceToken: ft, patch: { failure_code: 'publish_disabled' }, data: { note: "project's autonomous deploy is off — publish refused" } });
 
   const project = it.project_id ? store.getProject(it.project_id) : null;
   const repoPath = project?.path;

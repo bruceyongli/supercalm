@@ -23,9 +23,11 @@ export const FLAG_DEFS = {
   gitGuardrails: { env: 'AIOS_GIT_GUARDRAILS', desc: 'Block irreversible git via a claude PreToolUse hook' },
   codexNotify: { env: 'AIOS_CODEX_NOTIFY', desc: 'Inject codex notify program for turn-complete reporting' },
   projectMemory: { env: 'AIOS_PROJECT_MEMORY', desc: 'Project Memory: task cards replace the supervision doc (docs/specs/project-memory-plan.md; behavior phases read this — the schema itself is always present)' },
-  autoPublish: { env: 'AIOS_AUTO_PUBLISH', desc: 'Autonomous deploy: auto-merge APPROVED integrations to main + deploy the LIVE service (highest-risk; also requires per-project multi-session isolation). The AIOS_AUTO_PUBLISH env stays a hard kill-switch.' },
   aiReviewers: { env: 'AIOS_AI_REVIEWERS', desc: 'Autonomous deploy: run the adversarial AI reviewer panel (diff-risk, prod-failure, rollback-safety) as an EXTRA gate after the deterministic checks. Off = deterministic gate only (already safe).' },
 };
+// NB: autoPublish is NOT a global flag — it is PER-PROJECT (project_helpers.auto_publish, toggled in the
+// Projects view), so one project can auto-deploy while others (or ~/proxy) never do. AIOS_AUTO_PUBLISH env
+// remains a fleet-wide hard kill-switch, honored by project_helpers.helperEnabled().
 export const FLAG_KEYS = Object.keys(FLAG_DEFS);
 
 let _cache = {};

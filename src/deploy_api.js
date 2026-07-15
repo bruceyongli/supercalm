@@ -46,6 +46,7 @@ route('POST', '/api/session/:id/integrate', async (req, res, { id }) => {
   const s = store.getSession(id);
   if (!s) return json(res, 404, { error: 'no such session' });
   if (!s.project_id || !helperEnabled(s.project_id, 'isolation')) return json(res, 400, { error: 'session project is not isolated — enable multi-session collaboration first' });
+  if (!helperEnabled(s.project_id, 'autoPublish')) return json(res, 400, { error: 'autonomous deploy is not enabled for this project — turn it on in the Projects view' });
   if (!s.branch || !s.worktree_path) return json(res, 400, { error: 'session has no worktree branch to integrate' });
   const proj = store.getProject(s.project_id);
   const candidateSha = (await gitOut(s.worktree_path, ['rev-parse', 'HEAD'])).text.trim();
