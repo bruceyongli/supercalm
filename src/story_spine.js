@@ -25,6 +25,13 @@ function clip(s, n) {
   const t = String(s || '').replace(/\s+/g, ' ').trim();
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
 }
+// Multi-line clip for REPORT bodies: keeps line structure so markdown tables/headings/fences render
+// as rich content in the story view (clip's \s+ collapse destroyed them — the "reports with table
+// or rich content" fix). Trailing per-line spaces and 3+ blank-line runs still collapse.
+function clipML(s, n) {
+  const t = String(s || '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
 
 // Map one stored message row `{ts, direction, source, text}` → a story event, or null to drop it.
 export function messageToEvent(m) {
@@ -67,7 +74,7 @@ export function spineFromMessages(rows) {
     if (!out[i] || out[i].kind !== 'note') continue;
     let j = i + 1;
     while (j < out.length && !out[j]) j++; // skip dropped rows (detect noise)
-    if (j >= out.length || out[j].kind === 'you') out[i] = { ts: list[i].ts, kind: 'report', text: clip(list[i].text, 4000) };
+    if (j >= out.length || out[j].kind === 'you') out[i] = { ts: list[i].ts, kind: 'report', text: clipML(list[i].text, 4000) };
   }
   return out.filter(Boolean);
 }

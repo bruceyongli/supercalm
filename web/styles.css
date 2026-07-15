@@ -2507,6 +2507,33 @@ body.map-expanded-open { overflow: hidden; }
 .story-title { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13.5px; font-weight: 600; color: #e9eef5; line-height: 1.45; }
 .story-body { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; line-height: 1.7; color: #b9c4d4; margin-top: 3px; white-space: pre-wrap; word-break: break-word; }
 .story-ev[data-kind="you"] .story-body { background: #10151d; border: 1px solid #1d2632; border-radius: 12px; color: #dde5ee; padding: 11px 14px; }
+/* Rich report/note bodies — renderMarkdown output (tables, headings, code) on the story palette.
+   The container keeps the .story-body contract (13px/1.7 Plex Sans); white-space returns to normal
+   because block flow comes from the rendered tags, not source newlines. Headings stay feed-scale:
+   a report's ## section must not shout over the timeline. */
+.story-body.md { white-space: normal; }
+.story-body.md > :first-child { margin-top: 0; }
+.story-body.md > :last-child { margin-bottom: 0; }
+.story-body.md p, .story-body.md ul, .story-body.md ol, .story-body.md table, .story-body.md pre, .story-body.md blockquote { margin: 0 0 10px; }
+.story-body.md h1, .story-body.md h2, .story-body.md h3, .story-body.md h4, .story-body.md h5, .story-body.md h6 { margin: 14px 0 6px; font-size: 13.5px; font-weight: 600; color: #e9eef5; line-height: 1.45; }
+.story-body.md h1 { font-size: 14.5px; }
+.story-body.md h2 { font-size: 14px; }
+.story-body.md ul, .story-body.md ol { padding-left: 1.5em; }
+.story-body.md li { margin: 2px 0; }
+.story-body.md li > input[type="checkbox"] { margin-right: 6px; vertical-align: -1px; }
+.story-body.md table { border-collapse: collapse; border-spacing: 0; display: block; overflow-x: auto; max-width: 100%; }
+.story-body.md th, .story-body.md td { border: 1px solid #232c38; padding: 4px 10px; text-align: left; vertical-align: top; font-size: 12px; line-height: 1.5; }
+.story-body.md th { font-weight: 600; color: #e9eef5; background: #10151d; }
+.story-body.md tbody tr:nth-child(2n) { background: #0d1219; }
+.story-body.md pre { background: #0d1219; border: 1px solid #161d27; border-radius: 8px; padding: 10px 12px; overflow-x: auto; font-size: 11.5px; line-height: 1.55; }
+.story-body.md code { background: #10151d; border: 1px solid #161d27; border-radius: 5px; padding: 0.1em 0.35em; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11.5px; }
+.story-body.md pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+.story-body.md blockquote { border-left: 3px solid #232c38; padding: 2px 12px; color: #8a95a5; }
+.story-body.md blockquote > :last-child { margin-bottom: 0; }
+.story-body.md hr { border: 0; border-top: 1px solid #161d27; margin: 12px 0; }
+.story-body.md a { color: #58a6ff; text-decoration: none; }
+.story-body.md a:hover { text-decoration: underline; }
+.story-body.md strong { color: #dde5ee; font-weight: 600; }
 .story-ev[data-kind="ask"] .story-card { background: rgba(226,178,62,.05); border: 1px solid rgba(226,178,62,.25); border-radius: 12px; padding: 13px 15px; }
 .story-ev[data-kind="ask"] .story-title { color: #e2b23e; }
 .story-ev[data-kind="fail"] .story-title { color: #f2554d; }

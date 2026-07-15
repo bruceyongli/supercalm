@@ -118,7 +118,7 @@ export function prefetchStory(id) {
   api(`api/session/${id}/story`).then((r) => {
     if (!r || !Array.isArray(r.events) || !r.events.length) return;
     const payload = JSON.stringify({ events: r.events, trimmed: !!(r.meta && r.meta.trimmed), working: r.status === 'working', liveStatus: r.liveStatus || null });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story2_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v2)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story3_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v3)
   }).catch(() => _prefetched.delete(id));
 }
 

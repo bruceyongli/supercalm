@@ -23,8 +23,9 @@
 //  r4 (from production screenshots, 2026-07-11):
 //  F10 fail events get a human title ("Hit a snag") and XML/HTML tags are stripped from ALL
 //      bodies (<tool_use_error> was rendering verbatim).
-//  F11 de-markdown for note/report bodies: headings, **bold**, backticks, and | tables |
-//      (reports were raw markdown walls in the plain-language view).
+//  F11 (superseded 2026-07-15): note/report bodies now KEEP their markdown — the story view renders
+//      it as rich content (tables/headings/code, cleanRich + web renderMarkdown); deMd remains for
+//      fail/sub one-liners only.
 //  F12 Claude tool-name steps humanized (Read/Grep/Edit + trailing filename) — no more "Ran: Read".
 //  F13 1-step clusters stop saying "1 step" twice (meta carries duration only).
 //
@@ -280,7 +281,14 @@ function buildStory(atoms) {
       ev.meta = ev.steps.length === 1 ? dur : ev.steps.length + ' steps' + (dur ? ' · ' + dur : '');
     }
   }
-  for (const ev of out) if (ev.body && (ev.kind === 'note' || ev.kind === 'report' || ev.kind === 'sub' || ev.kind === 'fail')) ev.body = deMd(ev.body);
+  // note/report bodies KEEP their markdown — the story view renders it (tables/headings/code as
+  // rich content, web/story-view.js renderMarkdown). Only tool/XML noise is stripped. fail/sub
+  // stay de-markdowned: they're clipped one-liners, not documents.
+  for (const ev of out) {
+    if (!ev.body) continue;
+    if (ev.kind === 'note' || ev.kind === 'report') ev.body = cleanRich(ev.body);
+    else if (ev.kind === 'sub' || ev.kind === 'fail') ev.body = deMd(ev.body);
+  }
   // Promote each agent turn's FINAL 'note' to 'report' so EVERY historical report gets the listen
   // control, not just the newest (operator: "voice report should appear in all history reports").
   // Claude emits ALL assistant text as notes (interleaved with tool calls); a note is that turn's
@@ -294,6 +302,21 @@ function buildStory(atoms) {
     if (j >= out.length || out[j].kind === 'you') out[i].kind = 'report';
   }
   return out;
+}
+
+// Rich-body cleaner (replaces deMd for note/report — operator: "story view is not displaying
+// reports with table or rich content"): PRESERVE the markdown for the client to render; strip only
+// XML/tool tags (<tool_use_error> etc), and only OUTSIDE code — a fenced sample's JSX or an inline
+// `<base href>` mention is content, not noise. The client escapes everything before rendering
+// (common.js renderMarkdown), so what survives here is safe either way.
+function stripTagsOutsideCode(s) {
+  return String(s).split(/(```[\s\S]*?(?:```|$))/).map((seg, i) => {
+    if (i % 2) return seg; // inside a ``` fence
+    return seg.split(/(`[^`\n]*`)/).map((sp, j) => (j % 2 ? sp : sp.replace(/<\/?[a-z_][^>]*>/gi, ''))).join('');
+  }).join('');
+}
+function cleanRich(s) {
+  return stripTagsOutsideCode(String(s || '')).replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // F10/F11: strip XML tags + light de-markdown so agent reports read as prose, not source.

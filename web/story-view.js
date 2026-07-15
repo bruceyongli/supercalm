@@ -1,7 +1,7 @@
 // Story view (design handoff phase 1) — plain-language rendering of the session log, toggled
 // against the raw terminal. DOM contract + exact tokens from the handoff's spec.tokens.json;
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
-import { api } from './common.js';
+import { api, renderMarkdown } from './common.js';
 import { unlockAudio, newPlayback, speakSmart, cycleRate, currentRate } from './tts-player.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
@@ -106,7 +106,9 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // key with shell.js's hover prefetch. Bounded + default-view only (never the heavy ?full=1 story).
 // v2: bumped to flush any story caches polluted by the pre-fix switch race (a session's cache could hold
 // another session's atoms; the merge-never-removes design would keep repainting them on reopen).
-export const STORY_CACHE_KEY = (id) => `aios_story2_${id}`;
+// v3: rich-report change — old caches hold de-markdowned bodies whose evKeys differ from the new
+// markdown-preserving ones; merging both would duplicate every report bubble.
+export const STORY_CACHE_KEY = (id) => `aios_story3_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -271,8 +273,13 @@ function eventHtml(ev, i) {
   const metaCls = /recovered/.test(ev.meta || '') ? ' ok' : (isAsk && !ev.answered ? ' warn' : '');
   // ev.text is the fallback-story field (aios event log: "Session launched", "operator message · N chars…")
   // — render it as the body too, else untitled you/sys fallback events showed as bare icon+timestamp rows.
+  // report/note bodies are the agent's own writing and render as MARKDOWN (tables/headings/code —
+  // renderMarkdown escapes first, so this stays XSS-safe); everything else stays escaped plain text.
   const bodyText = ev.body || ev.text || '';
-  const body = bodyText ? `<div class="story-body">${esc(bodyText)}</div>` : '';
+  const rich = ev.kind === 'report' || ev.kind === 'note';
+  const body = bodyText ? (rich
+    ? `<div class="story-body md">${renderMarkdown(bodyText)}</div>`
+    : `<div class="story-body">${esc(bodyText)}</div>`) : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
   const head = untitled
