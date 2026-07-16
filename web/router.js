@@ -100,6 +100,16 @@ document.addEventListener('click', (e) => {
 
 window.addEventListener('popstate', () => render());
 
-// Mount the persistent sidebar ONCE, then render the initial route into #view.
-mountShell({});
-render();
+// ?phone=1 = the shell's "📱 phone view" pill. Only the retired classic index ever handled it, so after
+// the SPA cutover the pill reloaded the same desktop shell forever. Route it to the phone companion
+// CLIENT-side (the static router in src/server.js is a protected path — this keeps the fix shippable
+// by the autonomous pipeline). A session's ?id is preserved as phone.js's #s/<sid> deep link.
+const _q = new URLSearchParams(location.search);
+if (_q.get('phone') === '1') {
+  const sid = _q.get('id');
+  location.replace(new URL('phone' + (sid ? `#s/${encodeURIComponent(sid)}` : ''), document.baseURI));
+} else {
+  // Mount the persistent sidebar ONCE, then render the initial route into #view.
+  mountShell({});
+  render();
+}

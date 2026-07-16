@@ -9,7 +9,7 @@ import { api, escapeHtml as esc } from '../common.js';
 
 const SETTINGS_CSS = `
     /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
-    .st-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: start; }
+    .st-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: start; }
     .st-head { grid-column: 1 / -1; }
     .st-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 6px; }
     .st-nav { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 3px; padding: 0; margin: 0; align-items: stretch; }
@@ -21,7 +21,13 @@ const SETTINGS_CSS = `
     @media (max-width: 720px) {
       .st-wrap { grid-template-columns: 1fr; padding: 52px 14px 90px; gap: 14px; }
       .st-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
-      .st-nav a { border: 1px solid #232c38; border-radius: 999px; padding: 6px 11px; }
+      .st-nav a { border: 1px solid #232c38; border-radius: 999px; padding: 8px 12px; min-height: 38px; display: inline-flex; align-items: center; }
+      /* provider rows: name + "use" toggle on the first line, the long endpoint details wrap
+         full-width below (the desktop three-across row crushed into unreadable columns) */
+      #st-prov .ob-row { flex-wrap: wrap; row-gap: 4px; }
+      #st-prov .ob-row span.ob-ver { flex: 1 1 100%; order: 3; }
+      #st-prov .ob-row label.ob-ver { flex: 0 0 auto; }
+      #st-prov .ob-row input[type="checkbox"] { width: 19px; height: 19px; }
       .st-nav a.active { box-shadow: none; border-color: #58a6ff; }
     }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }

@@ -47,6 +47,13 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
     box-shadow: 2px 0 26px rgba(0, 0, 0, 0.55);
   }
   body:not(.session-page).dk-drawer .dk-side { transform: translateX(0); }
+  /* keep the ☰ tappable ABOVE the open drawer — it toggles, so it doubles as the close control;
+     inset the drawer's brand row so the button doesn't sit on the wordmark */
+  body:not(.session-page).dk-drawer .dk-menu-btn { z-index: 75; }
+  body:not(.session-page).dk-drawer .dk-side .dk-brand { padding-left: 48px; }
+  /* dashboard session rows: title line + full-width task line (one cramped row truncated both) */
+  .dk-row { flex-wrap: wrap; row-gap: 3px; }
+  .dk-row .dk-row-task { flex: 1 1 100%; order: 9; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   body:not(.session-page) .dk-collapse, body:not(.session-page) .dk-expand { display: none !important; }
   body:not(.session-page) .dk-menu-btn {
     display: inline-flex; align-items: center; justify-content: center; position: fixed;
@@ -55,7 +62,11 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
     font-size: 18px; cursor: pointer;
   }
   body:not(.session-page).dk-drawer .dk-drawer-backdrop { display: block; position: fixed; inset: 0; z-index: 65; background: rgba(2, 4, 8, 0.6); }
+  /* Clear the fixed ☰ button on EVERY view's header row. The views carry three header shapes:
+     .dk-main > header (injected legacy pages), .dk-page-head (dashboard), and each SPA view's own
+     top-of-page header (#view > header for usage/health/decisions — the ☰ was sitting ON the title). */
   body:not(.session-page) .dk-main > header, body:not(.session-page) .dk-page-head { padding-left: 48px; }
+  body:not(.session-page) #view > header .brand { padding-left: 48px; }
 }
 .dk-wordmark { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 15px; color: #e9eef5; }
 .dk-sub { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #5c6675; }
@@ -105,7 +116,11 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-foot-proxy { display: inline-flex; align-items: center; gap: 5px; color: #4ecb6c; }
 
 /* ---- SPA view container (router mounts each view here; grid column 2 of .dk-shell) ---- */
-.dk-view { min-width: 0; min-height: 100vh; display: flex; flex-direction: column; }
+/* width:100% pins the view to its grid track. Without it the flex-column container resolves its auto
+   width from the content's intrinsic (max-content) size — unnoticeable on desktop where the track is
+   wide, but on a phone the whole view laid out at the widest card's line length (846px on a 390px
+   viewport, measured), clipping every card/row at the right edge and panning the page. */
+.dk-view { width: 100%; max-width: 100%; min-width: 0; min-height: 100vh; display: flex; flex-direction: column; }
 .dk-view > .dk-main { flex: 1; }
 .view-loading { min-height: 40vh; }
 /* Session view = the real session view (web/session.js), mounted directly into #view (no iframe). Pin #view
@@ -144,7 +159,7 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-chip { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 800; border: 1px solid; border-radius: 999px; padding: 1px 8px; }
 .dk-card-name { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 800; color: #e9eef5; text-decoration: none; }
 .dk-card-meta { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #5c6675; }
-.dk-card-msg { font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.62; color: #dde5ee; margin-top: 9px; white-space: pre-wrap; }
+.dk-card-msg { font-family: 'JetBrains Mono', monospace; font-size: 14px; line-height: 1.62; color: #dde5ee; margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dk-card-opts { display: grid; gap: 7px; margin-top: 12px; }
 .dk-opt { height: 38px; border-radius: 10px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 700; border: 1px solid #232c38; background: #0d1219; color: #b9c4d4; cursor: pointer; text-align: left; padding: 0 14px; }
 .dk-opt.primary { background: #238636; border-color: #2ea043; color: #fff; }

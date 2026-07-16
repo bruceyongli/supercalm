@@ -902,8 +902,10 @@ function wire() {
 }
 
 // ---- boot ---------------------------------------------------------------------------------------
-const bootMatch = location.hash.match(/^#s\/(.+)$/);
+// #s/<sid> is the phone's own deep link; ?id=<sid> arrives when the desktop session page switches to
+// the phone view (the "📱 phone view" pill preserves the URL) — open that session directly.
+const bootMatch = location.hash.match(/^#s\/(.+)$/) || (new URLSearchParams(location.search).get('id') ? [null, new URLSearchParams(location.search).get('id')] : null);
 if (bootMatch) { S.screen = 'session'; S.sid = bootMatch[1]; loadDetail(S.sid); }
-history.replaceState({ screen: S.screen, sid: S.sid }, '', location.pathname + (location.hash || '#home'));
+history.replaceState({ screen: S.screen, sid: S.sid }, '', location.pathname + (S.screen === 'session' ? `#s/${S.sid}` : '#home'));
 loadHome();
 render();

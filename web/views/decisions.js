@@ -16,12 +16,12 @@ const DECISIONS_CSS = `
          .dk-main>header reset doesn't apply. Stack the header as blocks so the Doctrine/Messages
          toggle + the #dc-doctrine content sit BELOW the title row instead of crammed into the
          flex .brand line (they used to be nested inside .brand). */
-      .dc-head { display: block; max-width: 1100px; margin: 0 auto; padding: 12px 12px 0; }
+      .dc-head { display: block; width: 100%; max-width: 1100px; margin: 0 auto; padding: 12px 12px 0; }
       .dc-head .brand { display: flex; align-items: baseline; gap: 10px; margin: 0 0 4px; }
       .dc-head .brand .spacer { flex: 1; }
       .dc-head .brand .count { color: #5c6675; font-size: 12px; }
       .dc-head #dc-doctrine { display: block; }
-      .rec-wrap { max-width: 1100px; margin: 0 auto; padding: 12px; }
+      .rec-wrap { width: 100%; max-width: 1100px; margin: 0 auto; padding: 12px; }
       .filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 10px; }
       .filters label { display: flex; flex-direction: column; font-size: 11px; color: #8a95a5; gap: 3px; }
       .filters select, .filters input { background: #0b0f16; color: #e2e8f1; border: 1px solid #2c3646; border-radius: 6px; padding: 6px; font: inherit; font-size: 13px; min-width: 0; }

@@ -6,7 +6,7 @@
 import { api, escapeHtml as esc, fmtAgo } from '../common.js';
 
 const PROJECTS_CSS = `
-    .pj-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
+    .pj-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; }
     .pj-head { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
     .pj-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -.01em; color: #e9eef5; margin: 0; flex: 1; }
     .pj-sub { color: #8a95a5; font-size: 13px; margin: 0 0 20px; }

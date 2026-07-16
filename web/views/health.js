@@ -6,7 +6,10 @@
 import { api, escapeHtml } from '../common.js';
 
 const HEALTH_CSS = `
-      .health-wrap { max-width: 1180px; margin: 0 auto; padding: 14px; }
+      /* width:100% — the generic \`main { margin: 0 auto }\` disables flex-stretch sizing inside the SPA
+         #view (auto cross-axis margins), so without it the wrap sizes to its widest table's max-content
+         and the whole page clips at a phone's right edge. */
+      .health-wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 14px; }
       .health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
       .health-card { border: 1px solid #232c38; border-radius: 8px; padding: 13px; background: #10151d; min-height: 92px; }
       .health-card h2 { margin: 0 0 10px; font-size: 12px; color: #8a95a5; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -32,7 +35,14 @@ const HEALTH_CSS = `
       .health-notice button { background: #10151d; border: 1px solid #232c38; color: #e2e8f1; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
       .health-notice button:hover { border-color: #58a6ff; }
       .health-notice button:disabled { opacity: 0.6; cursor: default; }
-      @media (max-width: 800px) { .health-grid { grid-template-columns: 1fr; } }
+      @media (max-width: 800px) {
+        .health-grid { grid-template-columns: 1fr; }
+        /* phones: wide tables scroll inside their section; the notice's re-index action wraps under
+           the message instead of running off-screen */
+        .health-section { overflow-x: auto; }
+        .health-notice { flex-wrap: wrap; }
+        .health-row { flex-wrap: wrap; }
+      }
 `;
 
 let host = null;

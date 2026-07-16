@@ -294,10 +294,31 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 @media (hover: none) {
+  /* No hover on touch: the overlay actions were permanently visible and BURIED the card's
+     preview/title (unreadable wiki cards on phones). Let the card grow and flow the actions
+     BELOW the content instead of over it. */
+  .asset-card {
+    aspect-ratio: auto; width: min(180px, 100%);
+    display: flex; flex-direction: column;
+  }
+  /* the preview/badge/name inside the open button are absolutely stacked — keep its visual height */
+  .asset-card-open { height: 120px; flex: none; }
   .asset-card-actions {
     opacity: 1; pointer-events: auto; transform: none;
+    position: static; max-width: none; margin-top: auto; padding: 6px 6px 4px;
+    justify-content: flex-start; background: transparent; box-shadow: none;
   }
 }
+/* Touch devices (phone + tablet): comfortable tap targets on the shared controls the vision review
+   flagged at ~26–32px — panel tabs, the agents gear, small buttons, capability/consent checkboxes. */
+@media (pointer: coarse) {
+  .side-tab-btn { min-height: 44px; }
+  .side-agents-btn { width: 44px; height: 44px; }
+  .btn.sm, .btn.ghost.sm, .btn.danger.sm { min-height: 38px; }
+  .agent-caps .cap { padding: 7px 0; }
+  .cap input[type="checkbox"], .sup-switch input[type="checkbox"], .kn-toggle input[type="checkbox"] { width: 19px; height: 19px; }
+}
+
 .composer-bottom { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .composer-options { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
@@ -669,6 +690,16 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 /* Scrim + compact overlay (≤1194px): the drawer slides over the log, dim scrim, tap/esc/✕ closes. */
 .agent-dock-scrim { position: fixed; inset: 0; background: rgba(3, 6, 10, 0.55); z-index: 44; }
 .agent-dock-scrim[hidden] { display: none; }
+/* Explicit ✕ inside the drawer — compact widths only (reviewers: the overlay drawer had no visible
+   dismiss; on desktop the rail glyph/esc close it and the ✕ stays hidden). */
+.dock-drawer-x {
+  display: none; position: sticky; top: 0; float: right; z-index: 7;
+  width: 40px; height: 40px; margin: 0 0 4px 8px; place-items: center;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
+  color: var(--muted); font-size: 14px; cursor: pointer;
+}
+.dock-drawer-x:hover { color: var(--ink); border-color: var(--blue); }
+@media (max-width: 1194px) { .session-shell.dock-open .dock-drawer-x { display: grid; } }
 @media (min-width: 1195px) { .agent-dock-scrim { display: none !important; } } /* desktop pushes, no scrim */
 @media (max-width: 1194px) {
   .usage-resizer { display: none; }
@@ -1359,9 +1390,39 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 /* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + 44px rail +
    overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
 @media (max-width: 600px) {
+  /* Phone session layout: a flex column with EXPLICIT order — header · banner · main · agent bar.
+     (Was display:block, which let the agent-dock rail and the drawer panel fall into page flow BELOW
+     the composer as a loose stack of icons — the "agent panel is dead space on mobile" bug.) */
   .session-shell, .session-shell.rail-pinned {
-    display: block;
+    display: flex; flex-direction: column;
     overflow: auto;
+  }
+  .session-shell > header { order: 0; }
+  .session-shell > .session-banner { order: 1; }
+  .session-shell > .session-main { order: 2; }
+  .session-shell > .agent-dock-rail { order: 3; }
+  .session-shell > .session-usage-panel { order: 4; }
+  /* The dock rail becomes a bottom agent bar: glyphs in a row, gear at the far end, pinned while the
+     page scrolls. Same buttons, same drawer — just a phone-shaped surface. */
+  .session-shell > .agent-dock-rail {
+    position: sticky; bottom: 0; z-index: 30;
+    margin-top: auto; /* short content: pin the bar to the viewport bottom, not adrift mid-page */
+    flex-direction: row; align-items: center; width: 100%; min-width: 0;
+    gap: 4px; padding: 5px 10px calc(5px + env(safe-area-inset-bottom));
+    background: rgba(10, 14, 20, 0.96); border-top: 1px solid var(--line);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  }
+  .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 4px; }
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 44px; height: 44px; }
+  /* The drawer opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
+     on a 390px phone — unusable). Sits above the scrim; the ✕ / scrim / esc close it. */
+  .session-shell.dock-open .session-usage-panel,
+  .session-shell.rail-pinned.dock-open .session-usage-panel {
+    position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: auto; max-width: none;
+    height: min(80dvh, 680px); border-radius: 14px 14px 0 0; border-bottom: 0;
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); z-index: 46;
+    box-shadow: 0 -18px 48px rgba(1, 4, 9, 0.6);
+    overflow: auto; /* the closed-panel rule declares overflow:visible — the sheet must scroll itself */
   }
   .session-main, .session-shell.rail-pinned .session-main {
     height: auto; min-height: 0; margin-bottom: 8px;
@@ -1379,7 +1440,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   }
   .message-box { max-height: none; overflow: visible; }
   .usage-resizer { display: none; }
-  .session-usage-panel, .session-shell.rail-pinned .session-usage-panel {
+  /* CLOSED (in-flow) panel only. The :not(.dock-open) guard matters: the rail-pinned variant ties with
+     the bottom-sheet rule's specificity and sits later in the file, so without it height:auto beat the
+     sheet's bounded height and the OPEN drawer grew to its content (a 3500px fixed box off the top). */
+  .session-shell:not(.dock-open) .session-usage-panel, .session-shell.rail-pinned:not(.dock-open) .session-usage-panel {
     min-width: 0; height: auto; overflow: visible;
   }
   /* Narrow screens stack the session (display:block above), so the full-height sidebar would bury the
@@ -1397,7 +1461,16 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    keeps its existing stacked-below position — untouched. */
 @media (max-width: 600px) {
   .session-main, .session-shell.rail-pinned .session-main { grid-template-rows: minmax(0, 60dvh) auto auto; }
-  .session-banner { font-size: 11.5px; padding: 7px 10px; line-height: 1.35; gap: 6px; }
+  /* Banner reads as one flowing sentence on a phone. As a flex row, the nowrap "✓ first session
+     running" chip vertically centered against the two-line message and the texts overlapped. */
+  .session-banner { display: block; font-size: 11.5px; padding: 7px 34px 7px 10px; line-height: 1.45; position: relative; }
+  .session-banner-ok { display: inline; margin-right: 6px; white-space: normal; }
+  .session-banner-msg { display: inline; }
+  .session-banner-x { position: absolute; right: 6px; top: 4px; padding: 4px 8px; }
+  /* Composer: keep the box inside the viewport (it clipped the send button at the right edge) and
+     stop the settings selects from shrinking to "m…" — they wrap to a second row instead. */
+  .message-box { margin: 8px 8px 6px; max-width: calc(100% - 16px); }
+  .composer-settings select { min-width: 8ch; }
   /* Compact the session header on phones: truncate the title (no wrap/push) and drop the model · effort ·
      autonomy chip (it lives inside #s-title and is redundant with the composer's settings row), so the
      header stays tight. The short status word + story/terminal toggle + Stop/Kill stay in place. */
@@ -1410,7 +1483,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   header { gap: 7px; padding-left: 10px; padding-right: 10px; }
   .brand { flex: 1 0 100%; }
   header .spacer { display: none; }
-  .btn { padding: 5px 9px; min-height: 30px; font-size: 12px; }
+  .btn { padding: 5px 10px; min-height: 38px; font-size: 12px; } /* 30px was under every touch-target guideline */
   .clock { display: none; }
   main { padding-left: 10px; padding-right: 10px; }
   .qcard { padding: 10px; }
@@ -1536,7 +1609,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .timeline-attachment { grid-template-columns: 1fr; }
   .timeline-attachment img { width: 100%; height: auto; max-width: 100%; max-height: 220px; }
   .jump-latest { right: 10px; bottom: 10px; min-height: 30px; padding: 4px 10px; }
-  .message-box { width: 100%; max-width: 100%; box-sizing: border-box; gap: 5px; padding: 6px; border-radius: 8px; overflow: hidden; }
+  /* No width:100% here — the box is a grid item with side margins; forcing 100% pushed it 16px past
+     the viewport and clipped the send button at the right edge on phones. Stretch deducts margins. */
+  .message-box { box-sizing: border-box; gap: 5px; padding: 6px; border-radius: 8px; overflow: hidden; }
   .message-box textarea { min-height: 34px; padding: 2px 3px; }
   .attachment-list { display: grid; grid-template-columns: 1fr; }
   .attachment-list .asset-card { width: min(var(--asset-card-size), 100%); }

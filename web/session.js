@@ -105,6 +105,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
 
       <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize agent drawer"></div>
       <aside class="session-usage-panel" id="session-usage-panel">
+        <button class="dock-drawer-x" id="dock-drawer-x" type="button" title="Close panel" aria-label="Close panel">✕</button>
         <div id="side-panels">
           <section class="side-tab-panel" id="s-map" aria-live="polite" hidden></section>
           <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>

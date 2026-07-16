@@ -6,7 +6,7 @@
 import { api, escapeHtml as esc, fmtAgo } from '../common.js';
 
 const RECORDS_CSS = `
-    .rc-wrap { max-width: 1080px; margin: 0 auto; padding: 32px; }
+    .rc-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; }
     .rc-wrap h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -.01em; color: #e9eef5; margin: 0 0 16px; }
     .rc-filter { background: #10151d; border: 1px solid #1d2632; border-radius: 13px; padding: 13px 15px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
     .rc-filter-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }

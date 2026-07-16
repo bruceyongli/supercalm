@@ -103,6 +103,15 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     if (scrimEl) scrimEl.hidden = false; // CSS reveals the scrim only ≤1194px (overlay); desktop pushes
     await activate(id);
     markActiveTab();
+    // A drawer always opens at its top — a previous scroll position left the phone bottom-sheet
+    // starting mid-content with the panel header clipped off-screen. Re-assert on the next frame:
+    // the fixed-position swap + late content growth can move the scroll offset after this handler.
+    try {
+      const sup = $('#session-usage-panel');
+      const top = () => { if (sup) sup.scrollTop = 0; };
+      top();
+      requestAnimationFrame(() => requestAnimationFrame(top));
+    } catch {}
   }
   function close() {
     if (!open || !dock) return;
@@ -170,7 +179,11 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
         m.papi = makePapi(id, m);
         await m.inst.mount?.(el, m.papi);
       } catch (e) {
-        el.innerHTML = `<section class="su-card"><span class="muted">Failed to load ${escapeHtml(id)} panel: ${escapeHtml(e.message || String(e))}</span></section>`;
+        // Friendly failure card (no raw import URLs / stack text to the operator) + a real retry:
+        // drop the cached entry so the next activation re-imports instead of showing the corpse forever.
+        console.error(`agent panel ${id} failed to load:`, e);
+        el.innerHTML = `<section class="su-card panel-load-error"><span class="muted">The ${escapeHtml(a.ui?.tab || a.name || id)} panel didn't load.</span> <button class="btn sm" type="button">Retry</button></section>`;
+        el.querySelector('button').onclick = () => { modules.delete(id); el.remove(); activate(id); };
       }
     }
     // Only reveal if this tab is STILL active — a fast tab switch during the await above must not
@@ -328,9 +341,11 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   }
 
   if (dock) {
-    // esc closes the topmost drawer; a scrim tap (compact overlay) closes it. Both scoped to dock mode.
+    // esc closes the topmost drawer; a scrim tap (compact overlay) or the drawer's own ✕ (compact
+    // widths — CSS-hidden on desktop) closes it. All scoped to dock mode.
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }, { signal: dockAc.signal });
     scrimEl?.addEventListener('click', () => close(), { signal: dockAc.signal });
+    $('#dock-drawer-x')?.addEventListener('click', () => close(), { signal: dockAc.signal });
   }
 
   load();
