@@ -101,16 +101,20 @@ function renderSide() {
   // The rail lists only LIVE sessions (working/waiting) — a lean quick-nav. Stopped/parked sessions are
   // browsed on the dashboard page body (desktop.js #dk-rows), not stuffed into the nav rail.
   const live = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting');
+  // Rail rows (operator, 2026-07-16): the dot IS the status — no Working/Waiting words; the freed
+  // width goes to the title (flex) and a right-aligned last-activity age (the triage signal the rail
+  // lacked: waiting 30s and waiting 2h are different urgencies).
   $('#dk-sessions').innerHTML = live.map((s) => `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess>
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
-      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 54))}</span>
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
+      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 64))}</span>
     </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
-  // The auth chip reflects the REAL auth mode (proxy/aios/cli/none) — it was a hardcoded green "proxy"
-  // dot, which lied on installs with no proxy at all (part of the fresh-install confusion report).
+  // Footer = the important stuff only (operator): the running build (version, was the hostname) + the
+  // REAL auth mode (fetched below; the old chip was a hardcoded green "proxy" dot). The wall clock is
+  // gone — the OS shows the time.
   const am = authMode; // fetched once per page (fetchAuthMode below); null until known
   const chip = am == null ? '' : am.badge;
-  $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${chip}</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
+  $('#dk-foot').innerHTML = `<span title="Supercalm build">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${chip}</span>`;
 }
 
 // Auth-mode footer chip: one fetch per page load (a footer status, not a live feed). proxy (external
@@ -118,16 +122,20 @@ function renderSide() {
 // legitimate, but Supercalm can't see whether they're actually signed in) → a neutral dot; the
 // dashboard hero carries the actionable "finish setup" message for true fresh installs.
 let authMode = null;
+let appVersion = null; // footer build stamp; renderSide falls back to the hostname until known
 (async () => {
   try {
-    const r = await api('api/auth/status');
+    const [r, v] = await Promise.all([api('api/auth/status').catch(() => ({})), api('api/version').catch(() => ({}))]);
+    appVersion = v.version || null;
     const mode = r.mode || 'cli';
     authMode = mode === 'cli'
       ? { badge: '<i class="dk-dot"></i>cli auth' }
       : { badge: `<i class="dk-dot ok"></i>${esc(mode)}` };
   } catch { authMode = { badge: '' }; }
-  const foot = $('#dk-foot .dk-foot-proxy');
-  if (foot && authMode) foot.innerHTML = authMode.badge;
+  const foot = $('#dk-foot');
+  if (foot && (authMode || appVersion)) {
+    foot.innerHTML = `<span title="Supercalm build">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${authMode?.badge || ''}</span>`;
+  }
 })();
 
 // Hover prefetch: warm the story cache (sessionStorage; key shared with story-view.js) for a session the
@@ -340,7 +348,6 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
   }
   load();
-  setInterval(() => { const c = $('#dk-clock'); if (c) c.textContent = new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }, 30_000);
   // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a
   // permanent in-flight request that prevents network-idle (verify_shell_v3 navigates with waitUntil
   // networkidle). 2.5s clears fast pages; but slower pages (e.g. settings' npm-registry version check)

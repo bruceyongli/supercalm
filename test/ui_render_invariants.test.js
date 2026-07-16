@@ -138,4 +138,19 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(/api\('api\/auth\/status'\)/.test(shell), 'the footer auth chip reflects the real auth mode');
 }
 
+// Sidebar rail economy (operator, 2026-07-16): the dot IS the status — no Working/Waiting words in the
+// rail rows (the page-body list keeps them; renderInbox is asserted above). Footer shows the BUILD
+// (version) + auth mode, not hostname/clock.
+{
+  const shell = read('shell.js');
+  const rs = shell.slice(shell.indexOf('function renderSide()'), shell.indexOf('function renderSide()') + 2600);
+  assert.ok(!/dk-status/.test(rs), 'rail rows carry no dk-status word — the dot is the status');
+  assert.ok(/dk-sess-age/.test(rs) && /fmtAgo\(s\.last_activity\)/.test(rs), 'rail rows show the last-activity age instead');
+  assert.ok(/appVersion/.test(rs), 'the footer leads with the running version');
+  assert.ok(!/dk-clock/.test(shell), 'the footer wall clock is gone (the OS shows the time)');
+  const dcss = read('desktop.css');
+  assert.ok(/\.dk-sess-l1 b[^}]*flex: 1 1 auto/.test(dcss), 'the rail title flexes into the freed width');
+  assert.ok(/\.dk-sess-age/.test(dcss), 'the rail age style exists');
+}
+
 console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard + fresh-install add-project + honest setup/upgrade orientation');

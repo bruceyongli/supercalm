@@ -97,7 +97,10 @@ body.dk-collapsed .session-shell .dk-side { display: none; }
 .dk-sess.active { background: #121a26; box-shadow: inset 2px 0 0 #58a6ff; }
 .dk-sess.active:hover { background: #131d2b; }
 .dk-sess-l1 { display: flex; align-items: center; gap: 6px; }
-.dk-sess-l1 b { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 0 1 auto; }
+/* Title FLEXES into the width freed by dropping the Working/Waiting words (the dot carries status);
+   the agent chip + age sit right. */
+.dk-sess-l1 b { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 800; color: #e9eef5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 auto; }
+.dk-sess-age { margin-left: auto; flex-shrink: 0; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #5c6675; }
 .dk-agent { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; border: 1px solid currentColor; border-radius: 999px; padding: 0 6px; opacity: 0.85; flex-shrink: 0; }
 .dk-status { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 700; color: #8a95a5; }
 .dk-status { flex-shrink: 0; }
