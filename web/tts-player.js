@@ -56,14 +56,30 @@ export function unlockAudio() {
 
 // Per-playback stop handle (replaces voicemode's global stopFlag). One playback at a time is the
 // CALLER's contract — stop() pauses the shared element, which resolves the in-flight playUrl.
+// Every live handle is also tracked so a view teardown can guarantee nothing keeps narrating: the
+// audio is a MODULE SINGLETON (deliberately, so re-renders don't cut it), so the ONLY thing that
+// stopped it was the story view's own switch handler. Navigating anywhere else (dashboard, a system
+// page, closing the session) orphaned a long report — you'd hear session A while viewing B. The
+// registry + stopAllPlayback() make "leaving the view stops the voice" an invariant any view can enforce.
+const activeHandles = new Set();
 export function newPlayback() {
   const h = { stopped: false, stop() {} };
   h.stop = () => {
     h.stopped = true;
+    activeHandles.delete(h);
     try { if (player) player.pause(); } catch {}
     try { speechSynthesis.cancel(); } catch {}
   };
+  activeHandles.add(h);
   return h;
+}
+
+// Stop EVERY live playback (call on view teardown / navigation). Idempotent.
+export function stopAllPlayback() {
+  for (const h of [...activeHandles]) { try { h.stop(); } catch {} }
+  activeHandles.clear();
+  try { if (player) player.pause(); } catch {}
+  try { speechSynthesis.cancel(); } catch {}
 }
 
 export function preferredTtsFormat() {

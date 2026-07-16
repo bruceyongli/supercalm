@@ -42,7 +42,7 @@ route('POST', '/api/session/:id/voice-report', async (req, res, { id: sid }) => 
   if (!getSession(sid)) return json(res, 404, { error: 'unknown session' }); // keep LLM spend scoped to real sessions
   const text = String(b.text || '').slice(0, MAX_INPUT);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  const level = b.level === 'brief' ? 'brief' : 'full'; // 'brief' reserved; same treatment for now
+  const level = b.level === 'brief' ? 'brief' : 'full'; // honored: buildScript(level) → targetFor gives brief a ~40-80 word / 30s digest; cache key includes level
   const key = cacheKey(text, level);
   const respond = (script, model, source, polished, cached) => {
     const parts = splitParts(script);

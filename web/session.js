@@ -1,6 +1,7 @@
 import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 import { mountShell } from './shell.js';
+import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
 // app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
@@ -2992,6 +2993,7 @@ function pushHistory(text) {
 function switchSession(newId) {
   if (!newId || newId === id) return true;
   try {
+    stopStoryVoice(); // session A's report must not keep narrating over session B (esp. a long, still-playing report)
     id = newId;
     latestSessionInfo = null; latestUsage = null; latestMap = null; // per-session caches
     storyInited = false; // force the story view to re-init against the new id (2a cache paints it instantly)
@@ -3376,6 +3378,7 @@ $('#b-kill').onclick = async () => {
     try { terminalStream?.close(); } catch {}
     try { events?.close(); } catch {}
     try { agentPanel?.destroy?.(); } catch {}
+    try { stopStoryVoice(); } catch {} // leaving the session view stops any playing report narration (module-singleton audio)
     try { term?.dispose(); } catch {}
     try { palette?.remove(); } catch {} // the "/" command palette is appended to document.body, not the host
     _switchSession = null;

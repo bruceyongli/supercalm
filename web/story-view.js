@@ -206,7 +206,9 @@ function listenRowInner(key, srcLen) {
     return `<button class="story-listen${on ? ' ' + st.phase : ''}" data-story-listen data-evkey="${esc(key)}" data-level="${level}" title="${title}">${on ? listenLabel(st, idleLabel) : idleLabel}</button>`;
   };
   let html = btn('full', '▶ listen', 'Listen to this report');
-  if (srcLen > 2000) html += btn('brief', '▶ quick', 'Quick ~30-second version');
+  // Offer the ~30s digest once the full read-out is long enough for it to help (buildScript gives full
+  // ≥150 words above ~800 chars = a 1-2 min listen). The old 2000-char gate hid it on most reports.
+  if (srcLen > 800) html += btn('brief', '▶ quick', 'Quick ~30-second version');
   if (st && st.phase === 'playing') html += `<button class="story-listen rate" data-story-listen-rate title="Speech speed">${currentRate()}×</button>`;
   return html;
 }
