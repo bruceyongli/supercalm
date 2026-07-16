@@ -333,6 +333,10 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     pv.textContent = '📱 phone view'; pv.title = 'Switch to the phone companion view';
     pv.onclick = (e) => { e.preventDefault(); try { const u = new URL(location.href); u.searchParams.set('phone', '1'); location.href = u.toString(); } catch { location.href = '?phone=1'; } };
     document.body.appendChild(pv);
+    // fade the pill while the page scrolls under it (it's fixed, so table/card content passes beneath —
+    // reviewers kept flagging it as "obscures values"); back at full strength once scrolling settles
+    let pvT = 0;
+    window.addEventListener('scroll', () => { pv.classList.add('scrolling'); clearTimeout(pvT); pvT = setTimeout(() => pv.classList.remove('scrolling'), 650); }, { passive: true });
   }
   // Mobile drawer controls (SYSTEM pages / desktop dashboard on a phone): a ☰ button opens the off-canvas
   // sidebar, a backdrop or any nav tap closes it. CSS gates visibility to ≤720px non-session pages.

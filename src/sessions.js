@@ -672,17 +672,26 @@ function stableSnap(s) {
 }
 
 let quotaCache = { ts: 0, data: null };
+let quotaRefreshing = null;
+function refreshQuota() {
+  // single-flight: N concurrent /usage calls share one probe
+  if (quotaRefreshing) return quotaRefreshing;
+  quotaRefreshing = subscriptionStatus()
+    .then((data) => { quotaCache = { ts: now(), data }; })
+    .catch((e) => {
+      quotaCache = { ts: now(), data: { generatedAt: now(), subscriptions: [], errors: [{ id: 'subscription-status', error: String(e.message || e) }] } };
+    })
+    .finally(() => { quotaRefreshing = null; });
+  return quotaRefreshing;
+}
 async function quotaSnapshot() {
   const t = now();
   if (quotaCache.data && t - quotaCache.ts < QUOTA_CACHE_MS) return quotaCache.data;
-  try {
-    quotaCache = { ts: t, data: await subscriptionStatus() };
-  } catch (e) {
-    quotaCache = {
-      ts: t,
-      data: { generatedAt: t, subscriptions: [], errors: [{ id: 'subscription-status', error: String(e.message || e) }] },
-    };
-  }
+  // Stale-while-revalidate: the subscription probe takes seconds — it made GET /usage (fetched on every
+  // session open) stall ~4s whenever the cache expired. Serve the stale snapshot instantly and refresh
+  // in the background; only a cold boot (no snapshot at all) waits for the probe.
+  if (quotaCache.data) { refreshQuota(); return quotaCache.data; }
+  await refreshQuota();
   return quotaCache.data;
 }
 

@@ -2488,7 +2488,8 @@ function updateSendState() {
 
 function autoExpandReply() {
   reply.style.height = 'auto';
-  reply.style.height = Math.max(42, reply.scrollHeight) + 'px';
+  // phones: one-line floor — the fixed 42px floor plus row chrome read as "half the screen is composer"
+  reply.style.height = Math.max(compactComposerQuery.matches ? 28 : 42, reply.scrollHeight) + 'px';
   updateSendState();
   clearTimeout(rzTimer);
   rzTimer = setTimeout(syncSize, 80);

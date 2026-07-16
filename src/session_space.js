@@ -370,9 +370,9 @@ function buildClaudeSpace(text, session) {
     version: SPACE_VERSION,
     tool: 'claude',
     built_at: now(),
-    headline: session.title ? String(session.title).split('\n')[0].slice(0, 90) : 'Session',
+    headline: session.title ? String(session.title).split('\n')[0].slice(0, 220) : 'Session',
     state,
-    goal: systems[0]?.label || '',
+    goal: systems[0]?.detail || systems[0]?.label || '',
     active_id: active?.id || null,
     totals: { tokens: totals.tokens, usd: round(totals.usd), calls: totals.calls, requests: totals.requests, problems: totals.problems },
     systems: systems.map(cleanSystem),
@@ -691,8 +691,8 @@ function buildCodexSpace(text, session) {
   const state = session.status === 'exited' ? 'done' : session.status === 'waiting' ? 'waiting' : 'working';
   return {
     version: SPACE_VERSION, tool: 'codex', built_at: now(),
-    headline: session.title ? String(session.title).split('\n')[0].slice(0, 90) : 'Session',
-    state, goal: systems[0]?.label || '', active_id: active?.id || null,
+    headline: session.title ? String(session.title).split('\n')[0].slice(0, 220) : 'Session',
+    state, goal: systems[0]?.detail || systems[0]?.label || '', active_id: active?.id || null,
     totals: { tokens: totals.tokens, usd: round(totals.usd), calls: totals.calls, requests: totals.requests, problems: totals.problems },
     systems: systems.map(cleanSystem),
   };

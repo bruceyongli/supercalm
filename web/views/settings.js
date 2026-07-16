@@ -28,6 +28,8 @@ const SETTINGS_CSS = `
       #st-prov .ob-row span.ob-ver { flex: 1 1 100%; order: 3; }
       #st-prov .ob-row label.ob-ver { flex: 0 0 auto; }
       #st-prov .ob-row input[type="checkbox"] { width: 19px; height: 19px; }
+      /* add-provider form: one field per row — side-by-side 150px fields clipped their placeholders */
+      .st-form-row .st-inp, .st-form-row .st-sel { min-width: 100%; }
       .st-nav a.active { box-shadow: none; border-color: #58a6ff; }
     }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }

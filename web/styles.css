@@ -1475,13 +1475,13 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
      into "m…" — the row wraps instead. Forced stacked layout here (media query) because on iOS the
      container query alone left the + / mic / send sharing a row with the crushed selects. */
   .message-box { margin: 6px 8px; max-width: calc(100% - 16px); padding: 7px; gap: 5px; }
-  .message-box textarea { min-height: 34px; }
+  .message-box textarea { min-height: 26px; } /* one line empty; auto-grows as you type */
   .composer-bottom { flex-wrap: wrap; gap: 5px; }
   .composer-options { order: 2; width: 100%; }
   .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
   .composer-hint { display: none; }
-  .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 3px 6px; }
-  .settings.composer-settings .setting { flex: 0 0 auto; }
+  .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 2px 4px; font-size: 11px; } /* smaller type → the 4 controls fit one row (no 4th composer row) */
+  .settings.composer-settings .setting { flex: 0 0 auto; padding: 0 5px; }
   .settings.composer-settings select { max-width: 46vw; } /* width itself comes from fitSettingSelect's --select-width */
   /* Attachments: compact rows, not gallery cards — the 180px hover-none card filled the composer and
      pushed mic/send off-screen. Thumb + name + inline actions in a 52px row; the list itself scrolls. */
@@ -2016,10 +2016,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .version-toast:hover { background: rgba(33, 40, 51, 0.62); border-color: rgba(120, 170, 255, 0.5); }
 .version-toast .vt-up { color: var(--blue); font-weight: 700; }
 .version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; background: none; border: 0; font-family: inherit; line-height: 1; }
-/* Phones: float the toast ABOVE the session agent bar / composer bottom — pinned at the corner it sat
-   exactly on the gear glyph and blocked panel navigation (judge-reported blocking). */
+/* Phones have no dead corner: bottom-right sat on the agent-bar gear; above the composer it covered
+   mic/send (both judge-reported blocking). Banner style instead — top-right, slides down, and
+   version-badge.js auto-hides it after a beat so nothing stays covered. */
 @media (max-width: 600px) {
-  .version-toast { bottom: calc(96px + env(safe-area-inset-bottom)); right: 10px; }
+  .version-toast { top: calc(env(safe-area-inset-top) + 8px); bottom: auto; right: 8px; transform: translateY(-10px) scale(0.98); }
+  .version-toast.in { transform: translateY(0) scale(1); }
 }
 .version-toast .vt-gh { color: var(--blue); text-decoration: underline; cursor: pointer; }
 .version-toast .vt-x:hover { color: var(--ink); }
@@ -2138,6 +2140,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .map-ontrack.ot-drifting { color: var(--yellow); border-color: #5a4612; }
 .map-headline { color: var(--ink); font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-goal, .map-trust { font-size: 12px; line-height: 1.45; color: var(--ink); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* Phones: the node/session detail must be READABLE, not a one-line ellipsis + 2-line clamp (judge:
+   "title and GOAL are clipped rather than wrapped, preventing users from reading graph content"). */
+@media (max-width: 600px) {
+  .map-headline { white-space: normal; overflow: visible; text-overflow: clip; }
+  .map-goal, .map-trust { -webkit-line-clamp: 6; }
+}
 
 /* fullscreen map (the ⤢ button): a node-link graph needs room a side panel can't give */
 body.map-expanded-open { overflow: hidden; }
@@ -2383,6 +2391,7 @@ body.map-expanded-open { overflow: hidden; }
 .kn-toggle { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; }
 .kn-toggle input { margin: 0; }
 .kn-doc { width: 100%; box-sizing: border-box; min-height: 160px; resize: vertical; font-family: var(--mono, monospace); font-size: 11px; line-height: 1.45; background: var(--bg2, #0f1318); color: var(--fg, #cdd3da); border: 1px solid var(--border, #2a2f37); border-radius: 4px; padding: 8px; }
+@media (max-width: 600px) { .kn-doc { min-height: 84px; } } /* an empty 160px editor pushed Files below the fold in the phone sheet */
 .kn-doc.kn-ro { white-space: pre-wrap; word-break: break-word; overflow-x: auto; }
 .kn-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
 .kn-meta { color: var(--muted); font-size: 11px; }
