@@ -86,6 +86,22 @@ assert.equal(r6.stage, 'APPROVED', 'passing AI panel → APPROVED');
 free(i6);
 process.env.AIOS_AI_REVIEWERS = '';
 
+// 7) store.js / tests / package.json are NO LONGER protected (narrowed list) — an additive schema change
+// flows through the gate → APPROVED (the pipeline can now auto-ship real multi-session work).
+const c7 = candidate('c7', { 'src/store.js': 'db.exec("CREATE TABLE IF NOT EXISTS t (id TEXT)");\n', 'test/new.test.js': 'console.log("ok");\n' });
+const i7 = I.enqueue({ projectId: proj.id, sourceBranch: 'c7', candidateSha: c7 });
+const r7 = await driveGate(i7.id, { testCmd: 'true' });
+assert.equal(r7.stage, 'APPROVED', 'additive store.js + test change is no longer protected → APPROVED (got ' + r7.stage + '/' + r7.failure_code + ')');
+free(i7);
+
+// 8) a destructive schema op → HELD destructive_change (never auto-deploy; protects live user data)
+const c8 = candidate('c8', { 'src/store.js': 'db.exec("DROP TABLE sessions");\n' });
+const i8 = I.enqueue({ projectId: proj.id, sourceBranch: 'c8', candidateSha: c8 });
+const r8 = await driveGate(i8.id, { testCmd: 'true' });
+assert.equal(r8.stage, 'HELD', 'destructive schema op → HELD (got ' + r8.stage + '/' + r8.failure_code + ')');
+assert.equal(r8.failure_code, 'destructive_change', 'failure_code destructive_change');
+free(i8);
+
 // the gate never left an integration occupying the pipeline
 assert.equal(I.occupiedBy(), null, 'pipeline free after all gate runs');
 

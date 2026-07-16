@@ -21,20 +21,29 @@ import { reviewCandidate } from './deploy_reviewers.js';
 
 const exec = promisify(execFile);
 
-// PROTECTED PATHS — a candidate that touches any of these is INELIGIBLE for autonomous deploy: they can
-// subvert the deploy path, the DB schema, or the CHECK HARNESS ITSELF (the anti-gaming rule: the gate can't
-// be relaxed by the very change under review). Such a candidate is REJECTED → needs stronger/human review.
+// PROTECTED PATHS — narrowed (2026-07) to the ONE invariant that must hold: the pipeline must not be able to
+// auto-modify its OWN machinery (the anti-gaming rule — a candidate can't relax the gate/deploy/rollback that
+// judges + ships it). A change touching these is REJECTED → the operator ships it by hand. EARLY-STAGE
+// DELIBERATELY SMALL: everything else (store.js/schema, server.js, package.json, test/**) flows through the
+// normal gate — the full test suite is the sanity check — so real multi-session work can actually auto-ship.
 const PROTECTED = [
-  /^bin\/(deploy|release|version|integrate|update|install-service)/,
-  /^scripts\/(scan-secrets|aios-git-guardrail)/,
-  /^src\/(integrations|integrator|config|store)\.js$/, // the machine, config, + DB open/schema
-  /^src\/worktrees\.js$/,
-  /^src\/server\.js$/,                                  // the router + boot + health endpoints
-  /\.plist$/, /supercalm\.service$/,                   // launchd / systemd units
-  /^package(-lock)?\.json$/,                            // deps + the test-harness definition
-  /^\.github\//,                                        // CI
-  /^test\//,                                            // the tests that gate everything
+  /^bin\/(deploy|release|version|integrate|update|install-service)/,        // the deploy/release primitives
+  /^scripts\/(scan-secrets|aios-git-guardrail)/,                            // the secret scanner + git guardrail
+  /^src\/(integrations|integrator|publisher|deploy_breaker|deploy_orchestrator|deploy_api|deploy_reviewers|worktrees|config)\.js$/, // the pipeline machinery + boot config
+  /\.plist$/, /supercalm\.service$/,                                        // launchd / systemd units
+  /^\.github\//,                                                            // CI
 ];
+
+// Destructive DB ops in the candidate — a DROP/TRUNCATE would irreversibly lose LIVE user data. Tests run on
+// fresh scratch DBs so they never catch it, and forward-revert rollback can't bring dropped rows back. Scan
+// ADDED diff lines; any hit → HELD for a human (never auto-deployed). The one sanity check that protects the
+// "early users' work" the operator cares about.
+function destructiveOps(diffText) {
+  return String(diffText).split('\n')
+    .filter((l) => l.startsWith('+') && !l.startsWith('+++') && /\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE(\s+TABLE)?)\b/i.test(l))
+    .map((l) => l.replace(/^\+\s*/, '').trim().slice(0, 140))
+    .slice(0, 8);
+}
 
 const short = (s, n = 400) => String(s || '').slice(-n);
 const digest = (parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 32);
@@ -113,11 +122,16 @@ export async function driveGate(integrationId, { fenceToken, testCmd, review } =
   if (protectedHits.length) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: dg, failure_code: 'protected_path' }, data: { protectedHits } });
   if (!checks.pass) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: dg, failure_code: 'checks_failed' }, data: { checks: checks.checks } });
 
+  // Sanity check — never auto-deploy a change that would destroy live user data (a DROP/TRUNCATE the tests
+  // can't catch + rollback can't undo). HELD for a human. (Also the source diff for the optional AI panel.)
+  const diffText = (await gitOut(repoPath, ['diff', `${base}..${prep.sha}`], { maxBuffer: 8 * 1024 * 1024 })).text;
+  const destructive = destructiveOps(diffText);
+  if (destructive.length) return I.transition(integrationId, 'HELD', { fenceToken: ft, patch: { checks_digest: dg, failure_code: 'destructive_change' }, data: { destructive } });
+
   // AI reviewer panel (step 7) — only when the aiReviewers flag is on. Independent adversarial reviewers read
   // the candidate diff (as untrusted data); all must PASS with no high/critical finding, else REJECTED. The
   // deterministic gate above already makes autonomous deploy safe; this is the "smart" layer on proven rails.
   if (flagOn('aiReviewers')) {
-    const diffText = (await gitOut(repoPath, ['diff', `${base}..${prep.sha}`], { maxBuffer: 8 * 1024 * 1024 })).text;
     const rv = await (review || reviewCandidate)({ diffText, files });
     const rdg = digest({ sha: prep.sha, base, files, checks: checks.checks, reviews: rv.reviews });
     if (!rv.pass) return I.transition(integrationId, 'REJECTED', { fenceToken: ft, patch: { checks_digest: rdg, failure_code: 'ai_review_failed' }, data: { blocking: rv.blocking, reviews: rv.reviews } });
