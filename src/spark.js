@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import { SPARK, FFMPEG } from './config.js';
 import { route, json, readBody } from './server.js';
 import { getSpeech, getVoiceOverride } from './model_providers.js';
+import { resolveSttCandidates, normalizeSttSource, normalizeAgentHint } from './stt_source.js';
+import { transcribeCodex, codexSttAvailable } from './stt_codex.js';
 
 // Effective Spark connection = UI override (data/model_providers.json) merged over env (SPARK_IP/HOST),
 // read at REQUEST time so edits hot-reload without a restart. sparkEnabled() also honors the "use" mute.
@@ -133,13 +135,33 @@ async function transcribeWithProvider(sp, { audio, contentType, language }) {
   return { status: r.status, body: Buffer.from(await r.arrayBuffer()) };
 }
 
-// Browser records audio and POSTs the raw bytes here; we forward to Spark's
-// recommended multipart transcription endpoint and return { text }.
+// Effective STT preference (voice override, hot-reloaded) + the subscription kill-switch.
+function sttSourcePref() { return normalizeSttSource(getVoiceOverride()?.sttSource); }
+const SUBSCRIPTION_STT_ON = !/^(0|false|off|no)$/i.test(process.env.AIOS_STT_SUBSCRIPTION || '1');
+
+// Which sources could serve a request right now (login + built + kill-switch). Used by the resolver
+// and by GET /api/stt/sources. codexSttAvailable() reads ~/.codex/auth.json (cheap, never throws).
+async function sttAvailability() {
+  const speech = getSpeech({ redact: false });
+  return {
+    codex: SUBSCRIPTION_STT_ON && (await codexSttAvailable()),
+    claude: false, // pass 1: Claude WS path not built yet — a claude session stays on spark (no regression)
+    spark: sparkEnabled(),
+    provider: !!(speech?.enabled && speech.base_url),
+    _speech: speech,
+  };
+}
+
+// Browser records audio and POSTs the raw bytes here. We walk an ordered candidate list (subscription
+// STT from the user's own CLI login → Spark → cloud provider; see docs/specs/subscription-stt-plan.md),
+// each falling to the next only on an eligible failure, and return { text, backend, ... }.
 route('POST', '/api/transcribe', async (req, res) => {
   const ct = req.headers['content-type'] || 'audio/webm';
   const url = new URL(req.url, 'http://aios.local');
   const language = url.searchParams.get('language') || 'auto';
   const polish = boolQuery(req, 'polish', STT_POLISH_DEFAULT);
+  const agentHint = normalizeAgentHint(url.searchParams.get('agent'));
+  const forceProvider = url.searchParams.get('backend') === 'provider'; // ops/test flag — must win
   let audio;
   try {
     audio = await readBody(req, 40 * 1024 * 1024);
@@ -147,76 +169,99 @@ route('POST', '/api/transcribe', async (req, res) => {
     return json(res, 413, { error: 'audio too large' });
   }
   if (audio.length < 500) return json(res, 400, { error: 'no audio captured — the recording was empty' });
-  console.error('[aios] transcribe: ct=%s bytes=%d', ct, audio.length);
+  console.error('[aios] transcribe: ct=%s bytes=%d agent=%s', ct, audio.length, agentHint || '-');
 
-  const speech = getSpeech({ redact: false });
-  const providerConfigured = !!(speech?.enabled && speech.base_url);
-  // ?backend=provider forces the speech-provider path (Settings → Voice) even when Spark is
-  // configured — the Settings test button and ops checks prove the provider STT works end-to-end.
-  const forceProvider = url.searchParams.get('backend') === 'provider';
-  const sparkConfigured = sparkEnabled() && !forceProvider;
-  if (!sparkConfigured && !providerConfigured) {
-    return json(res, 502, { error: 'no speech-to-text configured — add a speech provider in Settings → Voice (or set SPARK_IP/SPARK_HOST)' });
+  const avail = await sttAvailability();
+  const speech = avail._speech;
+  // ?backend=provider still forces [provider] (subscription must NOT override the ops/test flag).
+  const candidates = forceProvider
+    ? (avail.provider ? ['provider'] : [])
+    : resolveSttCandidates({ pref: sttSourcePref(), hint: agentHint, avail });
+  if (!candidates.length) {
+    return json(res, 502, { error: 'no speech-to-text configured — sign in to Codex/Claude, add a speech provider in Settings → Voice, or set SPARK_IP/SPARK_HOST' });
   }
-  let r = null;
-  let usedTranscode = false;
-  let backend = sparkConfigured ? 'spark' : 'provider';
-  try {
-    if (sparkConfigured) {
-      try {
-        if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) {
-          r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
-        }
-        if (!r || r.status >= 400) {
-          if (r && r.status >= 400) console.error('[aios] transcribe direct spark failed:', r.status, r.body.toString('utf8').slice(0, 180));
-          const wav = await toWav(audio, extFor(ct));
-          usedTranscode = true;
-          r = await transcribeWithSpark({ audio: wav, contentType: 'audio/wav', language, polish });
-        }
-      } catch (e) {
-        // Network-level Spark failure (unreachable host, ffmpeg missing) — only HTTP >=400 used to
-        // fall through here, so a healthy configured provider was skipped and the caller got a 502.
-        if (!providerConfigured) throw e;
-        console.error('[aios] spark stt attempt failed, provider carries it:', e.message);
-        r = null;
-      }
-      if ((!r || r.status >= 400) && providerConfigured) { r = null; usedTranscode = false; backend = 'provider'; } // Spark down -> provider, with the ORIGINAL audio
-    }
-    if (!r && providerConfigured) {
-      r = await transcribeWithProvider(speech, { audio, contentType: ct, language });
-      if (r.status >= 400) {
-        // some local servers only take wav — one transcode retry (skipped cleanly if ffmpeg is absent)
-        try {
-          const wav = await toWav(audio, extFor(ct));
-          usedTranscode = true;
-          r = await transcribeWithProvider(speech, { audio: wav, contentType: 'audio/wav', language });
-        } catch {}
-      }
-    }
-    const txt = r.body.toString('utf8');
-    if (r.status >= 400) return json(res, 502, { error: `${backend} stt ${r.status}: ${txt.slice(0, 300)}` });
-    let payload = {};
+
+  // Cancel server work the moment the browser gives up (today it kept uploading + falling back).
+  const ctrl = new AbortController();
+  req.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
+  let wavP = null; // transcode once, lazily, shared across candidates that need WAV
+  const getWav = () => (wavP ||= toWav(audio, extFor(ct)));
+
+  const errors = [];
+  for (const name of candidates) {
+    if (ctrl.signal.aborted) break;
     try {
-      payload = JSON.parse(txt);
-    } catch {
-      payload = { text: txt };
+      if (name === 'codex') {
+        const { text } = await transcribeCodex(await getWav(), { signal: ctrl.signal });
+        return json(res, 200, { text, raw_text: text, polished_text: '', language, polish, transcoded: true, backend: 'codex' });
+      }
+      if (name === 'spark') {
+        const out = await runSpark({ audio, ct, language, polish, getWav });
+        if (out) return json(res, 200, out);
+        errors.push('spark: no result');
+      } else if (name === 'provider') {
+        const out = await runProvider({ speech, audio, ct, language, polish, getWav });
+        if (out) return json(res, 200, out);
+        errors.push('provider: no result');
+      }
+    } catch (e) {
+      // Typed subscription failures + spark/provider throws all fall through to the next candidate.
+      console.error(`[aios] stt ${name} failed, falling through:`, e.kind ? `${e.kind}: ${e.message}` : e.message);
+      errors.push(`${name}: ${e.kind || e.message}`);
     }
-    const text = polish
-      ? payload.polished_text || payload.text || payload.raw_text || ''
-      : payload.raw_text || payload.text || '';
-    json(res, 200, {
-      text: String(text).trim(),
-      raw_text: payload.raw_text || '',
-      polished_text: payload.polished_text || '',
-      language: payload.language || language,
-      timings: payload.timings || undefined,
-      polish,
-      transcoded: usedTranscode,
-      backend,
-    });
-  } catch (e) {
-    json(res, 502, { error: 'transcription failed: ' + e.message });
   }
+  json(res, 502, { error: 'transcription failed (all sources): ' + errors.join('; ').slice(0, 400) });
+});
+
+// Spark candidate: direct if it accepts the container, else transcode; returns the normalized response
+// object or null (caller falls through). Throws only on a hard error worth logging.
+async function runSpark({ audio, ct, language, polish, getWav }) {
+  let r = null;
+  if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+  let transcoded = false;
+  if (!r || r.status >= 400) {
+    if (r && r.status >= 400) console.error('[aios] spark direct failed:', r.status, r.body.toString('utf8').slice(0, 180));
+    r = await transcribeWithSpark({ audio: await getWav(), contentType: 'audio/wav', language, polish });
+    transcoded = true;
+  }
+  if (r.status >= 400) { console.error('[aios] spark transcode failed:', r.status); return null; }
+  return normalizeSttPayload(r.body.toString('utf8'), { backend: 'spark', language, polish, transcoded });
+}
+
+// Provider candidate: original audio first (as before), then one WAV retry (local servers that only
+// accept wav). Returns the normalized response object or null.
+async function runProvider({ speech, audio, ct, language, polish, getWav }) {
+  let r = await transcribeWithProvider(speech, { audio, contentType: ct, language });
+  let transcoded = false;
+  if (r.status >= 400) {
+    try { r = await transcribeWithProvider(speech, { audio: await getWav(), contentType: 'audio/wav', language }); transcoded = true; } catch {}
+  }
+  if (r.status >= 400) { console.error('[aios] provider stt failed:', r.status); return null; }
+  return normalizeSttPayload(r.body.toString('utf8'), { backend: 'provider', language, polish, transcoded });
+}
+
+function normalizeSttPayload(txt, { backend, language, polish, transcoded }) {
+  let payload = {};
+  try { payload = JSON.parse(txt); } catch { payload = { text: txt }; }
+  const text = polish
+    ? payload.polished_text || payload.text || payload.raw_text || ''
+    : payload.raw_text || payload.text || '';
+  return {
+    text: String(text).trim(),
+    raw_text: payload.raw_text || '',
+    polished_text: payload.polished_text || '',
+    language: payload.language || language,
+    timings: payload.timings || undefined,
+    polish,
+    transcoded,
+    backend,
+  };
+}
+
+// What STT sources are available right now (for Settings → Voice). Booleans only — no tokens/accounts.
+route('GET', '/api/stt/sources', async (req, res) => {
+  const a = await sttAvailability();
+  json(res, 200, { pref: sttSourcePref(), subscriptionEnabled: SUBSCRIPTION_STT_ON, sources: { codex: a.codex, claude: a.claude, spark: a.spark, provider: a.provider } });
 });
 
 // Diagnostics: confirm Supercalm -> Spark reachability.

@@ -74,7 +74,7 @@ export async function startVoiceMode() {
           if (stopFlag) break;
           live.stop();
           setState('thinking');
-          text = (await transcribe(blob)) || live.getText();
+          text = (await transcribe(blob, state.current?.tool)) || live.getText();
         } catch (e) {
           // Mic permission/device failures would otherwise loop forever: capture fails instantly,
           // an empty turn is posted, the server politely re-asks, repeat. Name the cause and stop.
@@ -548,12 +548,14 @@ function speakSingle(text) {
 }
 
 // ---- STT ----
-async function transcribe(blob) {
+// agentHint (the current queue item's agent) matches dictation to that session's STT source server-side.
+async function transcribe(blob, agentHint) {
   if (!blob || blob.size < 1200) return '';
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 30000); // never let STT wedge the loop
   try {
-    const r = await fetch('api/transcribe?language=auto&polish=false', { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
+    const q = agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '';
+    const r = await fetch('api/transcribe?language=auto&polish=false' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
     if (r.ok) rememberSpeechLanguage(j.language);
     return r.ok ? (j.text || '').trim() : '';

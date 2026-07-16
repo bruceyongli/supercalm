@@ -3234,7 +3234,7 @@ installFileTarget(messageBox);
 installFileTarget(document.querySelector('.session-main'));
 addEventListener('resize', autoExpandReply, { signal: _sig });
 compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
-wireMic(micBtn, reply, $('#mic-status'), { hold: true }); // press-hold-release on touch (spec); desktop stays tap-toggle
+wireMic(micBtn, reply, $('#mic-status'), { hold: true, hint: () => latestSessionInfo?.tool }); // hold on touch; ?agent= matches THIS session's agent for STT
 syncReplyPlaceholder();
 
 // Input routing. On desktop the terminal is interactive: clicking it focuses the terminal textarea and

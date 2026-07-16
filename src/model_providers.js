@@ -203,7 +203,7 @@ const VOICE_OVERRIDE_KEYS = ['ip', 'host', 'ttsEngine', 'ttsVoice', 'ttsInstruct
 export function getVoiceOverride() {
   const v = readAll().voice || null;
   if (!v) return null;
-  return { spark: v.spark || {}, sparkDisabled: !!v.sparkDisabled };
+  return { spark: v.spark || {}, sparkDisabled: !!v.sparkDisabled, sttSource: v.sttSource || 'auto' };
 }
 export function setVoiceOverride(patch = {}) {
   const data = readAll();
@@ -216,6 +216,10 @@ export function setVoiceOverride(patch = {}) {
   }
   const next = { ...cur, spark, updated_at: now() };
   if (patch.sparkDisabled !== undefined) next.sparkDisabled = !!patch.sparkDisabled;
+  if (patch.sttSource !== undefined) { // STT preference: auto | codex | claude | spark | provider
+    const s = String(patch.sttSource || '').trim().toLowerCase();
+    if (['auto', 'codex', 'claude', 'spark', 'provider'].includes(s)) next.sttSource = s;
+  }
   data.voice = next;
   writeAll(data);
   return getVoiceOverride();

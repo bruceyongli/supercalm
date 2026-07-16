@@ -192,11 +192,14 @@ function recorderOptions() {
   return {};
 }
 
-async function requestTranscription(blob) {
+// agentHint (codex|claude) lets the server MATCH THE SESSION'S AGENT — dictation in a codex session
+// routes to Codex STT, a claude session to Claude, else the default. Unknown/absent → server default.
+async function requestTranscription(blob, agentHint) {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 45000);
   try {
-    const r = await fetch('api/transcribe?language=auto&polish=false', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob, signal: ctrl.signal });
+    const q = agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '';
+    const r = await fetch('api/transcribe?language=auto&polish=false' + q, { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || r.status);
     rememberSpeechLanguage(j.language);
@@ -277,10 +280,13 @@ function setTextWithLivePreview(target, baseText, liveText) {
 // Tap-to-toggle dictation via Spark: tap to record, tap to stop -> transcribe.
 // One unified `click` handler avoids the mouse/touch double-firing that produced
 // empty clips. `statusEl` (optional) shows recording / transcribing stages.
-export function wireMic(btn, target, statusEl, { hold = false } = {}) {
+export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {}) {
   // hold-to-talk (spec) applies on TOUCH only — press-hold-record, release-to-transcribe; desktop keeps
   // tap-to-toggle. Default (no opt) is tap-to-toggle everywhere, so existing callers are unchanged.
+  // hint = the agent to match (string or () => string, resolved at transcribe time so it tracks a
+  // changing tool selector); passed to the STT route as ?agent=.
   const holdMode = hold && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  const agentHint = () => { try { const h = typeof hint === 'function' ? hint() : hint; return h ? String(h) : ''; } catch { return ''; } };
   let rec = null,
     chunks = [],
     stream = null,
@@ -330,7 +336,7 @@ export function wireMic(btn, target, statusEl, { hold = false } = {}) {
         const liveText = live?.getText() || '';
         let text = liveText;
         try {
-          text = (await requestTranscription(blob)) || liveText;
+          text = (await requestTranscription(blob, agentHint())) || liveText;
         } catch (e) {
           if (!liveText) throw e;
         }
