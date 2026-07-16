@@ -281,9 +281,15 @@ function eventHtml(ev, i) {
   // renderMarkdown escapes first, so this stays XSS-safe); everything else stays escaped plain text.
   const bodyText = ev.body || ev.text || '';
   const rich = ev.kind === 'report' || ev.kind === 'note';
-  const body = bodyText ? (rich
-    ? `<div class="story-body md">${renderMarkdown(bodyText)}</div>`
-    : `<div class="story-body">${esc(bodyText)}</div>`) : '';
+  // Attachment previews render INSIDE the operator's bubble — one send, one bubble (operator: the
+  // image "should be previewed in the story view with the user request"). Basenames come from the
+  // parser; the attachment route serves only this session's own upload dir.
+  const imgsHtml = (ev.images || []).length
+    ? `<div class="story-imgs">${ev.images.map((f) => `<img class="story-shot" data-story-shot loading="lazy" src="api/session/${sid}/attachment/${encodeURIComponent(f)}" alt="${esc(f)}" title="${esc(f)}" />`).join('')}</div>`
+    : '';
+  const body = (bodyText || imgsHtml) ? (rich
+    ? `<div class="story-body md">${renderMarkdown(bodyText)}${imgsHtml}</div>`
+    : `<div class="story-body">${esc(bodyText)}${imgsHtml}</div>`) : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
   const head = untitled

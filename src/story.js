@@ -86,6 +86,20 @@ const CLAUDE_TOOL_KIND = {
   AskUserQuestion: 'ask', ExitPlanMode: 'plan',
 };
 
+// Attachment IMAGE references in a turn: manifest lines ("N. name (PNG, image/png): /abs/path" under
+// "Attached files available locally…") and "[Image: source: /abs/path]" stubs both carry the upload's
+// on-disk path under <project>/.aios/attachments/<sid>/. Extract the image BASENAMES so the story can
+// preview the operator's screenshots INSIDE their bubble (operator: "the image should be previewed in
+// the story view with the user request") — the client builds api/session/:id/attachment/:file, which
+// serves only the session's own attachment dir. Filenames may contain spaces; stop at newline or `]`.
+export function extractAttachmentImages(raw) {
+  const out = [];
+  const rx = /\/[^\n\]]*?\/attachments\/[^/\n\]]+\/([^/\n\]]+?\.(?:png|jpe?g|gif|webp|svg))/gi;
+  let m;
+  while ((m = rx.exec(String(raw || ''))) && out.length < 8) if (!out.includes(m[1])) out.push(m[1]);
+  return out;
+}
+
 // ---------- F2: injected-context stripping ----------
 const INJECT_BLOCKS = /<(project_context|relevant_lessons|user_instructions|environment_context|system-reminder|INSTRUCTIONS|collaboration_mode)>[\s\S]*?<\/\1>/g;
 function cleanUserText(raw) {
@@ -143,16 +157,29 @@ function cleanUserText(raw) {
 // ---------- per-format extraction: raw atoms ----------
 // atom: { ts, kind, human, cmd, text, title, options, exitCode, durationMs, indent }
 
+// One send = one bubble: the harness may deliver an attachment as its OWN user turn (the
+// "[Image: source: …]" stub) right after the text turn. Fold extracted images into the adjacent
+// operator bubble (≤60s) instead of showing a second bubble; an image-only send with no nearby
+// bubble becomes its own (image-only) bubble rather than vanishing.
+function attachImagesToYou(atoms, ts, images, indent) {
+  if (!images.length) return;
+  const prev = [...atoms].reverse().find((a) => a.kind === 'you');
+  if (prev && Math.abs(ts - prev.ts) < 60000) prev.images = [...new Set([...(prev.images || []), ...images])];
+  else atoms.push({ ts, kind: 'you', text: '', images, indent });
+}
+
 function atomsFromCodex(lines) {
   const atoms = [];
   const callCmd = new Map(); // call_id -> cmd (F4)
   let sawTurnCtx = false;
   const pushYou = (ts, raw) => {
+    const images = extractAttachmentImages(raw);
     const text = cleanUserText(raw);
-    if (!text) return;
+    if (!text) return attachImagesToYou(atoms, ts, images);
     // F9: dedupe against an event_msg/user_message twin
     const dup = atoms.slice(-4).some((a) => a.kind === 'you' && Math.abs(a.ts - ts) < 5000 && a.text.slice(0, 120) === text.slice(0, 120));
-    if (!dup) atoms.push({ ts, kind: 'you', text });
+    if (!dup) atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
+    else if (images.length) attachImagesToYou(atoms, ts, images);
   };
   for (const l of lines) {
     let j; try { j = JSON.parse(l); } catch { continue; }
@@ -225,13 +252,23 @@ function atomsFromClaude(lines) {
       const c = j.message.content;
       if (typeof c === 'string') {
         if (/\[Request interrupted/.test(c)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
-        else { const text = cleanUserText(c); if (text) atoms.push({ ts, kind: 'you', text }); }
+        else {
+          const images = extractAttachmentImages(c);
+          const text = cleanUserText(c);
+          if (text) atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
+          else attachImagesToYou(atoms, ts, images); // image-stub turn → fold into the adjacent bubble
+        }
       } else if (Array.isArray(c)) {
         for (const part of c) {
           if (part.type === 'text' && part.text) {
             // F7: array-content user turns were dropped before
             if (/\[Request interrupted/.test(part.text)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
-            else { const text = cleanUserText(part.text); if (text) atoms.push({ ts, kind: 'you', text, indent }); }
+            else {
+              const images = extractAttachmentImages(part.text);
+              const text = cleanUserText(part.text);
+              if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
+              else attachImagesToYou(atoms, ts, images, indent);
+            }
           } else if (part.type === 'tool_result' && part.is_error) {
             atoms.push({ ts, kind: 'fail', title: 'Hit a snag', text: firstLines(deMd(textOf(part.content)), 2), indent });
           }
@@ -284,7 +321,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, exitCode: a.exitCode, indent: a.indent, chips: a.chips });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images });
   }
   flush();
 

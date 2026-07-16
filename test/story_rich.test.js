@@ -125,6 +125,46 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.equal(yous3[0].body, 'please review the sidebar layout', 'the [Image #N] marker is stripped from the real message');
 }
 
+// ---- attachment previews: one send = one bubble, image thumbnails inside it ----
+// The composer sends text + a manifest ("Attached files available locally… N. name (PNG): /path");
+// the harness may ALSO deliver the image as its own "[Image: source: /path]" stub turn. The story
+// folds both into the operator's single bubble as image previews (operator: "It should be in the
+// same message as we send in one shot, and the image should be previewed").
+{
+  const { extractAttachmentImages } = await import('../src/story.js');
+  const manifest = 'please fix the sidebar\n\nAttached files available locally to this coding CLI:\n1. Screenshot 2026-07-16 at 19.27.36.png (PNG, image/png): /Users/x/aios/.aios/attachments/s_1/1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png\n2. notes.txt (TXT, text/plain): /Users/x/aios/.aios/attachments/s_1/1784201262059-u_b-notes.txt\n\nOpen these paths directly when you need the uploaded content.';
+  const imgs = extractAttachmentImages(manifest);
+  assert.deepEqual(imgs, ['1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png'], 'extracts image basenames (spaces kept), skips non-images');
+
+  const lines = [
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: manifest } }),
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:02Z', message: { content: '[Image: source: /Users/x/aios/.aios/attachments/s_1/1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png]' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-07-16T10:01:00Z', message: { content: [{ type: 'text', text: 'On it.' }] } }),
+  ].join('\n');
+  const evs = parseSessionLog(lines);
+  const yous = evs.filter((e) => e.kind === 'you');
+  assert.equal(yous.length, 1, 'text turn + image-stub turn fold into ONE bubble');
+  assert.equal(yous[0].body, 'please fix the sidebar', 'the manifest is stripped from the bubble text');
+  assert.deepEqual(yous[0].images, ['1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png'], 'the bubble carries the image preview (deduped across manifest + stub)');
+
+  // an image-only send with no nearby bubble keeps a bubble of its own (preview, not vanished)
+  const solo = parseSessionLog([
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T12:00:00Z', message: { content: '[Image: source: /Users/x/aios/.aios/attachments/s_1/shot-alone.png]' } }),
+  ].join('\n'));
+  const soloYou = solo.find((e) => e.kind === 'you');
+  assert.ok(soloYou && !soloYou.body && soloYou.images?.length === 1, 'image-only send → image-only bubble');
+
+  // fallback spine: the stored composed text also strips the manifest + carries previews
+  const s = spineFromMessages([{ ts: 1, direction: 'in', source: 'text+attachments', text: manifest }]);
+  assert.equal(s[0].text, 'please fix the sidebar', 'spine bubble text drops the manifest');
+  assert.deepEqual(s[0].images, ['1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png'], 'spine bubble carries the preview');
+
+  // client renders previews inside the bubble via the session-scoped attachment route
+  const sv = read('web/story-view.js');
+  assert.ok(sv.includes('story-imgs') && sv.includes('attachment/${encodeURIComponent(f)}'), 'story view renders ev.images through api/session/:id/attachment');
+  assert.ok(read('web/styles.css').includes('.story-imgs'), 'preview strip style exists');
+}
+
 // ---- source locks: the client render path + cache-key agreement ----
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),

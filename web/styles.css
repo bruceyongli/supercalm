@@ -2622,6 +2622,9 @@ body.map-expanded-open { overflow: hidden; }
 /* Two load-earlier controls side by side: ‹ previous round (left) · ↑ show the full story (right). */
 .story-loadbar { display: flex; gap: 10px; }
 .story-loadbar .story-earlier { flex: 1; min-width: 0; }
+/* Attachment previews inside a message bubble — reuse the .story-shot thumbnail + lightbox. */
+.story-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.story-imgs .story-shot { margin-top: 0; }
 
 /* Calming "the agent is working" indicator, pinned below the feed while status === working. */
 .story-working { display: flex; align-items: center; gap: 10px; padding: 10px 26px; border-top: 1px solid #161d27; flex-shrink: 0; color: #8a95a5; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; background: #0b0f16; }
