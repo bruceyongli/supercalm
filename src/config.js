@@ -56,6 +56,22 @@ export const RELEASE_CHANNEL = (() => {
   } catch { return 'every'; }
 })();
 
+// LIVE channel (cached ~5s), so an autonomous deploy that soaks GREEN can promote ITSELF to 'stable' by
+// writing the marker WITHOUT a second restart — the boot constant above can't reflect a marker written after
+// boot. /api/version serves this. Same fallback: 'every' on any missing/mismatched/unreadable marker.
+let _chan = { at: 0, val: RELEASE_CHANNEL };
+export function releaseChannel() {
+  const t = Date.now();
+  if (t - _chan.at < 5000) return _chan.val;
+  let val = 'every';
+  try {
+    const m = JSON.parse(readFileSync(join(DATA_DIR, 'release_channel.json'), 'utf8'));
+    if (m && m.version === VERSION && m.channel === 'stable') val = 'stable';
+  } catch { /* every */ }
+  _chan = { at: t, val };
+  return val;
+}
+
 // The exact git commit the running server was built from — served at /healthz + /api/version so an
 // autonomous deploy can PROVE "the server is now serving exactly the candidate SHA" (build provenance,
 // step 1 of docs/specs/autonomous-deploy-plan.md). Resolved once at boot via a bounded git call; null if

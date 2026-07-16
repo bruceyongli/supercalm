@@ -19,10 +19,10 @@
 // GATED: the whole path is inert unless AIOS_AUTO_PUBLISH is on (default OFF) — auto-deploying the live
 // service is the highest-risk action, so it ships proven-but-off and the operator flips the capability.
 // servedSha / spawnDeploy are injectable so the flow is testable without touching the live service.
-import { existsSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { COMMIT_SHA, BOOT_ID } from './config.js';
+import { COMMIT_SHA, BOOT_ID, VERSION, DATA_DIR } from './config.js';
 import { gitOut } from './git.js';
 import { defaultBranch } from './worktrees.js';
 import { now } from './util.js';
@@ -154,6 +154,15 @@ async function servedHasCandidate(repoPath, expected, served) {
 }
 const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path : null) || null;
 
+// A soaked-GREEN autonomous deploy IS a stable release — it passed the full gate AND health-verified live in
+// production. Bless it: write the stable marker for the running version so `config.releaseChannel()` returns
+// 'stable' and the new-version toast fires even for "stable only" viewers (routine `bin/deploy` dev pushes
+// stay 'every'). LOCAL marker only — no public GitHub Release (that stays the maintainer's `bin/release`).
+function blessStable() {
+  try { writeFileSync(join(DATA_DIR, 'release_channel.json'), JSON.stringify({ version: VERSION, channel: 'stable', at: new Date().toISOString() }) + '\n'); }
+  catch (e) { console.error('[aios] blessStable failed:', e?.message || e); }
+}
+
 const _verifying = new Set(); // one soak loop per integration
 // Sustained health for an episode. Its success stage only after SUCCESSES CONSECUTIVE good probes (served-SHA
 // === the episode's expected sha AND a read→write→read DB smoke) inside the persisted deadline. A stale fence
@@ -178,7 +187,7 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawn
     I.recordProbe(intId, { bootId: BOOT_ID, servedSha: servedSha(), status: ok ? 'ok' : 'fail', detail });
     I.heartbeat(intId, fenceToken);
     consecutive = ok ? consecutive + 1 : 0;
-    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
+    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); blessStable(); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
     if (now() > it.health_deadline) { await onVerifyFail(intId, fenceToken, episode, { consecutive, detail, servedSha, spawnDeploy }); return done(); }
     const t = setTimeout(() => { tick().catch(() => done()); }, PROBE_MS);
     if (t.unref) t.unref();
