@@ -11,7 +11,7 @@ import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
-import { CLAUDE_SURVEY_RX } from './detect_classify.js';
+import { CLAUDE_SURVEY_RX, askSubmitStepPending } from './detect_classify.js';
 import { summarize } from './summarize.js';
 import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
@@ -265,6 +265,9 @@ function askMenuTypeDigit(screen) {
   return m ? m[1] : null;
 }
 
+// askSubmitStepPending (detect_classify.js, pure): the multi-question AskUserQuestion "✔ Submit"
+// parking detector — sendText confirms it after a menu answer so answers actually deliver.
+
 export async function sendText(name, text) {
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
@@ -300,6 +303,14 @@ export async function sendText(name, text) {
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', text], X);
   await sleep(SUBMIT_DELAY_MS);
   await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+  // If this answer completed a multi-question ask, the TUI is now parked on its "✔ Submit" step —
+  // confirm it so the answers actually reach the agent (see askSubmitStepPending above). One extra
+  // Enter, only on the exact all-answered Submit shape; unmatched TUIs are untouched.
+  if (digit) {
+    await sleep(450);
+    const after = await tmux('capture-pane', '-p', '-t', name).catch(() => '');
+    if (askSubmitStepPending(after)) await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+  }
 }
 
 // Send a single named control key. Accepts friendly aliases.

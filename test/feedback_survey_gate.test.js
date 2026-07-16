@@ -65,4 +65,24 @@ const detectSrc = readFileSync(new URL('../src/detect_classify.js', import.meta.
 const rulesBlock = detectSrc.slice(detectSrc.indexOf('const CONFIRM_RULES'), detectSrc.indexOf('function autoConfirmKeys'));
 assert.ok(!rulesBlock.includes('CLAUDE_SURVEY_RX'), 'the survey must not be an ambient CONFIRM_RULES gate');
 
+// ---- multi-question ask "✔ Submit" parking (operator report 2026-07-17, s_07814eddc4) ----
+// Answers picked through AIOS sat un-delivered on the final Submit step while the UI said "session
+// resumed". sendText confirms Submit after a MENU answer — and ONLY there (post-answer, our own
+// action), never ambiently from the poll loop: the 258-stray-'0's incident above is exactly what an
+// ambient auto-keyer does to displayed text.
+{
+  const { askSubmitStepPending } = await import('../src/detect_classify.js');
+  const allAnswered = '←  ☒ Default STT  ☒ Build scope  ✔ Submit  →\n\nReady to submit your answers.\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel';
+  const midFlow = '←  ☒ Default STT  ☐ Build scope  ✔ Submit  →\n\nHow much to build in this first pass?\n❯ 1. Codex first\n  2. Both now\n\nEnter to select · Tab/Arrow keys to navigate';
+  assert.equal(askSubmitStepPending(allAnswered), true, 'all questions answered + Submit tab → confirm');
+  assert.equal(askSubmitStepPending(midFlow), false, 'a pending ☐ question means the operator is still needed — never blind-submit');
+  assert.equal(askSubmitStepPending('❯ 1. yes\n  2. no\n\nEnter to select'), false, 'plain menus (codex, single-question) have no tab bar — no-op');
+  assert.equal(askSubmitStepPending('the PR is ready — click Submit on GitHub when you approve'), false, 'prose mentioning Submit never matches');
+
+  // wiring: the confirm lives in sendText's menu branch (after WE answered), not in classify/poll paths
+  assert.ok(/if \(digit\) \{[\s\S]{0,400}askSubmitStepPending/.test(sessionsSrc.slice(sessionsSrc.indexOf('export async function sendText'))), 'Submit confirm runs only after a menu answer sendText itself delivered');
+  const classifyBlock = detectSrc.slice(detectSrc.indexOf('export function classify'));
+  assert.ok(!classifyBlock.includes('askSubmitStepPending'), 'the Submit detector is NOT an ambient classifier gate');
+}
+
 console.log('feedback_survey_gate: all assertions passed');

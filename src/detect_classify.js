@@ -115,6 +115,17 @@ function questionFrom(text) {
 // cannot plausibly appear as displayed content (trust/bypass screens).
 export const CLAUDE_SURVEY_RX = /How is Claude doing this session\?[\s\S]{0,200}0:\s*Dismiss/i;
 
+// Multi-question AskUserQuestion: after the LAST answer the TUI parks on a final "✔ Submit" step —
+// nothing is delivered until it's confirmed. True only on the exact all-answered shape: the tab bar
+// shows answered marks (☒/✔), NO pending ☐ tab, a Submit tab, and the selection footer is still up.
+// sendText() confirms it with one Enter after answering via a menu (operator report 2026-07-17,
+// s_07814eddc4: answers picked through AIOS sat "waiting on the submit confirm step" while the
+// story claimed the session resumed). Codex menus have no tab bar → never matches (no-op).
+export function askSubmitStepPending(screen) {
+  const tail = stripAnsi(String(screen || '')).split('\n').slice(-16).join('\n');
+  return /Enter to select/.test(tail) && /Submit/.test(tail) && /[☒✔]/.test(tail) && !/☐/.test(tail);
+}
+
 // Known one-time gates that an autonomous (auto/full) session may auto-accept.
 // Keys are tmux key names; the bypass warning defaults to "No" so it needs Down first.
 const CONFIRM_RULES = [
