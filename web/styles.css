@@ -1617,7 +1617,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .message-box { box-sizing: border-box; gap: 5px; padding: 6px; border-radius: 8px; overflow: hidden; }
   .message-box textarea { min-height: 34px; padding: 2px 3px; }
   .attachment-list { display: grid; grid-template-columns: 1fr; }
+  /* composer chips are full-width rows on phones — .message-box .attachment-list beats the ≤600
+     compact-row block on order alone, which re-shrunk chips to 120px squares with wrapped buttons */
   .attachment-list .asset-card { width: min(var(--asset-card-size), 100%); }
+  .message-box .attachment-list .asset-card { width: 100%; }
   .composer-bottom { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
   .composer-options {
     order: 2; width: 100%; display: block;
@@ -2016,12 +2019,13 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .version-toast:hover { background: rgba(33, 40, 51, 0.62); border-color: rgba(120, 170, 255, 0.5); }
 .version-toast .vt-up { color: var(--blue); font-weight: 700; }
 .version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; background: none; border: 0; font-family: inherit; line-height: 1; }
-/* Phones have no dead corner: bottom-right sat on the agent-bar gear; above the composer it covered
-   mic/send (both judge-reported blocking). Banner style instead — top-right, slides down, and
-   version-badge.js auto-hides it after a beat so nothing stays covered. */
+/* Phones have no dead corner, so placement is per page (each spot was a judge-reported collision):
+   session pages → top-right banner (bottom is composer + agent bar); other pages → bottom-right but
+   ABOVE the phone-view pill and clear of headers. version-badge.js auto-hides it after 12s either way. */
 @media (max-width: 600px) {
-  .version-toast { top: calc(env(safe-area-inset-top) + 8px); bottom: auto; right: 8px; transform: translateY(-10px) scale(0.98); }
-  .version-toast.in { transform: translateY(0) scale(1); }
+  .version-toast { bottom: calc(env(safe-area-inset-bottom) + 58px); right: 8px; }
+  body.session-page .version-toast { top: calc(env(safe-area-inset-top) + 8px); bottom: auto; transform: translateY(-10px) scale(0.98); }
+  body.session-page .version-toast.in { transform: translateY(0) scale(1); }
 }
 .version-toast .vt-gh { color: var(--blue); text-decoration: underline; cursor: pointer; }
 .version-toast .vt-x:hover { color: var(--ink); }

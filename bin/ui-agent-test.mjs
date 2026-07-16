@@ -96,7 +96,9 @@ ws.addEventListener('message', (ev) => {
 });
 await new Promise((res, rej) => { ws.addEventListener('open', res, { once: true }); ws.addEventListener('error', () => rej(new Error('ws error')), { once: true }); });
 await cdp('Page.enable'); await cdp('Runtime.enable').catch(() => {});
-await cdp('Emulation.setDeviceMetricsOverride', { width: VW, height: VH, deviceScaleFactor: 2, mobile: true });
+// deviceScaleFactor 1: screenshots come out at CSS-pixel scale, so the judge's px estimates are CSS px
+// (at 2x it read a 135px composer as "270px" and filed a false blocker) — and payloads halve.
+await cdp('Emulation.setDeviceMetricsOverride', { width: VW, height: VH, deviceScaleFactor: 1, mobile: true });
 await cdp('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 await cdp('Network.enable').catch(() => {});
 await cdp('Network.setUserAgentOverride', { userAgent: UA, platform: 'iPhone' }).catch(() => {});

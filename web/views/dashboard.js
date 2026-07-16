@@ -2,6 +2,8 @@
 // home-data loop; tears the subscription down on leave. Logic mirrors the legacy desktop.js (which the
 // server cutover will retire). View contract: export init(host, params) + teardown().
 import { getHome, subscribeHome, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
+// cards/rows show the full first line (the rail keeps shortTitle); CSS ellipsizes/clamps per width
+const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict } from '../common.js';
 import { startVoiceMode } from '../voicemode.js';
 
@@ -64,7 +66,7 @@ function renderInbox(home) {
       <div class="dk-card-top">
         <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
         ${agentChip(s.tool)}
-        <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(shortTitle(s))}</a>
+        <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(fullTitle(s))}</a>
         <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
       </div>
       <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
@@ -82,7 +84,7 @@ function renderInbox(home) {
   const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}">
       <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i>${agentChip(s.tool)}
-      <b class="dk-row-name">${esc(shortTitle(s))}</b>
+      <b class="dk-row-name">${esc(fullTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
       <span class="dk-status ${s.status}">${sWord(s.status)}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>

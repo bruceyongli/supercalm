@@ -24,6 +24,7 @@ const SETTINGS_CSS = `
       .st-nav a { border: 1px solid #232c38; border-radius: 999px; padding: 8px 12px; min-height: 38px; display: inline-flex; align-items: center; }
       /* provider rows: name + "use" toggle on the first line, the long endpoint details wrap
          full-width below (the desktop three-across row crushed into unreadable columns) */
+      .st-wrap .ob-row { flex-wrap: wrap; row-gap: 4px; } /* every settings row (CLI tools too — the Codex row crowded version/badges/buttons into overlap) */
       #st-prov .ob-row { flex-wrap: wrap; row-gap: 4px; }
       #st-prov .ob-row span.ob-ver { flex: 1 1 100%; order: 3; }
       #st-prov .ob-row label.ob-ver { flex: 0 0 auto; }
