@@ -140,11 +140,13 @@ GREEN (or auto-rollback → ROLLED_BACK, or HELD). One integration at a time (si
   refused / fenced) without touching the live service.
 
 **MVP decisions (documented for the follow-ups):**
-- **Exact-SHA, no re-bump** (respects step 1's design). Because the served commit === the candidate
-  exactly, `VERIFYING` uses the **strongest** check: served `COMMIT_SHA` === `candidate_sha`. The cost:
-  an autonomous deploy whose candidate didn't bump `package.json` won't move the served version (no
-  new-version toast). Wiring a pre-check version bump into the candidate (+ auto-promoting the release
-  channel on soaked-green — [[release-system]] §3) is a **follow-up**, not a correctness gap.
+- **Exact-SHA deploy + version bump on top** (v0.3.160). `bin/deploy AIOS_DEPLOY_SHA` ff's main to the
+  tested candidate, then runs `bin/version` so the served version MOVES and the new-version toast fires
+  for autonomous deploys too (bin/version stays the only version editor; the release commit only touches
+  `package.json`/lock — the candidate is the exact tested code). Because the served HEAD is now one trusted
+  commit ABOVE the candidate, `VERIFYING` checks the candidate is an **ANCESTOR** of the served HEAD
+  (`servedHasCandidate()`) instead of exact equality — provably deployed, the only delta is the bump.
+  (Still open: auto-promoting the release channel to `stable` on soaked-green — [[release-system]] §3.)
 - **`HELD`, not auto-rollback, after a failed publish** — step 5 turns a post-publish failure into a
   forward-revert auto-rollback; until then a failed/timed-out publish parks as `HELD` for a human. Safe,
   just not yet self-healing.
