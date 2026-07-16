@@ -12,6 +12,8 @@ let panelEl = null;
 let events = [];
 let lastSig = '';
 let showFull = false; // instant load shows recent rounds; user can expand to the full story
+let rounds = 1; // how many operator rounds are loaded (‹ previous round increments; full ignores it)
+let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — keeps the viewport stable while content prepends
 let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
@@ -108,7 +110,9 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // another session's atoms; the merge-never-removes design would keep repainting them on reopen).
 // v3: rich-report change — old caches hold de-markdowned bodies whose evKeys differ from the new
 // markdown-preserving ones; merging both would duplicate every report bubble.
-export const STORY_CACHE_KEY = (id) => `aios_story3_${id}`;
+// v4: task-notification turns no longer parse as operator bubbles — cached stories still hold them
+// and the merge would resurrect what the parser now drops.
+export const STORY_CACHE_KEY = (id) => `aios_story4_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -341,7 +345,7 @@ function render() {
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<button class="story-earlier" data-story-earlier>↑ show the full story</button>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">‹ previous round</button><button class="story-earlier" data-story-earlier>↑ show the full story</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
     <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     ${renderWorking()}`;
   wire();
@@ -349,6 +353,9 @@ function render() {
   if (feed) {
     // PRESERVE the user's position across this wholesale re-render (the .story-feed node is recreated by the
     // innerHTML wipe above, so its scrollTop reset to 0 — restore it). Never jump to the bottom automatically.
+    // A load-earlier render PREPENDS content: shift the restore by the height delta so the reading
+    // position stays put instead of jumping to (now much earlier) absolute offset.
+    if (pendingAnchor != null) { feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor)); pendingAnchor = null; persistScroll(); }
     feed.scrollTop = feedTop;
     feed.addEventListener('scroll', () => {
       feedTop = feed.scrollTop;
@@ -362,8 +369,13 @@ function render() {
 function wire() {
   const latest = panelEl.querySelector('[data-story-latest]');
   if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
+  // Both load-earlier paths anchor the viewport: content PREPENDS, so the scroll position is adjusted
+  // by the height delta after the re-render (otherwise what you were reading jumps off-screen).
+  const anchor = () => { const f = panelEl.querySelector('.story-feed'); pendingAnchor = f ? f.scrollHeight : null; };
   const earlier = panelEl.querySelector('[data-story-earlier]');
-  if (earlier) earlier.onclick = () => { showFull = true; lastSig = ''; refreshStory({ quiet: false }); };
+  if (earlier) earlier.onclick = () => { showFull = true; lastSig = ''; anchor(); refreshStory({ quiet: false }); };
+  const prev = panelEl.querySelector('[data-story-prev]');
+  if (prev) prev.onclick = () => { rounds = Math.min(20, rounds + 1); lastSig = ''; anchor(); refreshStory({ quiet: false }); };
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
     t.onclick = () => {
       // toggle IN PLACE — a full re-render would detach the element mid-interaction (verifier
@@ -411,7 +423,7 @@ function wire() {
 export async function refreshStory({ quiet = true } = {}) {
   const mySid = sid; // capture: a session switch DURING this await must not apply session A's story to B
   try {
-    const r = await api(`api/session/${mySid}/story${showFull ? '?full=1' : ''}`);
+    const r = await api(`api/session/${mySid}/story${showFull ? '?full=1' : rounds > 1 ? `?rounds=${rounds}` : ''}`);
     // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
     // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
     // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
@@ -469,7 +481,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

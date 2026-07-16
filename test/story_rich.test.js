@@ -85,6 +85,46 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.ok(html.includes('<h2>Results</h2>'), 'report heading renders to a real heading');
 }
 
+// ---- harness task-notifications are MACHINE turns, never operator bubbles ----
+// Background-task events (Monitor/Agent completions) are injected into the CLI transcript as
+// user-ROLE turns. Rendered as "you" they showed raw XML under the operator's own glyph AND became
+// the story's round boundary — the default 1-round view started at the notification instead of the
+// operator's real message (operator report 2026-07-16: "I did not send this message").
+{
+  const notif = '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.\nDo NOT interpret this as user acknowledgement.\n\n<task-notification>\n<task-id>bzikb67aa</task-id>\n<status>completed</status>\n<summary>Monitor "integration int_x" stream ended</summary>\n</task-notification>';
+  const lines = [
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: 'please fix the sidebar' } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-07-16T10:00:10Z', message: { content: [{ type: 'text', text: 'working on it' }] } }),
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:05:00Z', message: { content: notif } }),
+    JSON.stringify({ type: 'assistant', timestamp: '2026-07-16T10:06:00Z', message: { content: [{ type: 'text', text: 'Done — sidebar shipped.' }] } }),
+  ].join('\n');
+  const evs = parseSessionLog(lines);
+  const yous = evs.filter((e) => e.kind === 'you');
+  assert.equal(yous.length, 1, 'the notification turn is dropped — exactly one operator bubble');
+  assert.equal(yous[0].body, 'please fix the sidebar', 'the real operator message survives as the round boundary');
+  assert.ok(!JSON.stringify(evs).includes('task-notification'), 'no event carries the raw notification XML');
+
+  // An operator PASTING a notification to ask about it keeps their words; only the banner goes.
+  const paste = 'why did this show up in my story?\n\n[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.';
+  const evs2 = parseSessionLog([
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: paste } }),
+  ].join('\n'));
+  const you2 = evs2.find((e) => e.kind === 'you');
+  assert.ok(you2 && you2.body.includes('why did this show up'), 'operator commentary in a mixed paste survives');
+  assert.ok(!you2.body.includes('SYSTEM NOTIFICATION'), 'the banner paragraph is stripped from the paste');
+
+  // Attachment plumbing around an image message is not the operator's words either: the "[Image #N]"
+  // numbering marker is stripped from their text, and a turn that is ONLY an "[Image: source: /path]"
+  // pointer stub is dropped entirely (it rendered as a bare operator bubble).
+  const evs3 = parseSessionLog([
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: '[Image #1] please review the sidebar layout' } }),
+    JSON.stringify({ type: 'user', timestamp: '2026-07-16T10:00:05Z', message: { content: '[Image: source: /Users/x/.aios/attachments/s_1/shot.png]' } }),
+  ].join('\n'));
+  const yous3 = evs3.filter((e) => e.kind === 'you');
+  assert.equal(yous3.length, 1, 'the pointer-stub-only turn is dropped');
+  assert.equal(yous3[0].body, 'please review the sidebar layout', 'the [Image #N] marker is stripped from the real message');
+}
+
 // ---- source locks: the client render path + cache-key agreement ----
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),
@@ -95,6 +135,11 @@ assert.ok(css.includes('.story-body.md table') && css.includes('.story-body.md p
 const svKey = storyView.match(/aios_story(\d+)_/)?.[1];
 const shKey = read('web/shell.js').match(/aios_story(\d+)_/)?.[1];
 assert.ok(svKey && svKey === shKey, `story cache-key version agrees between story-view.js (v${svKey}) and shell.js prefetch (v${shKey})`);
-assert.ok(Number(svKey) >= 3, 'cache key bumped past v2 — pre-rich cached bodies must not merge-duplicate');
+assert.ok(Number(svKey) >= 4, 'cache key bumped past v3 — cached notification bubbles must not merge back in');
+
+// Round pagination: ‹ previous round (left) + ↑ show the full story (right); rounds ride the fetch.
+assert.ok(storyView.includes('data-story-prev') && storyView.includes('data-story-earlier'), 'both load-earlier controls exist');
+assert.ok(/rounds > 1 \? `\?rounds=\$\{rounds\}` : ''/.test(storyView), 'refreshStory passes the incremental rounds window');
+assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewport anchored (content prepends)');
 
 console.log('story_rich: all assertions passed');

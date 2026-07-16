@@ -91,6 +91,18 @@ const INJECT_BLOCKS = /<(project_context|relevant_lessons|user_instructions|envi
 function cleanUserText(raw) {
   let t = String(raw || '').replace(INJECT_BLOCKS, '').trim();
   if (!t) return '';
+  // Harness-injected background-task events (Monitor/Agent completions) arrive as user-ROLE turns:
+  // "[SYSTEM NOTIFICATION - NOT USER INPUT] … <task-notification>…</task-notification>". They are
+  // machine plumbing, NEVER the operator — rendered as a "you" bubble they ALSO became the story's
+  // round boundary, hiding the operator's real message behind raw XML (operator report 2026-07-16,
+  // "I did not send this message"). Strip the blocks + the banner paragraphs; a turn that was only
+  // notifications collapses to empty → dropped. An operator PASTING a notification to ask about it
+  // keeps their own words (only the banner paragraphs go).
+  t = t.replace(/<task-notification>[\s\S]*?<\/task-notification>/gi, '').trim();
+  if (t.includes('[SYSTEM NOTIFICATION')) {
+    t = t.split(/\n\s*\n/).filter((p) => !/^\s*\[SYSTEM NOTIFICATION/i.test(p)).join('\n\n').trim();
+  }
+  if (!t) return '';
   // Compaction/continuation summaries are machine context, not conversation. The last-paragraph
   // heuristic below would otherwise surface a QUOTED OLD MESSAGE from inside the summary as a fresh
   // operator bubble (seen live: June "request failed 405" texts rendered unattributed in July stories).
@@ -106,7 +118,11 @@ function cleanUserText(raw) {
   // message get rotated to this?"). Strip both so their real text shows (and an annotation-only turn
   // collapses to empty → dropped, not surfaced as a "you" bubble).
   t = t.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
-  t = t.replace(/\[Image:\s*original\s+\d+x\d+[^\]]*\]/gi, '').trim();
+  // "[Image: original WxH …]" dimension notes, "[Image: source: /path]" pointer stubs, and the
+  // "[Image #N]" numbering markers are all harness plumbing around an operator's image message —
+  // never their words. A turn that was ONLY a pointer stub collapses to empty → dropped.
+  t = t.replace(/\[Image:\s*(?:original\s+\d+x\d+|source:)[^\]]*\]/gi, '').trim();
+  t = t.replace(/^\s*\[Image #\d+\]\s*/gim, '').trim();
   if (!t) return '';
   // Only VERY long turns (thousands of chars) are context/scrollback echo with the real message as the
   // last paragraph. A genuine multi-paragraph operator message (their side-nav + story requirements ran
