@@ -301,9 +301,34 @@ async function testVoice(m, backend) {
 }
 
 let vcOpen = null; // which card's setup form is open ('gpt' | 'local' | null) — survives re-renders
+
+// Dictation source = which STT powers the mic (subscription from your CLI login vs local Whisper vs
+// cloud). Independent of the TTS "voice choice" cards below. Default auto = match the session's agent.
+function sttSourceBlock(stt) {
+  if (!stt) return '';
+  const av = stt.sources || {};
+  const opt = (val, label, ok, note) =>
+    `<option value="${val}"${stt.pref === val ? ' selected' : ''}${ok ? '' : ' disabled'}>${label}${ok ? '' : ` — ${note}`}</option>`;
+  return `
+    <div class="vc-stt">
+      <div class="st-form-row">
+        <label for="st-stt-sel" style="font-weight:600">🎙 Dictation source</label>
+        <select class="st-sel" id="st-stt-sel">
+          ${opt('auto', 'Auto — match the session agent', true)}
+          ${opt('codex', 'Codex — your ChatGPT login', av.codex, 'sign in to Codex')}
+          ${opt('claude', 'Claude', av.claude, 'coming soon')}
+          ${opt('spark', 'Local Whisper (Spark)', av.spark, 'not configured')}
+          ${opt('provider', 'Cloud provider', av.provider, 'not configured')}
+        </select>
+        <span class="ob-msg" id="st-stt-msg"></span>
+      </div>
+      <p class="ob-fine" style="margin:6px 0 0">Auto uses the CLI you're signed into — a Codex session transcribes through your own ChatGPT account via the Codex app's private endpoint (unofficial, not a public API), a Claude session through Claude. Local Whisper stays fully on-device. Falls back automatically if a source is down.</p>
+    </div>`;
+}
+
 async function loadVoice() {
   try {
-    const r = await api('api/models/providers');
+    const [r, stt] = await Promise.all([api('api/models/providers'), api('api/stt/sources').catch(() => null)]);
     if (!host) return; // torn down mid-fetch
     const sp = r.speech;
     const spk = r.spark || { configured: !!r.spark_configured };
@@ -402,6 +427,7 @@ async function loadVoice() {
 
     $('#st-voicecard').innerHTML = `
       <div class="vc-status"><span>🔊 Speaks with <b>${speakDesc}</b></span><span>🎙 Hears you via <b>${hearDesc}</b></span></div>
+      ${sttSourceBlock(stt)}
       <div class="vc-cards" role="radiogroup" aria-label="Voice choice">${localCard}${gptCard}${browserCard}</div>
       <div class="vc-fallbacks">
         <h3>Fallbacks &amp; providers</h3>
@@ -438,6 +464,14 @@ async function loadVoice() {
         <div class="st-form-row"><button class="dk-new sm" id="st-sp-save">Test &amp; save</button><button class="dk-reply-btn" id="st-sp-cancel">Cancel</button><span class="ob-msg" id="st-sp-msg"></span></div>
       </div>
       </div>`;
+
+    // ---- dictation source picker (independent of the TTS voice cards) ----
+    const sttSel = document.querySelector('#st-stt-sel');
+    if (sttSel) sttSel.onchange = async () => {
+      const msg = document.querySelector('#st-stt-msg'); if (msg) msg.textContent = 'saving…';
+      try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sttSource: sttSel.value }) }); if (msg) { msg.textContent = '✓'; setTimeout(() => (msg.textContent = ''), 1500); } }
+      catch (err) { if (msg) msg.textContent = '⚠ ' + (err.message || err); }
+    };
 
     // ---- choice cards: one tap = the system switches (fallbacks stay automatic underneath) ----
     for (const c of document.querySelectorAll('[data-vc]')) {

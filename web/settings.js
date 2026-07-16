@@ -61,10 +61,41 @@ async function loadVoice() {
   try {
     const r = await api('api/models/providers');
     const sp = r.speech;
-    $('#st-voicecard').innerHTML = sp?.base_url
+    const provRow = sp?.base_url
       ? `<div class="ob-row"><b>${esc(sp.base_url)}</b><span class="ob-ver">STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')} · voice ${esc(sp.voice || '—')}</span><a class="dk-reply-btn" href="auth">Edit ▸</a></div>`
-      : `<p class="ob-fine">Not configured — voice falls back to the browser's built-in speech. <a class="dk-reply-btn" href="auth">Configure ▸</a> or run onboarding step 3.</p>`;
+      : `<p class="ob-fine">No cloud speech provider — voice falls back to the browser's built-in speech. <a class="dk-reply-btn" href="auth">Configure ▸</a> or run onboarding step 3.</p>`;
+    $('#st-voicecard').innerHTML = `<div id="st-stt"></div>${provRow}`;
+    await loadSttSource();
   } catch (e) { $('#st-voicecard').textContent = 'unavailable'; }
+}
+
+// Dictation source picker: which speech-to-text powers the mic. Default "auto" matches the session's
+// agent (a Codex session dictates via your own Codex login, etc.), falling back to local Whisper.
+async function loadSttSource() {
+  const host = $('#st-stt');
+  if (!host) return;
+  let s;
+  try { s = await api('api/stt/sources'); } catch { host.innerHTML = ''; return; }
+  const av = s.sources || {};
+  const opt = (val, label, ok, note) =>
+    `<option value="${val}"${s.pref === val ? ' selected' : ''}${ok ? '' : ' disabled'}>${label}${ok ? '' : ` — ${note}`}</option>`;
+  host.innerHTML = `
+    <div class="ob-row"><b>Dictation (speech-to-text)</b>
+      <select id="st-stt-sel" class="dk-reply-btn" style="padding:4px 8px">
+        ${opt('auto', 'Auto — match the session agent', true)}
+        ${opt('codex', 'Codex (your ChatGPT login)', av.codex, 'sign in to Codex')}
+        ${opt('claude', 'Claude', av.claude, 'coming soon')}
+        ${opt('spark', 'Local Whisper (Spark)', av.spark, 'not configured')}
+        ${opt('provider', 'Cloud provider', av.provider, 'not configured')}
+      </select>
+      <span class="ob-msg" id="st-stt-msg"></span>
+    </div>
+    <p class="ob-fine">Auto uses the CLI you're signed into — a Codex session transcribes through your own ChatGPT account (the Codex app's private endpoint, not an official API), a Claude session through Claude. Local Whisper stays fully on-device and never leaves your machine. Falls back automatically if a source is down.</p>`;
+  $('#st-stt-sel').onchange = async (e) => {
+    const msg = $('#st-stt-msg'); msg.textContent = 'saving…';
+    try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sttSource: e.target.value }) }); msg.textContent = '✓'; setTimeout(() => (msg.textContent = ''), 1500); }
+    catch (err) { msg.textContent = '⚠ ' + (err.message || err); }
+  };
 }
 
 // ---- Remote access -------------------------------------------------------------------------------
