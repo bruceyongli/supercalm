@@ -200,6 +200,47 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.equal(trimToRecentRounds(evs4, 1).events[0].body, 'ask B', 'supervisor messages are not round anchors');
 }
 
+// ---- asks: one card per question; the tool_result is the DURABLE answer record ----
+// Menu selections leave NO operator text turn in the transcript, so the old you-after-ask rule never
+// marked them answered — the option buttons resurrected whenever the client's local memory reset on a
+// session switch. And multi-question prompts only surfaced questions[0], showing stale options while
+// the terminal had moved to question 2 (operator report 2026-07-16, s_07814eddc4).
+{
+  const ask = { type: 'tool_use', id: 'tu_1', name: 'AskUserQuestion', input: { questions: [
+    { question: 'Default STT for CLI-authed users?', header: 'Default STT', options: [{ label: 'Match the session agent' }, { label: 'Keep Spark' }] },
+    { question: 'How much to build in this first pass?', header: 'Build scope', options: [{ label: 'Codex first' }, { label: 'Both now' }] },
+  ] } };
+  const result = 'Your questions have been answered: "Default STT for CLI-authed users?"="Match the session agent", "How much to build in this first pass?"="Codex first". You can now continue with these answers in mind.';
+  const mk = (parts) => JSON.stringify(parts);
+  const before = parseSessionLog([
+    mk({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: 'design the STT flow' } }),
+    mk({ type: 'assistant', timestamp: '2026-07-16T10:01:00Z', message: { content: [ask] } }),
+  ].join('\n'));
+  const pending = before.filter((e) => e.kind === 'ask');
+  assert.equal(pending.length, 2, 'a two-question prompt renders TWO ask cards');
+  assert.ok(pending[1].body.includes('How much to build'), 'question 2 is visible (not just questions[0])');
+  assert.ok(pending.every((e) => !e.answered), 'both pending until the tool completes');
+
+  const after = parseSessionLog([
+    mk({ type: 'user', timestamp: '2026-07-16T10:00:00Z', message: { content: 'design the STT flow' } }),
+    mk({ type: 'assistant', timestamp: '2026-07-16T10:01:00Z', message: { content: [ask] } }),
+    mk({ type: 'user', timestamp: '2026-07-16T10:05:00Z', message: { content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: result }] } }),
+  ].join('\n'));
+  const answered = after.filter((e) => e.kind === 'ask');
+  assert.ok(answered.every((e) => e.answered), 'the tool_result answers BOTH questions — no operator text turn needed');
+  assert.equal(answered[0].answeredWith, 'Match the session agent', 'per-question answer extracted');
+  assert.equal(answered[1].answeredWith, 'Codex first', 'per-question answer extracted (q2)');
+
+  // codex: request_user_input's function_call_output is the same durable record
+  const codex = parseSessionLog([
+    JSON.stringify({ timestamp: '2026-07-16T10:00:00Z', payload: { type: 'response_item' }, type: 'response_item' }),
+    JSON.stringify({ timestamp: '2026-07-16T10:00:01Z', type: 'response_item', payload: { type: 'function_call', name: 'request_user_input', call_id: 'c1', arguments: JSON.stringify({ question: 'Ship now?', options: ['yes', 'no'] }) } }),
+    JSON.stringify({ timestamp: '2026-07-16T10:02:00Z', type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: 'yes' } }),
+  ].join('\n'));
+  const cAsk = codex.find((e) => e.kind === 'ask');
+  assert.ok(cAsk?.answered && cAsk.answeredWith === 'yes', 'codex ask answered via its function_call_output');
+}
+
 // ---- source locks: the client render path + cache-key agreement ----
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),

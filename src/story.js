@@ -211,15 +211,24 @@ function atomsFromCodex(lines) {
           const chips = (args.plan || args.steps || []).map((s) => (typeof s === 'string' ? s : s.step || s.title || '')).filter(Boolean).slice(0, 6);
           atoms.push({ ts, kind: 'plan', title: 'Made a plan', chips });
         } else if (p.name === 'request_user_input') {
-          // F6: codex asks arrive as a tool call
+          // F6: codex asks arrive as a tool call; their function_call_output IS the durable answer
           const q = args.question || args.prompt || (args.questions?.[0]?.question) || 'Needs your decision';
           const options = (args.options || args.questions?.[0]?.options || []).map((o) => (typeof o === 'string' ? { label: o } : o));
-          atoms.push({ ts, kind: 'ask', title: 'Needs your decision', text: q, options });
+          atoms.push({ ts, kind: 'ask', title: 'Needs your decision', text: q, options, askId: p.call_id });
         } else {
           if (p.call_id) callCmd.set(p.call_id, cmd);
           atoms.push({ ts, kind: classifyCommand(cmd), cmd, human: humanizeCmd(cmd), callId: p.call_id });
         }
       } else if (t === 'function_call_output') {
+        // a request_user_input's output is the operator's ANSWER — mark the ask durably answered
+        // (menu selections leave no user text turn, so the you-after rule alone never fires)
+        const askAtom = p.call_id && atoms.find((a) => a.kind === 'ask' && a.askId === p.call_id);
+        if (askAtom) {
+          askAtom.answered = true;
+          const rawAns = typeof p.output === 'string' ? p.output : JSON.stringify(p.output || '');
+          askAtom.answeredWith = String(rawAns).split('\n')[0].slice(0, 60);
+          continue;
+        }
         // F5: exit code from JSON metadata first, regex fallback
         let exit = null, outText = '';
         const rawOut = typeof p.output === 'string' ? p.output : JSON.stringify(p.output || '');
@@ -242,8 +251,23 @@ function atomsFromCodex(lines) {
   return atoms;
 }
 
+const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 function atomsFromClaude(lines) {
   const atoms = [];
+  const askIds = new Set(); // AskUserQuestion tool_use ids — their tool_result IS the answer
+  // The tool_result ("Your questions have been answered: \"q\"=\"a\", …") is the DURABLE answer
+  // record: menu selections leave NO operator text turn in the transcript, so the old you-after-ask
+  // rule never marked them answered — the option buttons resurrected whenever the client's local
+  // memory reset on a session switch (operator report 2026-07-16, s_07814eddc4).
+  const answerAsks = (toolUseId, res) => {
+    for (const a of atoms) {
+      if (a.askId !== toolUseId) continue;
+      a.answered = true;
+      const m = a.text && res.match(new RegExp(`"${escapeRx(a.text)}"="([\\s\\S]*?)"(?:, "|\\.? ?You can now|$)`));
+      a.answeredWith = ((m ? m[1] : res.replace(/^Your questions have been answered:\s*/i, '')).split('\n')[0] || '').slice(0, 60);
+    }
+  };
   for (const l of lines) {
     let j; try { j = JSON.parse(l); } catch { continue; }
     const ts = Date.parse(j.timestamp) || 0;
@@ -269,6 +293,8 @@ function atomsFromClaude(lines) {
               if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
               else attachImagesToYou(atoms, ts, images, indent);
             }
+          } else if (part.type === 'tool_result' && !part.is_error && askIds.has(part.tool_use_id)) {
+            answerAsks(part.tool_use_id, textOf(part.content)); // the ask's durable answer record
           } else if (part.type === 'tool_result' && part.is_error) {
             atoms.push({ ts, kind: 'fail', title: 'Hit a snag', text: firstLines(deMd(textOf(part.content)), 2), indent });
           }
@@ -279,6 +305,21 @@ function atomsFromClaude(lines) {
         if (part.type === 'text' && part.text) atoms.push({ ts, kind: 'note', text: part.text, indent }); // final text => report (promoted below)
         else if (part.type === 'thinking') atoms.push({ ts, kind: '_thinking', indent });
         else if (part.type === 'tool_use') {
+          if (part.name === 'AskUserQuestion') {
+            // ONE ask card PER question — a multi-question prompt used to surface only questions[0],
+            // so after answering it the story re-showed the stale first options while the terminal
+            // had moved on to question 2 (operator: "the options appeared again").
+            const qs = part.input?.questions?.length ? part.input.questions : [{ question: 'Needs your decision', options: [] }];
+            for (const q of qs) {
+              atoms.push({
+                ts, kind: 'ask', indent, askId: part.id,
+                title: q.header ? `Needs your decision — ${q.header}` : 'Needs your decision',
+                text: q.question, options: q.options || [],
+              });
+            }
+            askIds.add(part.id);
+            continue;
+          }
           const base = CLAUDE_TOOL_KIND[part.name];
           const kind = base === null ? classifyCommand(part.input?.command) : (base || 'work');
           atoms.push({
@@ -286,8 +327,6 @@ function atomsFromClaude(lines) {
             cmd: part.input?.command || part.name + ' ' + (part.input?.file_path || part.input?.pattern || ''),
             human: part.input?.description || humanizeCmd(part.input?.command || part.name),
             title: part.name === 'Task' ? (part.input?.description || 'Sent a helper agent') : undefined,
-            options: part.name === 'AskUserQuestion' ? (part.input?.questions?.[0]?.options || []) : undefined,
-            text: part.name === 'AskUserQuestion' ? part.input?.questions?.[0]?.question : undefined,
           });
         }
       }
@@ -321,7 +360,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
   }
   flush();
 
@@ -398,9 +437,10 @@ function parseSessionLog(jsonlText) {
   const atoms = fmt === 'codex' ? atomsFromCodex(lines) : atomsFromClaude(lines);
   const out = buildStory(atoms);
   // S7: an ask followed by any later operator input is ANSWERED — the server data must agree
-  // with the client's optimistic stamp, or the next refetch resurrects the buttons.
+  // with the client's optimistic stamp, or the next refetch resurrects the buttons. Asks already
+  // answered via their tool_result/function_call_output (the durable record) keep that stamp.
   for (let i = 0; i < out.length; i++) {
-    if (out[i].kind !== 'ask') continue;
+    if (out[i].kind !== 'ask' || out[i].answered) continue;
     const reply = out.slice(i + 1).find((e) => e.kind === 'you');
     if (reply) {
       out[i].answered = true;
