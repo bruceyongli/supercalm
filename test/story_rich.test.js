@@ -165,6 +165,41 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.ok(read('web/styles.css').includes('.story-imgs'), 'preview strip style exists');
 }
 
+// ---- round windowing: a round = request → COMPLETED report; in-flight requests don't count ----
+// Operator (2026-07-16): "when a user sends a new request and the agent is still working, we should
+// not consider that as one round" — the default 1-round view must keep the previous completed
+// exchange visible instead of collapsing to just the new request + live progress.
+{
+  const { trimToRecentRounds, completedRoundStarts } = await import('../src/story.js');
+  const you = (ts, body) => ({ kind: 'you', ts, body });
+  const rep = (ts) => ({ kind: 'report', ts, body: 'report' });
+  const work = (ts) => ({ kind: 'work', ts, title: 'worked' });
+
+  // completed round + a NEW in-flight request → 1-round window starts at the COMPLETED round's request
+  const evs = [{ kind: 'sys', ts: 1 }, you(2, 'first ask'), work(3), rep(4), you(5, 'new ask — agent still working'), work(6)];
+  const t1 = trimToRecentRounds(evs, 1);
+  assert.equal(t1.trimmed, false, 'only one completed round exists — nothing to trim');
+  assert.ok(t1.events.some((e) => e.body === 'first ask'), 'the completed exchange stays visible');
+
+  // two completed rounds + in-flight → 1-round window starts at the SECOND completed request
+  const evs2 = [you(1, 'ask A'), rep(2), you(3, 'ask B'), rep(4), you(5, 'ask C in-flight'), work(6)];
+  const t2 = trimToRecentRounds(evs2, 1);
+  assert.equal(t2.trimmed, true);
+  assert.equal(t2.events[0].body, 'ask B', 'window anchors at the last COMPLETED round, in-flight rides along');
+  assert.ok(t2.events.some((e) => e.body === 'ask C in-flight'), 'the new request is still shown');
+
+  // the old (wrong) anchor: counting the in-flight message as a round would have started at ask C
+  assert.deepEqual(completedRoundStarts(evs2).map((i) => evs2[i].body), ['ask A', 'ask B'], 'in-flight ask C is not a round boundary');
+
+  // no reports at all (poked a stuck agent repeatedly) → everything is ONE in-flight round, no trim
+  const t3 = trimToRecentRounds([you(1, 'a'), work(2), you(3, 'b'), work(4)], 1);
+  assert.equal(t3.trimmed, false, 'a report-less session is a single in-flight round');
+
+  // supervisor nudges never count as boundaries
+  const evs4 = [you(1, 'ask A'), rep(2), { kind: 'you', ts: 3, body: '[Supervisor] nudge' }, rep(4), you(5, 'ask B'), rep(6), you(7, 'live'), work(8)];
+  assert.equal(trimToRecentRounds(evs4, 1).events[0].body, 'ask B', 'supervisor messages are not round anchors');
+}
+
 // ---- source locks: the client render path + cache-key agreement ----
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),

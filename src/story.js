@@ -418,4 +418,34 @@ function parseSessionLog(jsonlText) {
   return out;
 }
 
-export { parseSessionLog, classifyCommand, humanizeCmd, buildStory, atomsFromCodex, atomsFromClaude };
+// ---------- round windowing (used by story_api's default view; pure so it's testable) ----------
+// A ROUND is an operator request whose turn REACHED a completed report. An operator message sent
+// while the agent is still working (no report after it yet) belongs to the IN-FLIGHT round and does
+// NOT count — so the default 1-round window always shows the previous completed exchange too:
+// last answered request → its report → the new request → the live work (operator, 2026-07-16:
+// "when a user sends a new request and the agent is still working, we should not consider that as
+// one round"). Supervisor-prefixed messages are machine steering, never boundaries.
+const SUPERVISOR_RX = /^\s*\[supervisor\]/i;
+function isOperatorYou(e) {
+  return e.kind === 'you' && !SUPERVISOR_RX.test(e.body || e.title || '');
+}
+// Operator messages that already have a report somewhere after them (their round completed).
+function completedRoundStarts(events) {
+  let lastReport = -1;
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].kind === 'report') { lastReport = i; break; }
+  const idx = [];
+  for (let i = 0; i < lastReport; i++) if (isOperatorYou(events[i])) idx.push(i);
+  return idx;
+}
+// Keep events from the Nth-from-last COMPLETED round onward (the in-flight suffix rides along).
+function trimToRecentRounds(events, rounds) {
+  if (!rounds) return { events, trimmed: false };
+  const counted = completedRoundStarts(events);
+  if (counted.length <= rounds) return { events, trimmed: false };
+  return { events: events.slice(counted[counted.length - rounds]), trimmed: true };
+}
+
+export {
+  parseSessionLog, classifyCommand, humanizeCmd, buildStory, atomsFromCodex, atomsFromClaude,
+  isOperatorYou, completedRoundStarts, trimToRecentRounds,
+};

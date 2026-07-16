@@ -9,7 +9,7 @@ import { homedir } from 'node:os';
 import { route, json } from './server.js';
 import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
 import { findClaudeLog } from './claude_transcripts.js';
-import { parseSessionLog } from './story.js';
+import { parseSessionLog, completedRoundStarts, trimToRecentRounds } from './story.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { spineFromMessages } from './story_spine.js';
@@ -73,23 +73,12 @@ const cache = new Map(); // key -> { file, mtimeMs, events, meta }
 // and keep the last few OPERATOR rounds (a round = one operator message → everything until the next;
 // supervisor '[Supervisor] …' messages are shown but do NOT count as round boundaries). ?full=1
 // reads the whole file; ?rounds=N tunes the window.
-const DEFAULT_ROUNDS = 1; // instant first paint: one round starting at the user's real message (?rounds=N for more)
+const DEFAULT_ROUNDS = 1; // instant first paint: one COMPLETED round (request → report; ?rounds=N for more)
 const FULL_PARSE_UNDER = 1_200_000; // small transcripts: parse whole (already instant)
 const TAIL_START_BYTES = 3_000_000;
 const TAIL_CAP_BYTES = 32_000_000; // never scan more than this for the recent view
-const SUPERVISOR_RX = /^\s*\[supervisor\]/i;
-
-function isOperatorYou(e) {
-  return e.kind === 'you' && !SUPERVISOR_RX.test(e.body || e.title || '');
-}
-// Keep events from the Nth-from-last operator message onward. Returns { events, trimmed }.
-function trimToRecentRounds(events, rounds) {
-  if (!rounds) return { events, trimmed: false };
-  const opIdx = [];
-  for (let i = 0; i < events.length; i++) if (isOperatorYou(events[i])) opIdx.push(i);
-  if (opIdx.length <= rounds) return { events, trimmed: false };
-  return { events: events.slice(opIdx[opIdx.length - rounds]), trimmed: true };
-}
+// Round semantics + trimming live in story.js (pure, testable): a round = an operator request whose
+// turn reached a completed report; in-flight requests ride along without counting.
 // Read the last `bytes` of a file, dropping the partial first line so parseSessionLog sees whole lines.
 async function readTailBytes(file, bytes, size) {
   const fh = await open(file, 'r');
@@ -205,7 +194,9 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
       const text = readWhole ? await readFile(file, 'utf8') : await readTailBytes(file, bytes, st.size);
       const parsed = parseSessionLog(text);
       attachShots(text, parsed);
-      const opCount = parsed.filter(isOperatorYou).length;
+      // grow the tail until it holds `rounds` COMPLETED rounds — an in-flight request at the end
+      // must not satisfy the window (it would hide the previous request → report exchange).
+      const opCount = completedRoundStarts(parsed).length;
       if (opCount >= rounds || readWhole || bytes >= TAIL_CAP_BYTES) {
         ({ events, trimmed } = trimToRecentRounds(parsed, rounds));
         scannedWhole = readWhole;
