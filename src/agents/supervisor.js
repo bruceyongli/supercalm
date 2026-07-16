@@ -30,6 +30,7 @@ import { STANCE_SYS, buildStanceUserText, classifyStanceFromText, resolveStance,
 import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective } from './supervisor/send_policy.js';
 import { readRecentCommits, detectThrash, checkpointRepo } from './supervisor/thrash.js';
 import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
+import { tickSignature, gateTick, HEARTBEAT_MS } from './supervisor/event_gate.js';
 import {
   VERIFY_EVIDENCE_VERSION,
   VERIFY_PROMPT_VERSION,
@@ -1944,6 +1945,31 @@ export async function onTick(ctx) {
     st = applySupervisorState(ctx, { baseRef });
   }
   const baseRef = st.baseRef || null;
+
+  // EVENT GATE (v4 Phase 0, event_gate.js): everything below — evidence subprocesses, card/doc
+  // maintenance, stance updates, brains — runs only when something observable CHANGED (pane hash,
+  // status/question/stage/category, doc revision, stance, active card), an API-error episode is
+  // live (backoff timers are minute-granular), or the heartbeat elapsed. The heartbeat tightens to
+  // the stuck/checkpoint timers so their latency contracts survive the gate. A skipped tick writes
+  // nothing — state churn per skip would just relocate the waste the gate exists to remove.
+  const gateSig = tickSignature({
+    status: s.status,
+    question: s.question,
+    category: s.category,
+    stage: s.stage,
+    paneSig: typeof ctx.paneSig === 'function' ? ctx.paneSig() : '',
+    docRev: h32(cfg.doc || ''),
+    stanceTs: h32(JSON.stringify(st.operatorStance || '')),
+    activeTaskId: st.activeTaskId || '',
+  });
+  const gateBeat = Math.min(
+    HEARTBEAT_MS,
+    Math.max(60_000, (Number(cfg.stuck_timeout_sec) > 0 ? Number(cfg.stuck_timeout_sec) * 1000 : HEARTBEAT_MS)),
+    cfg.checkpoint ? Math.max(60_000, (Number(cfg.checkpoint_interval_sec) > 0 ? Number(cfg.checkpoint_interval_sec) * 1000 : HEARTBEAT_MS)) : HEARTBEAT_MS,
+  );
+  const gate = gateTick(st, gateSig, t, { heartbeatMs: gateBeat });
+  if (!gate.run) return;
+  st = applySupervisorState(ctx, gate.patch);
 
   // Project Memory: card-as-contract (see applyActiveCard). Null with the flag off / no active task.
   const activeCard = applyActiveCard(ctx, cfg);

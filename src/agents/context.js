@@ -4,7 +4,8 @@ import { getSession, getProject, getGrant, upsertGrant, addMessage, addEvent, GL
 import { viewTaskState, routeTaskPatch } from './supervisor/task_state.js';
 import { recordUsage, getSessionLimit } from '../usage_store.js';
 import { routeForModel } from '../model_catalog.js';
-import { resume as resumeSessionById, sendText, noteReply } from '../sessions.js';
+import { resume as resumeSessionById, sendText, noteReply, paneSig } from '../sessions.js';
+import { evaluateSend, emptyKernelState } from './send_kernel.js';
 import { bus } from '../bus.js';
 import { now } from '../util.js';
 import { DATA_DIR } from '../config.js';
@@ -42,6 +43,28 @@ function oneLine(s) {
     .join('')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// SEND KERNEL wrapper (v4 Phase 0) — the ONE place agent text becomes pane keystrokes. State is
+// per-session (the pane is shared: two agents alternating identical nudges must share one budget).
+// Every verdict is audited to the events table; blocks that merit operator attention notify once
+// per incident (the kernel's escalateKey dedupes).
+const kernelStates = new Map(); // session_id -> kernel state
+function mediateSend(agent, session_id, s, kind, text) {
+  const st = kernelStates.get(session_id) || emptyKernelState();
+  const v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id) }, now());
+  kernelStates.set(session_id, v.state);
+  addEvent(session_id, 'send-kernel', { agent: agent.id, kind, allowed: v.allowed, reason: v.reason || '' });
+  if (!v.allowed && v.escalate) {
+    bus.emit('notify', {
+      title: 'Supervisor send blocked',
+      body: `${v.reason} — ${String(text || '').slice(0, 110)}`,
+      url: `session?id=${session_id}`,
+      tag: `kernel-${session_id}-${v.escalateKey}`,
+    });
+    bus.emit('event', { type: 'agent', agent: agent.id, kind: 'kernel-escalation', session: session_id, reason: v.reason });
+  }
+  return v;
 }
 
 export function makeContext(agent, session_id, extra = {}) {
@@ -140,7 +163,10 @@ export function makeContext(agent, session_id, extra = {}) {
     },
 
     // ---- send-input (the dangerous one: injects into a bypass-mode CLI) ------
-    async sendToAgent(text, { guarded = true, blockDecision = guarded } = {}) {
+    // `kind` is the send's typed lane (send_policy SEND_KINDS); the kernel fails closed on unknown
+    // kinds, so callers must declare what a send IS, not just what it says. 'operator' = the
+    // operator's own relayed words — kernel-exempt.
+    async sendToAgent(text, { guarded = true, blockDecision = guarded, kind = 'nudge' } = {}) {
       requireCap('send-input');
       const s = getSession(session_id);
       if (!s) throw new Error('session not found');
@@ -150,6 +176,8 @@ export function makeContext(agent, session_id, extra = {}) {
       // guarded) = don't answer a question the agent is asking the user; callers can opt to send anyway.
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
       if (blockDecision && s.category === 'decision') return { sent: false, reason: 'decision' };
+      const k = mediateSend(agent, session_id, s, kind, msg);
+      if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, `[${agent.name || agent.id}] ${msg}`);
       addMessage(session_id, 'in', `agent:${agent.id}`, msg);
       addEvent(session_id, 'agent-send', { agent: agent.id, len: msg.length });
@@ -159,17 +187,27 @@ export function makeContext(agent, session_id, extra = {}) {
 
     // Send a RAW slash command (e.g. /compact) to the agent's composer — no "[name]" prefix, since a
     // prefixed "/compact" wouldn't be recognized by the TUI. send-input gated; restricted to "/" commands.
-    async sendCommand(cmd, { guarded = false } = {}) {
+    async sendCommand(cmd, { guarded = false, kind = 'recover' } = {}) {
       requireCap('send-input');
       const s = getSession(session_id);
       if (!s) throw new Error('session not found');
       const c = oneLine(cmd).slice(0, 120);
       if (!c.startsWith('/')) return { sent: false, reason: 'not-a-command' };
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
+      const k = mediateSend(agent, session_id, s, kind, c);
+      if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, c);
       addEvent(session_id, 'agent-command', { agent: agent.id, cmd: c });
       noteReply(session_id);
       return { sent: true, command: c };
+    },
+
+    // Current stabilized-pane signature (read-context): the same value the kernel keys its
+    // no-effect breaker on. Agents use it for cheap change detection (event gate) without shelling
+    // out for a full snapshot.
+    paneSig() {
+      requireCap('read-context');
+      return paneSig(session_id);
     },
     async resumeSession({ force = false } = {}) {
       requireCap('send-input');

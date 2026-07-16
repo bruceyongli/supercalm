@@ -106,7 +106,12 @@ export async function dispatchSupervisorSend(ctx, {
     updateDecisionSend(decision.decisionId, result);
     return result;
   }
-  const result = await ctx.sendToAgent(msg, sendOptions);
+  // Typed send lane for the kernel (context.js): the operator relay is the operator's own words
+  // (kernel-exempt); everything else maps from the decision's actionType, defaulting to the most
+  // restricted lane. An unmapped/unknown kind fails closed downstream.
+  const kind = sendOptions.kind
+    || (ruleId === 'hold.resolve_send' ? 'operator' : ({ answer: 'answer', challenge: 'challenge', recover: 'recover' })[actionType] || 'nudge');
+  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
   return result;
 }
@@ -150,7 +155,7 @@ export async function dispatchSupervisorCommand(ctx, {
     updateDecisionSend(decision.decisionId, result);
     return result;
   }
-  const result = await ctx.sendCommand(cmd, sendOptions);
+  const result = await ctx.sendCommand(cmd, { ...sendOptions, kind: sendOptions.kind || 'recover' });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.command || '' });
   return result;
 }

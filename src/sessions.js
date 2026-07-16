@@ -899,6 +899,14 @@ function applyStatus(s, status, question, activityBump) {
   bus.emit('changed');
 }
 
+// Stabilized-snapshot signature of the session's pane, as maintained by the poll loop (lastHash of
+// stableSnap). The send kernel keys its dedupe + no-effect circuit breaker on this: a send "worked"
+// only if this signature moves afterwards. Empty string when the session isn't in the live registry
+// (kernel guards degrade gracefully: pane-keyed checks skip, window/rate checks still apply).
+export function paneSig(sid) {
+  return String(reg.get(sid)?.lastHash || '');
+}
+
 // A reply was just sent to this session (text OR voice): move it OUT of the needs-you
 // queue immediately rather than waiting for the poll loop to notice the screen change.
 // Sets working, clears the stale question/summary, and resets the idle timer + wait
