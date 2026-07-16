@@ -185,6 +185,7 @@ function closePalette() { if ($('#dk-palette')) $('#dk-palette').hidden = true; 
 // or "+ new project…" on a fresh install with none.
 let stateCache = null;
 export async function openLaunch(opts = {}) {
+  document.body.classList.remove('dk-drawer'); // launched from the phone drawer: close it so the modal isn't buried under it
   try { stateCache = await api('api/state'); } catch { stateCache = { projects: [], tools: [] }; }
   const m = document.createElement('div');
   m.className = 'dk-palette';

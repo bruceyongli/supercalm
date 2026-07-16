@@ -1408,25 +1408,31 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     position: sticky; bottom: 0; z-index: 30;
     margin-top: auto; /* short content: pin the bar to the viewport bottom, not adrift mid-page */
     flex-direction: row; align-items: center; width: 100%; min-width: 0;
-    gap: 4px; padding: 5px 10px calc(5px + env(safe-area-inset-bottom));
+    gap: 2px; padding: 2px 8px calc(2px + env(safe-area-inset-bottom)); /* slim: one compact row (operator: the bar ate too much of the screen) */
     background: rgba(10, 14, 20, 0.96); border-top: 1px solid var(--line);
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
-  .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 4px; }
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 44px; height: 44px; }
+  .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 2px; }
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; height: 40px; }
   /* The drawer opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
      on a 390px phone — unusable). Sits above the scrim; the ✕ / scrim / esc close it. */
   .session-shell.dock-open .session-usage-panel,
   .session-shell.rail-pinned.dock-open .session-usage-panel {
     position: fixed; left: 0; right: 0; top: auto; bottom: 0; width: auto; max-width: none;
-    height: min(80dvh, 680px); border-radius: 14px 14px 0 0; border-bottom: 0;
+    /* fit-content sheet: a short panel (e.g. the Graph summary) shows as a compact sheet instead of a
+       mostly-empty full-screen cover (judge finding); tall panels cap at 85dvh and scroll inside */
+    height: auto; min-height: 200px; max-height: min(85dvh, 720px);
+    border-radius: 14px 14px 0 0; border-bottom: 0;
     padding: 10px 12px calc(12px + env(safe-area-inset-bottom)); z-index: 46;
     box-shadow: 0 -18px 48px rgba(1, 4, 9, 0.6);
     overflow: auto; /* the closed-panel rule declares overflow:visible — the sheet must scroll itself */
   }
+  /* ONE height budget for every main view (operator: the story was squeezed to ~30dvh with a dead gap
+     between the composer and the agent bar): the main flexes to fill the 100dvh shell, the log row
+     takes ALL leftover space (each panel scrolls internally), composer + tools stay content-sized. */
   .session-main, .session-shell.rail-pinned .session-main {
-    height: auto; min-height: 0; margin-bottom: 8px;
-    grid-template-rows: minmax(360px, 48dvh) auto auto;
+    flex: 1 1 auto; height: auto; min-height: 0; margin-bottom: 0;
+    grid-template-rows: minmax(0, 1fr) max-content max-content;
   }
   .session-shell.conversation-mode .session-main,
   .session-shell.rail-pinned.conversation-mode .session-main,
@@ -1434,17 +1440,15 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .session-shell.rail-pinned.agent-mode .session-main,
   .session-shell.scrollback-mode .session-main,
   .session-shell.rail-pinned.scrollback-mode .session-main {
-    height: 100%; margin-bottom: 0;
     grid-column: 1;
-    grid-template-rows: minmax(0, 1fr) max-content max-content;
   }
   .message-box { max-height: none; overflow: visible; }
   .usage-resizer { display: none; }
-  /* CLOSED (in-flow) panel only. The :not(.dock-open) guard matters: the rail-pinned variant ties with
-     the bottom-sheet rule's specificity and sits later in the file, so without it height:auto beat the
-     sheet's bounded height and the OPEN drawer grew to its content (a 3500px fixed box off the top). */
+  /* CLOSED drawer: fully hidden on phones. It sits in the flex flow (order 4, after the agent bar), so
+     anything short of display:none leaves the mounted panel content rendering full-width in the page
+     after a ✕/scrim close — the operator-reported "panel stuck open with no way to close". */
   .session-shell:not(.dock-open) .session-usage-panel, .session-shell.rail-pinned:not(.dock-open) .session-usage-panel {
-    min-width: 0; height: auto; overflow: visible;
+    display: none;
   }
   /* Narrow screens stack the session (display:block above), so the full-height sidebar would bury the
      story. Hide it here — the ← back returns to the dashboard's nav. NOTE: the prior rule targeted
@@ -1460,17 +1464,36 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    make the story the dominant element on phones and slim the first-run banner. The right agent panel
    keeps its existing stacked-below position — untouched. */
 @media (max-width: 600px) {
-  .session-main, .session-shell.rail-pinned .session-main { grid-template-rows: minmax(0, 60dvh) auto auto; }
   /* Banner reads as one flowing sentence on a phone. As a flex row, the nowrap "✓ first session
      running" chip vertically centered against the two-line message and the texts overlapped. */
   .session-banner { display: block; font-size: 11.5px; padding: 7px 34px 7px 10px; line-height: 1.45; position: relative; }
   .session-banner-ok { display: inline; margin-right: 6px; white-space: normal; }
   .session-banner-msg { display: inline; }
   .session-banner-x { position: absolute; right: 6px; top: 4px; padding: 4px 8px; }
-  /* Composer: keep the box inside the viewport (it clipped the send button at the right edge) and
-     stop the settings selects from shrinking to "m…" — they wrap to a second row instead. */
-  .message-box { margin: 8px 8px 6px; max-width: calc(100% - 16px); }
-  .composer-settings select { min-width: 8ch; }
+  /* Composer: keep the box inside the viewport (it clipped the send button at the right edge), keep it
+     SLIM (operator: the composer + a dead gap ate the screen), and never let a settings select shrink
+     into "m…" — the row wraps instead. Forced stacked layout here (media query) because on iOS the
+     container query alone left the + / mic / send sharing a row with the crushed selects. */
+  .message-box { margin: 6px 8px; max-width: calc(100% - 16px); padding: 7px; gap: 5px; }
+  .message-box textarea { min-height: 34px; }
+  .composer-bottom { flex-wrap: wrap; gap: 5px; }
+  .composer-options { order: 2; width: 100%; }
+  .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
+  .composer-hint { display: none; }
+  .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 3px 6px; }
+  .settings.composer-settings .setting { flex: 0 0 auto; }
+  .settings.composer-settings select { max-width: 46vw; } /* width itself comes from fitSettingSelect's --select-width */
+  /* Attachments: compact rows, not gallery cards — the 180px hover-none card filled the composer and
+     pushed mic/send off-screen. Thumb + name + inline actions in a 52px row; the list itself scrolls. */
+  .message-box .attachment-list { max-height: 24dvh; overflow-y: auto; gap: 6px; }
+  .message-box .asset-card { width: 100%; height: 52px; min-height: 52px; aspect-ratio: auto; display: flex; flex-direction: row; align-items: center; gap: 6px; padding: 4px; }
+  .message-box .asset-card-open { position: relative; height: 100%; width: auto; flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; overflow: hidden; }
+  .message-box .asset-card-preview { position: static; inset: auto; width: 42px; height: 42px; flex: none; border-radius: 6px; }
+  .message-box .asset-card-badge { display: none; }
+  .message-box .asset-card-name { position: static; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; padding: 0; background: none; }
+  .message-box .asset-card-meta { position: static; flex: none; font-size: 10.5px; padding: 0; background: none; }
+  .message-box .asset-card-actions { position: static; opacity: 1; pointer-events: auto; transform: none; margin: 0; padding: 0; flex: none; background: none; box-shadow: none; }
+  .message-box .asset-card-actions .btn { min-height: 36px; padding: 4px 9px; }
   /* Compact the session header on phones: truncate the title (no wrap/push) and drop the model · effort ·
      autonomy chip (it lives inside #s-title and is redundant with the composer's settings row), so the
      header stays tight. The short status word + story/terminal toggle + Stop/Kill stay in place. */
@@ -1510,28 +1533,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   }
   .session-main, .session-shell.rail-pinned .session-main {
     width: 100%; max-width: 100%; min-height: 0; overflow: hidden; box-sizing: border-box;
-    grid-template-rows: minmax(220px, 30dvh) auto auto;
-  }
-  .session-main:has(#conversation:not([hidden])),
-  .session-main:has(#agent-view:not([hidden])),
-  .session-shell.rail-pinned .session-main:has(#conversation:not([hidden])),
-  .session-shell.rail-pinned .session-main:has(#agent-view:not([hidden])) {
-    grid-template-rows: minmax(340px, 46dvh) auto auto;
-  }
-  .session-shell.conversation-mode .session-main,
-  .session-shell.rail-pinned.conversation-mode .session-main,
-  .session-shell.agent-mode .session-main,
-  .session-shell.rail-pinned.agent-mode .session-main,
-  .session-shell.scrollback-mode .session-main,
-  .session-shell.rail-pinned.scrollback-mode .session-main {
-    height: 100%;
-    grid-template-rows: minmax(0, 1fr) max-content max-content;
-  }
-  .session-shell.conversation-mode .session-main:has(#conversation:not([hidden])),
-  .session-shell.rail-pinned.conversation-mode .session-main:has(#conversation:not([hidden])),
-  .session-shell.agent-mode .session-main:has(#agent-view:not([hidden])),
-  .session-shell.rail-pinned.agent-mode .session-main:has(#agent-view:not([hidden])) {
-    grid-template-rows: minmax(0, 1fr) max-content max-content;
+    /* height budget lives in the earlier ≤600 block (main flexes; the log row takes 1fr) — the
+       per-view dvh caps that used to live here squeezed the story to a third of the screen */
   }
   .su-kpis, .limit-grid { grid-template-columns: 1fr; }
   .quota-row { grid-template-columns: 58px minmax(80px, 1fr) auto; }
@@ -2012,7 +2015,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .version-toast.in { visibility: visible; pointer-events: auto; opacity: 1; transform: translateY(0) scale(1); }
 .version-toast:hover { background: rgba(33, 40, 51, 0.62); border-color: rgba(120, 170, 255, 0.5); }
 .version-toast .vt-up { color: var(--blue); font-weight: 700; }
-.version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; }
+.version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; background: none; border: 0; font-family: inherit; line-height: 1; }
+/* Phones: float the toast ABOVE the session agent bar / composer bottom — pinned at the corner it sat
+   exactly on the gear glyph and blocked panel navigation (judge-reported blocking). */
+@media (max-width: 600px) {
+  .version-toast { bottom: calc(96px + env(safe-area-inset-bottom)); right: 10px; }
+}
 .version-toast .vt-gh { color: var(--blue); text-decoration: underline; cursor: pointer; }
 .version-toast .vt-x:hover { color: var(--ink); }
 .version-toast .vt-text { display: flex; flex-direction: column; line-height: 1.25; }
@@ -2640,6 +2648,18 @@ body.map-expanded-open { overflow: hidden; }
 .story-working-bg { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #161d27; border-radius: 999px; padding: 1px 8px; margin-left: auto; white-space: nowrap; }
 @keyframes story-work-pulse { 0%, 100% { opacity: 0.25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
 @media (prefers-reduced-motion: reduce) { .story-working-dots i { animation: none; opacity: 0.7; } }
+/* Phones: reclaim the timeline gutter for text — 26px feed inset + 30px icon column + 14px gap +
+   42px sub-indents left messages in a narrow column with heavy wrapping (judge finding). */
+@media (max-width: 600px) {
+  .story-feed { padding: 12px 10px 16px; }
+  .story-ev { grid-template-columns: 24px 1fr; gap: 0 8px; padding-bottom: 14px; }
+  .story-ev.sub-indent { margin-left: 20px; }
+  .story-ev:not(.sub-indent)::before { left: 11px; top: 28px; }
+  .story-icon { width: 24px; height: 24px; font-size: 11px; }
+  .story-head { padding: 9px 12px; }
+  .story-ev[data-kind="you"] .story-body { padding: 9px 11px; }
+  .story-ev[data-kind="ask"] .story-card { padding: 10px 12px; }
+}
 
 /* r4 4a: compact supervisor mode select (replaces the 4-button segmented) */
 .sup-mode-select { background: transparent; border: none; color: #79b8ff; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; cursor: pointer; padding: 2px 4px; -webkit-appearance: none; appearance: none; }

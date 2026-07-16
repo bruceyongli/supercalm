@@ -186,7 +186,7 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-show-more:hover { color: #8a95a5; border-color: #365a86; }
 
 /* ---- palette ---- */
-.dk-palette { position: fixed; inset: 0; background: rgba(4,6,10,.72); display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; z-index: 50; }
+.dk-palette { position: fixed; inset: 0; background: rgba(4,6,10,.72); display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; z-index: 80; } /* above the ≤720 off-canvas drawer (70) + its ☰ (75): the New-Session launcher opened UNDER the drawer on phones */
 .dk-palette-box { width: min(560px, 92vw); background: #0f141c; border: 1px solid #2a3442; border-radius: 16px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.55); animation: dkrise 0.18s ease-out; }
 @keyframes dkrise { from { transform: translateY(10px); opacity: 0.5; } }
 .dk-palette-box input { width: 100%; background: transparent; border: none; border-bottom: 1px solid #1d2632; color: #e9eef5; font-family: 'JetBrains Mono', monospace; font-size: 13px; padding: 15px 18px; outline: none; }

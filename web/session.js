@@ -610,6 +610,7 @@ function setMainView(view) {
   else if (activeMainView === 'agent') setTimeout(() => loadAgentView(), 0);
   else if (activeMainView === 'scrollback') loadScrollback();
   else setTimeout(syncSize, 80);
+  if (activeMainView === 'terminal') ensureTerminalData(true); // lazy: history + byte-stream on first open
 }
 document.querySelectorAll('[data-main-view]').forEach((b) => {
   b.onclick = () => setMainView(b.dataset.mainView);
@@ -624,6 +625,11 @@ async function loadStoryView() {
   if (!storyInited) { storyInited = true; mod.initStoryView({ sessionId: id, panel: document.querySelector('[data-story-panel]') }); }
   else mod.refreshStory();
 }
+// Terminal DATA is lazy (declared before the first setMainView call; the function body below hoists):
+// story is the default log view — the ~192KB scrollback bootstrap + the live byte-stream + xterm
+// rendering stay off the critical path until the terminal is actually shown once. Applies to every
+// device; on phones it was the dominant load cost of opening a session.
+let terminalDataStarted = false;
 setMainView(activeMainView);
 
 function terminalBottomDistance() {
@@ -997,7 +1003,18 @@ function startTerminalStream() {
   });
   terminalStream.onerror = () => {}; // EventSource auto-reconnects
 }
-bootstrapTerminalScrollback().finally(() => afterIdle(startTerminalStream));
+function ensureTerminalData(immediate = false) {
+  if (terminalDataStarted || _sig.aborted) return;
+  terminalDataStarted = true;
+  // Phones skip the raw-history replay: ~192KB captured across the pane's historic widths renders as
+  // soup in a ~46-col xterm (mid-word wraps, duplicated TUI frames). The stream's connect payload
+  // re-baselines to the CURRENT screen server-side; full history lives in the Transcript view.
+  const narrow = matchMedia('(max-width: 600px)').matches;
+  const boot = narrow ? Promise.resolve() : bootstrapTerminalScrollback();
+  // immediate = the user explicitly switched to the terminal — connect now, not after the idle defer.
+  boot.finally(() => (immediate ? startTerminalStream() : afterIdle(startTerminalStream)));
+}
+if (activeMainView === 'terminal') ensureTerminalData();
 
 // ---- rich conversation timeline --------------------------------------------
 function fmtBytes(v) {
@@ -1960,7 +1977,9 @@ function optionHtml(items, selected) {
 
 function fitSettingSelect(el) {
   const text = el?.options?.[el.selectedIndex]?.textContent || el?.value || '';
-  const ch = Math.max(2, Math.min(54, String(text).length));
+  // +1ch headroom: iOS Safari (no field-sizing support, so this var IS the width) insets select text
+  // by a couple px, so an exact-length width ellipsized short values ("max" → "m…", operator-reported).
+  const ch = Math.max(3, Math.min(54, String(text).length + 1));
   el?.style.setProperty('--select-width', `${ch}ch`);
 }
 
@@ -3042,7 +3061,9 @@ function switchSession(newId) {
     loadStoryView();
     loadUsage();
     loadMap();
-    bootstrapTerminalScrollback().finally(() => startTerminalStream());
+    // terminal data stays lazy across the in-place switch too — reload it only if it's on screen
+    terminalDataStarted = false;
+    if (activeMainView === 'terminal') ensureTerminalData();
     setTimeout(syncSize, 80);
     return true;
   } catch (e) {
