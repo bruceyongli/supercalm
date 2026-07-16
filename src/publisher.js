@@ -61,6 +61,12 @@ function defaultSpawnDeploy(repoPath, candidateSha) {
     stdio: 'ignore',
     env: { ...process.env, AIOS_DEPLOY_SHA: candidateSha },
   });
+  // Spawn failures (ENOENT/EACCES — bin/deploy missing or unexecutable) arrive ASYNC on a detached
+  // child; unhandled they throw uncaughtException (crashes the test harness outright — the
+  // publisher.test flake — and on the live daemon the deploy silently never runs while the global
+  // guard eats the error). Log it; the health deadline then HOLDs the integration (deploy_not_served),
+  // which is the designed no-false-green outcome.
+  child.on('error', (e) => console.error('[aios] deploy spawn failed:', e?.message || e));
   child.unref();
   return child.pid || null;
 }
