@@ -382,7 +382,7 @@ async function sendReply(text) {
       return;
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    S.text = ''; S.typing = false; S.draft = ''; S.sheet = null;
+    draftSet(S.sid, ''); S.text = ''; S.typing = false; S.draft = ''; S.sheet = null;
     toast('Sent — session resumed');
     loadDetail(S.sid); loadHome();
   } catch (e) {
@@ -405,10 +405,18 @@ async function sendKey(k) {
   } catch (e) { toast('Key failed: ' + (e.message || e)); }
 }
 
+// Composer drafts are PER-SESSION — keyed by session id (same localStorage key as the desktop composer, so
+// an unsent draft even follows you between phone and desktop). Typing in one session never bleeds into
+// another, and switching back restores your in-progress prompt. (Bug this fixes: S.text was one global.)
+const draftKey = (sid) => 'aios_draft_' + sid;
+const draftGet = (sid) => { try { return (sid && localStorage.getItem(draftKey(sid))) || ''; } catch { return ''; } };
+const draftSet = (sid, v) => { try { if (!sid) return; v ? localStorage.setItem(draftKey(sid), v) : localStorage.removeItem(draftKey(sid)); } catch {} };
+
 // ---- navigation (history-backed so hardware/gesture back works in the PWA) ----------------------
 function nav(screen, sid = null, push = true) {
   stopSpeech();
   S.screen = screen; S.sid = sid; S.overlay = null; S.sheet = null; S.typing = false; S.killArmed = false;
+  S.text = draftGet(sid); // restore THIS session's unsent composer text (empty for home / a fresh session)
   if (screen === 'session' && sid) { S.detail = null; S.usage = null; loadDetail(sid); loadUsage(); }
   if (push) history.pushState({ screen, sid }, '', location.pathname + (screen === 'home' ? '#home' : `#s/${sid}`)); // path-anchored: <base href="./"> makes bare-hash URLs resolve to the site root
   render();
@@ -858,7 +866,7 @@ function wire() {
     const ta = $('#real-ta');
     if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
   });
-  $('#real-ta')?.addEventListener('input', (e) => { S.text = e.target.value; });
+  $('#real-ta')?.addEventListener('input', (e) => { S.text = e.target.value; draftSet(S.sid, S.text); });
   $('#real-ta')?.addEventListener('blur', () => { if (!S.text.trim()) { S.typing = false; render(); } });
   $('#send-text')?.addEventListener('click', () => sendReply(S.text));
   $('#mic')?.addEventListener('click', () => startRec());
@@ -905,7 +913,7 @@ function wire() {
 // #s/<sid> is the phone's own deep link; ?id=<sid> arrives when the desktop session page switches to
 // the phone view (the "📱 phone view" pill preserves the URL) — open that session directly.
 const bootMatch = location.hash.match(/^#s\/(.+)$/) || (new URLSearchParams(location.search).get('id') ? [null, new URLSearchParams(location.search).get('id')] : null);
-if (bootMatch) { S.screen = 'session'; S.sid = bootMatch[1]; loadDetail(S.sid); }
+if (bootMatch) { S.screen = 'session'; S.sid = bootMatch[1]; S.text = draftGet(S.sid); loadDetail(S.sid); }
 history.replaceState({ screen: S.screen, sid: S.sid }, '', location.pathname + (S.screen === 'session' ? `#s/${S.sid}` : '#home'));
 loadHome();
 render();
