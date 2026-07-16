@@ -136,5 +136,25 @@ const doneE = await waitFor(iE.id, ['ROLLED_BACK', 'HELD', 'GREEN'], 3000);
 assert.equal(doneE.stage, 'ROLLED_BACK', 'rollback verified through the health window → ROLLED_BACK (got ' + doneE.stage + '/' + doneE.failure_code + ')');
 clear(iE.id);
 
+// F) the version-bump path: the deploy now bumps the version ON TOP of the candidate, so the served HEAD is a
+// DESCENDANT of the candidate (not equal). Verify must still recognize it via the ANCESTOR check → GREEN.
+const cF = candidateCommit('cF', 'f2.txt');
+const iF = approved(cF, 'cF');
+const bumpDeploy = (repoPath, sha) => {
+  execFileSync('git', ['-C', repoPath, 'merge', '--ff-only', sha], { stdio: 'ignore' });      // ff main → candidate
+  writeFileSync(join(repoPath, 'ver.txt'), '9.9.9\n');                                          // then a release-bump commit
+  execFileSync('git', ['-C', repoPath, 'add', '.'], { stdio: 'ignore' });
+  execFileSync('git', ['-C', repoPath, 'commit', '-qm', 'release: v9.9.9'], { stdio: 'ignore' });
+  return 4343;
+};
+const rF = await P.drivePublish(iF.id, { servedSha: () => WRONG, spawnDeploy: bumpDeploy });
+assert.equal(rF.stage, 'RESTART_REQUESTED', 'bump path reaches RESTART_REQUESTED');
+const deployedF = g('rev-parse', 'main');
+assert.notEqual(deployedF, cF, 'the deploy bumped: served HEAD sits above the candidate');
+await P.reconcile({ servedSha: () => deployedF }); // reborn server serves the bump commit (a descendant of cF)
+const greenF = await waitFor(iF.id, ['GREEN', 'HELD', 'REJECTED']);
+assert.equal(greenF.stage, 'GREEN', 'candidate is an ancestor of the served bump commit → GREEN (got ' + greenF.stage + '/' + greenF.failure_code + ')');
+clear(iF.id);
+
 assert.equal(I.occupiedBy(), null, 'pipeline free after all publisher runs');
 console.log('publisher.test: all assertions passed');

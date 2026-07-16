@@ -142,6 +142,18 @@ function walkTo(intId, targetStage, path) {
   return I.getIntegration(intId);
 }
 
+// After an autonomous deploy bumps the version, the served HEAD sits one trusted release commit ABOVE the
+// tested candidate, so served===candidate no longer holds. Verify instead that the candidate is an ANCESTOR
+// of the served HEAD — it is provably in the deployed history; the only delta is bin/version's package.json
+// bump. repoPath = the project repo; served = the running server's HEAD sha.
+async function servedHasCandidate(repoPath, expected, served) {
+  if (!expected || !served) return false;
+  if (expected === served) return true;               // fast path (no-bump deploys / tests)
+  if (!repoPath) return false;
+  return !(await gitOut(repoPath, ['merge-base', '--is-ancestor', expected, served])).error;
+}
+const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path : null) || null;
+
 const _verifying = new Set(); // one soak loop per integration
 // Sustained health for an episode. Its success stage only after SUCCESSES CONSECUTIVE good probes (served-SHA
 // === the episode's expected sha AND a read→write→read DB smoke) inside the persisted deadline. A stale fence
@@ -158,7 +170,7 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawn
     if (it.fence_token !== fenceToken) return done(); // fenced out — a boot recovery owns it now
     let ok = false, detail = '';
     try {
-      const servedOk = shaEq(servedSha(), episode.sha(it));
+      const servedOk = await servedHasCandidate(repoOf(it), episode.sha(it), servedSha());
       const dbOk = dbSmoke(intId);
       ok = servedOk && dbOk;
       detail = `served=${servedOk} db=${dbOk}`;
@@ -233,8 +245,9 @@ export async function reconcile(opts = {}) {
 
   if (it.stage === episode.verify) { verifyLoop(it.id, { fenceToken: ft, servedSha, spawnDeploy, episode }); return { integration: it, resumed: episode.verify }; }
 
-  if (shaEq(servedSha(), episode.sha(it))) {
-    // The reborn server IS the expected sha — the deploy landed. Soak it before calling it done.
+  if (await servedHasCandidate(repoOf(it), episode.sha(it), servedSha())) {
+    // The reborn server carries the expected sha (candidate is in its deployed history) — the deploy landed.
+    // Soak it before calling it done.
     walkTo(it.id, episode.verify, episode.path);
     const cur = I.getIntegration(it.id);
     if (cur.stage === episode.verify) verifyLoop(it.id, { fenceToken: cur.fence_token, servedSha, spawnDeploy, episode });

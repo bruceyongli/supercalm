@@ -92,8 +92,12 @@ if [ -n "${AIOS_DEPLOY_SHA:-}" ]; then
   git merge-base --is-ancestor "$BR" "$SHA" 2>/dev/null || { echo "error: '$BR' is not an ancestor of $SHA — refusing a non-fast-forward exact deploy." >&2; exit 1; }
   echo "==> exact-SHA deploy: fast-forwarding $BR to $(git rev-parse --short "$SHA")"
   git merge --ff-only "$SHA"
-  NEW="$(node -p "require('./package.json').version")"
-  echo "    -> v$NEW ($(git rev-parse --short HEAD))"
+  # Bump the version ON TOP of the deployed candidate so the served version MOVES and the new-version toast
+  # fires for autonomous deploys too. bin/version is the only version editor; this release commit only touches
+  # package.json/lock (the candidate stays the exact tested code). Verify (src/publisher.js) checks the
+  # candidate is an ANCESTOR of the served HEAD, so this one trusted extra commit is expected.
+  NEW="$(bin/version "$LEVEL")"
+  echo "    -> v$NEW ($(git rev-parse --short HEAD)) — candidate $(git rev-parse --short "$SHA")"
 else
   OLD="$(node -p "require('./package.json').version")"
   echo "==> bump release version ($LEVEL)"
