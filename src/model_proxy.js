@@ -1010,13 +1010,13 @@ async function handleResponses(req, res) {
 }
 
 route('GET', '/api/proxy/models', (req, res) => {
-  json(res, 200, { ok: true, providers: currentProviders(), models: listProxyModels() });
+  json(res, 200, { ok: true, providers: currentProviders(), models: listProxyModels({ liveOnly: true }) });
 });
 
 route('GET', '/api/cli-proxy/v1/models', (req, res) => {
   json(res, 200, {
     object: 'list',
-    data: listProxyModels().map((m) => ({
+    data: listProxyModels({ liveOnly: true }).map((m) => ({
       id: m.id,
       object: 'model',
       created: 0,

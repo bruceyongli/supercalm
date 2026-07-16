@@ -4,6 +4,7 @@
 // freshly-rendered markup. No timers/streams, so teardown just nulls module state.
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml as esc, fmtAgo } from '../common.js';
+import { openLaunch } from '../shell.js';
 
 const PROJECTS_CSS = `
     .pj-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; }
@@ -53,7 +54,7 @@ async function load() {
         </label>
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
-      <button class="dk-new sm" data-pj-launch="${esc(p.path)}">+ session</button>
+      <button class="dk-new sm" data-pj-launch="${esc(p.project_id)}">+ session</button>
     </div>`;
   }).join('');
   const list = $('#pj-list');
@@ -64,7 +65,9 @@ async function load() {
     try { await api(`api/project/${b.dataset.pjIndex}/graph?rebuild=1`); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
     catch (e) { b.textContent = '⚠ ' + (e.message || e).slice(0, 30); }
   };
-  for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => (location.href = `desktop#launch=${encodeURIComponent(b.dataset.pjLaunch)}`);
+  // "+ session" opens the launch modal HERE with that project preselected. It used to navigate to the
+  // legacy desktop page with a #launch= hash that nothing handles — a silent dead end.
+  for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => openLaunch({ projectId: b.dataset.pjLaunch });
   const postHelpers = (pid, patch) => api(`api/project/${pid}/helpers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
   for (const c of document.querySelectorAll('[data-pj-iso]')) c.onchange = async () => {
     const pid = c.dataset.pjIso, want = c.checked;
@@ -102,10 +105,15 @@ export function init(el) {
   }
   host.innerHTML = `
     <div class="pj-wrap" data-pj>
-      <div class="pj-head"><h1>Projects</h1><a class="dk-new sm" href="desktop">+ Add via new session</a></div>
+      <div class="pj-head"><h1>Projects</h1><button class="dk-new sm" data-pj-add>+ Add project</button></div>
       <p class="pj-sub">Every repo Supercalm has worked in — with its code graph, freshness, and a one-click session.</p>
       <div id="pj-list">loading…</div>
     </div>`;
+  // Add project = the launch modal opened straight on the new-project fields (path + name + first task).
+  // The old header link navigated to the legacy desktop page — the redesign's only visible add-project
+  // affordance was a dead end (first-time-user report, 2026-07-16).
+  const add = host.querySelector('[data-pj-add]');
+  if (add) add.onclick = () => openLaunch({ newProject: true });
   load();
 }
 

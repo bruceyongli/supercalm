@@ -95,7 +95,7 @@ async function answer(card, text) {
 
 function wireCards() {
   const hero = document.getElementById('dk-hero-start');
-  if (hero) hero.onclick = openLaunch;
+  if (hero) hero.onclick = () => openLaunch(); // not a direct handler — the click event must not become openLaunch's opts
   for (const card of document.querySelectorAll('[data-dk-card]')) {
     for (const b of card.querySelectorAll('[data-dk-opt]')) b.onclick = () => answer(card, b.dataset.key);
     const replyBtn = card.querySelector('[data-dk-reply]');

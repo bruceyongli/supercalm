@@ -59,6 +59,11 @@ async function checkAll({ force = false } = {}) {
         bin: CLI[id].bin,
         current,
         latest,
+        // aliases: onboarding/settings/the dashboard hero were written against {installed, version} —
+        // serving both shapes at the source fixes every consumer (the shape mismatch made the
+        // onboarding wizard render every CLI as not-installed and wedge its step-1 gate).
+        installed: !!current,
+        version: current,
         updateAvailable: !!(current && latest && current !== latest),
       };
     })

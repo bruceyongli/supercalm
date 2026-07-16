@@ -149,7 +149,7 @@ function callOnce(route, messages, { temperature = 0.1, maxTokens = 4000, json =
 export function curatedModels(defaultModel) {
   const seen = new Set();
   const out = [];
-  for (const m of listProxyModels()) {
+  for (const m of listProxyModels({ liveOnly: true })) {
     if ((m.kind || 'chat') === 'image' || !m.recommended || seen.has(m.id)) continue;
     seen.add(m.id);
     out.push({ id: m.id, label: m.label, provider: m.provider, vision: isVisionRoute(routeForModel(m.id)) });

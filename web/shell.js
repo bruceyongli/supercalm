@@ -106,8 +106,29 @@ function renderSide() {
       <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(shortTitle(s))}</b>${agentChip(s.tool)}<span class="dk-status ${s.status}">${s.status === 'working' ? 'Working' : 'Waiting'}</span></span>
       <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 54))}</span>
     </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
-  $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy"><i class="dk-dot ok"></i>proxy</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
+  // The auth chip reflects the REAL auth mode (proxy/aios/cli/none) — it was a hardcoded green "proxy"
+  // dot, which lied on installs with no proxy at all (part of the fresh-install confusion report).
+  const am = authMode; // fetched once per page (fetchAuthMode below); null until known
+  const chip = am == null ? '' : am.badge;
+  $('#dk-foot').innerHTML = `<span>${esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${chip}</span><span id="dk-clock">${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>`;
 }
+
+// Auth-mode footer chip: one fetch per page load (a footer status, not a live feed). proxy (external
+// fleet) / aios (Supercalm's own login + shim) / pinned → green, named. cli (the CLIs' own logins —
+// legitimate, but Supercalm can't see whether they're actually signed in) → a neutral dot; the
+// dashboard hero carries the actionable "finish setup" message for true fresh installs.
+let authMode = null;
+(async () => {
+  try {
+    const r = await api('api/auth/status');
+    const mode = r.mode || 'cli';
+    authMode = mode === 'cli'
+      ? { badge: '<i class="dk-dot"></i>cli auth' }
+      : { badge: `<i class="dk-dot ok"></i>${esc(mode)}` };
+  } catch { authMode = { badge: '' }; }
+  const foot = $('#dk-foot .dk-foot-proxy');
+  if (foot && authMode) foot.innerHTML = authMode.badge;
+})();
 
 // Hover prefetch: warm the story cache (sessionStorage; key shared with story-view.js) for a session the
 // operator is about to open, so the click paints instantly. Once per session per page; bounded to ~200 KB.
@@ -151,8 +172,11 @@ function openPalette() { if (!$('#dk-palette')) return; $('#dk-palette').hidden 
 function closePalette() { if ($('#dk-palette')) $('#dk-palette').hidden = true; }
 
 // ---- New-session launch modal ---------------------------------------------------------------------
+// opts: { projectId } preselects an existing project (Projects-page row action); { path } preselects
+// "+ new project…" with the path prefilled. Both optional — the plain open picks the first project,
+// or "+ new project…" on a fresh install with none.
 let stateCache = null;
-export async function openLaunch() {
+export async function openLaunch(opts = {}) {
   try { stateCache = await api('api/state'); } catch { stateCache = { projects: [], tools: [] }; }
   const m = document.createElement('div');
   m.className = 'dk-palette';
@@ -201,7 +225,16 @@ export async function openLaunch() {
   };
   fillModels();
   for (const b of toolBtns) b.onclick = () => { toolBtns.forEach((x) => x.classList.toggle('on', x === b)); fillModels(); };
-  q('#nl-project').onchange = () => { q('#nl-newproj').hidden = q('#nl-project').value !== '__new'; };
+  // Visibility must be SYNCED, not only reacted to: on a fresh install with zero projects,
+  // "+ new project…" is the pre-selected first option and no change event ever fires — the old
+  // onchange-only wiring left the path field permanently hidden, so a first-time user could not
+  // add a project from anywhere (this modal is the only add-project surface in the redesign).
+  const syncNewProj = () => { q('#nl-newproj').hidden = q('#nl-project').value !== '__new'; };
+  q('#nl-project').onchange = syncNewProj;
+  if (opts.projectId && projects.some((p) => p.id === opts.projectId)) q('#nl-project').value = opts.projectId;
+  else if (opts.newProject || opts.path) { q('#nl-project').value = '__new'; if (opts.path) q('#nl-path').value = opts.path; }
+  syncNewProj();
+  if (q('#nl-project').value === '__new' && !q('#nl-path').value) setTimeout(() => q('#nl-path').focus(), 0);
   q('#nl-path')?.addEventListener('input', () => { const seg = q('#nl-path').value.split('/').filter(Boolean).pop() || ''; if (!q('#nl-name').value) q('#nl-name').placeholder = seg || 'auto from path'; });
   q('#nl-example').onclick = () => { q('#nl-task').value = 'Read the failing tests, fix the root cause they expose, run the full suite, and summarize the change for review.'; };
   const mic = wireMic(q('#nl-mic'), q('#nl-task'), q('#nl-mic-status')); // speak the task instead of typing it

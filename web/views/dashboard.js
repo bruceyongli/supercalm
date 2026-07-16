@@ -2,8 +2,32 @@
 // home-data loop; tears the subscription down on leave. Logic mirrors the legacy desktop.js (which the
 // server cutover will retire). View contract: export init(host, params) + teardown().
 import { getHome, subscribeHome, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
-import { api, escapeHtml as esc, fmtAgo } from '../common.js';
+import { api, escapeHtml as esc, fmtAgo, setupVerdict } from '../common.js';
 import { startVoiceMode } from '../voicemode.js';
+
+// The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
+// (a CLI installed + a credential) actually pass; otherwise it points at the wizard. Checked once
+// per mount (three tiny GETs), painted in place — the hero renders instantly either way.
+let setupLine = null; // null = unknown yet; {ok, missing}
+async function checkSetup() {
+  if (setupLine) return;
+  try {
+    const [tv, auth, prov] = await Promise.all([
+      api('api/tools/versions').catch(() => ({})),
+      api('api/auth/status').catch(() => ({})),
+      api('api/models/providers').catch(() => ({})),
+    ]);
+    setupLine = setupVerdict({ tools: tv.tools || [], auth, providers: prov.providers || [] });
+  } catch { setupLine = null; return; }
+  const el = host?.querySelector('[data-dk-setupline]');
+  if (el) paintSetupLine(el);
+}
+function paintSetupLine(el) {
+  if (!setupLine) return;
+  if (setupLine.ok) { el.innerHTML = '<span class="ok">✓ setup complete — this box is yours</span>'; return; }
+  const what = setupLine.missing === 'agents' ? 'no coding agent CLI found on this machine' : 'no sign-in yet — agents cannot run';
+  el.innerHTML = `<span class="warn" style="color:#e2b23e">◌ setup isn't finished — ${esc(what)}</span> <a class="dk-reply-btn" href="onboarding">Finish setup ▸</a>`;
+}
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const STOPPED_SHOWN = 10;
@@ -49,7 +73,7 @@ function renderInbox(home) {
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>`;
   }).join('') || ((home.sessions || []).length === 0
-    ? `<div class="dk-hero" data-dk-allclear><span class="ok">✓ setup complete — this box is yours</span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>`
+    ? `<div class="dk-hero" data-dk-allclear><span data-dk-setupline><span class="ok">✓ this box is yours</span></span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>`
     : '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>');
   const all = home.sessions || [];
   const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
@@ -89,7 +113,9 @@ async function answer(card, text) {
 
 function wireCards() {
   const hero = $('#dk-hero-start');
-  if (hero) hero.onclick = openLaunch;
+  if (hero) hero.onclick = () => openLaunch();
+  const setupEl = host.querySelector('[data-dk-setupline]');
+  if (setupEl) { paintSetupLine(setupEl); checkSetup(); }
   for (const card of host.querySelectorAll('[data-dk-card]')) {
     for (const b of card.querySelectorAll('[data-dk-opt]')) b.onclick = () => answer(card, b.dataset.key);
     const replyBtn = card.querySelector('[data-dk-reply]');

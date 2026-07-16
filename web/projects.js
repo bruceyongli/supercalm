@@ -2,7 +2,14 @@
 // live-session count, path, graph chip, freshness, counts, index + new-session actions.
 // Data: /api/product/health (per-project graph status) + /api/phone/home (live counts).
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
+import { openLaunch } from './shell.js';
 const $ = (s) => document.querySelector(s);
+
+// The header "+ Add project" opens the launch modal IN PLACE on the new-project fields. It used to
+// navigate to the legacy desktop page (`href="desktop"`), whose hash it relied on was never handled —
+// a first-time user's only visible add-project affordance was a dead end.
+const addBtn = document.querySelector('[data-pj-add]');
+if (addBtn) addBtn.onclick = (e) => { e.preventDefault(); openLaunch({ newProject: true }); };
 
 async function load() {
   let health = { projects: [] }, home = { sessions: [] };
@@ -25,7 +32,7 @@ async function load() {
         <span class="pj-counts">${ready ? `${counts.file || 0} files · ${counts.route || 0} routes · indexed ${fmtAgo(p.indexed_at)} ago` : 'no code graph yet'}</span>
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
-      <button class="dk-new sm" data-pj-launch="${esc(p.path)}">+ session</button>
+      <button class="dk-new sm" data-pj-launch="${esc(p.project_id)}">+ session</button>
     </div>`;
   }).join('');
   $('#pj-list').innerHTML = rows || '<div class="dk-allclear">No projects yet — start a session and type a new path; the project is created on the spot.</div>';
@@ -34,6 +41,8 @@ async function load() {
     try { await api(`api/project/${b.dataset.pjIndex}/graph?rebuild=1`); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
     catch (e) { b.textContent = '⚠ ' + (e.message || e).slice(0, 30); }
   };
-  for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => (location.href = `desktop#launch=${encodeURIComponent(b.dataset.pjLaunch)}`);
+  // "+ session" on a row opens the launch modal here with THAT project preselected (it used to
+  // navigate to the legacy desktop page with a #launch= hash nothing ever read).
+  for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => openLaunch({ projectId: b.dataset.pjLaunch });
 }
 load();

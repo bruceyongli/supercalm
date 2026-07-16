@@ -59,6 +59,32 @@
     try { return localStorage.getItem('aios_release_notify') || 'stable'; } catch { return 'stable'; }
   }
 
+  // Post-upgrade orientation (first-time-user report: upgraders "got lost after seeing so many UI
+  // changes … and errors in settings"). The reload toast covers the moment OF the deploy; this covers
+  // the visit AFTER it: this browser last saw version X, the server now runs Y → one dismissible toast
+  // pointing at Settings (the 1:1 homes for every setup step), so changed/broken config has an obvious
+  // front door. Remembered per browser in localStorage; shown once per version jump.
+  const SEEN_KEY = 'aios_seen_version';
+  function checkUpgraded(version) {
+    let seen = null;
+    try { seen = localStorage.getItem(SEEN_KEY); } catch {}
+    try { localStorage.setItem(SEEN_KEY, version); } catch {}
+    if (!seen || seen === version || releaseNotify() === 'off' || shown) return;
+    shown = 'upgraded:' + version;
+    const el = toastEl();
+    el.title = 'Review Settings — every setup step has a home there';
+    el.onclick = (e) => {
+      if (e.target?.dataset?.dismiss) { el.classList.remove('in'); shown = null; return; }
+      location.href = 'settings';
+    };
+    el.innerHTML =
+      `<span class="vt-up">✦</span>` +
+      `<span class="vt-text"><span class="vt-line">Updated <b>v${seen}</b> → <b>v${version}</b> while you were away</span>` +
+      `<span class="vt-sub">Things may have moved — review Settings · check auth & agents</span></span>` +
+      `<span class="vt-x" data-dismiss="1" title="Dismiss">×</span>`;
+    requestAnimationFrame(() => el.classList.add('in'));
+  }
+
   // Local: this server moved to a newer build than the page — reload to pick it up.
   function showReloadToast(version, isStable) {
     shown = 'reload:' + version;
@@ -138,7 +164,7 @@
     const v = await getJson('api/version');
     const version = v?.version || null;
     if (!version) return;
-    if (baseline == null) baseline = version; // first read = the running build
+    if (baseline == null) { baseline = version; checkUpgraded(version); } // first read = the running build
     const mode = releaseNotify();
     if (mode === 'off') return; // release notifications disabled entirely — no reload nudge, no upstream nudge
     if (version !== baseline) {

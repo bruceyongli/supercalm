@@ -217,10 +217,15 @@ export function applyCatalog(providers, meta = {}) {
   return true;
 }
 
-export function listProxyModels({ providers = null, includeImages = false } = {}) {
+// liveOnly: skip providers whose last scan found the port unreachable (scanProvider marks `up:false`;
+// a fleet-less install marks EVERY fleet provider down on its first scan). Pickers that offer models to
+// RUN pass liveOnly — offering a down provider's model is a guaranteed failure (first-time-user report:
+// "showed all models, and most are not available"). Admin/label surfaces keep the full catalog.
+export function listProxyModels({ providers = null, includeImages = false, liveOnly = false } = {}) {
   const allow = providers ? new Set(providers) : null;
   return PROVIDERS
     .filter((p) => !allow || allow.has(p.proxy))
+    .filter((p) => !liveOnly || p.up !== false)
     .flatMap((p) =>
       p.models
         .filter((m) => includeImages || (m.kind || 'chat') !== 'image')
@@ -255,7 +260,7 @@ export function listProxyModels({ providers = null, includeImages = false } = {}
 }
 
 export function toolModels(tool) {
-  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'] });
+  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'] }); // agy-native — its CLI login serves these
 
   // Alias entries replace their concrete targets (don't ALSO list claude-opus-4-8 when
   // "opus" maps to it — duplicate rows with near-identical labels confuse the picker).
@@ -271,6 +276,10 @@ export function toolModels(tool) {
       : [];
   // The tool's own provider leads as ONE contiguous section (aliases + the rest of its
   // models, e.g. Fable 5 / Opus 4.7 right under the opus alias), then everything else.
+  // The own-provider section is NOT live-gated: those ids ride the CLI's own login (claude
+  // --model / codex -c model=) and work with zero fleet. Cross-provider models REQUIRE the
+  // bridge → a reachable fleet port, so `rest` is live-gated — a fresh fleet-less install
+  // offers exactly what its CLIs can actually run instead of the whole static seed.
   const native =
     tool === 'codex'
       ? listProxyModels({ providers: ['codex'] })
@@ -278,7 +287,7 @@ export function toolModels(tool) {
         ? [...nativeAliases, ...listProxyModels({ providers: ['claude'] })]
         : [];
   const ownProvider = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : null;
-  const rest = listProxyModels().filter((m) => m.provider !== ownProvider);
+  const rest = listProxyModels({ liveOnly: true }).filter((m) => m.provider !== ownProvider);
   return [...native, ...rest].filter((m) => {
     if (seen.has(m.id)) return false;
     seen.add(m.id);

@@ -1689,7 +1689,12 @@ route('POST', '/api/session', async (req, res) => {
   if (b.project_id) project = store.getProject(b.project_id);
   if (!project && b.path) {
     const p = String(b.path).trim();
-    project = store.getProjectByPath(p) || store.createProject({ id: id('p'), name: basename(p) || p, path: p });
+    // honor the launch modal's optional Name field (it was sent and silently ignored before)
+    const name = String(b.name || '').trim() || basename(p) || p;
+    project = store.getProjectByPath(p) || store.createProject({ id: id('p'), name, path: p });
+    // "Build knowledge base after launch" (modal checkbox — previously a dead control): kick the
+    // wiki rebuild fire-and-forget so the launch reply never waits on it; failures are non-fatal.
+    if (boolParam(b.kb)) rebuildWiki(project).catch((e) => console.error('[aios] kb build on project create failed:', e?.message || e));
   }
   if (!project) return json(res, 400, { error: 'project_id or path required' });
   const T = TOOLS[tool];
@@ -1825,7 +1830,7 @@ route('POST', '/api/space/labeling', async (req, res) => {
 route('GET', '/api/space/config', async (req, res) => {
   // every chat-capable fleet model, so the picker can switch among them by usage condition (exclude
   // image/video/audio/embedding models — they can't do the JSON labeling task)
-  const models = listProxyModels({ includeImages: false })
+  const models = listProxyModels({ includeImages: false, liveOnly: true })
     .filter((m) => !/image|video|wan2|tts|whisper|embed|computer-use/i.test(m.id))
     .map((m) => ({ id: m.id, label: m.label, provider: m.providerLabel, port: m.port }));
   json(res, 200, { ok: true, config: labelConfig(), models });
@@ -2188,7 +2193,7 @@ route('POST', '/api/project/:id/wiki/rebuild', async (req, res, { id: pid }) => 
 route('GET', '/api/project/:id/helpers', (req, res, { id: pid }) => {
   const p = store.getProject(pid);
   if (!p) return json(res, 404, { error: 'no such project' });
-  json(res, 200, { ok: true, helpers: getHelpers(pid), models: listProxyModels({ includeImages: false }) });
+  json(res, 200, { ok: true, helpers: getHelpers(pid), models: listProxyModels({ includeImages: false, liveOnly: true }) });
 });
 route('POST', '/api/project/:id/helpers', async (req, res, { id: pid }) => {
   const p = store.getProject(pid);

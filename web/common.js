@@ -53,6 +53,15 @@ export function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// Setup readiness — the SAME definition the onboarding wizard gates on (its steps 1–2), shared so
+// the dashboard hero can be honest instead of claiming "setup complete" on an unconfigured install
+// (first-time-user report, 2026-07-16). Pure: callers fetch tools/versions + auth/status + providers.
+export function setupVerdict({ tools = [], auth = {}, providers = [] } = {}) {
+  const agents = (tools || []).some((t) => t.installed || t.current); // tolerate both response shapes
+  const credentialed = (auth.providers || []).some((p) => p.loggedIn) || auth.mode === 'proxy' || (providers || []).length > 0;
+  return { ok: agents && credentialed, missing: !agents ? 'agents' : !credentialed ? 'signin' : null };
+}
+
 const STATUS_META = {
   waiting: { color: '#d29922', glyph: '!', prefix: '! ', label: 'waiting' },
   working: { color: '#3fb950', glyph: '', prefix: '> ', label: 'working' },

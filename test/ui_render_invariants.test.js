@@ -80,4 +80,62 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(/writeStoryCache\(mySid/.test(body), 'refreshStory writes the cache under the captured session id');
 }
 
-console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard');
+// Fresh-install add-project (first-time-user report, 2026-07-16): with ZERO projects, "+ new project…"
+// is the launch modal's pre-selected first option, so an onchange-only visibility wire never fires and
+// the path field stays hidden — the redesign's ONLY add-project surface was a dead end. The modal must
+// SYNC visibility at open, and the Projects page must open this modal in place (its old header link and
+// row buttons navigated to the legacy desktop page with a #launch= hash nothing handles).
+{
+  const shell = read('shell.js');
+  const ol = shell.indexOf('export async function openLaunch');
+  assert.ok(ol > 0, 'openLaunch exists');
+  const body = shell.slice(ol, ol + 6000);
+  assert.ok(/const syncNewProj = /.test(body), 'openLaunch defines the newproj visibility sync');
+  assert.ok(/onchange = syncNewProj/.test(body), 'the sync is the onchange handler');
+  assert.ok(/\n\s*syncNewProj\(\);/.test(body), 'the sync ALSO runs at open — zero-projects installs start on "+ new project…" with no change event');
+
+  for (const f of ['views/projects.js', 'projects.js']) {
+    const pj = read(f);
+    assert.ok(!/desktop#launch/.test(pj), `${f}: no navigation to the legacy desktop #launch hash (nothing handles it)`);
+    assert.ok(/openLaunch\(\{ ?projectId/.test(pj), `${f}: row "+ session" opens the launch modal with the project preselected`);
+    assert.ok(/openLaunch\(\{ ?newProject: true ?\}\)/.test(pj), `${f}: the add-project affordance opens the launch modal on the new-project fields`);
+  }
+
+  // The server honors what the modal sends for a new project: custom name + the KB checkbox.
+  const sess = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
+  assert.ok(/String\(b\.name \|\| ''\)\.trim\(\) \|\| basename\(p\)/.test(sess), 'POST /api/session uses the optional Name for the auto-created project');
+  assert.ok(/boolParam\(b\.kb\)/.test(sess) && /rebuildWiki\(project\)/.test(sess), 'POST /api/session honors the Build-knowledge-base checkbox (fire-and-forget wiki rebuild)');
+}
+
+// Upgrade/setup orientation (first-time-user report, 2026-07-16): the empty-inbox hero must not claim
+// "setup complete" on an unconfigured install; the version badge orients upgraders ("updated while you
+// were away → review Settings"); the footer auth chip must not hardcode a green "proxy" dot.
+{
+  const { setupVerdict } = await import('../web/common.js');
+  assert.deepEqual(setupVerdict({ tools: [{ installed: true }], auth: { mode: 'proxy', providers: [] } }), { ok: true, missing: null }, 'CLI + proxy = ready');
+  assert.deepEqual(setupVerdict({ tools: [{ installed: true }], auth: { providers: [{ loggedIn: true }] } }), { ok: true, missing: null }, 'CLI + a login = ready');
+  assert.equal(setupVerdict({ tools: [], auth: { mode: 'proxy' } }).missing, 'agents', 'no CLI → missing agents (checked first)');
+  assert.equal(setupVerdict({ tools: [{ installed: true }], auth: { mode: 'cli', providers: [] } }).missing, 'signin', 'no credential → missing signin');
+  assert.ok(setupVerdict({ tools: [{ installed: true }], auth: { mode: 'cli' }, providers: [{ id: 'x' }] }).ok, 'a user API provider counts as credentialed');
+
+  const dash = read('views/dashboard.js');
+  assert.ok(/data-dk-setupline/.test(dash) && /setupVerdict/.test(dash), 'the dashboard hero setup line derives from setupVerdict');
+  assert.ok(/href="onboarding"/.test(dash), 'an unfinished setup points at the onboarding wizard');
+  assert.ok(!/✓ setup complete[^<]*<\/span><p>/.test(dash.replace(/paintSetupLine[\s\S]*?\n}/, '')), 'the hero markup itself no longer hardcodes "setup complete"');
+
+  const vb = read('version-badge.js');
+  assert.ok(/aios_seen_version/.test(vb) && /checkUpgraded\(version\)/.test(vb), 'version badge remembers the last-seen version and shows the post-upgrade orientation toast');
+
+  // Shape contract: onboarding/settings consume {installed, version}; the endpoint natively computes
+  // {current}. The server must serve BOTH — the mismatch rendered every CLI "not installed" and wedged
+  // the onboarding step-1 gate on machines where the CLIs are fine.
+  const tu = readFileSync(new URL('../src/tool_updates.js', import.meta.url), 'utf8');
+  assert.ok(/installed: !!current/.test(tu) && /version: current/.test(tu), 'tools/versions serves installed+version aliases alongside current');
+  assert.ok(setupVerdict({ tools: [{ current: '1.0.0' }], auth: { mode: 'proxy' } }).ok, 'setupVerdict tolerates the bare {current} shape too');
+
+  const shell = read('shell.js');
+  assert.ok(!/dk-dot ok"><\/i>proxy</.test(shell), 'the footer auth chip is not a hardcoded green "proxy" dot');
+  assert.ok(/api\('api\/auth\/status'\)/.test(shell), 'the footer auth chip reflects the real auth mode');
+}
+
+console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard + fresh-install add-project + honest setup/upgrade orientation');
