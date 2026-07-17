@@ -1,47 +1,32 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage } from './common.js';
+import { unlockAudio as unlockPlayer, newPlayback, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
 
 // Hands-free voice concierge loop:
 //   speak (TTS) -> [listen with VAD -> STT -> /turn]  OR  [/continue] -> speak -> ...
 // until the server says done or the user taps Stop / says "stop".
+// TTS synthesis + playback is the SHARED tts-player.js stack (one stack for story-view + concierge +
+// phone); this module owns the concierge LOOP, the overlay UI, VAD/STT, and the device-voice picker.
 let active = false,
   stopFlag = false,
   voiceId = null,
-  audioEl = null,
+  handle = null, // current tts-player playback handle (for stop)
   ui = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TTS_RATE_KEY = 'aios_tts_rate';
 const TTS_RATE_PRESETS = [1, 1.15, 1.25, 1.5, 1.75];
 
-// iOS Safari blocks audio playback that isn't tied to a user gesture. The macOS-`say`
-// backend returned audio in ~ms so play() still fell inside the tap's gesture window;
-// server TTS can return after the gesture window, so iOS may refuse to play it. Fix: during the Voice
-// tap we play a tiny silent clip on ONE persistent <audio> element — that unlocks it for
-// the whole page session, and we reuse that same element for every spoken line, so later
-// programmatic play() calls are allowed no matter how long generation took.
-const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyLjEyLjEwMAAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAABQAAAqAAbW1tbW1tbW1tbW1tbW1tbW1tbZKSkpKSkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2tra2tra2trbb29vb29vb29vb29vb29vb29vb2///////////////////////////AAAAAExhdmM2Mi4yOAAAAAAAAAAAAAAAACQEUAAAAAAAAAKgvT/qZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExFMAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKYAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
-let player = null; // the one persistent, gesture-unlocked <audio>, reused for every line
 let vadCtx = null; // ONE gesture-unlocked AudioContext for every turn's VAD analyser — a per-turn
 // context created after the first turn is outside any gesture, so iOS starts it 'suspended': the
 // analyser reads flat, "silence" never ends, and recording was force-cut at the 8s no-speech grace.
-function getPlayer() {
-  if (!player) player = new Audio();
-  applyAudioRate(player);
-  return player;
-}
+// Unlock iOS audio (the shared player) + the VAD AudioContext — MUST run synchronously in the tap.
 function unlockAudio() {
-  try {
-    const a = getPlayer();
-    a.src = SILENT_MP3;
-    const p = a.play();
-    if (p && p.then) p.then(() => { try { a.pause(); a.currentTime = 0; } catch {} }).catch(() => {});
-  } catch {}
+  unlockPlayer(); // shared <audio> gesture-unlock + speechSynthesis warm (tts-player)
   try {
     const AC = window.AudioContext || window.webkitAudioContext;
     vadCtx = vadCtx || new AC();
     if (vadCtx.state !== 'running') vadCtx.resume().catch(() => {});
   } catch {}
-  try { speechSynthesis.getVoices(); const u = new SpeechSynthesisUtterance(''); u.volume = 0; speechSynthesis.speak(u); } catch {} // warm voices + unlock on-device TTS
 }
 
 export async function startVoiceMode() {
@@ -112,8 +97,8 @@ function end() {
   active = false;
   if (voiceId) post('api/voice/stop', { voiceId }).catch(() => {});
   voiceId = null;
-  if (audioEl) { try { audioEl.pause(); } catch {} audioEl = null; }
-  try { speechSynthesis.cancel(); } catch {}
+  try { handle?.stop(); } catch {}
+  try { stopAllPlayback(); } catch {} // halt any tts-player playback (belt for the shared element)
   if (ui) { ui.root.remove(); ui = null; }
 }
 
@@ -137,16 +122,8 @@ function ttsRate() {
 function setTtsRate(rate) {
   const value = TTS_RATE_PRESETS.includes(Number(rate)) ? Number(rate) : 1;
   try { localStorage.setItem(TTS_RATE_KEY, String(value)); } catch {}
-  applyAudioRate();
+  applyRateLive(); // apply to the shared player mid-utterance (tts-player)
   renderVoiceControls();
-}
-function applyAudioRate(a = audioEl || player) {
-  if (!a) return;
-  const rate = ttsRate();
-  try { a.playbackRate = rate; } catch {}
-  try { a.preservesPitch = true; } catch {}
-  try { a.webkitPreservesPitch = true; } catch {}
-  try { a.mozPreservesPitch = true; } catch {}
 }
 function showTtsNotice(message, { offerDevice = false } = {}) {
   if (!ui?.ttsNotice) return;
@@ -170,69 +147,16 @@ function renderVoiceControls() {
   if (ui.mode) ui.mode.textContent = ttsMode() === 'browser' ? 'Device voice fallback' : 'Spark Kokoro voice';
   if (ui.deviceVoice) ui.deviceVoice.textContent = ttsMode() === 'browser' ? 'Use Spark voice' : 'Use device voice';
 }
-function preferredTtsFormat() {
-  try {
-    const a = document.createElement('audio');
-    if (a.canPlayType('audio/ogg; codecs="opus"') || a.canPlayType('audio/opus')) return 'opus';
-  } catch {}
-  return 'mp3';
-}
-function ttsPayload(text, extra = {}) {
-  return { text, response_format: preferredTtsFormat(), ...extra };
-}
-function shouldStreamTts(text) {
-  return text.length > 220 || splitSentences(text).length > 2;
-}
+// Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
+// user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
 async function speak(text) {
-  if (!text || stopFlag) return Promise.resolve();
-  if (ttsMode() === 'neural') {
-    clearTtsNotice();
-    try {
-      // A stream that produced NOTHING falls back to pipelined per-sentence synthesis (speakParts) —
-      // single-shotting the whole text re-pays the exact first-audio latency the pipeline exists to cut.
-      // (A partially-played stream resolves rather than rejects, so nothing is ever spoken twice.)
-      return shouldStreamTts(text) ? await speakStream(text).catch(() => speakParts(splitSentences(text))) : await speakSingle(text);
-    } catch (e) {
-      showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest of this conversation too.', { offerDevice: true });
-      return speakBrowser(text);
-    }
-  }
-  showTtsNotice('Using your device voice fallback. You can switch back to Spark Kokoro when the network is better.', { offerDevice: true });
-  return speakBrowser(text);
-}
-
-// On-device speech synthesis. Instant. Uses the device's DEFAULT voice — the most natural one;
-// FORCING a voice via getVoices() (what I did before) tended to pick a robotic "compact" voice on
-// iOS. Speaks the whole line as ONE utterance for natural prosody, only splitting very long text to
-// dodge iOS's long-utterance truncation. ALWAYS resolves: onend + an idle-poll backstop (iOS often
-// drops onend) + an absolute cap, and only after it has STARTED, so the loop never wedges or ends
-// mid-speech (which would make the mic record the TTS).
-function speakBrowser(text) {
-  return new Promise((resolve) => {
-    if (!text || stopFlag || typeof speechSynthesis === 'undefined') return resolve();
-    let done = false, cap = null, poll = null, started = false;
-    const fin = () => { if (done) return; done = true; if (cap) clearTimeout(cap); if (poll) clearInterval(poll); resolve(); };
-    try {
-      speechSynthesis.cancel(); // clear any stuck/queued utterance
-      const chunks = text.length > 240 ? splitSentences(text) : [text];
-      const picked = chosenVoice(); // user's pick from the picker, or null => system default (natural)
-      chunks.forEach((p, i) => {
-        const u = new SpeechSynthesisUtterance(p);
-        if (picked) u.voice = picked;
-        u.rate = ttsRate();
-        if (i === chunks.length - 1) u.onend = u.onerror = fin;
-        speechSynthesis.speak(u);
-      });
-      poll = setInterval(() => {
-        if (done) return;
-        if (stopFlag) return fin();
-        if (speechSynthesis.speaking || speechSynthesis.pending) started = true;
-        else if (started) fin(); // was speaking, now idle -> finished
-      }, 250);
-      cap = setTimeout(fin, Math.min(60000, 5000 + (text.length * 110) / ttsRate())); // generous backstop (must exceed real speech)
-    } catch {
-      fin();
-    }
+  if (!text || stopFlag) return;
+  if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Kokoro when the network is better.', { offerDevice: true });
+  else clearTtsNotice();
+  handle = newPlayback();
+  await speakSmart(text, handle, {
+    onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
+    onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
   });
 }
 
@@ -242,17 +166,6 @@ function speakBrowser(text) {
 // Zarvox…) that sound robotic / like an ill old person — we hide those and only offer real,
 // on-device (localService) English voices, so a pick can never be a broken/undownloaded voice.
 const BAD_VOICE_RX = /\b(albert|bad news|bahh|bells|boing|bubbles|cellos|good news|jester|organ|superstar|trinoids|whisper|wobble|zarvox|grandma|grandpa|reed|rocko|sandy|shelley|flo|eddy|junior|kathy|ralph|fred|deranged|hysterical|princess)\b/i;
-
-function chosenVoice() {
-  try {
-    const id = localStorage.getItem('aios_tts_voice');
-    if (!id) return null;
-    const vs = speechSynthesis.getVoices() || [];
-    return vs.find((v) => v.voiceURI === id) || vs.find((v) => v.name === id) || null; // null if the pick vanished -> default
-  } catch {
-    return null;
-  }
-}
 
 function usableVoices() {
   try {
@@ -332,220 +245,6 @@ export function openVoicePicker() {
 }
 
 // Sentence-ish chunks, merging tiny fragments so each chunk is worth a TTS round-trip.
-function splitSentences(text) {
-  const raw = String(text).match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(text)];
-  const out = [];
-  for (const piece of raw.map((s) => s.trim()).filter(Boolean)) {
-    if (out.length && (out[out.length - 1].length < 18 || piece.length < 12)) out[out.length - 1] += ' ' + piece;
-    else out.push(piece);
-  }
-  return out;
-}
-
-function base64ToBlob(base64, mediaType) {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: mediaType || 'audio/mpeg' });
-}
-
-function parseSseBlock(block) {
-  let event = 'message';
-  const dataLines = [];
-  for (const line of block.split(/\r?\n/)) {
-    if (line.startsWith('event:')) event = line.slice(6).trim();
-    if (line.startsWith('data:')) dataLines.push(line.slice(5).trimStart());
-  }
-  const data = dataLines.length ? JSON.parse(dataLines.join('\n')) : {};
-  return { event, data };
-}
-
-function speakStream(text) {
-  return new Promise((resolve, reject) => {
-    if (!text || stopFlag) return resolve();
-    const ctrl = new AbortController();
-    const urls = [];
-    let readingDone = false, playing = false, finished = false, played = 0;
-    const cap = setTimeout(() => finish(new Error('tts stream timeout')), 90000);
-    const slow = setTimeout(() => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to device voice if the network is slow.', { offerDevice: true }), 4500);
-    const finish = (err) => {
-      if (finished) return;
-      finished = true;
-      clearTimeout(cap);
-      clearTimeout(slow);
-      try { ctrl.abort(); } catch {}
-      for (const url of urls.splice(0)) {
-        try { URL.revokeObjectURL(url); } catch {}
-      }
-      err ? reject(err) : resolve();
-    };
-    const pump = async () => {
-      if (playing || finished) return;
-      playing = true;
-      while (urls.length && !stopFlag && !finished) {
-        const url = urls.shift();
-        played += 1;
-        await playUrl(url);
-      }
-      playing = false;
-      if (stopFlag) return finish();
-      if (readingDone && !urls.length) return played ? finish() : finish(new Error('no audio'));
-    };
-    (async () => {
-      try {
-        const r = await fetch('api/tts/stream', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(ttsPayload(text)),
-          signal: ctrl.signal,
-        });
-        if (!r.ok || !r.body?.getReader) throw new Error('tts stream ' + r.status);
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (!finished) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let separator = buffer.indexOf('\n\n');
-          while (separator !== -1) {
-            const block = buffer.slice(0, separator).trim();
-            buffer = buffer.slice(separator + 2);
-            if (block) {
-              const { event, data } = parseSseBlock(block);
-              if (event === 'chunk' && data.audio_base64) {
-                clearTimeout(slow);
-                urls.push(URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)));
-                pump();
-              } else if (event === 'done') {
-                readingDone = true;
-                pump();
-              } else if (event === 'error') {
-                throw new Error(data.detail || 'tts stream error');
-              }
-            }
-            separator = buffer.indexOf('\n\n');
-          }
-        }
-        readingDone = true;
-        pump();
-      } catch (e) {
-        if (!finished && !stopFlag) finish(played ? undefined : e);
-      }
-    })();
-  });
-}
-
-// Generate one chunk's mp3, return a blob URL (or reject). 60s abort guard.
-function fetchTTS(text) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 60000);
-  return fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text)), signal: ctrl.signal })
-    .then((r) => { if (!r.ok) throw new Error('tts ' + r.status); return r.blob(); })
-    .then((b) => URL.createObjectURL(b))
-    .finally(() => clearTimeout(t));
-}
-
-// Pipeline: prefetch chunk i+1 while chunk i plays. First (short) chunk starts in ~2s; later
-// chunks are usually ready before the previous finishes -> near-gapless. Resolves when all
-// have played; REJECTS if none played (caller falls back to single-shot of the whole text).
-function speakParts(parts) {
-  return new Promise((resolve, reject) => {
-    let played = 0;
-    let next = fetchTTS(parts[0]).catch(() => null);
-    (async () => {
-      for (let i = 0; i < parts.length; i++) {
-        if (stopFlag) break;
-        const cur = next;
-        if (i + 1 < parts.length) next = fetchTTS(parts[i + 1]).catch(() => null); // prefetch during playback
-        const url = await cur;
-        if (!url) continue;
-        if (stopFlag) { try { URL.revokeObjectURL(url); } catch {} break; }
-        played++;
-        await playUrl(url);
-      }
-      played ? resolve() : reject(new Error('no audio'));
-    })();
-  });
-}
-
-// Play one mp3 url on the gesture-unlocked element; ALWAYS resolves (ended/error/stop, a
-// per-chunk stall timer for iOS's dropped 'ended', and an absolute cap).
-function playUrl(url) {
-  return new Promise((resolve) => {
-    if (stopFlag) { try { URL.revokeObjectURL(url); } catch {} return resolve(); }
-    let done = false, cap = null, stall = null;
-    const fin = () => {
-      if (done) return;
-      done = true;
-      if (cap) clearTimeout(cap);
-      if (stall) clearTimeout(stall);
-      try { URL.revokeObjectURL(url); } catch {}
-      resolve();
-    };
-    const arm = (ms) => { if (stall) clearTimeout(stall); stall = setTimeout(fin, ms); };
-    cap = setTimeout(fin, 60000);
-    audioEl = getPlayer();
-    audioEl.onended = audioEl.onerror = fin;
-    audioEl.onpause = () => { if (stopFlag) fin(); };
-    audioEl.onplaying = audioEl.ontimeupdate = () => arm(3500);
-    audioEl.src = url;
-    try { audioEl.currentTime = 0; } catch {}
-    applyAudioRate(audioEl);
-    audioEl.play().then(() => arm(5000)).catch(fin);
-  });
-}
-
-// ---- single-shot TTS (/api/tts), with browser fallback ----
-// HARDENED for iOS Safari: ALWAYS resolves exactly once. iOS can drop the <audio> 'ended'
-// event for blob-URL mp3 — guards: a stall timer (~3.5s after timeupdates stop), an absolute
-// text-sized cap, and AbortController for a hung fetch. The fallback path when streaming is
-// unavailable; the server itself falls back Spark-single -> macOS-say, then speechSynthesis.
-function speakSingle(text) {
-  return new Promise((resolve, reject) => {
-    if (!text || stopFlag) return resolve();
-    let done = false, cap = null, stall = null;
-    const ctrl = new AbortController();
-    const slow = setTimeout(() => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to device voice if the network is slow.', { offerDevice: true }), 4500);
-    const finish = (err) => {
-      if (done) return;
-      done = true;
-      if (cap) clearTimeout(cap);
-      if (stall) clearTimeout(stall);
-      clearTimeout(slow);
-      try { ctrl.abort(); } catch {}
-      try { if (audioEl) { audioEl.onended = audioEl.onerror = audioEl.ontimeupdate = audioEl.onplaying = audioEl.onpause = null; audioEl.pause(); } } catch {}
-      err && !stopFlag ? reject(err) : resolve();
-    };
-    const armStall = (ms) => { if (stall) clearTimeout(stall); stall = setTimeout(finish, ms); };
-    cap = setTimeout(() => finish(new Error('tts timeout')), Math.min(90000, 8000 + text.length * 100)); // absolute backstop
-    (async () => {
-      try {
-        const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text)), signal: ctrl.signal });
-        if (!r.ok) throw new Error('tts ' + r.status);
-        const blob = await r.blob();
-        if (done || stopFlag) return finish();
-        const url = URL.createObjectURL(blob);
-        audioEl = getPlayer(); // reuse the gesture-unlocked element so iOS allows play() seconds after the tap
-        clearTimeout(slow);
-        audioEl.onended = () => { try { URL.revokeObjectURL(url); } catch {} finish(); };
-        audioEl.onerror = () => { try { URL.revokeObjectURL(url); } catch {} finish(new Error('audio playback failed')); };
-        // heartbeat: while audio plays, timeupdate fires ~4x/s and re-arms the stall timer;
-        // when playback stops (even if 'ended' never fires) it lapses after 3.5s -> finish.
-        audioEl.onplaying = audioEl.ontimeupdate = () => armStall(3500);
-        audioEl.onpause = () => { if (stopFlag) finish(); }; // tapping Stop pauses -> resolve immediately
-        audioEl.src = url;
-        try { audioEl.currentTime = 0; } catch {}
-        applyAudioRate(audioEl);
-        await audioEl.play();
-        armStall(5000); // in case neither 'playing' nor 'timeupdate' ever fires on iOS
-      } catch (e) {
-        if (done) return; // aborted by cap/stop
-        finish(e);
-      }
-    })();
-  });
-}
 
 // ---- STT ----
 // agentHint (the current queue item's agent) matches dictation to that session's STT source server-side.

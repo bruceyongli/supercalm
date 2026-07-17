@@ -12,6 +12,7 @@
 
 import { api, coalesce, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
+import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 
 registerSW();
 
@@ -32,7 +33,6 @@ const S = {
   rec: { t0: 0, timer: null, media: null, chunks: [] }, draft: '',
   killArmed: false, killTimer: null,
   toast: '', toastTimer: null,
-  voiceRate: Number(localStorage.ph_rate || 1.05),
 };
 
 // ---- utils -------------------------------------------------------------------------------------
@@ -146,43 +146,23 @@ function spokenFromBrief(b, fallback) {
   return `${b.topic}. ${b.standard}${opts}`.trim();
 }
 
-// ---- TTS (server /api/tts → Audio; speechSynthesis fallback) -------------------------------------
-let audioEl = null;
+// ---- TTS — the ONE shared stack (tts-player.js): stream → single → device voice --------------------
+let phoneHandle = null; // current tts-player playback handle
 function stopSpeech() {
   S.queue = [];
   S.speakingId = null;
   S.playScope = null;
-  if (audioEl) { try { audioEl.pause(); } catch {} audioEl = null; }
-  try { speechSynthesis.cancel(); } catch {}
+  try { phoneHandle?.stop(); } catch {}
+  try { stopAllPlayback(); } catch {}
   render();
 }
 async function speakOne(text) {
-  // server TTS first (Spark/provider), browser voice as fallback — resolves on playback end
-  try {
-    const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }) });
-    if (!r.ok) throw new Error('tts ' + r.status);
-    const blob = await r.blob();
-    await new Promise((res, rej) => {
-      audioEl = new Audio(URL.createObjectURL(blob));
-      audioEl.playbackRate = S.voiceRate;
-      audioEl.onended = res;
-      audioEl.onerror = rej;
-      audioEl.play().catch(rej);
-    });
-    return true;
-  } catch {
-    return new Promise((res) => {
-      try {
-        const u = new SpeechSynthesisUtterance(text);
-        u.rate = S.voiceRate;
-        u.onend = () => res(true);
-        u.onerror = () => res(false);
-        speechSynthesis.speak(u);
-      } catch { res(false); }
-    });
-  }
+  phoneHandle = newPlayback();
+  try { await speakSmart(text, phoneHandle, {}); } catch {}
+  return !phoneHandle.stopped; // done (true) unless it was stopped mid-line
 }
 async function playQueue(items, scope) {
+  unlockAudio(); // gesture-unlock the shared player (this runs inside the tap that started the queue)
   stopSpeech();
   S.queue = items.slice();
   S.playScope = scope;
@@ -210,6 +190,7 @@ async function playQueue(items, scope) {
 const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false };
 
 async function voiceModeStart() {
+  unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
   V.on = true; V.state = 'starting'; V.stopFlag = false; S.sheet = 'voicemode';

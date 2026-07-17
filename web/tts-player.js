@@ -148,7 +148,7 @@ function playUrl(url, h) {
 // The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
 // has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
 // re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
-function speakStream(text, h, extra = {}) {
+function speakStream(text, h, extra = {}, onSlow) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
@@ -156,10 +156,12 @@ function speakStream(text, h, extra = {}) {
     let readingDone = false, playing = false, finished = false, played = 0;
     const capMs = Math.max(90000, 20000 + (text.length * 130) / ttsRate());
     const cap = setTimeout(() => finish(played ? undefined : new Error('tts stream timeout')), capMs);
+    const slow = onSlow ? setTimeout(() => { if (!played && !finished) { try { onSlow(); } catch {} } }, 4500) : null; // still no audio → "spark is slow"
     const finish = (err) => {
       if (finished) return;
       finished = true;
       clearTimeout(cap);
+      if (slow) clearTimeout(slow);
       try { ctrl.abort(); } catch {}
       for (const url of urls.splice(0)) { try { URL.revokeObjectURL(url); } catch {} }
       err ? reject(err) : resolve();
@@ -223,16 +225,18 @@ function speakStream(text, h, extra = {}) {
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
 // Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
 // has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
-function speakSingle(text, h, extra = {}) {
+function speakSingle(text, h, extra = {}, onSlow) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     let done = false, cap = null, stall = null, playedSome = false;
     const ctrl = new AbortController();
+    const slow = onSlow ? setTimeout(() => { if (!playedSome && !done) { try { onSlow(); } catch {} } }, 4500) : null;
     const finish = (err) => {
       if (done) return;
       done = true;
       if (cap) clearTimeout(cap);
       if (stall) clearTimeout(stall);
+      if (slow) clearTimeout(slow);
       try { ctrl.abort(); } catch {}
       try { if (player) { player.onended = player.onerror = player.ontimeupdate = player.onplaying = player.onpause = null; player.pause(); } } catch {}
       err && !h.stopped && !playedSome ? reject(err) : resolve();
@@ -308,7 +312,10 @@ function speakBrowser(text, h) {
 // config) — after the first stream failure we go straight to single-shot for the rest of this page
 // session instead of burning a failed round-trip per part on no-Spark installs.
 let streamUnavailable = false;
-export async function speakSmart(text, h, { ttsExtra = {} } = {}) {
+// Optional callbacks let a caller show its own UI without coupling this module to any:
+//   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
+//   onFallback() — neural failed and we're speaking with the on-device voice instead.
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
@@ -316,17 +323,22 @@ export async function speakSmart(text, h, { ttsExtra = {} } = {}) {
   try {
     const long = text.length > 220 || splitSentences(text).length > 2;
     if (long && !streamUnavailable) {
-      return await speakStream(text, h, ttsExtra).catch((e) => {
+      return await speakStream(text, h, ttsExtra, onSlow).catch((e) => {
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
         if (/\b409\b/.test(String(e?.message || ''))) streamUnavailable = true;
         if (h.stopped) return;
-        return speakSingle(text, h, ttsExtra);
+        return speakSingle(text, h, ttsExtra, onSlow);
       });
     }
-    return await speakSingle(text, h, ttsExtra);
+    return await speakSingle(text, h, ttsExtra, onSlow);
   } catch {
     if (h.stopped) return;
+    try { onFallback?.(); } catch {}
     return speakBrowser(text, h);
   }
 }
+
+// Re-apply the current localStorage rate to the live shared element (for a rate control that should
+// take effect mid-utterance). cycleRate() already does this when cycling; this is for a direct set.
+export function applyRateLive() { if (player) applyRate(player); }
