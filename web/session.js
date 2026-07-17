@@ -130,6 +130,26 @@ export function mountSession(hostEl, { id: startId = '', embedded = true } = {})
   let id = startId || params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
   if (!id) { location.href = document.baseURI; return; }
   const resizeOff = params.get('resize') === 'off' || params.has('noresize');
+  // One-tap capability mint (v4 S1): a kernel-escalation push deep-links session?id=<sid>&mint=<class>.
+  // Native confirm keeps it zero-chrome (house rule: no visible controls for rare edge cases); the minted
+  // capability is single-use + 15min TTL, and the supervisor's next attempt consumes it and proceeds.
+  const mintClass = params.get('mint');
+  if (mintClass && /^[a-z_]{3,24}$/.test(mintClass)) {
+    setTimeout(() => {
+      if (confirm(`The supervisor was blocked on a reserved "${mintClass}" action for this session.\n\nAuthorize it ONCE (15 min, single use)?`)) {
+        fetch('api/capability/mint', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session: id, action: mintClass }),
+        }).then((r) => r.json()).then((d) => {
+          if (!d.ok) alert('Mint failed: ' + (d.error || 'unknown'));
+        }).catch((e) => alert('Mint failed: ' + e.message));
+      }
+      // strip the param either way so a reload never re-prompts
+      params.delete('mint');
+      history.replaceState(null, '', location.pathname + '?' + params.toString());
+    }, 400);
+  }
   // Ensure the markup is present: the SPA passes an empty #view (inject); the standalone page provides it.
   if (hostEl && !document.getElementById('session-shell')) hostEl.innerHTML = SESSION_MARKUP;
   // Teardown registry — destroySession() aborts/clears these so a re-mount starts clean (idempotent). The
