@@ -156,10 +156,9 @@
     getJson(`api/changes?from=${encodeURIComponent(seen)}&to=${encodeURIComponent(version)}`).then((r) => {
       const sub = el.querySelector('[data-changes]');
       if (!sub) return;
-      const items = (r?.changes || []).slice(0, 3);
+      const items = (r?.changes || []).slice(0, 4); // the distilled list is already the curated summary
       const link = r?.url ? ` · <a data-gh href="${esc(r.url)}" target="_blank" rel="noopener">what’s new ↗</a>` : '';
-      const more = r?.total > items.length ? ` +${r.total - items.length} more` : '';
-      sub.innerHTML = (items.length ? items.map(esc).join(' · ') + more : 'Things may have moved — review Settings') + link;
+      sub.innerHTML = (items.length ? items.map(esc).join(' · ') : 'Things may have moved — review Settings') + link;
     });
   }
 
