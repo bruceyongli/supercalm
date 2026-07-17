@@ -30,7 +30,10 @@ const SETTINGS_CSS = `
       #st-prov .ob-row label.ob-ver { flex: 0 0 auto; }
       #st-prov .ob-row input[type="checkbox"] { width: 19px; height: 19px; }
       /* add-provider form: one field per row — side-by-side 150px fields clipped their placeholders */
-      .st-form-row .st-inp, .st-form-row .st-sel { min-width: 100%; }
+      .st-form-row { flex-direction: column; align-items: stretch; }
+      /* width+max-width (not just min-width): a select intrinsic max-content (long option text)
+         was 470px and dragged the whole document to 511px on a 390px phone */
+      .st-form-row .st-inp, .st-form-row .st-sel { width: 100%; max-width: 100%; min-width: 0; }
       .st-nav a.active { box-shadow: none; border-color: #58a6ff; }
     }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }

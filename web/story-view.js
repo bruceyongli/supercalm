@@ -62,13 +62,14 @@ function reconcileEchoes() {
 // point. Returns the echo handle so a failed send (409 stopped / error) can cancel the ghost.
 export function noteComposerSend(text) {
   if (!sid || !normText(text)) return null; // story not mounted / attachment-only send
-  const feed = panelEl && panelEl.querySelector('.story-feed');
-  const stick = feed ? nearBottom(feed) : false;
   const echo = { ts: Date.now(), text: String(text), state: 'pending' };
   sendEchoes.push(echo);
   if (sendEchoes.length > 20) sendEchoes = sendEchoes.slice(-20);
   render();
-  if (stick) storyToLatest(); // keep them at the tail ONLY if they were already there (scroll rule)
+  // YOUR OWN send always jumps to the tail. The no-auto-scroll rule protects READING; sending is an
+  // explicit act at the conversation's newest point — when the echo landed below the fold (mid-history
+  // scroll), the send looked like silent message loss (judge-blocking twice; a phone user would agree).
+  storyToLatest();
   return echo;
 }
 export function cancelComposerSend(echo) {

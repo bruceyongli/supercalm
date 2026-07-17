@@ -8,13 +8,30 @@ import { listProviders, startLogin, completeLogin, logout, forceRefresh, status,
 import { authStatus, probeProxy } from './authmode.js';
 
 // Overall status: claude's active auth mode + proxy reachability + every provider's login state.
-route('GET', '/api/auth/status', async (req, res) => {
-  try {
+// Stale-while-revalidate: the provider probes are slow (`agy models` alone runs ~4s) and made EVERY
+// /api/auth/status call — the settings/auth pages' first paint — stall ~5s. Serve the last snapshot
+// instantly and refresh in the background; login/logout/refresh invalidate so changes show promptly.
+const AUTH_STATUS_TTL_MS = Number(process.env.AIOS_AUTH_STATUS_TTL_MS || 30000);
+let authStatusCache = { ts: 0, data: null };
+let authStatusInflight = null;
+function refreshAuthStatus() {
+  if (authStatusInflight) return authStatusInflight;
+  authStatusInflight = (async () => {
     const base = await authStatus();
     const providers = await Promise.all(
       listProviders().map(async (p) => ({ ...p, ...(await status(p.id)) }))
     );
-    json(res, 200, { ...base, providers });
+    authStatusCache = { ts: Date.now(), data: { ...base, providers } };
+  })().finally(() => { authStatusInflight = null; });
+  return authStatusInflight;
+}
+function invalidateAuthStatus() { authStatusCache = { ts: 0, data: authStatusCache.data }; }
+
+route('GET', '/api/auth/status', async (req, res) => {
+  try {
+    if (!authStatusCache.data) await refreshAuthStatus();
+    else if (Date.now() - authStatusCache.ts > AUTH_STATUS_TTL_MS) refreshAuthStatus().catch(() => {});
+    json(res, 200, authStatusCache.data);
   } catch (e) {
     json(res, 500, { error: String(e?.message || e) });
   }
@@ -40,7 +57,9 @@ route('POST', '/api/auth/:provider/complete', async (req, res, params) => {
     const body = await readJson(req);
     const code = String(body?.code || '').trim();
     if (!code) return json(res, 400, { error: 'missing code' });
-    json(res, 200, await completeLogin(params.provider, code, body?.nonce));
+    const done = await completeLogin(params.provider, code, body?.nonce);
+    invalidateAuthStatus();
+    json(res, 200, done);
   } catch (e) {
     json(res, 400, { error: String(e?.message || e) });
   }
@@ -56,6 +75,7 @@ route('POST', '/api/auth/:provider/refresh', async (req, res, params) => {
       return json(res, 200, { ok: true, deferred: true, note: 'proxy is active and owns refresh' });
     }
     await forceRefresh(params.provider);
+    invalidateAuthStatus();
     json(res, 200, { ok: true });
   } catch (e) {
     json(res, 400, { error: String(e?.message || e) });
@@ -70,10 +90,15 @@ route('POST', '/api/auth/:provider/logout', async (req, res, params) => {
     if (params.provider === 'claude' && (await probeProxy())) {
       return json(res, 409, { error: 'the proxy is active and shares this credential — manage it via the proxy dashboard so the proxy keeps working' });
     }
-    json(res, 200, await logout(params.provider));
+    const out = await logout(params.provider);
+    invalidateAuthStatus();
+    json(res, 200, out);
   } catch (e) {
     json(res, 400, { error: String(e?.message || e) });
   }
 });
+
+// Pre-warm the snapshot off the boot path so even the FIRST settings/auth page load paints instantly.
+setTimeout(() => refreshAuthStatus().catch(() => {}), 3000);
 
 console.log('[aios] auth api active (claude/codex/antigravity)');

@@ -28,9 +28,36 @@ function isTransient(e) {
   return TRANSIENT_RX.test(String(e?.message || e || ''));
 }
 
+// ---- access-denied cooldown ------------------------------------------------------------------------
+// A 403 from a route is a fleet ACCESS change (model de-escalated / upstream account rejected — e.g.
+// "Antigravity loadCodeAssist failed (403)"), not a transient. Operator policy: switch models, never
+// hammer or escalate. Remember the denial per route and fail fast for a window so fallback chains skip
+// the dead hop instantly instead of re-burning it (and the logs) on every call.
+const DENIED_COOLDOWN_MS = Number(process.env.AIOS_MODEL_DENIED_COOLDOWN_MS || 10 * 60 * 1000);
+const deniedRoutes = new Map(); // key -> ts of the 403
+export function routeKeyOf(route) {
+  return `${route?.proxy || route?.base || route?.port || '?'}:${route?.model || route?.id || '?'}`;
+}
+export function isRouteDenied(key) {
+  const t = deniedRoutes.get(key);
+  if (t == null) return false;
+  if (Date.now() - t >= DENIED_COOLDOWN_MS) { deniedRoutes.delete(key); return false; }
+  return true;
+}
+export function markRouteDenied(key) {
+  if (!deniedRoutes.has(key)) console.error(`[aios] model route ${key} returned 403 — cooling down ${Math.round(DENIED_COOLDOWN_MS / 60000)}m (access change, not an error to retry)`);
+  deniedRoutes.set(key, Date.now());
+}
+const DENIED_RX = /\b403\b|forbidden|permission[_ ]denied|access denied/i;
+export function isAccessDenied(e) {
+  return DENIED_RX.test(String(e?.message || e || ''));
+}
+
 // POST chat-completions to a resolved fleet route, retrying transient failures. `messages` may contain
 // OpenAI-style multimodal content arrays (text + image_url). Returns { content, usage, raw, model }.
 export async function callProxyModel(route, messages, opts = {}) {
+  const key = routeKeyOf(route);
+  if (isRouteDenied(key)) throw new Error(`model access denied (cooling down after 403): ${key}`);
   const tries = Math.max(0, opts.retries ?? 2);
   let lastErr;
   for (let i = 0; i <= tries; i++) {
@@ -38,6 +65,7 @@ export async function callProxyModel(route, messages, opts = {}) {
       return await callOnce(route, messages, opts);
     } catch (e) {
       lastErr = e;
+      if (isAccessDenied(e)) { markRouteDenied(key); throw e; }
       if (i < tries && isTransient(e)) {
         await delay(500 * (i + 1));
         continue;

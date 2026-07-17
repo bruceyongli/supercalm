@@ -234,6 +234,9 @@ a { color: var(--blue); text-decoration: none; }
 /* flex-column scroll containers must never compress children to fit the viewport */
 .home-scroll > *, .msgs > *, .pn-body > *, .rp-scroll > * { flex-shrink: 0; }
 /* long real-world titles (URLs, task strings) clamp instead of wrapping the row */
-.needname, .sessname { max-width: 38vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the decision card title WRAPS (judge: 38vw ellipsis made triage items unidentifiable); the
+   compact all-sessions rows keep one line but at readable width */
+.needname { max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.sessname { max-width: 56vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sv-name { max-width: 52vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .needsum { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; }

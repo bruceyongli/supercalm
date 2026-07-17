@@ -568,9 +568,9 @@ function renderHome() {
         <a href="usage">Usage</a>
         <a href="health">Health</a>
         <a href="settings">Settings</a>
+        <a href="./?desktop=1">Desktop site ›</a>
       </nav>
       ${others.length ? `<div class="sec-label" style="padding-top:12px">ALL SESSIONS <span class="cnt neutral">${others.length}</span></div>${otherRows}` : ''}
-      <a href="./?desktop=1" style="text-align:center;font-size:11px;color:var(--tx-faint);padding:16px 0 4px">Desktop site ›</a>
     </div>
   </div>`;
 }

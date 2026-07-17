@@ -47,7 +47,7 @@ const SYS = `You are a meticulous mobile QA agent with full control of a phone b
 JOURNEYS to cover (self-paced; mark them done as you complete them):
 1. dashboard-triage: read the dashboard, open the sidebar drawer (☰) and close it.
 2. open-session: open a session from the list; confirm the story/messages are readable and fill the screen sensibly.
-3. compose-send: tap the composer, type "status?" and send it; confirm it appears without breaking layout.
+3. compose-send: tap the composer, type a UNIQUE short message (e.g. "qa check <3 random letters>" — the session's history contains messages from earlier test runs, so a generic text may already appear in the story and mislead you) and send it; confirm YOUR text appears without breaking layout.
 4. panels: open agent panels from the bottom bar glyphs (try 2 different ones + the gear); scroll inside; CLOSE each one and verify it actually closed (this has been buggy).
 5. terminal-switch: switch the session to the terminal view and back to story.
 6. new-session: open the new-session launcher (+ in the drawer's Sessions row, or from the dashboard); inspect the form fits the phone; CANCEL it (do not launch).
@@ -109,12 +109,43 @@ async function tapXY(x, y) {
   await delay(40);
   await cdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
 }
+// Live pages re-render between the element map and the model's (20-40s later) action — stale
+// coordinates tapped dead space and read as "unresponsive controls". Re-find the element by tag+label
+// closest to its mapped position and tap FRESH coordinates; fall back to the stored ones.
+async function freshXY(el) {
+  if (!el) return null;
+  const found = await evaluate(`(() => {
+    const want = ${JSON.stringify(el.label || '')};
+    let best = null, bestD = 1e9;
+    for (const c of document.querySelectorAll(${JSON.stringify(el.tag.split('#')[0] || '*')})) {
+      const r = c.getBoundingClientRect();
+      if (!r.width || !r.height || r.bottom < 0 || r.top > ${VH}) continue;
+      let label = (c.getAttribute('aria-label') || c.textContent || c.placeholder || c.value || '').replace(/\\s+/g, ' ').trim().slice(0, 42);
+      if (c.tagName === 'SELECT' && c.selectedIndex >= 0) label = 'select: ' + (c.options[c.selectedIndex]?.textContent || '').trim().slice(0, 30);
+      if (want && label !== want) continue;
+      const d = Math.hypot(r.left + r.width / 2 - ${el.x}, r.top + r.height / 2 - ${el.y});
+      if (d < bestD) { bestD = d; best = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; }
+    }
+    return best;
+  })()`).catch(() => null);
+  return found || { x: el.x, y: el.y };
+}
 async function scrollBy(dy) {
-  // touch-drag scroll on the dominant scroller under the midpoint (real behavior incl. momentum-free)
-  await evaluate(`(() => {
-    const el = document.elementFromPoint(${VW / 2}, ${VH / 2});
-    let s = el; while (s && s !== document.body && s.scrollHeight <= s.clientHeight + 4) s = s.parentElement;
-    (s && s !== document.body ? s : (document.scrollingElement || document.documentElement)).scrollBy({ top: ${Number(dy) || 0}, behavior: 'instant' });
+  // Scroll whatever actually moves: the scroller under the midpoint, the document, then the largest
+  // overflow container. Returns the delta so the model KNOWS "0 = already at the end" instead of
+  // guessing the page is broken (the point-walk alone silently no-oped on app-shell pages).
+  return await evaluate(`(() => {
+    const d = ${Number(dy) || 0};
+    const isScroller = (e) => e && e.scrollHeight > e.clientHeight + 8 && /(auto|scroll)/.test(getComputedStyle(e).overflowY);
+    const targets = [];
+    let s = document.elementFromPoint(${VW / 2}, ${VH / 2});
+    while (s && s !== document.body && !isScroller(s)) s = s.parentElement;
+    if (s && s !== document.body) targets.push(s);
+    targets.push(document.scrollingElement || document.documentElement);
+    const all = [...document.querySelectorAll('*')].filter(isScroller).sort((a, b) => b.clientWidth * b.clientHeight - a.clientWidth * a.clientHeight);
+    if (all[0]) targets.push(all[0]);
+    for (const t of targets) { const b = t.scrollTop; t.scrollBy({ top: d, behavior: 'instant' }); if (Math.abs(t.scrollTop - b) > 1) return Math.round(t.scrollTop - b); }
+    return 0;
   })()`);
 }
 
@@ -199,9 +230,9 @@ try {
     if (a.type === 'done') break;
     try {
       const el = a.ref ? refs[Number(String(a.ref).replace(/^e/, '')) - 1] : null;
-      if (a.type === 'tap' && el) { await tapXY(el.x, el.y); note = `tapped ${a.ref} ${el.tag}`; }
+      if (a.type === 'tap' && el) { const p = await freshXY(el); await tapXY(p.x, p.y); note = `tapped ${a.ref} ${el.tag}`; }
       else if (a.type === 'type' && a.text != null) {
-        if (el) await tapXY(el.x, el.y);
+        if (el) { const p = await freshXY(el); await tapXY(p.x, p.y); }
         await delay(250);
         await cdp('Input.insertText', { text: String(a.text) });
         note = `typed "${String(a.text).slice(0, 30)}"`;
@@ -215,7 +246,7 @@ try {
           } }
           return 'select not found';
         })()`)) || 'select attempted';
-      } else if (a.type === 'scroll') { await scrollBy(a.dy ?? 600); note = `scrolled ${a.dy ?? 600}`; }
+      } else if (a.type === 'scroll') { const moved = await scrollBy(a.dy ?? 600); note = moved ? `scrolled ${moved}px` : 'scroll moved nothing — already at the end (or no scroller); do not treat as broken'; }
       else if (a.type === 'nav' && a.url) { await cdp('Page.navigate', { url: new URL(String(a.url).replace(/^\//, ''), BASE).href }); note = `navigated to ${a.url}`; await delay(1500); }
       else if (a.type === 'back') { await evaluate('history.back()'); note = 'went back'; await delay(1200); }
       else if (a.type === 'wait') { note = 'waited'; }

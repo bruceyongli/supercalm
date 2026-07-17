@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { fleetKey, userRoutes, routeForModel } from './model_catalog.js';
-import { callProxyModel } from './agents/model.js';
+import { callProxyModel, isRouteDenied, markRouteDenied, isAccessDenied } from './agents/model.js';
 
 // Local-proxy chat with a fallback chain. Default brain for the voice concierge,
 // chosen by a faithfulness+latency benchmark (NOT speed alone — see README/commit):
@@ -86,10 +86,16 @@ async function callEntry(entry, messages, opts = {}) {
 export async function chat(messages, opts = {}, chain = VOICE_CHAIN, callFn = callEntry) {
   let lastErr;
   for (const entry of withUserTail(chain)) {
+    // a hop that 403'd recently is an ACCESS change (de-escalated model) — skip it silently instead of
+    // re-burning the call + a log line on every chat (the gemini hop alone produced thousands of
+    // "loadCodeAssist failed (403)" lines while the fleet had antigravity de-escalated)
+    const key = entry.api ? `api:${entry.model}` : `${entry.port}:${entry.model}`;
+    if (isRouteDenied(key)) { lastErr = lastErr || new Error(`model access denied (cooldown): ${key}`); continue; }
     try {
       return { content: await callFn(entry, messages, opts), model: entry.model };
     } catch (e) {
       lastErr = e;
+      if (isAccessDenied(e)) markRouteDenied(key);
       console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port} failed: ${e.message}`);
       if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain
     }

@@ -138,6 +138,9 @@ function workSummary(sys) {
 const OVERLOAD_RX = /overloaded|rate.?limit|too many requests|quota|\b(429|529|503)\b/i;
 const NETBLIP_RX = /fetch failed|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|\b(500|502|504)\b/i;
 const BADMODEL_RX = /not[_ ]?found|unknown model|no such model|invalid model|\b404\b/i; // misconfigured model -> stand down, don't spam
+// access revoked (fleet de-escalated the model / upstream 403, e.g. "Antigravity loadCodeAssist failed
+// (403)") — same stand-down as a bad model: retrying every sweep produced thousands of log lines
+const DENIED_RX = /\b403\b|forbidden|permission[_ ]denied|access denied/i;
 const PAUSE_MS = Number(process.env.AIOS_LABEL_PAUSE_MS || 240000); // stand down 4 min after an overload
 let pausedUntil = 0;
 function tripBreaker(msg) {
@@ -182,6 +185,7 @@ async function chatJson(messages, maxTokens = 320) {
     } catch (e) {
       const msg = String(e?.message || e);
       if (BADMODEL_RX.test(msg)) { tripBreaker(`model "${currentModel()}" not available: ${msg.slice(0, 80)}`); throw e; } // misconfig -> stand down
+      if (DENIED_RX.test(msg)) { tripBreaker(`model "${currentModel()}" access denied (403) — pick another AIOS_LABEL_MODEL or restore fleet access`); throw e; } // access change -> stand down
       if (OVERLOAD_RX.test(msg)) { tripBreaker(msg); throw e; } // overloaded -> stand down, do NOT add load
       if (i < 1 && NETBLIP_RX.test(msg)) { await sleep(600); continue; } // one retry for a transient blip
       throw e;
