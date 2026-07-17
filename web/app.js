@@ -222,7 +222,7 @@ function sessionRow(s) {
   row.innerHTML =
     `<span class="dot ${s.status}"></span>${badge(s)}` +
     `<span class="title"><b>${where(s)}</b> <span class="muted">${escapeHtml(s.title || '')}</span> ${meta(s)}</span>` +
-    `<span class="meta status-txt ${s.status}">${s.status}</span>` +
+    `<span class="meta status-txt ${s.status}">${s.parked ? 'parked' : s.status}</span>` +
     `<span class="meta hide-sm">${fmtAgo(s.last_activity)} ago</span>` +
     resumeBtn +
     `<a class="btn ghost sm" href="session?id=${s.id}">open</a>`;
@@ -249,7 +249,7 @@ function renderSessions() {
   const box = $('#sessions');
   if (isInteracting(box)) return; // don't collapse the expanded "Recent" list out from under you
   const all = STATE.sessions || [];
-  const live = all.filter((s) => s.status !== 'exited');
+  const live = all.filter((s) => s.status !== 'exited').sort((a, b) => (a.parked ? 1 : 0) - (b.parked ? 1 : 0));
   const dead = all.filter((s) => s.status === 'exited').slice(0, 12);
   box.innerHTML = '';
   if (!all.length) {

@@ -149,7 +149,7 @@ export function buildState() {
   // the "needs you" queue: waiting AND not LLM-judged as still-working. Tiered by engagement
   // (blocking > fresh > stale) so an abandoned session's asks can't crowd out live work.
   const queue = all
-    .filter((s) => s.status === 'waiting' && s.category !== 'working')
+    .filter((s) => s.status === 'waiting' && s.category !== 'working' && !s.parked) // parked = byte-still 6h+; reply wakes it (park.js, A3)
     .map((s) => ({ ...s, queueTier: queueTier({ tier: s.tier, category: s.category }) }))
     .sort((a, b) => (QUEUE_TIER_ORDER[a.queueTier] ?? 1) - (QUEUE_TIER_ORDER[b.queueTier] ?? 1));
   return {

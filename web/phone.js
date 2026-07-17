@@ -498,9 +498,9 @@ function render() {
 function renderHome() {
   const sessions = S.home?.sessions || [];
   const counts = S.home?.counts || { waiting: 0, working: 0, live: 0 };
-  const live = sessions.filter((s) => ['working', 'waiting'].includes(s.status));
+  const live = sessions.filter((s) => ['working', 'waiting'].includes(s.status) && !s.parked);
   const needs = live.filter((s) => s.unread > 0 && s.status === 'waiting');
-  const stale = sessions.filter((s) => s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3 && !needs.includes(s));
+  const stale = sessions.filter((s) => (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
   const playing = S.playScope === 'home' || V.on;
   const playLabel = V.on ? '■ End voice session' : totalUnread ? `▶ Play ${totalUnread} unread` : 'Voice — ask anything';
