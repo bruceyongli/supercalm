@@ -116,8 +116,8 @@ export async function dispatchSupervisorSend(ctx, {
     payload: { text: msg, sendOptions, intent: typedIntent ? { name: typedIntent.name } : undefined },
   });
   if (!allowed) {
-    const result = { sent: false, reason: suppressed || 'blocked', message: '' };
-    updateDecisionSend(decision.decisionId, result);
+    const result = { sent: false, reason: suppressed || 'blocked', message: '', draft: msg };
+    updateDecisionSend(decision.decisionId, { sent: false, reason: suppressed || 'blocked', message: '' });
     return result;
   }
   // Typed send lane for the kernel (context.js): a rendered intent carries its own lane; the operator
@@ -135,7 +135,7 @@ export async function dispatchSupervisorSend(ctx, {
     : (sendOptions.lease ?? { paneSig: ctx.__tickPaneSig });
   const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
-  return result;
+  return { ...result, draft: msg }; // draft = the rendered text, for caller logging even on kernel blocks
 }
 
 export async function dispatchSupervisorCommand(ctx, {

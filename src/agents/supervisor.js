@@ -2658,7 +2658,7 @@ async function runKeepWorking(ctx, cfg, snapshot = null) {
   });
   sent = r.sent ? 1 : 0;
   sent_text = r.message || '';
-  logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: cfg.model, verdict: 'nudged', assessment: 'Agent went idle mid-task (no question, no done-claim); pushed it to resume the next concrete step on the current focus.', message: msg, sent, sent_text });
+  logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: cfg.model, verdict: 'nudged', assessment: 'Agent went idle mid-task (no question, no done-claim); pushed it to resume the next concrete step on the current focus.', message: r.draft || '', sent, sent_text });
   ctx.emit('review', { verdict: 'nudged', summary: 'idle mid-task — pushed to keep working' });
   return !!sent; // the caller's per-focus cap counts DELIVERED pushes only
 }

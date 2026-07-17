@@ -20,7 +20,10 @@ assert.match(supervisorSource, /not never and not contradiction/);
 assert.match(supervisorSource, /Staged sequencing/);
 assert.match(supervisorSource, /not automatic blockers or contradictions/);
 assert.match(supervisorSource, /future\/when-ready\/next phase is now current/);
-assert.match(supervisorSource, /next unblocked sequenced\/future\/when-ready phase/);
+// The keep-working push's sequencing rhetoric moved with its template into intents.js (v4 Phase 1:
+// code-authored send templates are vetted centrally). Same contract, template's actual home:
+const intentsSource = readFileSync(new URL('../src/agents/intents.js', import.meta.url), 'utf8');
+assert.match(intentsSource, /next unblocked sequenced\/future\/when-ready phase/);
 
 const maintainerSource = readFileSync(new URL('../src/agents/doc_maintainer.js', import.meta.url), 'utf8');
 assert.match(maintainerSource, /Progressive sequencing rule/);
