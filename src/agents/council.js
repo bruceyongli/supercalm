@@ -9,6 +9,7 @@
 // forbids obeying instructions inside it. Model output is the advisors' opinion, never auto-executed; the
 // operator reviews and edits before any commit reaches an agent or the doc.
 import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { renderIntent } from './intents.js';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
@@ -439,7 +440,11 @@ export async function capture(ctx, { threadId, title, text, dest = {} } = {}) {
   }
   // 3) the coding agent — hand the outcome off directly (guarded; only when it's waiting).
   if (dest.agent) {
-    try { const r = await ctx.sendToAgent(`Council outcome — ${ttl}:\n${body}`, { guarded: true, blockDecision: false }); done.agent = !!r.sent; if (!r.sent) done.agentReason = r.reason; } catch (e) { done.agentError = String(e.message || e).slice(0, 120); }
+    try {
+      const ri = renderIntent('COUNCIL_OUTCOME', { title: ttl, body });
+      const r = ri.ok ? await ctx.sendToAgent(ri.text, { guarded: true, blockDecision: false, kind: ri.kind, intentName: 'COUNCIL_OUTCOME' }) : { sent: false, reason: 'intent-render-refused: ' + ri.error };
+      done.agent = !!r.sent; if (!r.sent) done.agentReason = r.reason;
+    } catch (e) { done.agentError = String(e.message || e).slice(0, 120); }
   }
   addMessage(threadId, { role: 'outcome', content: `# ${ttl}\n\n${body}` });
   _touchThread.run(now(), 'captured', threadId);

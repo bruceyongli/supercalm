@@ -70,7 +70,9 @@ const snapshot = {
   assert.equal(ctx.sent.length, 0);
 }
 
-// ---- free-text path still works during the strangler migration (kind from actionType) ----
+// ---- free-text without an intent: dispatch still forwards it, and the KERNEL refuses it ----
+// (require-intent is the Phase-1 end-state default; the fake ctx here bypasses the kernel, so assert
+// the dispatch-level contract: no intent => empty intentName forwarded for the kernel to refuse.)
 {
   const ctx = fakeCtx();
   const r = await dispatchSupervisorSend(ctx, {
@@ -78,8 +80,9 @@ const snapshot = {
     text: 'Use the existing helper module.',
     triggeringSignal: { type: 'question', summary: 'which module?', ts: 2 },
   });
-  assert.equal(r.sent, true);
+  assert.equal(r.sent, true, 'dispatch itself stays permissive (the kernel owns refusal)');
   assert.equal(ctx.sent[0].opts.kind, 'answer');
+  assert.equal(ctx.sent[0].opts.intentName, '', 'no declared intent => empty intentName reaches the kernel, which refuses under require-intent');
 }
 
 // ---- lease pass-through (Phase 1): reasoned sends carry the tick's pane signature; recovery doesn't ----

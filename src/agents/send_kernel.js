@@ -34,11 +34,12 @@ export const KERNEL_DEFAULTS = {
   receiptTimeoutMs: Number(process.env.AIOS_SEND_KERNEL_RECEIPT_MS || 5 * 60_000), // a send unacknowledged by ANY pane movement for this long resolves received:false
 };
 
-// End-state of Phase 1 (flip AFTER every agent send path declares an intent — council's outcome send
-// is the last holdout): a non-operator send without a declared intent name is refused outright, making
-// free-form autonomous sends structurally impossible rather than merely migrated-away-from.
+// Phase-1 end-state, ON by default now that every agent send path declares an intent (supervisor via
+// dispatch, slash-commands as RECOVER_COMMAND, council via COUNCIL_OUTCOME): a non-operator send without
+// a declared intent is refused outright — free-form autonomous sends are structurally impossible.
+// AIOS_SEND_KERNEL_REQUIRE_INTENT=0 is the emergency kill-switch (matches the Phase-0 pattern).
 export function intentRequired() {
-  return process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT === '1';
+  return process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT !== '0';
 }
 
 export function kernelEnabled() {

@@ -5,7 +5,7 @@ const { evaluateSend, emptyKernelState, reservedActionClass, kernelEnabled, RESE
 
 const T0 = 1_800_000_000_000;
 const MIN_GAP = KERNEL_DEFAULTS.minGapMs;
-const prop = (over = {}) => ({ kind: 'nudge', text: 'please continue with the task', paneSig: 'sigA', ...over });
+const prop = (over = {}) => ({ kind: 'nudge', text: 'please continue with the task', paneSig: 'sigA', intentName: 'CONTINUE', ...over });
 
 // Drive an ALLOWED send through the kernel, asserting it was allowed. Returns next state.
 function sendOk(st, p, t) {
@@ -173,18 +173,17 @@ function sendOk(st, p, t) {
 
 // ---- require-intent (Phase 1 end-state, default OFF until every agent lane declares intents) ----
 {
-  const free = evaluateSend(emptyKernelState(), prop(), T0);
-  assert.equal(free.allowed, true, 'flag off: free-form sends still pass (migration mode)');
-  process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT = '1';
-  const blocked = evaluateSend(emptyKernelState(), prop(), T0);
-  assert.equal(blocked.allowed, false, 'flag on: a send without a declared intent is refused');
+  const blocked = evaluateSend(emptyKernelState(), prop({ intentName: '' }), T0);
+  assert.equal(blocked.allowed, false, 'DEFAULT ON: a send without a declared intent is refused');
   assert.equal(blocked.reason, 'kernel-intent-required');
   const declared = evaluateSend(emptyKernelState(), prop({ intentName: 'CONTINUE' }), T0);
-  assert.equal(declared.allowed, true, 'flag on: declared-intent sends pass');
+  assert.equal(declared.allowed, true, 'declared-intent sends pass');
   const op = evaluateSend(emptyKernelState(), prop({ kind: 'operator' }), T0);
-  assert.equal(op.allowed, true, 'flag on: operator relay stays exempt');
+  assert.equal(op.allowed, true, 'operator relay stays exempt');
+  process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT = '0';
+  assert.equal(evaluateSend(emptyKernelState(), prop({ intentName: '' }), T0).allowed, true, 'kill-switch 0 restores migration mode');
   delete process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT;
-  assert.equal(evaluateSend(emptyKernelState(), prop(), T0).allowed, true, 'MUTATION CHECK: flag restored off, free sends pass again');
+  assert.equal(evaluateSend(emptyKernelState(), prop({ intentName: '' }), T0).allowed, false, 'MUTATION CHECK: default is ON');
 }
 
 console.log('send_kernel: all assertions passed');

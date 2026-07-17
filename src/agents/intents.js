@@ -94,6 +94,15 @@ export const INTENTS = {
     params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
     render: (p) => clamp(p.text, 900),
   },
+  // Council decision handoff (code-authored shape; the body is the council's captured outcome doc).
+  COUNCIL_OUTCOME: {
+    kind: 'nudge',
+    params: {
+      title: (v) => typeof v === 'string' && v.trim().length >= 2,
+      body: (v) => typeof v === 'string' && v.trim().length >= 3,
+    },
+    render: (p) => `Council outcome — ${clamp(p.title, 120)}: ${clamp(p.body, 900)}`,
+  },
 };
 
 export const INTENT_NAMES = Object.keys(INTENTS);
