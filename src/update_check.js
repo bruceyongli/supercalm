@@ -11,6 +11,7 @@
 import { VERSION, ROOT, DATA_DIR } from './config.js';
 import { route, json } from './server.js';
 import { gitOut } from './git.js';
+import { chatJson } from './llm.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { join } from 'node:path';
@@ -102,27 +103,48 @@ route('GET', '/api/update', async (req, res) => {
 const verOf = (v) => { const m = String(v || '').match(/^v?(\d+\.\d+\.\d+)$/); return m ? m[1] : null; };
 function cleanSubject(s) {
   let d = String(s).replace(/^\w+(\([^)]*\))?!?:\s*/, ''); // drop "type(scope): "
-  d = d.split(/\s+[—(]/)[0].trim();                         // drop parentheticals / em-dash tails
-  return (d.charAt(0).toUpperCase() + d.slice(1)).slice(0, 64);
+  d = d.split(/\s+[—(]/)[0].trim().replace(/[.;,]+$/, ''); // drop parentheticals / em-dash tails + trailing punct
+  d = d.charAt(0).toUpperCase() + d.slice(1);
+  if (d.length > 56) d = d.slice(0, 56).replace(/\s+\S*$/, '') + '…'; // word-boundary truncate, no mid-word cuts
+  return d;
 }
+// Distill the raw commit subjects into a SHORT, user-facing summary via a cheap model (what a person would
+// notice: "UI improvements", "Faster voice replies"). Fail-soft: any error → null (caller uses the raw list).
+async function distillChanges(rawSubjects) {
+  if (!rawSubjects.length) return null;
+  try {
+    const { obj } = await chatJson([
+      { role: 'system', content: 'Turn these git commit subjects into a SHORT release note for END USERS. Output ONLY JSON: {"changes":["...","..."]} — 3 to 5 items, each a plain non-technical phrase a user would recognize (e.g. "UI improvements", "Voice replies in history", "Bug fixes"). Group related commits; drop internal/dev-only noise. Title Case, no trailing punctuation, max ~36 chars each.' },
+      { role: 'user', content: rawSubjects.slice(0, 40).join('\n') },
+    ]);
+    const items = Array.isArray(obj?.changes) ? obj.changes.map((x) => String(x || '').trim().replace(/[.;,]+$/, '').slice(0, 44)).filter(Boolean).slice(0, 5) : null;
+    return items && items.length ? items : null;
+  } catch { return null; }
+}
+const _changeCache = new Map(); // `${from}..${to}` -> { body, at }
 route('GET', '/api/changes', async (req, res, params, url) => {
   res.setHeader('cache-control', 'no-store');
   const from = verOf(url.searchParams.get('from'));
   const to = verOf(url.searchParams.get('to')) || VERSION;
-  const changes = [];
-  if (from && to && from !== to) {
-    const out = await gitOut(ROOT, ['log', `v${from}..v${to}`, '--no-merges', '--format=%s'], { timeout: 4000 });
-    if (!out.error) {
-      const seen = new Set();
-      for (const line of out.text.split('\n').map((s) => s.trim()).filter(Boolean)) {
-        if (/^release: v/i.test(line) || /^chore(\(|:)/i.test(line)) continue;
-        const d = cleanSubject(line); const k = d.toLowerCase();
-        if (d && !seen.has(k)) { seen.add(k); changes.push(d); }
-      }
+  const compare = from && to && from !== to ? `https://github.com/${REPO}/compare/v${from}...v${to}` : `https://github.com/${REPO}/releases`;
+  if (!from || !to || from === to) return json(res, 200, { ok: true, from, to, changes: [], total: 0, url: compare });
+  const key = from + '..' + to;
+  const hit = _changeCache.get(key);
+  if (hit && Date.now() - hit.at < 3600_000) return json(res, 200, { ...hit.body, url: compare });
+  const raw = [];
+  const out = await gitOut(ROOT, ['log', `v${from}..v${to}`, '--no-merges', '--format=%s'], { timeout: 4000 });
+  if (!out.error) {
+    const seen = new Set();
+    for (const line of out.text.split('\n').map((s) => s.trim()).filter(Boolean)) {
+      if (/^release: v/i.test(line) || /^chore(\(|:)/i.test(line)) continue;
+      const d = cleanSubject(line); const k = d.toLowerCase();
+      if (d && !seen.has(k)) { seen.add(k); raw.push(d); }
     }
   }
-  const compare = from && to && from !== to ? `https://github.com/${REPO}/compare/v${from}...v${to}` : `https://github.com/${REPO}/releases`;
-  json(res, 200, { ok: true, from, to, changes: changes.slice(0, 6), total: changes.length, url: compare });
+  const distilled = await distillChanges(raw);
+  const body = { ok: true, from, to, changes: (distilled && distilled.length) ? distilled : raw.slice(0, 6), total: raw.length, distilled: !!distilled };
+  _changeCache.set(key, { body, at: Date.now() });
+  json(res, 200, { ...body, url: compare });
 });
 route('POST', '/api/update/check', async (req, res) => {
   await checkNow();
