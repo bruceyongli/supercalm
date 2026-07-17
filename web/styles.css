@@ -2002,13 +2002,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.12);
   cursor: pointer; user-select: none;
+  visibility: hidden; pointer-events: none;
   opacity: 0; transform: translateY(10px) scale(0.98);
   transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), background 0.2s ease;
 }
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
   .version-toast { background: rgba(22, 27, 34, 0.94); } /* opaque fallback if blur unsupported */
 }
-.version-toast.in { opacity: 1; transform: translateY(0) scale(1); }
+.version-toast.in { visibility: visible; pointer-events: auto; opacity: 1; transform: translateY(0) scale(1); }
 .version-toast:hover { background: rgba(33, 40, 51, 0.62); border-color: rgba(120, 170, 255, 0.5); }
 .version-toast .vt-up { color: var(--blue); font-weight: 700; }
 .version-toast .vt-x { color: var(--muted); font-size: 14px; padding: 0 2px 0 6px; cursor: pointer; }

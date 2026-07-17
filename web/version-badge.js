@@ -21,9 +21,12 @@
   const POLL_MS = 30_000;
   const UPDATE_POLL_MS = 30 * 60_000; // upstream releases move slowly; the server caches its own check anyway
   const DISMISS_KEY = 'aios_update_dismissed';
+  const UPGRADE_NOTICE_KEY = 'aios_upgrade_notified_version';
+  const UPGRADE_NOTICE_MS = 8_000;
   let baseline = null; // version observed when this page loaded
   let shown = null; // toast content key currently displayed (avoid rebuilding on every poll)
   let upstream = null; // {version, url} when GitHub has a newer release than this server
+  let autoDismissTimer = null;
 
   async function getJson(path) {
     try {
@@ -34,6 +37,19 @@
     }
   }
 
+  function positionToast(el) {
+    if (!el?.isConnected) return;
+    // Stay clear of a full-width footer composer (the session page): sit just above it. Other pages
+    // keep the CSS default (bottom-right). This is repeated after mount because the session composer
+    // may finish rendering just after this module's first network response.
+    const composer = document.querySelector('.footer-composer');
+    const composerRect = composer?.getBoundingClientRect();
+    const composerVisible = composerRect && composerRect.width > 0 && composerRect.height > 0;
+    el.style.bottom = composerVisible
+      ? `${Math.max(14, Math.round(window.innerHeight - composerRect.top + 12))}px`
+      : '';
+  }
+
   function toastEl() {
     let el = document.getElementById('aios-version-toast');
     if (!el) {
@@ -41,15 +57,47 @@
       el.id = 'aios-version-toast';
       el.className = 'version-toast';
       el.setAttribute('role', 'status');
+      el.setAttribute('aria-hidden', 'true');
       (document.body || document.documentElement).appendChild(el);
     }
-    // Stay clear of a full-width footer composer (the session page): sit just above it. Other pages
-    // keep the CSS default (bottom-right). Recomputed each time it's shown.
-    const composer = document.querySelector('.footer-composer');
-    el.style.bottom = composer && composer.offsetParent !== null
-      ? `${Math.max(14, Math.round(window.innerHeight - composer.getBoundingClientRect().top + 12))}px`
-      : '';
+    el.inert = false;
+    el.setAttribute('aria-hidden', 'false');
+    positionToast(el);
+    requestAnimationFrame(() => positionToast(el));
+    setTimeout(() => positionToast(el), 250);
     return el;
+  }
+
+  function dismissToast(expected = shown) {
+    if (expected && shown !== expected) return;
+    clearTimeout(autoDismissTimer);
+    autoDismissTimer = null;
+    const el = document.getElementById('aios-version-toast');
+    if (el) {
+      // Removing opacity is not enough: an invisible fixed element still participates in hit-testing.
+      // Disable every interaction path synchronously, then remove the node entirely so composer clicks
+      // can never be intercepted by a stale Settings/reload handler.
+      el.onclick = null;
+      el.classList.remove('in');
+      el.setAttribute('aria-hidden', 'true');
+      el.inert = true;
+      el.remove();
+    }
+    shown = null;
+  }
+
+  function revealToast(el, { autoDismiss = 0 } = {}) {
+    clearTimeout(autoDismissTimer);
+    autoDismissTimer = null;
+    const contentKey = shown;
+    requestAnimationFrame(() => {
+      if (!el.isConnected || shown !== contentKey) return;
+      positionToast(el);
+      el.classList.add('in');
+      if (autoDismiss > 0) {
+        autoDismissTimer = setTimeout(() => dismissToast(contentKey), autoDismiss);
+      }
+    });
   }
 
   // Release-notification mode (Settings → Preferences, aios_release_notify): 'stable' (default) toasts only
@@ -65,16 +113,27 @@
   // pointing at Settings (the 1:1 homes for every setup step), so changed/broken config has an obvious
   // front door. Remembered per browser in localStorage; shown once per version jump.
   const SEEN_KEY = 'aios_seen_version';
-  function checkUpgraded(version) {
+  function checkUpgraded(version, channel) {
     let seen = null;
+    let notified = null;
     try { seen = localStorage.getItem(SEEN_KEY); } catch {}
+    try { notified = localStorage.getItem(UPGRADE_NOTICE_KEY); } catch {}
     try { localStorage.setItem(SEEN_KEY, version); } catch {}
-    if (!seen || seen === version || releaseNotify() === 'off' || shown) return;
+    const mode = releaseNotify();
+    const routineRelease = mode === 'stable' && channel && channel !== 'stable';
+    if (!seen || seen === version || notified === version || mode === 'off' || routineRelease || shown) return;
+    // Record before painting so simultaneous tabs and reloads cannot each mount the same notice.
+    try { localStorage.setItem(UPGRADE_NOTICE_KEY, version); } catch {}
     shown = 'upgraded:' + version;
     const el = toastEl();
     el.title = 'Review Settings — every setup step has a home there';
     el.onclick = (e) => {
-      if (e.target?.dataset?.dismiss) { el.classList.remove('in'); shown = null; return; }
+      if (e.target?.dataset?.dismiss) {
+        e.preventDefault();
+        e.stopPropagation();
+        dismissToast('upgraded:' + version);
+        return;
+      }
       location.href = 'settings';
     };
     el.innerHTML =
@@ -82,7 +141,7 @@
       `<span class="vt-text"><span class="vt-line">Updated <b>v${seen}</b> → <b>v${version}</b> while you were away</span>` +
       `<span class="vt-sub">Things may have moved — review Settings · check auth & agents</span></span>` +
       `<span class="vt-x" data-dismiss="1" title="Dismiss">×</span>`;
-    requestAnimationFrame(() => el.classList.add('in'));
+    revealToast(el, { autoDismiss: UPGRADE_NOTICE_MS });
   }
 
   // Local: this server moved to a newer build than the page — reload to pick it up.
@@ -96,7 +155,7 @@
       `<span class="vt-text"><span class="vt-line">New ${isStable ? 'stable ' : ''}version <b>v${version}</b></span>` +
       `<span class="vt-sub">Reload to update</span></span>` +
       `<span class="vt-icon">⟳</span>`;
-    requestAnimationFrame(() => el.classList.add('in'));
+    revealToast(el);
   }
 
   // Upstream: GitHub has a newer release than this server. When the server says it can self-update
@@ -110,8 +169,9 @@
     el.onclick = async (e) => {
       if (e.target?.dataset?.dismiss) {
         try { localStorage.setItem(DISMISS_KEY, u.version); } catch {}
-        el.classList.remove('in');
-        shown = null;
+        e.preventDefault();
+        e.stopPropagation();
+        dismissToast('upstream:' + u.version);
         return;
       }
       if (e.target?.dataset?.gh) { window.open(u.url, '_blank', 'noopener'); return; }
@@ -129,7 +189,7 @@
       `<span class="vt-text"><span class="vt-line">Update available <b>v${u.version}</b></span>` +
       `<span class="vt-sub">${u.canApply ? 'Click to update now' : 'run bin/update'} · <span data-gh="1" class="vt-gh">GitHub ↗</span></span></span>` +
       `<span class="vt-x" data-dismiss="1" title="Dismiss this version">×</span>`;
-    requestAnimationFrame(() => el.classList.add('in'));
+    revealToast(el);
   }
 
   // Updating in progress: the server is pulling + restarting. Poll /api/update for a failure verdict;
@@ -144,7 +204,7 @@
       `<span class="vt-text"><span class="vt-line">Updating to <b>v${u.version}</b>…</span>` +
       `<span class="vt-sub">pull · install · restart — hold on</span></span>` +
       `<span class="vt-icon">⟳</span>`;
-    requestAnimationFrame(() => el.classList.add('in'));
+    revealToast(el);
     const t0 = Date.now();
     const watch = setInterval(async () => {
       if (shown !== 'applying:' + u.version) { clearInterval(watch); return; }
@@ -164,7 +224,7 @@
     const v = await getJson('api/version');
     const version = v?.version || null;
     if (!version) return;
-    if (baseline == null) { baseline = version; checkUpgraded(version); } // first read = the running build
+    if (baseline == null) { baseline = version; checkUpgraded(version, v?.channel); } // first read = the running build
     const mode = releaseNotify();
     if (mode === 'off') return; // release notifications disabled entirely — no reload nudge, no upstream nudge
     if (version !== baseline) {
@@ -198,4 +258,5 @@
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
   addEventListener('focus', check);
   addEventListener('online', check);
+  addEventListener('resize', () => positionToast(document.getElementById('aios-version-toast')), { passive: true });
 })();

@@ -60,7 +60,12 @@ Each release now carries a **channel**, and the toast filters by the user's pref
   - **Stable only** (default): reload nudge only when a **stable** release lands; routine auto-deploys
     are silently skipped (the loaded page keeps running against the newer backend — accepted skew).
   - **Every release**: nudge on any bump (the original behavior).
-  - **Off**: no reload nudge, no upstream nudge.
+- **Off**: no reload nudge, no upstream nudge.
+- **Post-upgrade orientation:** after a browser first loads a newer eligible build, a compact Settings
+  pointer is shown once for that version and auto-dismisses after 8 seconds. It obeys the same channel
+  preference, so the default stable-only mode does not surface it for routine `every` deploys. Closing
+  it synchronously disables hit-testing and removes the node/click handler; a dismissed toast cannot
+  intercept footer-composer controls.
 - **Control:** Settings → Preferences → **Release notifications** (`localStorage aios_release_notify`,
   default `stable`).
 - 🟡 **Producer swap (planned):** today "stable" = human `bin/release`. When the autonomous pipeline's

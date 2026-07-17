@@ -124,7 +124,12 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(!/✓ setup complete[^<]*<\/span><p>/.test(dash.replace(/paintSetupLine[\s\S]*?\n}/, '')), 'the hero markup itself no longer hardcodes "setup complete"');
 
   const vb = read('version-badge.js');
-  assert.ok(/aios_seen_version/.test(vb) && /checkUpgraded\(version\)/.test(vb), 'version badge remembers the last-seen version and shows the post-upgrade orientation toast');
+  assert.ok(/aios_seen_version/.test(vb) && /checkUpgraded\(version, v\?\.channel\)/.test(vb), 'version badge remembers the last-seen version and checks the release channel before post-upgrade orientation');
+  assert.ok(/aios_upgrade_notified_version/.test(vb) && /UPGRADE_NOTICE_MS/.test(vb), 'post-upgrade orientation is recorded once per version and auto-dismisses');
+  assert.ok(/function dismissToast/.test(vb) && /el\.onclick = null/.test(vb) && /el\.remove\(\)/.test(vb), 'dismissal destroys the toast and its Settings click handler');
+  const css = read('styles.css');
+  assert.match(css, /\.version-toast\s*\{[\s\S]*?pointer-events:\s*none/, 'hidden version toast never participates in hit-testing');
+  assert.match(css, /\.version-toast\.in\s*\{[^}]*pointer-events:\s*auto/, 'only the visible version toast accepts pointer input');
 
   // Shape contract: onboarding/settings consume {installed, version}; the endpoint natively computes
   // {current}. The server must serve BOTH — the mismatch rendered every CLI "not installed" and wedged
