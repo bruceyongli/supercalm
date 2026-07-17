@@ -2370,13 +2370,23 @@ function renderSettings(s, tmeta) {
     };
   });
 }
-(async () => {
+// Render the composer's settings row (autonomy/effort/model/orchestration) for the CURRENT session.
+// Must re-run on every in-place session switch — otherwise the footer keeps showing the previously
+// viewed session's model/effort, and (worse) the stale model <select>'s onchange would POST to the NEW
+// session, writing the wrong tool's model onto it. `_toolsMeta` is the (near-static) tool catalog,
+// cached after the first fetch so switches don't re-pull the whole /api/state; the SELECTED values come
+// fresh from api/session each time. Guarded against a race: if `id` changed while fetching, skip the paint.
+let _toolsMeta = null;
+async function loadSettings() {
   try {
+    const reqId = id;
     const s = await api(`api/session/${id}`);
-    const st = await api('api/state');
-    renderSettings(s, (st.tools || []).find((t) => t.id === s.tool) || {});
+    if (!_toolsMeta) { const st = await api('api/state'); _toolsMeta = st.tools || []; }
+    if (reqId !== id) return; // a newer switch superseded this fetch — don't paint stale settings
+    renderSettings(s, (_toolsMeta || []).find((t) => t.id === s.tool) || {});
   } catch {}
-})();
+}
+loadSettings();
 
 // ---- reply composer ---------------------------------------------------------
 // Stopped-session send: an inline bar over the composer offers Resume (no native confirm dialog).
@@ -3059,6 +3069,7 @@ function switchSession(newId) {
     mountAgentPanel();
     // re-run the content loaders (all read the live module-level id)
     loadInfo();
+    loadSettings(); // re-render the composer settings row for the new session (else model/effort bleed across switches)
     loadStoryView();
     loadUsage();
     loadMap();
