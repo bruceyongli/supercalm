@@ -6,6 +6,7 @@ import { recordUsage, getSessionLimit } from '../usage_store.js';
 import { routeForModel } from '../model_catalog.js';
 import { resume as resumeSessionById, sendText, noteReply, paneSig } from '../sessions.js';
 import { evaluateSend, emptyKernelState } from './send_kernel.js';
+import { consumeCapability } from '../capabilities.js';
 import { bus } from '../bus.js';
 import { now } from '../util.js';
 import { DATA_DIR } from '../config.js';
@@ -52,7 +53,20 @@ function oneLine(s) {
 const kernelStates = new Map(); // session_id -> kernel state
 function mediateSend(agent, session_id, s, kind, text, lease, intentName) {
   const st = kernelStates.get(session_id) || emptyKernelState();
-  const v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName }, now());
+  let v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName }, now());
+  // CAPABILITY CONSULT (S1): a reserved block converts to a send IFF an operator-minted capability
+  // for exactly this class + scope consumes. Re-evaluate with the waiver so lease/dedupe/rate/breaker
+  // still apply — authority covers the action, not spam. v1's state (escalation bump) is discarded on
+  // success; the consumption itself is the audit anchor.
+  if (!v.allowed && v.reason.startsWith('kernel-reserved:')) {
+    const cls = v.reason.slice('kernel-reserved:'.length);
+    let cap = null;
+    try { cap = consumeCapability({ sessionId: session_id, action: cls, scopeText: text }); } catch (e) { console.error('[aios] capability consult failed:', e?.message || e); }
+    if (cap) {
+      v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName, reservedWaiver: cls }, now());
+      addEvent(session_id, 'capability-consumed', { agent: agent.id, capability: cap.id, action: cls, minted_by: cap.minted_by, allowed: v.allowed });
+    }
+  }
   kernelStates.set(session_id, v.state);
   addEvent(session_id, 'send-kernel', { agent: agent.id, kind, allowed: v.allowed, reason: v.reason || '' });
   // Receipt of the PREVIOUS allowed send, resolved by observation (pane moved / timeout) — the S3

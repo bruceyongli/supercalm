@@ -113,6 +113,7 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
   const paneSig = String(proposal?.paneSig || '');
   const leaseSig = String(proposal?.lease?.paneSig || '');
   const intentName = String(proposal?.intentName || '');
+  const reservedWaiver = String(proposal?.reservedWaiver || ''); // set by the wrapper AFTER consuming a matching operator-minted capability — never by a brain
 
   // Operator relays are the operator's own words — never kernel business, never budgeted.
   if (kind === 'operator') return { allowed: true, reason: '', escalate: false, escalateKey: '', receipt: null, state: st };
@@ -149,8 +150,11 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
   if (leaseSig && paneSig && leaseSig !== paneSig) return verdict(false, 'kernel-lease-expired');
 
   // 3) reserved actions — structurally unsendable; escalate once per class per open incident.
+  //    EXCEPTION: a capability waiver for exactly this class (consumed by the wrapper from an
+  //    operator-minted capability) converts the block into a normal send — which still runs the
+  //    lease/dedupe/rate/breaker checks below; a capability authorizes the ACTION, not spam.
   const reserved = reservedActionClass(text);
-  if (reserved) {
+  if (reserved && reserved !== reservedWaiver) {
     const key = `reserved:${reserved}`;
     const last = st.escalated?.[key] || 0;
     const escalate = t - last > 60 * 60_000; // re-notify at most hourly if the brain keeps trying

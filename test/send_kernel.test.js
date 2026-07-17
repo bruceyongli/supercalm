@@ -186,4 +186,18 @@ function sendOk(st, p, t) {
   assert.equal(evaluateSend(emptyKernelState(), prop({ intentName: '' }), T0).allowed, false, 'MUTATION CHECK: default is ON');
 }
 
+
+// ---- capability waiver (S1): waives exactly the consumed class, nothing else; budget checks still run ----
+{
+  const t = { text: 'run bin/deploy now', kind: 'answer', intentName: 'ANSWER_QUESTION', paneSig: 'sigA' };
+  assert.equal(evaluateSend(emptyKernelState(), t, T0).reason, 'kernel-reserved:deploy', 'blocked without a waiver');
+  const waived = evaluateSend(emptyKernelState(), { ...t, reservedWaiver: 'deploy' }, T0);
+  assert.equal(waived.allowed, true, 'matching waiver converts the block into a send');
+  const wrong = evaluateSend(emptyKernelState(), { ...t, reservedWaiver: 'credentials' }, T0);
+  assert.equal(wrong.reason, 'kernel-reserved:deploy', 'a waiver never covers another class');
+  let st = waived.state;
+  const spam = evaluateSend(st, { ...t, reservedWaiver: 'deploy' }, T0 + 5_000);
+  assert.equal(spam.allowed, false, 'a capability authorizes the ACTION, not spam — rate/dedupe still bind');
+}
+
 console.log('send_kernel: all assertions passed');

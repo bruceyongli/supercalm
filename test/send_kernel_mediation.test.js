@@ -57,4 +57,15 @@ const RAW_SENDERS = /\bimport\s*\{[^}]*\b(sendText|sendKey|sendRaw)\b[^}]*\}\s*f
     'the operator relay path maps to the kernel-exempt operator kind');
 }
 
+
+// 4) The capability consult lives at the choke point: a reserved block consults consumeCapability and
+//    only a successful consumption re-evaluates with the waiver (never brain-supplied).
+{
+  const src = readFileSync(join(AGENTS, 'context.js'), 'utf8');
+  assert.ok(/consumeCapability\(\{ sessionId: session_id, action: cls, scopeText: text \}\)/.test(src), 'reserved blocks consult capabilities');
+  assert.ok(/reservedWaiver: cls/.test(src), 'waiver re-evaluation uses the consumed class only');
+  const kernel = readFileSync(join(ROOT, 'src', 'agents', 'send_kernel.js'), 'utf8');
+  assert.ok(/reserved !== reservedWaiver/.test(kernel), 'kernel honors exactly the matching waiver');
+}
+
 console.log('send_kernel_mediation: all assertions passed');
