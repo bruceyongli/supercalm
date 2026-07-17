@@ -10,6 +10,7 @@
 
 import { VERSION, ROOT, DATA_DIR } from './config.js';
 import { route, json } from './server.js';
+import { gitOut } from './git.js';
 import { execFile, spawn } from 'node:child_process';
 import { openSync } from 'node:fs';
 import { join } from 'node:path';
@@ -93,6 +94,35 @@ async function payload() {
 route('GET', '/api/update', async (req, res) => {
   res.setHeader('cache-control', 'no-store');
   json(res, 200, await payload());
+});
+
+// "What changed" between two deployed versions, for the new-version toast — cleaned commit subjects
+// (conventional-commit prefix stripped, release-bumps + chores dropped, deduped) + a GitHub compare URL
+// for the full detail. Fail-soft: any git error → empty list (the toast keeps its generic hint).
+const verOf = (v) => { const m = String(v || '').match(/^v?(\d+\.\d+\.\d+)$/); return m ? m[1] : null; };
+function cleanSubject(s) {
+  let d = String(s).replace(/^\w+(\([^)]*\))?!?:\s*/, ''); // drop "type(scope): "
+  d = d.split(/\s+[—(]/)[0].trim();                         // drop parentheticals / em-dash tails
+  return (d.charAt(0).toUpperCase() + d.slice(1)).slice(0, 64);
+}
+route('GET', '/api/changes', async (req, res, params, url) => {
+  res.setHeader('cache-control', 'no-store');
+  const from = verOf(url.searchParams.get('from'));
+  const to = verOf(url.searchParams.get('to')) || VERSION;
+  const changes = [];
+  if (from && to && from !== to) {
+    const out = await gitOut(ROOT, ['log', `v${from}..v${to}`, '--no-merges', '--format=%s'], { timeout: 4000 });
+    if (!out.error) {
+      const seen = new Set();
+      for (const line of out.text.split('\n').map((s) => s.trim()).filter(Boolean)) {
+        if (/^release: v/i.test(line) || /^chore(\(|:)/i.test(line)) continue;
+        const d = cleanSubject(line); const k = d.toLowerCase();
+        if (d && !seen.has(k)) { seen.add(k); changes.push(d); }
+      }
+    }
+  }
+  const compare = from && to && from !== to ? `https://github.com/${REPO}/compare/v${from}...v${to}` : `https://github.com/${REPO}/releases`;
+  json(res, 200, { ok: true, from, to, changes: changes.slice(0, 6), total: changes.length, url: compare });
 });
 route('POST', '/api/update/check', async (req, res) => {
   await checkNow();

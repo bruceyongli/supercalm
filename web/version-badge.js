@@ -36,6 +36,7 @@
       return null; // server mid-restart / offline — try again next tick, never throw
     }
   }
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
   function positionToast(el) {
     if (!el?.isConnected) return;
@@ -135,6 +136,7 @@
     const el = toastEl();
     el.title = 'Review Settings — every setup step has a home there';
     el.onclick = (e) => {
+      if (e.target?.closest?.('a')) return; // the "what's new ↗" link opens itself (new tab), no Settings nav
       if (e.target?.dataset?.dismiss) {
         e.preventDefault();
         e.stopPropagation();
@@ -146,9 +148,19 @@
     el.innerHTML =
       `<span class="vt-up">✦</span>` +
       `<span class="vt-text"><span class="vt-line">Updated <b>v${seen}</b> → <b>v${version}</b> while you were away</span>` +
-      `<span class="vt-sub">Things may have moved — review Settings · check auth & agents</span></span>` +
+      `<span class="vt-sub" data-changes>What’s new — loading…</span></span>` +
       `<span class="vt-x" data-dismiss="1" title="Dismiss">×</span>`;
     revealToast(el, { autoDismiss: UPGRADE_NOTICE_MS });
+    // Fill in WHAT changed — cleaned commit subjects between the two versions + a details link to the GitHub
+    // compare page. Fail-soft: on error/empty, keep the generic "review Settings" hint.
+    getJson(`api/changes?from=${encodeURIComponent(seen)}&to=${encodeURIComponent(version)}`).then((r) => {
+      const sub = el.querySelector('[data-changes]');
+      if (!sub) return;
+      const items = (r?.changes || []).slice(0, 3);
+      const link = r?.url ? ` · <a data-gh href="${esc(r.url)}" target="_blank" rel="noopener">what’s new ↗</a>` : '';
+      const more = r?.total > items.length ? ` +${r.total - items.length} more` : '';
+      sub.innerHTML = (items.length ? items.map(esc).join(' · ') + more : 'Things may have moved — review Settings') + link;
+    });
   }
 
   // Local: this server moved to a newer build than the page — reload to pick it up.
