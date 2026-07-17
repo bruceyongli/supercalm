@@ -69,6 +69,12 @@ const SHELLS = new Set(['zsh', 'bash', 'sh', '-zsh', '-bash', 'fish', 'login']);
 // switch can freeze the session at 'exited' (the poll loop then skips it forever — `status != 'exited'`).
 // Only a shell that persists PAST this grace means the agent truly exited to a prompt.
 const LAUNCH_GRACE_MS = Number(process.env.AIOS_LAUNCH_GRACE_MS || 20000);
+// Claude quota auto-fallback: when a claude session on a claude-NATIVE model (Anthropic account) hits the
+// rate/quota wall (429), reroute it to a fleet-served model (different quota) and relaunch-continue, ONCE.
+// Mirrors the codex ChatGPT-cap fallback below. Off with AIOS_CLAUDE_QUOTA_FALLBACK=0.
+const CLAUDE_QUOTA_FALLBACK = process.env.AIOS_CLAUDE_QUOTA_FALLBACK !== '0';
+const CLAUDE_QUOTA_FALLBACK_MODEL = process.env.AIOS_CLAUDE_QUOTA_FALLBACK_MODEL || 'gpt-5.6-sol';
+const CLAUDE_QUOTA_STREAK = Number(process.env.AIOS_CLAUDE_QUOTA_STREAK || 2); // consecutive rate_limit polls before firing
 const BOOL_TRUE = new Set(['1', 'true', 'yes', 'on']);
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
@@ -850,6 +856,7 @@ async function enforceUsageLimit(s, entry) {
 const CODEX_USAGE_LIMIT_RX = /you'?ve hit your usage limit|upgrade to (plus|pro) to continue using codex|usage limit[^\n]*try again/i;
 
 async function pollOnce() {
+  let fellBackThisTick = false; // cap auto-fallback relaunches to 1 per tick (staggers a mass quota burn)
   for (const entry of [...reg.values()]) {
     const s = store.getSession(entry.id);
     if (!s || s.status === 'exited') {
@@ -882,6 +889,39 @@ async function pollOnce() {
       console.log(`[aios] codex ${s.id}: ChatGPT usage limit -> falling back to the proxy fleet (codex_via_proxy)`);
       resume(s.id, { force: true }).catch((e) => console.error('[aios] codex via-proxy fallback relaunch failed:', e.message));
       continue;
+    }
+    // Claude quota auto-fallback (the codex analogue above): a claude session on a claude-NATIVE model —
+    // i.e. running on the Anthropic account — that hit the rate/quota wall (429) is stuck. Reroute it to a
+    // fleet-served model (different quota) and relaunch-continue, ONCE: switching the model makes
+    // authmode.resolveClaudeEnv route to the fleet proxy, escaping the Anthropic account. The persisted
+    // non-native model is the loop-breaker (the isNativeModel guard is then false). Reuses the shared,
+    // self-echo-hardened classifier (a STRUCTURED error marker is required; healthy ⏺/spinner below the
+    // line ⇒ not an error) + a consecutive-poll debounce, so a session merely DISPLAYING 429 text (e.g. the
+    // operator's own meta-session) can never trip it. Not a fresh-relaunch reprint (launch grace).
+    if (CLAUDE_QUOTA_FALLBACK && s.tool === 'claude' && !entry.quotaFallback &&
+        isNativeModel('claude', s.model || TOOLS.claude.model) &&
+        now() - (entry.startedAt || 0) > LAUNCH_GRACE_MS) {
+      const errLine = detectSessionError(snap.slice(-4000));
+      const isQuota = !!errLine && classifyErrorType(errLine) === 'rate_limit';
+      entry.quotaStreak = isQuota ? (entry.quotaStreak || 0) + 1 : 0;
+      if (isQuota && entry.quotaStreak >= CLAUDE_QUOTA_STREAK && !fellBackThisTick &&
+          !isNativeModel('claude', CLAUDE_QUOTA_FALLBACK_MODEL)) { // misconfig guard: fallback must be a fleet model
+        entry.quotaFallback = true;
+        fellBackThisTick = true;
+        const to = CLAUDE_QUOTA_FALLBACK_MODEL;
+        store.updateSession(s.id, { model: to }); // synchronous + non-native => the real re-fire loop-breaker
+        store.addEvent(s.id, 'claude-quota-fallback', { from: s.model, to, line: errLine.slice(0, 160) });
+        console.log(`[aios] claude ${s.id}: Anthropic quota wall (429) -> fleet model ${to} (relaunch-continue)`);
+        bus.emit('changed');
+        resume(s.id, { force: true }).catch((e) => {
+          // rare: model already switched (loop-broken) but the pane didn't relaunch — surface it so the
+          // operator can Resume manually, rather than the session silently staying on the dead pane.
+          console.error('[aios] claude quota fallback relaunch failed:', e.message);
+          store.addEvent(s.id, 'claude-quota-fallback-failed', { error: String(e.message).slice(0, 160) });
+          bus.emit('notify', { title: 'Session needs a manual resume', body: `${(s.title || s.id).slice(0, 80)} — auto-switched to ${to} after a quota wall but the relaunch failed. Open it and Resume.`, url: `session?id=${s.id}`, tag: `quota-fb-${s.id}` });
+        });
+        continue;
+      }
     }
     const h = hash(stableSnap(snap));
     const changed = h !== entry.lastHash;
@@ -2565,7 +2605,15 @@ async function boot() {
   await ensureServer();
   await tmuxOk('set-option', '-g', 'history-limit', '200000');
   await discover();
-  setInterval(() => pollOnce().catch((e) => console.error('[aios] poll error', e.message)), POLL_MS);
+  // Never overlap poll ticks: an auto-fallback relaunch (or a slow tmux) can make one tick outlast POLL_MS,
+  // and two concurrent pollOnce runs over the same reg could double-fire a fallback. Skip a tick if the
+  // previous is still running (also hardens the pre-existing codex fallback against the same race).
+  let _pollBusy = false;
+  setInterval(() => {
+    if (_pollBusy) return;
+    _pollBusy = true;
+    pollOnce().catch((e) => console.error('[aios] poll error', e.message)).finally(() => { _pollBusy = false; });
+  }, POLL_MS);
   setInterval(() => tailOnce().catch((e) => console.error('[aios] tail error', e.message)), TAIL_MS);
   console.log('[aios] sessions ready');
 }
