@@ -34,6 +34,13 @@ export const KERNEL_DEFAULTS = {
   receiptTimeoutMs: Number(process.env.AIOS_SEND_KERNEL_RECEIPT_MS || 5 * 60_000), // a send unacknowledged by ANY pane movement for this long resolves received:false
 };
 
+// End-state of Phase 1 (flip AFTER every agent send path declares an intent — council's outcome send
+// is the last holdout): a non-operator send without a declared intent name is refused outright, making
+// free-form autonomous sends structurally impossible rather than merely migrated-away-from.
+export function intentRequired() {
+  return process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT === '1';
+}
+
 export function kernelEnabled() {
   return process.env.AIOS_SEND_KERNEL !== '0';
 }
@@ -104,6 +111,7 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
   const text = String(proposal?.text || '');
   const paneSig = String(proposal?.paneSig || '');
   const leaseSig = String(proposal?.lease?.paneSig || '');
+  const intentName = String(proposal?.intentName || '');
 
   // Operator relays are the operator's own words — never kernel business, never budgeted.
   if (kind === 'operator') return { allowed: true, reason: '', escalate: false, escalateKey: '', receipt: null, state: st };
@@ -129,6 +137,10 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
 
   // 1) kind allowlist — an undeclared/unknown kind is a programming error upstream; fail closed.
   if (!SEND_KINDS.includes(kind)) return verdict(false, 'kernel-kind-not-allowlisted');
+
+  // 1b) require-intent (Phase 1 end-state, opt-in until every agent lane declares intents): free-form
+  //     autonomous sends are refused, not just deprecated.
+  if (intentRequired() && !intentName) return verdict(false, 'kernel-intent-required');
 
   // 2) LEASE (CAS semantics): the proposal was computed against a pane that has since moved — the
   //    operator typed, a menu appeared, the agent progressed. Refuse; the pane change itself fires the

@@ -86,6 +86,14 @@ export const INTENTS = {
     params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
     render: (p) => clamp(p.text, 600),
   },
+  // Code-assembled challenge bodies (completion gate, corrective gaps). A declared lane rather than a
+  // structured template for now: the gate builders emit criteria lists whose full templating lands with
+  // Phase-2 claim budgets. Hygiene-screened + clamped; the kernel's dedupe/budget bounds re-challenges.
+  CHALLENGE_TEXT: {
+    kind: 'challenge',
+    params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
+    render: (p) => clamp(p.text, 900),
+  },
 };
 
 export const INTENT_NAMES = Object.keys(INTENTS);
@@ -106,7 +114,7 @@ export function renderIntent(name, params = {}) {
   let text;
   try { text = spec.render(params); } catch (e) { return { ok: false, error: `render failed: ${String(e?.message || e)}` }; }
   if (!text || !String(text).trim()) return { ok: false, error: `intent '${name}' rendered empty text` };
-  const passthrough = name === 'ANSWER_QUESTION' || name === 'UNSTICK_DIRECTION' || name === 'RECOVER_NOTE';
+  const passthrough = name === 'ANSWER_QUESTION' || name === 'UNSTICK_DIRECTION' || name === 'RECOVER_NOTE' || name === 'CHALLENGE_TEXT';
   if (!passthrough && UNRESOLVED_RX.test(text)) return { ok: false, error: `intent '${name}' rendered unresolved placeholder content` };
   if (passthrough && /\/path\/to\//i.test(text)) return { ok: false, error: `${name} content carries a scaffold path placeholder` };
   return { ok: true, text: String(text), kind: spec.kind };

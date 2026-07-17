@@ -133,7 +133,7 @@ export async function dispatchSupervisorSend(ctx, {
   const lease = (kind === 'recover' || kind === 'operator' || !ctx.__tickPaneSig)
     ? (sendOptions.lease ?? null)
     : (sendOptions.lease ?? { paneSig: ctx.__tickPaneSig });
-  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease });
+  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease, intentName: typedIntent?.name || sendOptions.intentName || (ruleId === 'hold.resolve_send' ? 'OPERATOR_RELAY' : '') });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
   return { ...result, draft: msg }; // draft = the rendered text, for caller logging even on kernel blocks
 }

@@ -170,4 +170,21 @@ function sendOk(st, p, t) {
   assert.equal(JSON.stringify(st), frozen, 'evaluateSend must not mutate its input state');
 }
 
+
+// ---- require-intent (Phase 1 end-state, default OFF until every agent lane declares intents) ----
+{
+  const free = evaluateSend(emptyKernelState(), prop(), T0);
+  assert.equal(free.allowed, true, 'flag off: free-form sends still pass (migration mode)');
+  process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT = '1';
+  const blocked = evaluateSend(emptyKernelState(), prop(), T0);
+  assert.equal(blocked.allowed, false, 'flag on: a send without a declared intent is refused');
+  assert.equal(blocked.reason, 'kernel-intent-required');
+  const declared = evaluateSend(emptyKernelState(), prop({ intentName: 'CONTINUE' }), T0);
+  assert.equal(declared.allowed, true, 'flag on: declared-intent sends pass');
+  const op = evaluateSend(emptyKernelState(), prop({ kind: 'operator' }), T0);
+  assert.equal(op.allowed, true, 'flag on: operator relay stays exempt');
+  delete process.env.AIOS_SEND_KERNEL_REQUIRE_INTENT;
+  assert.equal(evaluateSend(emptyKernelState(), prop(), T0).allowed, true, 'MUTATION CHECK: flag restored off, free sends pass again');
+}
+
 console.log('send_kernel: all assertions passed');
