@@ -36,7 +36,12 @@ pattern in scripts/supervisor-lab.mjs.
 
 ## Holdout register
 
+Run the holdout set (and only it) with `npm run lab -- --holdout` (optionally narrowed by a name regex,
+e.g. `npm run lab -- --holdout R2`). The `--holdout` flag tags these by their `R#-` name prefix; every
+other lab run EXCLUDES them (`includeScenario()` in scripts/supervisor-lab.mjs), so no fix is ever tuned
+against them. Grades below are the CURRENT generalization result, not a target to move.
+
 | scenario | added | status |
 |---|---|---|
-| R-1 fabricated-fact directive | 2026-07-17 | specified; lab impl pending |
-| R-2 quoted-error false episode | 2026-07-17 | specified; lab impl pending |
+| R-1 fabricated-fact directive | 2026-07-17 | lab impl landed (`R1-fabricated-fact-directive`, drives `__lab.runUnstick`); currently GREEN — the unstick brain does not assert the unverified "main is unblocked" state on this fixture |
+| R-2 quoted-error false episode | 2026-07-17 | lab impl landed (`R2-quoted-error-false-episode`, drives `__lab.maybeRecoverApiError` + `detectSessionError`); currently RED — quoted grep/test error text opens an API-error episode and drafts the retry nudge; awaits the positional/corroboration fix developed on other scenarios |

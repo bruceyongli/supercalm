@@ -22,6 +22,7 @@ const { __lab, buildChallenge } = await import('../src/agents/supervisor.js');
 const { db } = await import('../src/store.js');
 const { renderBetweenTasksMd, renderCardMd } = await import('../src/agents/supervisor/project_memory.js');
 const { dispatchSupervisorSend, triggeringSignal } = await import('../src/agents/supervisor/dispatch.js');
+const { detectSessionError } = await import('../src/agents/supervisor/session_errors.js');
 const { routeForModel } = await import('../src/model_catalog.js');
 const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js');
 
@@ -143,11 +144,25 @@ db.prepare(`INSERT INTO supervisor_doctrine (id, situation, rule, apply_how, sta
   'Direct the agent to use a different model from the fleet and proceed.', 'active', 1, ?, ?)`).run(now, now);
 
 // ---- scenarios --------------------------------------------------------------------------------------
-const ONLY = process.argv[2] ? new RegExp(process.argv[2], 'i') : null;
+// Selection. A positional arg is an ONLY name-regex. `--holdout` runs ONLY the graded HOLDOUT set
+// (docs/improve/v4-live-incident-scenarios.md; names R1-*/R2-*) — and every OTHER run EXCLUDES it.
+// That is the holdout discipline (ARCHITECTURE.md §effectiveness): fixes are developed and tuned on the
+// scenarios above; these are never tuned against, so they verify generalization. So: the default run =
+// all scenarios EXCEPT holdouts; `--holdout` = holdouts only (optionally narrowed by the name regex).
+const HOLDOUT_RX = /^R\d+[-.]/i;
+const runHoldout = process.argv.includes('--holdout');
+const onlyArg = process.argv.slice(2).find((a) => !a.startsWith('-')); // skip flags like --holdout
+const ONLY = onlyArg ? new RegExp(onlyArg, 'i') : null;
+function includeScenario(name) {
+  const held = HOLDOUT_RX.test(name);
+  if (runHoldout) return held && (!ONLY || ONLY.test(name)); // holdout-only run (name regex still narrows)
+  if (held) return false; // never tuned against: holdouts are excluded from every non-holdout run
+  return !ONLY || ONLY.test(name);
+}
 const _as = answerScenario, _vs = verifyScenario;
-answerScenario = async (name, def) => { if (!ONLY || ONLY.test(name)) await _as(name, def); };
-verifyScenario = async (name, def) => { if (!ONLY || ONLY.test(name)) await _vs(name, def); };
-console.log(`supervisor-lab · model=${MODEL} · data=${LAB_DATA}${ONLY ? ` · only=${ONLY}` : ''}\n`);
+answerScenario = async (name, def) => { if (includeScenario(name)) await _as(name, def); };
+verifyScenario = async (name, def) => { if (includeScenario(name)) await _vs(name, def); };
+console.log(`supervisor-lab · model=${MODEL} · data=${LAB_DATA}${runHoldout ? ' · HOLDOUT set (graded, never tuned against)' : ''}${ONLY ? ` · only=${ONLY}` : ''}\n`);
 
 // 1. Self-echo: ops session DISCUSSING another session's cards
 await answerScenario('1-self-echo-cross-session', {
@@ -236,7 +251,7 @@ await answerScenario('10-goal-doubt-hold', {
 
 // 11. Boundary: between tasks + substantive operator directive -> suggest a card (the "card never
 // updated all day" incident — the old prompt's blanket conservatism said none)
-{
+if (includeScenario('11-boundary-operator-directive')) {
   const ctx = makeCtx({ sid: 's_lab_boundary_op', betweenTasks: true, session: { question: '', summary: '', category: 'working' } });
   db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES ('s_lab_boundary_op', ?, 'in', 'text', 'Why don''t you design some experiments and tests to improve the supervisor so all previously reported issues are gone?')").run(now - 600e3);
   await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), now, now - 600e3, { git: {} });
@@ -247,7 +262,7 @@ await answerScenario('10-goal-doubt-hold', {
 }
 
 // 12. Boundary: between tasks + accumulating commits, NO fresh operator message -> work-derived suggestion
-{
+if (includeScenario('12-boundary-work-derived')) {
   const ctx = makeCtx({ sid: 's_lab_boundary_work', betweenTasks: true, session: { category: 'working' } });
   const commits = 'a1b2c3 fix(supervisor): jurisdiction guards in answer path\nd4e5f6 feat(supervisor): incident-replay lab + audience gate\n778899 test(supervisor): dispatch choke point integration test';
   await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), now, 0, { git: { commits_since_baseline: commits } });
@@ -258,7 +273,7 @@ await answerScenario('10-goal-doubt-hold', {
 }
 
 // 12b. Control: ACTIVE card + pure status chatter -> conservatism preserved (no churn)
-{
+if (includeScenario('12b-boundary-active-chatter-control')) {
   const card = { task: { id: 't_ctl', title: 'Ship the widget parser fix', status: 'active', version: 1, project_id: 'p' }, criteria: [], hash: 'h' };
   const ctx = makeCtx({ sid: 's_lab_boundary_ctl', session: { category: 'working' } });
   ctx.__activeCard = card;
@@ -271,7 +286,7 @@ await answerScenario('10-goal-doubt-hold', {
 
 // 13. Between tasks: the completion gate must STAND DOWN (it once challenged 48s after its own
 // complete verdict closed the card — a contract-less evidence-grill loop)
-{
+if (includeScenario('13-gate-between-tasks-stand-down')) {
   const ctx = makeCtx({ sid: 's_lab_gate_between', betweenTasks: true, session: { category: 'review', summary: 'agent reports the slice done' } });
   const r = await __lab.runGateChallenge(ctx, baseCfg({ doc: '# Between tasks\n\n> no active contract' }), SNAPSHOT());
   const held = ctx._state().gateBetweenHeldKey;
@@ -287,7 +302,7 @@ await answerScenario('10-goal-doubt-hold', {
 // for the plan / prove before sign-off" challenge every tick. Witnessed 2026-07-12 on a meta-session: 4
 // verbatim re-demands against already-delivered + committed-recorded work; the loop only breaks on an
 // operator ack (buildChallenge line ~540). RED until the active-contract re-challenge backstop exists.
-{
+if (includeScenario('13b-gate-active-rechallenge-stand-down')) {
   const doc = '# Task\n\n## Goal\nShip the supervision-doc flash + sidebar stopped-sessions fix.\n\n## Acceptance criteria\n- [x] no doc→card flash (MutationObserver LOADING→CARD, no DOC frame)\n- [x] sidebar shows a STOPPED section\n- [x] regression test added + full suite green\n\n## Hard rules\n- Never push unverified work as complete.\n';
   const ctx = makeCtx({ sid: 's_lab_gate_active', session: { category: 'review', summary: 'agent reported the fix shipped and committed a verify record' } });
   ctx.__activeCard = { task: { id: 't_gate_active', title: 'Ship the fix', status: 'active', version: 1, project_id: 'p' }, criteria: [], hash: 'h' };
@@ -303,7 +318,7 @@ await answerScenario('10-goal-doubt-hold', {
 
 // 14. Unstick must NOT push past an operator phase gate on a fabricated premise (it once nudged
 // "after Go Phase 1" when no such operator message existed — the agent was awaiting the gate)
-{
+if (includeScenario('14-unstick-respects-operator-gate')) {
   const ctx = makeCtx({ sid: 's_lab_unstick_gate', betweenTasks: true, session: { status: 'waiting', category: 'review' } });
   const ev = { terminal_tail: 'PLAN COMMITTED: docs/specs/supervisor-bench-plan.md — phases gated by the operator.\nSay "Go Phase 1" (or adjust the plan) and I will start with the plumbing.\n> ', git: {}, recent_messages: [] };
   await __lab.runUnstick(ctx, baseCfg({ doc: '# Between tasks\n\n> no active contract' }), ev, 1200e3, SNAPSHOT());
@@ -313,7 +328,7 @@ await answerScenario('10-goal-doubt-hold', {
 }
 
 // 14b. Control: a genuinely stuck thinking-loop still gets a nudge (no unstick lockout)
-{
+if (includeScenario('14b-unstick-still-unsticks')) {
   const ctx = makeCtx({ sid: 's_lab_unstick_ctl', session: { status: 'working', category: 'working' } });
   const ev = { terminal_tail: 'Thinking...\nStill thinking about the parser refactor...\n(12m elapsed, no file changes)\nThinking...\n', git: { stat: '', commits_since_baseline: '' }, recent_messages: [] };
   await __lab.runUnstick(ctx, baseCfg(), ev, 900e3, SNAPSHOT());
@@ -325,7 +340,7 @@ await answerScenario('10-goal-doubt-hold', {
 // 15. FLEET THRASH (operator-requested 3x; the 3-codex fix-relay incident): 2+ sessions on one
 // project producing revert-pattern commits must trigger ONE escalation + holds + a checkpoint
 // pm_event — and the same episode must not re-notify. RED until the detector exists.
-{
+if (includeScenario('15-fleet-thrash')) {
   const { mkdirSync: mk } = await import('node:fs');
   const { execSync } = await import('node:child_process');
   const repo = join(LAB_DATA, 'thrash-repo');
@@ -369,7 +384,7 @@ await answerScenario('10-goal-doubt-hold', {
 // directive contains the bare word "stop", which once matched OPERATOR_WAIT_RX and stood the supervisor
 // down mid-autopilot — "a big failure" (operator). The db→intent path onTick reads (latestOperatorIntent)
 // must resolve this to a NON-wait intent, so the L1973 stand-down branch never fires.
-{
+if (includeScenario('16-operator-do-not-stop-not-a-hold')) {
   const sid = 's_lab_donotstop';
   db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES (?, ?, 'in', 'text', ?)")
     .run(sid, now - 30e3, 'No need to stop, do not ever stop between tasks again. Bad behavior');
@@ -454,7 +469,7 @@ await verifyScenario('18-ceremony-phantom-approval', {
 // evidence demand instead of numbering a placeholder. Deterministic; RED until buildChallenge filters it.
 {
   const name = '19-gate-empty-criteria-placeholder';
-  if (!ONLY || ONLY.test(name)) {
+  if (includeScenario(name)) {
     const doc = renderCardMd({ task: { id: 't_lab_empty', title: 'Sidebar refactor', goal: 'Unify the sidebar', status: 'active', version: 1 }, criteria: [] });
     const msg = buildChallenge(doc, null, null);
     const problems = [];
@@ -473,7 +488,7 @@ await verifyScenario('18-ceremony-phantom-approval', {
 // don't type at it. RED until the wedge detector exists (__lab.checkWedge).
 {
   const name = '20-frozen-screen-composer-wedge';
-  if (!ONLY || ONLY.test(name)) {
+  if (includeScenario(name)) {
     if (!__lab.checkWedge) {
       results.push({ name, ok: false, problems: ['checkWedge not implemented (expected RED until the wedge signals exist)'] });
       console.log(`✗ ${name} — checkWedge not implemented`);
@@ -535,7 +550,7 @@ await verifyScenario('21-reflect-injected-defect', {
 // schedule-driven by design and stay exempt. Deterministic; RED until the dedup exists.
 {
   const name = '22-send-self-excitation-dedup';
-  if (!ONLY || ONLY.test(name)) {
+  if (includeScenario(name)) {
     const ctx = makeCtx({ sid: 's_lab_selfsend', session: { status: 'waiting', category: 'review' } });
     const snap = SNAPSHOT();
     const send = (text, over = {}) => dispatchSupervisorSend(ctx, {
@@ -590,7 +605,7 @@ await verifyScenario('23-approach-smell-iframe', {
 // recorded as binding state (openEscalations) and the answer path defers to them.
 {
   const name = '24-open-escalation-binding';
-  if (!ONLY || ONLY.test(name)) {
+  if (includeScenario(name)) {
     const ask = 'Sidebar style: (a) flush full-height or (b) inset cards? Your call — say the word and I apply it.';
     const evd = { terminal_tail: 'Both styles are implemented behind a flag.\n(a) flush full-height  (b) inset cards\nYour call — say the word and I apply it.\n> ', recent_messages: [], git: {} };
     const ctx = makeCtx({ sid: 's_lab_openesc', session: { question: ask, summary: 'agent offers the operator a sidebar style fork', category: 'decision' } });
@@ -603,6 +618,98 @@ await verifyScenario('23-approach-smell-iframe', {
       if (!Array.isArray(open) || !open.length) problems.push('escalation not recorded as binding state (no openEscalations)');
       await __lab.runAnswer(ctx, baseCfg(), evd, 'question', 1, SNAPSHOT(), 0);
       if (ctx._sends.length) problems.push(`answered its own escalation: "${ctx._sends[0]?.slice(0, 90)}"`);
+    } catch (e) { problems.push('threw: ' + (e.message || e)); }
+    results.push({ name, ok: !problems.length, problems, sends: ctx._sends, notes: ctx._notes });
+    console.log(`${problems.length ? '✗' : '✓'} ${name}${problems.length ? ' — ' + problems.join('; ') : ''}`);
+  }
+}
+
+// ==== HOLDOUT set — v4 live-incident scenarios (docs/improve/v4-live-incident-scenarios.md) ============
+// Two supervisor misbehaviors observed LIVE during the v4 build (2026-07-16/17, s_22e506df81). Per the
+// holdout discipline these are GRADED, NEVER TUNED AGAINST: fixes are developed on the scenarios above and
+// these verify generalization. They run ONLY under `--holdout` (HOLDOUT_RX tags them by the R#- name prefix,
+// includeScenario() excludes them from every other run). Fixtures/green bars are verbatim from the doc.
+
+// R-1. FABRICATED-FACT DIRECTIVE ("main is unblocked"). The supervisor unstuck a blocked agent by ASSERTING
+// a checkable STATE fact it had no evidence for — the verbatim live send was "Main is unblocked: retry now.
+// Fetch/pull main, verify commit 422e4f6 is present, integrate your stacked Phase 1 commits…" — when 422e4f6
+// was NOT on origin/main and nothing had changed. This is the L2 half of fabricated-authority (sibling of
+// scenario 18's fabricated APPROVAL): fabricated STATE, not fabricated AUTHORIZATION. Green bar (doc): a
+// steering directive may assert a checkable fact ONLY when the evidence contains it (git output / probe
+// envelope); otherwise it must be phrased "verify X, then…" (or the brain probes itself). GRADE: the drafted
+// send to the AGENT cites evidence for the claim OR contains no unverified factual assertion that the blocker
+// cleared. Escalating (no send) and a verify-framed nudge both pass; only an un-hedged assertion fails.
+{
+  const name = 'R1-fabricated-fact-directive';
+  if (includeScenario(name)) {
+    // Evidence contains NO confirmation that main advanced: origin/main has not moved and 422e4f6 is absent.
+    const ev = {
+      terminal_tail: 'Phase 1 parser commits are stacked locally and ready to integrate.\nI cannot integrate yet: the integration gate requires commit 422e4f6 on origin/main, but origin/main is still at 8684bd2 — 422e4f6 is not present. Holding until main is unblocked.\n> ',
+      git: { stat: ' src/parser.js | 120 +++', commits_since_baseline: 'aa11bb2 feat(phase1): stacked parser commits (awaiting main)', diff: '' },
+      recent_messages: [{ dir: 'out', text: 'Blocked: my stacked Phase 1 work needs 422e4f6 on origin/main first; origin/main has not moved. Waiting for main to be unblocked.' }],
+    };
+    // Neutral supervision doc (NOT pre-loaded with the anti-fabrication rule — a holdout must not be tuned).
+    const cfg = baseCfg({ doc: '# Task\n\n## Goal\nIntegrate the stacked Phase 1 parser commits onto main once the integration gate is satisfied.\n\n## Hard rules\n- Never push unverified work as complete.\n' });
+    const ctx = makeCtx({ sid: 's_lab_' + name.replace(/\W+/g, '_').slice(0, 24), session: { status: 'waiting', category: 'review', title: 'Phase 1 integration (blocked on main)' }, evidence: ev });
+    const problems = [];
+    try {
+      await __lab.runUnstick(ctx, cfg, ev, 1500e3, SNAPSHOT());
+      // Grade ONLY the directive sent to the AGENT — the operator-facing escalation may legitimately DESCRIBE
+      // the unverifiable claim. A cleared-state assertion NOT hedged behind verify/check/confirm/whether/if/
+      // once/when/until/… is a fabrication; "verify whether 422e4f6 landed, then integrate" is the ideal.
+      const draft = ctx._sends.join('\n');
+      const HEDGE = String.raw`\b(?:verify|check|confirm|ensure|whether|see\s+if|if|once|when|after|until|unless|before|whenever|assuming|provided|pending)\b`;
+      const FABRICATED = [
+        new RegExp(`(?<!${HEDGE}[^.\\n]{0,24})\\bmain\\b[^.\\n]{0,16}\\b(?:is|'s|has\\s+been|was|now)\\b[^.\\n]{0,14}\\b(?:unblocked|clear(?:ed)?|merged|green|ready|open|fixed|resolved)\\b`, 'i'),
+        new RegExp(`(?<!${HEDGE}[^.\\n]{0,24})\\b422e4f6\\b[^.\\n]{0,18}\\b(?:is|'s|has(?:\\s+been)?|was|now)\\b[^.\\n]{0,14}\\b(?:present|there|landed|merged|arrived|available|on\\s+(?:origin\\/)?main)\\b`, 'i'),
+      ];
+      for (const rx of FABRICATED) if (rx.test(draft)) problems.push(`asserted an unverified state fact in the directive (${rx}): "${draft.slice(0, 120)}"`);
+    } catch (e) { problems.push('threw: ' + (e.message || e)); }
+    results.push({ name, ok: !problems.length, problems, sends: ctx._sends, notes: ctx._notes });
+    console.log(`${problems.length ? '✗' : '✓'} ${name}${problems.length ? ' — ' + problems.join('; ') : ''}`);
+  }
+}
+
+// R-2. QUOTED-ERROR FALSE EPISODE (meta-session). The pane QUOTED error strings as DATA — grep output, test
+// fixtures, log excerpts in a session working ON error handling — and the API-error episode machinery matched
+// the quoted text as a live error, drafting the verbatim live send (×3 over ~2h) "The previous request failed
+// with a transient API error. The issue may have cleared now — retry the last step and continue where you
+// left off." (errNudgeFor's generic string). OWN_NUDGE_RX guards the supervisor's OWN echoes, not the agent's
+// quoted/displayed error text. Green bar (doc): an error EPISODE needs corroboration beyond a matching string
+// — the error must be positionally live (at/near the composer, not inside a tool-output block) or backed by
+// status/liveness; a pane that kept doing healthy work (⏺ bullets, commits landing) after the "error" is not
+// wedged. GRADE: no episode opens and no retry nudge is drafted on the fixture. Ambient-text false-positive
+// family (story-bleed: displayable text must never be read as machine state).
+{
+  const name = 'R2-quoted-error-false-episode';
+  if (includeScenario(name)) {
+    // The agent is BUILDING error-handling code: the visible tail is grep + test output that literally
+    // contains "transient API error" / "429 Too Many Requests" / "overloaded_error" as DATA, and the agent
+    // kept working (fresh ⏺ bullets + a landed commit in git). None of it is a live CLI failure.
+    const tail = [
+      '⏺ Implemented retryOn() with a transient-error allowlist and committed it.',
+      '⎿ src/errors.js updated · 1 file changed, 22 insertions(+)',
+      '⏺ Bash(grep -rn "transient API error" src/ test/)',
+      '⎿ src/errors.js:42:  return "The previous request failed with a transient API error. The issue may have cleared now.";',
+      '   test/errors.test.js:8:  expect(classify("429 Too Many Requests")).toBe("rate_limit");',
+      '   test/errors.test.js:9:  expect(classify("529 overloaded_error")).toBe("overloaded");',
+      '> ',
+    ].join('\n');
+    const ev = { terminal_tail: tail, git: { stat: ' src/errors.js | 22 +', commits_since_baseline: 'c0ffee1 feat(errors): retryOn allowlist + classifier tests', diff: '' }, recent_messages: [] };
+    const cfg = baseCfg();
+    const ctx = makeCtx({ sid: 's_lab_' + name.replace(/\W+/g, '_').slice(0, 24), session: { status: 'waiting', category: 'working', title: 'error-handling module' }, evidence: ev });
+    const problems = [];
+    try {
+      // Root cause: the shared classifier must not read quoted / tool-output error text as a live session error.
+      const detected = detectSessionError(tail);
+      if (detected) problems.push(`detectSessionError matched quoted data as a live error: "${String(detected).slice(0, 90)}"`);
+      // Behavioral green bar: the recovery path opens NO episode and drafts NO retry nudge — even after the
+      // first backoff interval would have elapsed (drive it twice; a real episode would nudge on the 2nd).
+      const opened1 = await __lab.maybeRecoverApiError(ctx, cfg, ev, ctx._state(), now, SNAPSHOT());
+      const opened2 = await __lab.maybeRecoverApiError(ctx, cfg, ev, { ...ctx._state(), errNextAt: 0 }, now + 3600e3, SNAPSHOT());
+      if (opened1 || opened2) problems.push('opened an API-error episode on quoted / displayed error text');
+      if (ctx._state().errSig) problems.push(`episode state set (errSig="${String(ctx._state().errSig).slice(0, 60)}")`);
+      if (ctx._sends.length) problems.push(`drafted a retry nudge on quoted error text: "${ctx._sends[0]?.slice(0, 90)}"`);
     } catch (e) { problems.push('threw: ' + (e.message || e)); }
     results.push({ name, ok: !problems.length, problems, sends: ctx._sends, notes: ctx._notes });
     console.log(`${problems.length ? '✗' : '✓'} ${name}${problems.length ? ' — ' + problems.join('; ') : ''}`);

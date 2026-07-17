@@ -3001,4 +3001,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, checkThrash, onTick, latestOperatorIntent };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, maybeRecoverApiError, checkThrash, onTick, latestOperatorIntent };
