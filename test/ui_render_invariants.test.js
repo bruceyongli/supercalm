@@ -73,7 +73,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const sv = read('story-view.js');
   const rs = sv.indexOf('export async function refreshStory');
   assert.ok(rs > 0, 'refreshStory exists');
-  const body = sv.slice(rs, rs + 2600);
+  const body = sv.slice(rs, rs + 3600);
   assert.ok(/const mySid\s*=\s*sid/.test(body), 'refreshStory captures the session id (mySid) before the await');
   assert.ok(/api\(`api\/session\/\$\{mySid\}\/story/.test(body), 'refreshStory fetches with the captured mySid, not the live sid');
   assert.ok(/if\s*\(\s*sid\s*!==\s*mySid\s*\)\s*return/.test(body), 'refreshStory discards a response once a switch has re-pointed sid (no cross-session leak)');
@@ -156,6 +156,18 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const dcss = read('desktop.css');
   assert.ok(/\.dk-sess-l1 b[^}]*flex: 1 1 auto/.test(dcss), 'the rail title flexes into the freed width');
   assert.ok(/\.dk-sess-age/.test(dcss), 'the rail age style exists');
+}
+
+
+// The Projects "index" button must call the real rebuild endpoint. It used to GET
+// /graph?rebuild=1 — a param the GET route ignores — so it 200'd, claimed "indexed ✓", and
+// nothing was ever indexed (E2E finding #2).
+{
+  for (const f of ['views/projects.js', 'projects.js']) {
+    const pj = read(f);
+    assert.ok(!/graph\?rebuild=1/.test(pj), `${f}: no GET ?rebuild=1 (the route ignores it)`);
+    assert.ok(/graph\/rebuild`, \{ method: 'POST' \}/.test(pj), `${f}: index button POSTs the rebuild route`);
+  }
 }
 
 console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard + fresh-install add-project + honest setup/upgrade orientation');

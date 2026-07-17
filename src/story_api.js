@@ -206,7 +206,10 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
       bytes *= 2;
     }
   }
-  const meta = { file, mtimeMs: st.mtimeMs, count: events.length, trimmed, full: full || scannedWhole, rounds };
+  // source is part of the client contract: the story view must NOT merge fallback-spine events with
+  // transcript events (same task, different ts → duplicate operator cards; E2E finding #3) — on a
+  // source switch it replaces the feed instead.
+  const meta = { file, mtimeMs: st.mtimeMs, count: events.length, trimmed, full: full || scannedWhole, rounds, source: 'transcript' };
   cache.set(key, { file, mtimeMs: st.mtimeMs, events, meta });
   if (cache.size > 60) cache.delete(cache.keys().next().value);
   return { events, meta };

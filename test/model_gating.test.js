@@ -53,4 +53,14 @@ assert.ok(/listProxyModels\(\{ liveOnly: true \}\)/.test(read('src/agents/model.
 assert.equal((read('src/model_proxy.js').match(/listProxyModels\(\{ liveOnly: true \}\)/g) || []).length, 2,
   'the cli-proxy bridge offers only routable (up) models');
 
+
+// The static seed must not carry fleet-only routing aliases: 'codex-auto-review' is not a model the
+// codex CLI can run natively, so seeding it leaked a dead picker option on fleet-less installs
+// (E2E finding #1). Fleet machines re-gain it from the live /v1/models scan.
+{
+  const catalogSrc = readFileSync(new URL('../src/model_catalog.js', import.meta.url), 'utf8');
+  const seed = catalogSrc.slice(catalogSrc.indexOf('PROXY_PROVIDERS'), catalogSrc.indexOf('export function currentProviders'));
+  assert.ok(!/codex-auto-review/.test(seed.replace(/\/\/[^\n]*/g, '')), 'the static seed does not list codex-auto-review (comments excepted)');
+}
+
 console.log('model_gating: all assertions passed');

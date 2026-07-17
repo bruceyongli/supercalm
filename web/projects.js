@@ -38,7 +38,7 @@ async function load() {
   $('#pj-list').innerHTML = rows || '<div class="dk-allclear">No projects yet — start a session and type a new path; the project is created on the spot.</div>';
   for (const b of document.querySelectorAll('[data-pj-index]')) b.onclick = async () => {
     b.textContent = 'indexing…';
-    try { await api(`api/project/${b.dataset.pjIndex}/graph?rebuild=1`); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
+    try { await api(`api/project/${b.dataset.pjIndex}/graph/rebuild`, { method: 'POST' }); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
     catch (e) { b.textContent = '⚠ ' + (e.message || e).slice(0, 30); }
   };
   // "+ session" on a row opens the launch modal here with THAT project preselected (it used to

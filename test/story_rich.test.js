@@ -258,4 +258,18 @@ assert.ok(storyView.includes('data-story-prev') && storyView.includes('data-stor
 assert.ok(/rounds > 1 \? `\?rounds=\$\{rounds\}` : ''/.test(storyView), 'refreshStory passes the incremental rounds window');
 assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewport anchored (content prepends)');
 
+
+// Source-switch dedupe (E2E finding #3): the fallback-spine story arrives BEFORE the CLI transcript is
+// locatable; when the source switches the client must REPLACE the feed, not merge two copies of the
+// same conversation. And the story header must not say "session starting" once a report is in (#4).
+{
+  const svSrc = read('web/story-view.js');
+  assert.ok(/const src = r\.meta\?\.source \|\| 'transcript'/.test(svSrc) && /if \(storySource && src !== storySource\) events = \[\]/.test(svSrc),
+    'story view replaces the feed on a source switch instead of merging duplicates');
+  assert.ok(/storySource = null/.test(svSrc), 'source tracking resets on session switch');
+  assert.ok(svSrc.includes("report in — waiting for you"), 'rollup fallback reflects waiting-with-report, not "session starting"');
+  const apiSrc = read('src/story_api.js');
+  assert.ok(/source: 'transcript'/.test(apiSrc) && /source: 'fallback'/.test(apiSrc), 'the story API tags both sources in meta');
+}
+
 console.log('story_rich: all assertions passed');

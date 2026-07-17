@@ -13,6 +13,7 @@ let events = [];
 let lastSig = '';
 let showFull = false; // instant load shows recent rounds; user can expand to the full story
 let rounds = 1; // how many operator rounds are loaded (‹ previous round increments; full ignores it)
+let storySource = null; // 'fallback' | 'transcript' — a switch REPLACES the feed (merging both duplicated the task card)
 let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — keeps the viewport stable while content prepends
 let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
@@ -149,7 +150,12 @@ function rollup(evs) {
   if (fails) parts.push(`${fails} snag${fails > 1 ? 's' : ''} this round`);
   else if (checks) parts.push('checks green');
   if (asks.length) parts.push(`${asks.length} question${asks.length > 1 ? 's' : ''} for you`);
-  return parts.join(' · ') || (mins ? `${mins} min active · working` : 'session starting');
+  // Fallback for very young sessions: "session starting" only while actually working — a session
+  // that already reported and sits Waiting must not claim it's starting (E2E finding #4).
+  return parts.join(' · ')
+    || (mins ? `${mins} min active · working`
+      : working ? 'session starting'
+        : evs.some((e) => e.kind === 'report') ? 'report in — waiting for you' : 'waiting for you');
 }
 
 function stepsBodyHtml(steps) {
@@ -438,6 +444,12 @@ export async function refreshStory({ quiet = true } = {}) {
     // header, 2026-07-13). Discard it — B's own refreshStory already ran with the correct id.
     if (sid !== mySid) return;
     const incoming = r.events || [];
+    // Source switch (fallback spine → the CLI transcript, once it becomes locatable): the same
+    // conversation re-arrives with different timestamps/keys — merging would duplicate every card
+    // (E2E finding #3: the launch task showed twice). Replace wholesale instead.
+    const src = r.meta?.source || 'transcript';
+    if (storySource && src !== storySource) events = [];
+    storySource = src;
     if (!events.length) {
       events = incoming; // first open of this session: adopt the windowed story loaded from source
     } else if (incoming.length) {
@@ -489,7 +501,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

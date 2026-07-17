@@ -98,7 +98,9 @@ export const PROXY_PROVIDERS = [
       { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', recommended: true },
       { id: 'gpt-5.3-codex-spark', label: 'GPT-5.3 Codex Spark' },
       { id: 'gpt-5.2', label: 'GPT-5.2' },
-      { id: 'codex-auto-review', label: 'Codex auto-review' },
+      // NB no 'codex-auto-review' here: it's a FLEET-side routing alias, not a model the codex CLI
+      // can run natively — seeding it leaked a dead option into fleet-less pickers (E2E finding #1).
+      // Fleet machines still get it: the live scan lists it from /v1/models and re-adds it.
     ],
   },
   {
