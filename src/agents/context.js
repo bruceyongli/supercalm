@@ -11,6 +11,7 @@ import { bus } from '../bus.js';
 import { now } from '../util.js';
 import { DATA_DIR } from '../config.js';
 import { sessionContext, gatherImages, gitHead } from './evidence.js';
+import { gitProbe, urlProbe } from './probes.js';
 import { callProxyModel, isVisionRoute } from './model.js';
 import { activePreviewProfiles, normalizePreviewProfiles } from '../preview_profiles.js';
 
@@ -136,6 +137,18 @@ export function makeContext(agent, session_id, extra = {}) {
       }
       return data;
     },
+    // EVIDENCE PROBES (v4 Phase 2, A1/A5): system-collected provenance envelopes — the typed
+    // alternative to "done on my word". Git truth for the session's repo + optional URL liveness.
+    async runProbes({ urls = [] } = {}) {
+      requireCap('read-context');
+      const s = getSession(session_id);
+      const proj = s?.project_id ? getProject(s.project_id) : null;
+      const out = [];
+      if (proj?.path) out.push(await gitProbe(proj.path));
+      for (const u of urls.slice(0, 4)) out.push(await urlProbe(String(u)));
+      return out;
+    },
+
     // Current HEAD sha of the session's project — the supervisor captures this as a baseline so later
     // reviews can see work already committed (read-only, no acting).
     async gitHead() {
