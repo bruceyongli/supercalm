@@ -116,7 +116,10 @@ export async function drivePublish(integrationId, opts = {}) {
   if (!ffOk) return safeHold(integrationId, ft, 'not_fast_forward', { base, mainSha, candidate });
 
   // previous_green_sha = the main that was live before this deploy — the forward-revert target if we roll back.
-  I.transition(integrationId, 'MAIN_PUBLISHED', { fenceToken: ft, patch: { base_sha: mainSha, previous_green_sha: mainSha }, data: { base, mainSha } });
+  // INTENT, not a confirmed result: the detached bin/deploy below does the actual ff+push, and reconcile
+  // confirms via the SERVED sha post-restart. So this records the intent to publish `mainSha → candidate`,
+  // NOT that the commit stuck on main (a concurrent deploy could still lose the race → HELD deploy_not_served).
+  I.transition(integrationId, 'MAIN_PUBLISHED', { fenceToken: ft, patch: { base_sha: mainSha, previous_green_sha: mainSha }, data: { base, mainSha, intent: true, confirmedBy: 'served-sha at reconcile' } });
   I.transition(integrationId, 'RESTART_REQUESTED', { fenceToken: ft, data: { preBootId: BOOT_ID, candidate } });
 
   let pid = null;

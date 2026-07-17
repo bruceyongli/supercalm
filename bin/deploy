@@ -58,6 +58,41 @@ if [ "$BR" != "main" ] && [ "${AIOS_ALLOW_BRANCH_DEPLOY:-}" != "1" ]; then
   exit 1
 fi
 
+# Cross-process deploy lock (Finding 1: prevent a concurrent deploy — manual OR the autonomous pipeline,
+# which also runs THIS script — from clobbering each other's push mid-restart). An exclusive flock on an
+# inherited FD: the lock is held for this whole script (sync→bump→push→restart) and KERNEL-RELEASED when the
+# process exits or dies, so there is no stale-lock file to ever delete. A second deploy WAITS (up to 5 min).
+# FAIL-OPEN by design: if the lock mechanism can't run (no python3/flock, unwritable path), deploy proceeds
+# exactly as before — the lock is an optimization; the real safety is the exact-SHA ff-abort + the pipeline's
+# served-SHA HELD. macOS has no flock(1), so fall back to a fcntl.flock on the inherited FD via python3.
+LOCKFILE="${AIOS_DEPLOY_LOCK:-$HOME/.local/share/aios/deploy.lock}"
+if mkdir -p "$(dirname "$LOCKFILE")" 2>/dev/null && exec 9>"$LOCKFILE" 2>/dev/null; then
+  if command -v flock >/dev/null 2>&1; then
+    if flock -w 300 9; then echo "==> deploy lock acquired"; else echo "error: another deploy holds the lock ($LOCKFILE) — waited 5 min. Retry once it frees." >&2; exit 1; fi
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - 9 <<'PYLOCK'
+import fcntl, sys, time
+fd = int(sys.argv[1]); deadline = time.time() + 300
+while True:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); sys.exit(0)   # held via the parent shell's FD
+    except BlockingIOError:
+        if time.time() > deadline: sys.exit(2)
+        time.sleep(1)
+    except Exception:
+        sys.exit(3)
+PYLOCK
+    rc=$?
+    if [ "$rc" = 0 ]; then echo "==> deploy lock acquired"
+    elif [ "$rc" = 2 ]; then echo "error: another deploy holds the lock ($LOCKFILE) — waited 5 min. Retry once it frees." >&2; exit 1
+    else echo "==> deploy lock unavailable (fcntl rc=$rc) — proceeding without it (fail-open)"; fi
+  else
+    echo "==> no flock/python3 — proceeding without the deploy lock (fail-open)"
+  fi
+else
+  echo "==> deploy lock file unavailable — proceeding without it (fail-open)"
+fi
+
 # Security checkpoint (operator doctrine: before any push to the PUBLIC repo, scan for credentials, personal
 # data, or sensitive config). Run it EXPLICITLY here — independent of the git pre-commit hook (core.hooksPath),
 # which requires `bin/install-hooks` and can be bypassed — so a release can never ship a secret even from a
