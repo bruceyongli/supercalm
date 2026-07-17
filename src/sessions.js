@@ -6,6 +6,7 @@ import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'n
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
+import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
 import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
@@ -869,6 +870,21 @@ async function pollOnce() {
       }
     }
 
+    // DEGRADED marker (Phase 2, A8; session_errors.js — the same classifier the supervisor's episode
+    // machinery uses): a RETRYABLE API wall (429/529/transient) needs TIME, not the operator — flag it
+    // and the queue skips it until the screen recovers. billing/permission/auth stay visible (operator
+    // territory). Scanned only when the pane changed; written only on flip.
+    if (changed) {
+      const errLine = detectSessionError(snap.slice(-4000));
+      const cls = errLine ? classifyErrorType(errLine) : null;
+      const wantDegraded = errLine && ['rate_limit', 'overloaded', 'transient', 'generic'].includes(cls) ? 1 : 0;
+      if (wantDegraded !== (s.degraded ? 1 : 0)) {
+        store.updateSession(s.id, { degraded: wantDegraded });
+        store.addEvent(s.id, wantDegraded ? 'degraded' : 'recovered', wantDegraded ? { cls, line: String(errLine).slice(0, 160) } : {});
+        bus.emit('changed');
+      }
+    }
+
     let status = 'working';
     let question = null;
     if (classifier) {
@@ -951,7 +967,7 @@ export function paneSig(sid) {
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
   const before = store.getSession(sid);
-  const updated = store.updateSession(sid, { status: 'working', question: null, summary: null, category: null, stage: null, parked: 0, last_activity: now() });
+  const updated = store.updateSession(sid, { status: 'working', question: null, summary: null, category: null, stage: null, parked: 0, degraded: 0, last_activity: now() });
   const entry = reg.get(sid);
   if (entry) {
     entry.lastChange = now();

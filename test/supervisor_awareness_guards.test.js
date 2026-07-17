@@ -25,8 +25,11 @@ assert.match(src, /sendOptions: \{ guarded: false, blockDecision: false \}/);
 assert.match(src, /currentOperatorRequirements/);
 assert.match(src, /current_operator_requirements/);
 assert.match(src, /OPERATOR LATEST WORDS WIN/);
-assert.match(src, /passcode required/);
-assert.match(src, /authentication_error/);
+// The auth/error regexes moved with the classifier extraction (v4 Phase 2) — same contract,
+// the classifier's actual home (session_errors.js is imported by both supervisor and poll loop):
+const errSrc = readFileSync(new URL('../src/agents/supervisor/session_errors.js', import.meta.url), 'utf8');
+assert.match(errSrc, /passcode required/);
+assert.match(errSrc, /authentication_error/);
 assert.match(src, /operator\.settle_after_reanalysis/);
 assert.match(src, /lastOperatorDocAttemptTs/);
 assert.match(src, /formatOperatorRequirements\(currentOperatorRequirements\(sig\)\)/);
