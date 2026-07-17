@@ -76,7 +76,9 @@ function mediateSend(agent, session_id, s, kind, text, lease, intentName) {
     bus.emit('notify', {
       title: 'Supervisor send blocked',
       body: `${v.reason} — ${String(text || '').slice(0, 110)}`,
-      url: `session?id=${session_id}`,
+      url: v.reason.startsWith('kernel-reserved:')
+        ? `session?id=${session_id}&mint=${v.reason.slice('kernel-reserved:'.length)}`
+        : `session?id=${session_id}`,
       tag: `kernel-${session_id}-${v.escalateKey}`,
     });
     bus.emit('event', { type: 'agent', agent: agent.id, kind: 'kernel-escalation', session: session_id, reason: v.reason });
