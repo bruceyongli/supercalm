@@ -5,6 +5,7 @@ import { existsSync, statSync } from 'node:fs';
 import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { parkVerdict } from './park.js';
 import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
@@ -843,6 +844,22 @@ async function pollOnce() {
     }
     const idleMs = now() - entry.lastChange;
 
+    // PARKED lifecycle (park.js, traceability A3): byte-still beyond the threshold -> flag + one
+    // notification + queue demotion (UIs read s.parked); ANY movement or reply un-parks instantly.
+    {
+      const v = parkVerdict({ status: s.status, parked: !!s.parked, idleMs });
+      if (v.park) {
+        store.updateSession(s.id, { parked: 1 });
+        store.addEvent(s.id, 'parked', { idleMs });
+        bus.emit('notify', { title: 'Session parked', body: `${(s.title || s.id).slice(0, 80)} — no pane movement for ${Math.round(idleMs / 3600000)}h; parked out of the queue. Reply to wake it.`, url: `session?id=${s.id}`, tag: `park-${s.id}` });
+        bus.emit('changed');
+      } else if (v.unpark) {
+        store.updateSession(s.id, { parked: 0 });
+        store.addEvent(s.id, 'unparked', {});
+        bus.emit('changed');
+      }
+    }
+
     let status = 'working';
     let question = null;
     if (classifier) {
@@ -925,7 +942,7 @@ export function paneSig(sid) {
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
   const before = store.getSession(sid);
-  const updated = store.updateSession(sid, { status: 'working', question: null, summary: null, category: null, stage: null, last_activity: now() });
+  const updated = store.updateSession(sid, { status: 'working', question: null, summary: null, category: null, stage: null, parked: 0, last_activity: now() });
   const entry = reg.get(sid);
   if (entry) {
     entry.lastChange = now();

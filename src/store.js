@@ -110,7 +110,7 @@ db.exec(`
 `);
 
 // Migrations for DBs created before a column existed (ALTER errors if it already does).
-for (const col of ['autonomy TEXT', 'effort TEXT', 'model TEXT', 'fast_mode INTEGER NOT NULL DEFAULT 0', 'orchestration TEXT', 'summary TEXT', 'category TEXT', 'stage TEXT', 'codex_via_proxy INTEGER NOT NULL DEFAULT 0', 'codex_uuid TEXT', 'claude_transcript TEXT', 'worktree_path TEXT', 'branch TEXT']) {
+for (const col of ['autonomy TEXT', 'effort TEXT', 'model TEXT', 'fast_mode INTEGER NOT NULL DEFAULT 0', 'orchestration TEXT', 'summary TEXT', 'category TEXT', 'stage TEXT', 'codex_via_proxy INTEGER NOT NULL DEFAULT 0', 'codex_uuid TEXT', 'claude_transcript TEXT', 'worktree_path TEXT', 'branch TEXT', 'parked INTEGER NOT NULL DEFAULT 0']) {
   try {
     db.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
   } catch {}
@@ -156,7 +156,7 @@ export const getSessionByTmux = (t) => _getSessionByTmux.get(t);
 export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
 
-const SESSION_FIELDS = ['project_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['project_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
   const keys = Object.keys(patch).filter((k) => SESSION_FIELDS.includes(k));
   if (!keys.length) return getSession(id);
