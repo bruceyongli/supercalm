@@ -65,6 +65,27 @@ export const INTENTS = {
     params: { command: (v) => typeof v === 'string' && RECOVER_COMMANDS.has(v.trim()) },
     render: (p) => p.command.trim(),
   },
+  // Code-authored fixed template (moved verbatim from runKeepWorking so the shape is vetted HERE):
+  // drives an idle-but-unfinished agent to resume. The "real evidence, not prose" framing is load-
+  // bearing — it pushes back on fake-done drift; keep it intact.
+  KEEP_WORKING: {
+    kind: 'nudge',
+    params: { focus: (v) => v == null || typeof v === 'string' },
+    render: (p) => `You stopped mid-task but the work is not finished. Resume now — take the next concrete step on the current focus${p.focus && String(p.focus).trim() ? ': ' + clamp(p.focus, 200) : ''}. If that step is genuinely the operator's (an approval, a credential, access), say so explicitly and ask them — do not idle silently. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing.`,
+  },
+  // LLM-authored content lanes (like ANSWER_QUESTION): declared passthroughs with hygiene screens —
+  // the unstick brain's specific direction, and recovery context notes. Both remain kernel-scanned,
+  // dedupe/rate/breaker-bounded, and lease-carrying (unstick) per dispatch rules.
+  UNSTICK_DIRECTION: {
+    kind: 'nudge',
+    params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
+    render: (p) => clamp(p.text, 600),
+  },
+  RECOVER_NOTE: {
+    kind: 'recover',
+    params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
+    render: (p) => clamp(p.text, 600),
+  },
 };
 
 export const INTENT_NAMES = Object.keys(INTENTS);
@@ -85,7 +106,8 @@ export function renderIntent(name, params = {}) {
   let text;
   try { text = spec.render(params); } catch (e) { return { ok: false, error: `render failed: ${String(e?.message || e)}` }; }
   if (!text || !String(text).trim()) return { ok: false, error: `intent '${name}' rendered empty text` };
-  if (name !== 'ANSWER_QUESTION' && UNRESOLVED_RX.test(text)) return { ok: false, error: `intent '${name}' rendered unresolved placeholder content` };
-  if (name === 'ANSWER_QUESTION' && /\/path\/to\//i.test(text)) return { ok: false, error: 'answer text carries a scaffold path placeholder' };
+  const passthrough = name === 'ANSWER_QUESTION' || name === 'UNSTICK_DIRECTION' || name === 'RECOVER_NOTE';
+  if (!passthrough && UNRESOLVED_RX.test(text)) return { ok: false, error: `intent '${name}' rendered unresolved placeholder content` };
+  if (passthrough && /\/path\/to\//i.test(text)) return { ok: false, error: `${name} content carries a scaffold path placeholder` };
   return { ok: true, text: String(text), kind: spec.kind };
 }

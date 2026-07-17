@@ -58,4 +58,21 @@ for (const name of INTENT_NAMES) {
   assert.equal(renderIntent('RECOVER_COMMAND', { command: '/clear' }).ok, true);
 }
 
+
+// ---- named template + passthrough lanes (call-site migration) ----
+{
+  const kw = renderIntent('KEEP_WORKING', { focus: 'Execute Supervisor v4 Phase 1' });
+  assert.equal(kw.ok, true);
+  assert.equal(kw.kind, 'nudge');
+  assert.ok(kw.text.startsWith('You stopped mid-task') && kw.text.includes('Phase 1'), 'verbatim template + focus interpolation');
+  assert.equal(renderIntent('KEEP_WORKING', {}).ok, true, 'focus is optional');
+
+  const un = renderIntent('UNSTICK_DIRECTION', { text: 'Run the failing test first, then fix the import cycle.' });
+  assert.deepEqual([un.ok, un.kind], [true, 'nudge']);
+  assert.equal(renderIntent('UNSTICK_DIRECTION', { text: 'see /path/to/model' }).ok, false, 'passthrough hygiene holds');
+
+  const rn = renderIntent('RECOVER_NOTE', { text: 'Session resumed after unexpected exit; continue the active task.' });
+  assert.deepEqual([rn.ok, rn.kind], [true, 'recover']);
+}
+
 console.log('intents: all assertions passed');

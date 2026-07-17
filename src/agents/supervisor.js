@@ -967,7 +967,7 @@ async function maybeSendProxyAuthRecovery(ctx, cfg, ev, trigger, snapshot = null
     snapshot,
     ruleId: 'answer.proxy_auth_recovery',
     actionType: 'answer',
-    text: msg,
+    intent: { name: 'RECOVER_NOTE', params: { text: msg } },
     sendOptions: { guarded: false, blockDecision: false },
     allowedSend: gate.allowed,
     suppressionReason: gate.reason,
@@ -1165,7 +1165,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     snapshot,
     ruleId: 'answer.send',
     actionType: 'answer',
-    text: answer,
+    intent: { name: 'ANSWER_QUESTION', params: { text: answer } },
     sendOptions: { guarded: true, blockDecision: false },
     allowedSend: gate.allowed,
     suppressionReason: gate.reason,
@@ -1216,7 +1216,7 @@ async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
     snapshot,
     ruleId: 'unstick.send',
     actionType: 'nudge',
-    text: message,
+    intent: { name: 'UNSTICK_DIRECTION', params: { text: message } },
     sendOptions: { guarded: false },
     allowedSend: gate.allowed,
     suppressionReason: gate.reason,
@@ -2642,7 +2642,6 @@ function buildCodexContextHandoff(ctx, cfg, ev = {}) {
 // reliable; the "real evidence, not prose" framing also pushes back on agents that drift toward fake-done.
 async function runKeepWorking(ctx, cfg, snapshot = null) {
   const focus = focusLine(cfg.doc);
-  const msg = `You stopped mid-task but the work is not finished. Resume now — take the next concrete step on the current focus${focus ? ': ' + focus : ''}. If that step is genuinely the operator's (an approval, a credential, access), say so explicitly and ask them — do not idle silently. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing.`;
   let sent = 0;
   let sent_text = '';
   const allowed = canSend(ctx, cfg, 'nudge');
@@ -2650,7 +2649,7 @@ async function runKeepWorking(ctx, cfg, snapshot = null) {
     snapshot,
     ruleId: 'idle.keepworking',
     actionType: 'nudge',
-    text: msg,
+    intent: { name: 'KEEP_WORKING', params: { focus } },
     sendOptions: { guarded: true, blockDecision: false },
     allowedSend: allowed,
     suppressionReason: allowed ? '' : blockedReason(ctx, cfg, 'nudge'),
