@@ -64,6 +64,11 @@ const RESIZE_CLIENT_TTL_MS = Number(process.env.AIOS_RESIZE_CLIENT_TTL_MS || 150
 const RESIZE_INTERACTIVE_MS = Number(process.env.AIOS_RESIZE_INTERACTIVE_MS || 30000);
 const RESIZE_MAX_CLIENTS = Number(process.env.AIOS_RESIZE_MAX_CLIENTS || 24);
 const SHELLS = new Set(['zsh', 'bash', 'sh', '-zsh', '-bash', 'fish', 'login']);
+// A freshly (re)launched pane sits at the shell for a beat while `. launch.sh` execs the agent (gotcha
+// #8). The poll loop must NOT mark it exited during that window on the SHELLS check, or a resume/model-
+// switch can freeze the session at 'exited' (the poll loop then skips it forever — `status != 'exited'`).
+// Only a shell that persists PAST this grace means the agent truly exited to a prompt.
+const LAUNCH_GRACE_MS = Number(process.env.AIOS_LAUNCH_GRACE_MS || 20000);
 const BOOL_TRUE = new Set(['1', 'true', 'yes', 'on']);
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
@@ -350,6 +355,7 @@ function register(s) {
     subscribers: new Set(),
     lastHash: null,
     lastChange: now(),
+    startedAt: now(), // (re)launch time — the SHELLS-exit check is graced for LAUNCH_GRACE_MS after this
   };
   try {
     entry.offset = existsSync(entry.logFile) ? statSync(entry.logFile).size : 0;
@@ -856,6 +862,10 @@ async function pollOnce() {
     }
     const cmd = await paneCmd(entry.tmux);
     if (SHELLS.has(cmd)) {
+      // Grace: a just-(re)launched pane is briefly at the shell before `. launch.sh` execs the agent.
+      // Marking it exited here would freeze the session (poll loop then skips exited rows). Wait it out —
+      // a shell still present after the grace is a real exit-to-prompt.
+      if (now() - (entry.startedAt || 0) < LAUNCH_GRACE_MS) continue;
       markExited(entry, 0);
       continue;
     }
