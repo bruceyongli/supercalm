@@ -84,6 +84,31 @@ const SETTINGS_CSS = `
     .st-inp, .st-sel { background: #0b0f16; border: 1px solid #232c38; border-radius: 8px; color: #dde5ee; font-size: 12.5px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', ui-monospace, monospace; }
     .st-inp::placeholder { color: #3f4856; }
     .st-sel { width: auto; }
+    /* provider-centric voice: two capability rows (Speaks/Hears) + collapsed fallbacks + a providers table */
+    .vc2-row { border: 1px solid #1d2632; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: #0d1219; }
+    .vc2-rowhead { font-size: 13.5px; color: #dde5ee; margin-bottom: 8px; }
+    .vc2-rowhead b { font-weight: 600; }
+    .vc2-sub { color: #5c6675; font-size: 12px; margin-left: 4px; }
+    .vc2-primary { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+    .vc2-primary > label { display: inline-flex; align-items: center; gap: 8px; color: #8a95a5; font-size: 12px; }
+    .vc2-chain { color: #6cc04a; font-size: 12px; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .vc2-fb { margin-top: 8px; }
+    .vc2-fb summary { color: #5c6675; font-size: 12px; cursor: pointer; user-select: none; }
+    .vc2-fb summary:hover { color: #8a95a5; }
+    .vc2-fbwrap { display: flex; flex-wrap: wrap; gap: 6px 14px; margin-top: 8px; }
+    .vc2-fbchip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #b9c4d4; }
+    .vc2-fbchip.dis { opacity: 0.5; }
+    .vc2-cloud { color: #e2b23e; font-size: 10.5px; }
+    .vc2-cap { font-size: 9px; font-weight: 800; letter-spacing: 0.04em; color: #79b8ff; border: 1px solid #79b8ff44; border-radius: 4px; padding: 0 4px; line-height: 15px; }
+    .vc2-manage { margin-top: 6px; border-top: 1px solid #10151d; padding-top: 10px; }
+    .vc2-manage > summary { color: #8a95a5; font-size: 13px; font-weight: 600; cursor: pointer; user-select: none; padding: 4px 0; }
+    .vc2-manage > summary:hover { color: #dde5ee; }
+    .vc2-provlist { display: grid; gap: 8px; margin-top: 8px; }
+    .vc2-prov { border: 1px solid #1c2230; border-radius: 10px; padding: 10px 12px; background: #0b0f16; }
+    .vc2-provhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: #dde5ee; }
+    .vc2-provdetail { color: #5c6675; font-size: 11.5px; margin-left: auto; }
+    .vc2-provbody { margin-top: 8px; }
+    .vc2-provbody:empty { display: none; }
 `;
 
 let host = null;
@@ -271,112 +296,72 @@ function armConfirm(btn, confirmLabel, fn) {
   };
 }
 
-// Which "voice choice" the current server state amounts to. One of: local | gpt | browser.
-// "local" covers BOTH flavors of self-hosted voice: the env-configured dedicated device and
-// OpenAI-compatible local servers — users think "local voice", not our device codename.
-function voiceChoice(spk, sp) {
-  if (spk?.configured && spk.enabled !== false) return 'local';
-  if (sp?.base_url) return /^https:\/\/api\.(openai|groq)\.com/.test(sp.base_url) || (/^https:/.test(sp.base_url) && sp.key_set) ? 'gpt' : 'local';
-  return 'browser';
-}
-// Combined one-tap check for the ACTIVE voice: play a sample, then round-trip STT — one message.
-async function testVoice(m, backend) {
-  m.textContent = 'testing…';
-  try {
-    const body = { text: 'Voice check — this is how your reports will sound.', ...(backend ? { backend } : {}) };
-    const t = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    if (!t.ok) throw new Error('speak failed: HTTP ' + t.status);
-    const src = t.headers.get('x-tts-backend') || t.headers.get('x-aios-tts-source') || '?';
-    const audio = await t.blob();
-    const a = new Audio(URL.createObjectURL(audio));
-    m.textContent = `speaking (${src})…`;
-    await a.play().catch(() => {});
-    const q = backend ? `?backend=${backend}&polish=false` : '?polish=false';
-    const s = await fetch(`api/transcribe${q}`, { method: 'POST', headers: { 'content-type': audio.type || 'audio/mpeg' }, body: audio });
-    const j = await s.json().catch(() => ({}));
-    m.textContent = s.ok
-      ? `✓ speaks (${src}) · hears you (${j.backend || '?'}): “${(j.text || '').slice(0, 42)}”`
-      : `✓ speaks (${src}) · ⚠ dictation: ${(j.error || 'HTTP ' + s.status).slice(0, 80)}`;
-  } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-}
+// ---- Provider-centric voice config (docs/specs/voice-providers-redesign.md) ---------------------
+// Every source is a PROVIDER with capabilities; TTS and STT are chosen INDEPENDENTLY, each a primary +
+// a collapsed fallback list. A "Manage providers" table configures each provider once. Replaces the old
+// bundled 3-card + bolted-on dictation dropdown.
+const SHORT_LABEL = { spark: 'Spark', codex: 'Codex', claude: 'Claude', cloud: 'Cloud', macos: 'macOS say', browser: 'Browser', 'match-agent': 'Match agent' };
+const STATUS_META = {
+  ok: { c: '#4ecb6c', t: 'READY' }, 'needs-signin': { c: '#e2b23e', t: 'SIGN IN' },
+  'not-configured': { c: '#8a95a5', t: 'NOT SET' }, unavailable: { c: '#f2554d', t: 'UNAVAILABLE' },
+};
+const statusChip = (p) => { const s = STATUS_META[p.status] || STATUS_META['not-configured']; return `<span class="dk-chip" style="color:${s.c};border-color:${s.c}55">${s.t}</span>`; };
+const capBadges = (p) => [p.caps.tts ? 'TTS' : '', p.caps.stt ? 'STT' : ''].filter(Boolean).map((c) => `<span class="vc2-cap">${c}</span>`).join('');
+const resolvedText = (ids) => (ids.length ? ids.map((id) => SHORT_LABEL[id] || id).join(' → ') : '⚠ nothing available — configure a provider below');
 
-let vcOpen = null; // which card's setup form is open ('gpt' | 'local' | null) — survives re-renders
-
-// Dictation source = which STT powers the mic (subscription from your CLI login vs local Whisper vs
-// cloud). Independent of the TTS "voice choice" cards below. Default auto = match the session's agent.
-function sttSourceBlock(stt) {
-  if (!stt) return '';
-  const av = stt.sources || {};
-  const opt = (val, label, ok, note) =>
-    `<option value="${val}"${stt.pref === val ? ' selected' : ''}${ok ? '' : ' disabled'}>${label}${ok ? '' : ` — ${note}`}</option>`;
+function primaryOptions(cap, providers, sel) {
+  const opts = [];
+  if (cap === 'stt') opts.push(`<option value="match-agent"${sel.primary === 'match-agent' ? ' selected' : ''}>Match the session's agent</option>`);
+  for (const p of providers) {
+    const reason = p.available ? '' : ` — ${p.status === 'needs-signin' ? 'sign in first' : p.status === 'unavailable' ? p.detail : 'not configured'}`;
+    opts.push(`<option value="${p.id}"${sel.primary === p.id ? ' selected' : ''}${p.available ? '' : ' disabled'}>${esc(p.label)}${esc(reason)}</option>`);
+  }
+  return opts.join('');
+}
+function fallbackChips(cap, providers, sel) {
+  const rows = providers.filter((p) => p.id !== sel.primary).map((p) => {
+    const on = sel.fallbacks.includes(p.id);
+    const cloud = p.location === 'cloud';
+    return `<label class="vc2-fbchip${p.available ? '' : ' dis'}"><input type="checkbox" data-fb="${cap}" data-pid="${p.id}"${on ? ' checked' : ''}${p.available ? '' : ' disabled'}/> ${esc(SHORT_LABEL[p.id] || p.label)}${cloud ? ' <span class="vc2-cloud">↗ sends audio to cloud</span>' : ''}</label>`;
+  }).join('');
+  return rows || '<span class="ob-fine">no other providers available</span>';
+}
+function capabilityRow(cap, title, sub, sel, providers, resolved) {
   return `
-    <div class="vc-stt">
-      <div class="st-form-row">
-        <label for="st-stt-sel" style="font-weight:600">🎙 Dictation source</label>
-        <select class="st-sel" id="st-stt-sel">
-          ${opt('auto', 'Auto — match the session agent', true)}
-          ${opt('codex', 'Codex — your ChatGPT login', av.codex, 'sign in to Codex')}
-          ${opt('claude', 'Claude', av.claude, 'coming soon')}
-          ${opt('spark', 'Local Whisper (Spark)', av.spark, 'not configured')}
-          ${opt('provider', 'Cloud provider', av.provider, 'not configured')}
-        </select>
-        <span class="ob-msg" id="st-stt-msg"></span>
+    <div class="vc2-row">
+      <div class="vc2-rowhead"><b>${title}</b> <span class="vc2-sub">${sub}</span></div>
+      <div class="vc2-primary">
+        <label>Primary <select class="st-sel" id="vc2-${cap}-primary">${primaryOptions(cap, providers, sel)}</select></label>
+        <span class="vc2-chain">${esc(resolvedText(resolved))}</span>
       </div>
-      <p class="ob-fine" style="margin:6px 0 0">Auto uses the CLI you're signed into — a Codex session transcribes through your own ChatGPT account via the Codex app's private endpoint (unofficial, not a public API), a Claude session through Claude. Local Whisper stays fully on-device. Falls back automatically if a source is down.</p>
+      <details class="vc2-fb"><summary>Fallbacks</summary><div class="vc2-fbwrap">${fallbackChips(cap, providers, sel)}</div></details>
     </div>`;
 }
 
-async function loadVoice() {
-  try {
-    const [r, stt] = await Promise.all([api('api/models/providers'), api('api/stt/sources').catch(() => null)]);
-    if (!host) return; // torn down mid-fetch
-    const sp = r.speech;
-    const spk = r.spark || { configured: !!r.spark_configured };
-    const spark = !!spk.configured;
-    const enabled = spk.enabled !== false;
-    const ov = (k) => spk.overridden?.includes(k);
-    const choice = voiceChoice(spk, sp);
-    const openCard = vcOpen || choice; // the active choice shows its details; a tapped card shows its setup
-
-    const deviceActive = spark && enabled; // env-configured dedicated local voice server, currently in use
-
-    // ---- one-line truth: what speaks, what listens (no architecture vocabulary) ----
-    const speakDesc = {
-      gpt: `GPT · ${esc(sp?.tts_model || '')}/${esc(sp?.tts_voice || '')}`,
-      local: deviceActive ? `local ${esc(spk.ttsEngine || 'kokoro')}/${esc(spk.ttsVoice || 'af_heart')}` : `local ${esc(sp?.tts_model || 'kokoro')}/${esc(sp?.tts_voice || 'af_heart')}`,
-      browser: 'this device',
-    }[choice];
-    const hearDesc = { gpt: 'OpenAI Whisper', local: 'local Whisper', browser: 'off — browser dictation only' }[choice];
-
-    // ---- the three choices ----
-    const card = (id, title, sub, chips, body) => `
-      <div class="vc-card${choice === id ? ' on' : ''}" data-vc="${id}" role="radio" aria-checked="${choice === id}">
-        <div class="vc-head"><span class="vc-dot"></span><span class="vc-title">${title}${chips || ''}</span></div>
-        <div class="vc-sub">${sub}</div>
-        ${openCard === id && body ? `<div class="vc-body">${body}</div>` : ''}
-      </div>`;
-    const inUse = '<span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">IN USE</span>';
-    const testRow = (id) => choice === id ? `<div class="st-form-row"><button class="dk-reply-btn" data-vc-test="${id}">▶ Test voice</button><span class="ob-msg" id="st-vc-msg-${id}"></span></div>` : '';
-
-    const localSelected = choice === 'local';
-    // Per-field source badge + reset (gpt: show current values, mark env vs override, no blank-to-inherit).
-    const vcBadge = (key) => ov(key) ? '<span class="vc-badge ov">overridden</span>' : '<span class="vc-badge env">from env</span>';
-    const vcReset = (key) => ov(key) ? `<button class="vc-reset" data-vc-reset="${key}" title="reset to the data/aios.env value" aria-label="reset to env">↺</button>` : '';
-    const sField = (id, label, val, key, ph, full) => `
-      <div class="vc-field${full ? ' full' : ''}">
-        <label for="${id}">${label} ${vcBadge(key)}${vcReset(key)}</label>
-        <input class="st-inp" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph)}" data-vc-init="${esc(val || '')}" autocomplete="off" spellcheck="false" />
-      </div>`;
-    // The dedicated local voice server (env-configured): its real settings, PREFILLED + editable inline —
-    // no "Advanced", no "Edit" toggle, no empty fields (operator: "the info is not there"). gpt design.
-    const localDetail = `
+// Per-provider config block for the Manage Providers table.
+function cloudForm(sp) {
+  return `<div class="st-form" id="st-sp-form" hidden>
+    <input class="st-inp" id="st-sp-base" placeholder="Base URL (https://api.openai.com · http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
+    <input class="st-inp" id="st-sp-sttbase" placeholder="STT base URL — only if dictation runs on a DIFFERENT server (blank = same)" value="${esc(sp?.stt_base_url || '')}" />
+    <input class="st-inp" id="st-sp-key" type="password" placeholder="API key${sp?.key_set ? ' (saved — blank keeps it)' : ' (blank for local/open servers)'}" autocomplete="off" />
+    <div class="st-form-row"><input class="st-inp" id="st-sp-sttm" placeholder="STT model (whisper-1)" value="${esc(sp?.stt_model || 'whisper-1')}" /><input class="st-inp" id="st-sp-ttsm" placeholder="TTS model (tts-1 · kokoro)" value="${esc(sp?.tts_model || 'tts-1')}" /><input class="st-inp" id="st-sp-voice" placeholder="TTS voice (alloy · af_heart)" value="${esc(sp?.tts_voice || 'alloy')}" /></div>
+    <input class="st-inp" id="st-sp-instr" placeholder="Speaking style, optional (gpt-4o-mini-tts follows it)" value="${esc(sp?.tts_instructions || '')}" />
+    <div class="st-form-row"><button class="dk-new sm" id="st-sp-save">Test &amp; save</button><button class="dk-reply-btn" id="st-sp-cancel">Cancel</button><span class="ob-msg" id="st-sp-msg"></span></div>
+  </div>`;
+}
+function providerConfig(p, spk, sp) {
+  if (p.id === 'spark') {
+    if (!p.configured) return '<p class="ob-fine">Set SPARK_IP / SPARK_HOST in data/aios.env to add your local voice device (Whisper + Kokoro).</p>';
+    const badge = (k) => (spk.overridden?.includes(k) ? '<span class="vc-badge ov">override</span>' : '<span class="vc-badge env">env</span>');
+    const reset = (k) => (spk.overridden?.includes(k) ? `<button class="vc-reset" data-vc-reset="${k}" title="reset to the data/aios.env value">↺</button>` : '');
+    const f = (id, label, val, key, ph) => `<div class="vc-field"><label>${label} ${badge(key)}${reset(key)}</label><input class="st-inp" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph)}" data-vc-init="${esc(val || '')}" autocomplete="off" spellcheck="false" /></div>`;
+    return `
       <div class="vc-field-grid">
-        ${sField('st-spark-host', 'Server host / SNI', spk.host, 'host', 'spark.your-tailnet.ts.net')}
-        ${sField('st-spark-ip', 'Server IP', spk.ip, 'ip', 'tailnet IP')}
-        ${sField('st-spark-engine', 'TTS engine', spk.ttsEngine, 'ttsEngine', 'kokoro · qwen')}
-        ${sField('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'af_heart · am_michael · Ryan')}
-        ${sField('st-spark-instr', 'Speaking style (optional)', spk.ttsInstruct, 'ttsInstruct', 'e.g. calm colleague giving a status report', true)}
-        <div class="vc-field"><label>Dictation (STT)</label><div class="vc-field-ro">${esc(spk.sttModel || 'whisper-1')} · local Whisper</div></div>
+        ${f('st-spark-host', 'Server host / SNI', spk.host, 'host', 'spark.your-tailnet.ts.net')}
+        ${f('st-spark-ip', 'Server IP', spk.ip, 'ip', 'tailnet IP')}
+        ${f('st-spark-engine', 'TTS engine', spk.ttsEngine, 'ttsEngine', 'kokoro · qwen')}
+        ${f('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'af_heart · Ryan')}
+        ${f('st-spark-instr', 'Speaking style (optional)', spk.ttsInstruct, 'ttsInstruct', 'e.g. calm colleague giving a status report')}
       </div>
       <div class="vc-detail-actions">
         <button class="dk-reply-btn" id="st-spark-sample">▶ Play</button>
@@ -384,208 +369,140 @@ async function loadVoice() {
         <button class="dk-reply-btn" id="st-spark-health">Re-check</button>
         <span class="ob-msg" id="st-spark-msg" style="margin-left:auto"></span>
       </div>
-      <div class="vc-dirty" id="st-spark-dirty" hidden>
-        <span class="ob-msg" id="st-spark-editmsg">Unsaved changes</span>
-        <button class="dk-reply-btn" id="st-spark-testdraft" style="margin-left:auto">Test draft</button>
-        <button class="dk-reply-btn" id="st-spark-discard">Discard</button>
-        <button class="dk-new sm" id="st-spark-save">Save changes</button>
-      </div>
-      <p class="ob-fine" style="margin:8px 0 0">Edits save as a local override in data/model_providers.json over data/aios.env — hot-reloaded, no restart. ↺ resets a field to its env value.</p>`;
-    const localBody = deviceActive
-      ? localDetail
-      : `${localSelected ? '' : `
-        <input class="st-inp" id="st-vc-lspeak" placeholder="Speak — Kokoro-FastAPI URL (http://127.0.0.1:8880)" value="${esc((choice !== 'gpt' && sp?.base_url) || '')}" />
-        <input class="st-inp" id="st-vc-lhear" placeholder="Listen — Whisper server URL (blank = same server, e.g. speaches does both)" value="${esc(sp?.stt_base_url || '')}" />
-        <div class="st-form-row">
-          <button class="dk-new sm" data-vc-save="local">Save &amp; use local voice</button>
-          <span class="ob-msg" id="st-vc-lmsg"></span>
-        </div>
-        <p class="ob-fine" style="margin:0">Defaults: kokoro/af_heart + whisper-1${spark ? '; switch back to your local device anytime' : ''}.</p>`}
-      ${testRow('local')}`;
-    const localCard = card('local', 'Local voice (Whisper + Kokoro)',
-      'Self-hosted voice models on your own hardware — private and free.',
-      localSelected ? inUse : '', localBody);
-
-    const gptSelected = choice === 'gpt';
-    const gptCard = card('gpt', 'GPT voice (OpenAI)',
-      'OpenAI’s cloud voices + Whisper dictation. Needs only your API key.',
-      gptSelected ? inUse : '',
-      `${gptSelected ? '' : `
-        <input class="st-inp" id="st-vc-gptkey" type="password" placeholder="OpenAI API key (sk-…)" autocomplete="off" />
-        <div class="st-form-row">
-          <select class="st-sel" id="st-vc-gptvoice">${['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map((v) => `<option${v === 'alloy' ? ' selected' : ''}>${v}</option>`).join('')}</select>
-          <button class="dk-new sm" data-vc-save="gpt">Save &amp; use GPT voice</button>
-          <span class="ob-msg" id="st-vc-gptmsg"></span>
-        </div>
-        <p class="ob-fine" style="margin:0">Uses gpt-4o-mini-tts + whisper-1${spark ? '; your local voice steps aside (switch back anytime)' : ''}. Fine-tune models under advanced.</p>`}
-      ${testRow('gpt')}`);
-
-    const browserCard = card('browser', 'Browser only',
-      'No setup. This device reads aloud with its built-in voice; server dictation stays off.',
-      choice === 'browser' ? '<span class="dk-chip" style="color:#8a95a5;border-color:currentColor">IN USE</span>' : '',
-      choice === 'browser' ? '' : '<div class="st-form-row"><button class="dk-reply-btn" data-vc-save="browser">Turn server voice off</button><span class="ob-msg" id="st-vc-bmsg"></span></div>');
-
-    $('#st-voicecard').innerHTML = `
-      <div class="vc-status"><span>🔊 Speaks with <b>${speakDesc}</b></span><span>🎙 Hears you via <b>${hearDesc}</b></span></div>
-      ${sttSourceBlock(stt)}
-      <div class="vc-cards" role="radiogroup" aria-label="Voice choice">${localCard}${gptCard}${browserCard}</div>
-      <div class="vc-fallbacks">
-        <h3>Fallbacks &amp; providers</h3>
-      ${spark ? `
-      <div class="ob-row"><b>Local say</b>
-        <span class="dk-chip" style="color:#8a95a5;border-color:currentColor">FALLBACK · TTS</span>
-        <span class="ob-ver">macOS say · 127.0.0.1:${esc(String(spk.localTtsPort || 17071))} · voice ${esc(spk.localVoice || 'alloy')} · built-in, used only if the voice server is unreachable</span>
-      </div>` : ''}
-      ${sp?.base_url ? `
-      <div class="ob-row"><b>Speech provider</b>
-        <span class="dk-chip" style="color:#4ecb6c;border-color:#4ecb6c55">READY · TTS + STT</span>
-        <span class="ob-ver">${esc(sp.base_url)} · STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')}/${esc(sp.tts_voice || '—')}${sp.key_set ? '' : ' · no key'}</span>
-        <button class="dk-reply-btn" id="st-sp-sample">▶ Play</button>
-        <button class="dk-reply-btn" id="st-sp-stt">Test STT</button>
-        <button class="dk-reply-btn" id="st-sp-edit-btn">Edit</button>
-        <button class="dk-reply-btn" id="st-sp-del" style="color:#f2554d;border-color:#f2554d55">Remove</button>
-        <span class="ob-msg" id="st-sp-rowmsg"></span>
-      </div>` : `
-      <div class="ob-row"><b>Speech provider</b>
-        <span class="dk-chip" style="color:#8a95a5;border-color:currentColor">NOT CONFIGURED</span>
-        <span class="ob-ver">OpenAI-compatible TTS + STT (OpenAI · Groq · local Kokoro-FastAPI / speaches)${spark ? '' : ' — without it and without Spark, voice falls back to the browser'}</span>
-        <button class="dk-reply-btn" id="st-sp-add-btn">+ Add provider</button>
-      </div>`}
-      <div class="st-form" id="st-sp-form" hidden>
-        <input class="st-inp" id="st-sp-base" placeholder="Base URL (https://api.openai.com · http://127.0.0.1:8880 for Kokoro-FastAPI)" value="${esc(sp?.base_url || '')}" />
-        <input class="st-inp" id="st-sp-sttbase" placeholder="STT base URL — only if dictation runs on a DIFFERENT server (blank = same)" value="${esc(sp?.stt_base_url || '')}" />
-        <input class="st-inp" id="st-sp-key" type="password" placeholder="API key${sp?.key_set ? ' (saved — blank keeps it)' : ' (blank for local/open servers)'}" autocomplete="off" />
-        <div class="st-form-row">
-          <input class="st-inp" id="st-sp-sttm" placeholder="STT model (whisper-1 · gpt-4o-mini-transcribe)" value="${esc(sp?.stt_model || 'whisper-1')}" />
-          <input class="st-inp" id="st-sp-ttsm" placeholder="TTS model (tts-1 · gpt-4o-mini-tts · kokoro)" value="${esc(sp?.tts_model || 'tts-1')}" />
-          <input class="st-inp" id="st-sp-voice" placeholder="TTS voice (alloy · af_heart)" value="${esc(sp?.tts_voice || 'alloy')}" />
-        </div>
-        <input class="st-inp" id="st-sp-instr" placeholder="Speaking style, optional (gpt-4o-mini-tts follows it — e.g. calm colleague giving a status report)" value="${esc(sp?.tts_instructions || '')}" />
-        <div class="st-form-row"><button class="dk-new sm" id="st-sp-save">Test &amp; save</button><button class="dk-reply-btn" id="st-sp-cancel">Cancel</button><span class="ob-msg" id="st-sp-msg"></span></div>
-      </div>
-      </div>`;
-
-    // ---- dictation source picker (independent of the TTS voice cards) ----
-    const sttSel = document.querySelector('#st-stt-sel');
-    if (sttSel) sttSel.onchange = async () => {
-      const msg = document.querySelector('#st-stt-msg'); if (msg) msg.textContent = 'saving…';
-      try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sttSource: sttSel.value }) }); if (msg) { msg.textContent = '✓'; setTimeout(() => (msg.textContent = ''), 1500); } }
-      catch (err) { if (msg) msg.textContent = '⚠ ' + (err.message || err); }
-    };
-
-    // ---- choice cards: one tap = the system switches (fallbacks stay automatic underneath) ----
-    for (const c of document.querySelectorAll('[data-vc]')) {
-      c.onclick = async (e) => {
-        if (e.target.closest('button, input, select, a, [data-vc-save], [data-vc-test]')) return; // controls inside the card
-        const id = c.dataset.vc;
-        if (id === choice) { if (vcOpen) { vcOpen = null; loadVoice(); } return; } // re-tapping the active choice closes any open setup
-        if (id === 'local' && spark) { // the dedicated local device is already configured — switching back is instant
-          try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sparkDisabled: false }) }); vcOpen = null; loadVoice(); } catch {}
-          return;
-        }
-        vcOpen = id; // gpt/local/browser need their one-step setup first — open it
-        loadVoice();
-      };
+      <div class="vc-dirty" id="st-spark-dirty" hidden><span class="ob-msg" id="st-spark-editmsg">Unsaved changes</span><button class="dk-reply-btn" id="st-spark-testdraft" style="margin-left:auto">Test draft</button><button class="dk-reply-btn" id="st-spark-discard">Discard</button><button class="dk-new sm" id="st-spark-save">Save</button></div>`;
+  }
+  if (p.id === 'codex') {
+    return `<p class="ob-fine">${p.available ? 'Dictation runs through your own ChatGPT login. <b>Unofficial endpoint</b> — may change without notice; your audio goes to your ChatGPT account.' : 'Sign in to Codex to dictate from your ChatGPT subscription (no local Whisper needed).'} <a class="dk-reply-btn" href="auth">${p.available ? 'Re-login ▸' : 'Sign in ▸'}</a></p>`;
+  }
+  if (p.id === 'claude') {
+    return "<p class=\"ob-fine\">Claude's dictation service is browser-gated (Cloudflare) with no supported headless API, so it can't run from the server. Nothing to configure — a Claude session uses the fallbacks above.</p>";
+  }
+  if (p.id === 'macos') {
+    return '<div class="vc-detail-actions"><button class="dk-reply-btn" id="st-macos-test">▶ Play</button><span class="ob-msg" id="st-macos-msg"></span></div>';
+  }
+  if (p.id === 'browser') {
+    return '<p class="ob-fine">On-device speech — no setup, instant, lower quality. Used when you pick it, or as the final fallback. Quality depends on your browser and OS voices.</p>';
+  }
+  if (p.id === 'cloud') {
+    if (sp?.base_url) {
+      return `
+        <div class="ob-row"><span class="ob-ver">${esc(sp.base_url)} · STT ${esc(sp.stt_model || '—')} · TTS ${esc(sp.tts_model || '—')}/${esc(sp.tts_voice || '—')}${sp.key_set ? '' : ' · no key'}</span></div>
+        <div class="vc-detail-actions"><button class="dk-reply-btn" id="st-sp-sample">▶ Play</button><button class="dk-reply-btn" id="st-sp-stt">Test STT</button><button class="dk-reply-btn" id="st-sp-edit-btn">Edit</button><button class="dk-reply-btn" id="st-sp-del" style="color:#f2554d;border-color:#f2554d55">Remove</button><span class="ob-msg" id="st-sp-rowmsg"></span></div>
+        ${cloudForm(sp)}`;
     }
-    const vcApply = async (msgEl, speechBody) => {
-      msgEl.textContent = 'testing…';
-      const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(speechBody) });
-      if (!j.ok) throw new Error(j.error || 'failed');
-      if (spark && enabled) await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sparkDisabled: true }) });
-      vcOpen = null;
+    return `<p class="ob-fine">An OpenAI-compatible endpoint (OpenAI · Groq · local Kokoro-FastAPI / speaches) adds cloud TTS + STT. <button class="dk-reply-btn" id="st-sp-add-btn">+ Add provider</button></p>${cloudForm(sp)}`;
+  }
+  return '';
+}
+
+async function loadVoice() {
+  const host = $('#st-voicecard');
+  if (!host) return;
+  try {
+    const [state, r] = await Promise.all([api('api/voice/state'), api('api/models/providers')]);
+    if (!$('#st-voicecard')) return; // torn down mid-fetch
+    const { providers, config: cfg, resolved } = state;
+    const spk = r.spark || {};
+    const sp = r.speech;
+    const ttsP = providers.filter((p) => p.caps.tts);
+    const sttP = providers.filter((p) => p.caps.stt);
+    // Bridge to the client TTS stacks (they read localStorage.aios_tts): browser primary → device voice.
+    try { localStorage.setItem('aios_tts', cfg.tts.primary === 'browser' ? 'browser' : 'neural'); } catch {}
+
+    host.innerHTML = `
+      ${capabilityRow('tts', '🔊 Speaks', 'reports &amp; voice replies', cfg.tts, ttsP, resolved.tts)}
+      ${capabilityRow('stt', '🎙 Hears you', 'dictation to the agent', cfg.stt, sttP, resolved.stt)}
+      <details class="vc2-manage"><summary>Manage providers</summary>
+        <div class="vc2-provlist">
+          ${providers.map((p) => `
+            <div class="vc2-prov">
+              <div class="vc2-provhead"><b>${esc(p.label)}</b> ${capBadges(p)} ${statusChip(p)}<span class="vc2-provdetail">${esc(p.detail || '')}</span></div>
+              <div class="vc2-provbody">${providerConfig(p, spk, sp)}</div>
+            </div>`).join('')}
+        </div>
+      </details>`;
+
+    // ---- capability selection (primary + fallback checkboxes) ----
+    const saveCap = async (cap) => {
+      const primary = $(`#vc2-${cap}-primary`).value;
+      const fallbacks = [...document.querySelectorAll(`input[data-fb="${cap}"]:checked`)].map((el) => el.dataset.pid);
+      if (cap === 'tts') { try { localStorage.setItem('aios_tts', primary === 'browser' ? 'browser' : 'neural'); } catch {} }
+      try { await api('api/voice/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [cap]: { primary, fallbacks } }) }); } catch {}
       loadVoice();
     };
-    const gptSave = document.querySelector('[data-vc-save="gpt"]');
-    if (gptSave) gptSave.onclick = async () => {
-      const m = $('#st-vc-gptmsg');
-      try {
-        const key = $('#st-vc-gptkey').value.trim();
-        if (!key) { m.textContent = '⚠ paste your OpenAI API key'; return; }
-        await vcApply(m, { base_url: 'https://api.openai.com', stt_base_url: '', api_key: key, stt_model: 'whisper-1', tts_model: 'gpt-4o-mini-tts', tts_voice: $('#st-vc-gptvoice').value });
-      } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-    };
-    const localSave = document.querySelector('[data-vc-save="local"]');
-    if (localSave) localSave.onclick = async () => {
-      const m = $('#st-vc-lmsg');
-      try {
-        const speak = $('#st-vc-lspeak').value.trim();
-        if (!speak) { m.textContent = '⚠ enter the Kokoro-FastAPI URL'; return; }
-        await vcApply(m, { base_url: speak, stt_base_url: $('#st-vc-lhear').value.trim(), api_key: '', stt_model: 'whisper-1', tts_model: 'kokoro', tts_voice: 'af_heart' });
-      } catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-    };
-    const browserSave = document.querySelector('[data-vc-save="browser"]');
-    if (browserSave) armConfirm(browserSave, 'Confirm — turn server voice off', async () => {
-      try {
-        await api('api/models/speech', { method: 'DELETE' }).catch(() => {});
-        if (spark && enabled) await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sparkDisabled: true }) });
-        vcOpen = null;
-        loadVoice();
-      } catch {}
-    });
-    for (const b of document.querySelectorAll('[data-vc-test]')) {
-      // the dedicated device speaks through the default chain; URL-based local + GPT test the provider path
-      b.onclick = () => testVoice($(`#st-vc-msg-${b.dataset.vcTest}`), b.dataset.vcTest === 'local' && deviceActive ? undefined : 'provider');
+    for (const cap of ['tts', 'stt']) {
+      const primEl = $(`#vc2-${cap}-primary`);
+      if (primEl) primEl.onchange = () => saveCap(cap);
+      for (const cb of document.querySelectorAll(`input[data-fb="${cap}"]`)) cb.onchange = () => saveCap(cap);
     }
 
-    // ---- Local voice server: inline, always-editable fields (only when it's the active choice) ----
-    if (spark && deviceActive) {
-      const m = $('#st-spark-msg');
-      const em = $('#st-spark-editmsg');
-      $('#st-spark-sample') && ($('#st-spark-sample').onclick = () => playTts(m));
-      $('#st-spark-stt') && ($('#st-spark-stt').onclick = () => roundTripStt(m));
-      $('#st-spark-health') && ($('#st-spark-health').onclick = async () => {
-        m.textContent = 'checking…';
-        try { const j = await api('api/spark/health'); m.textContent = j.status && j.status < 400 ? `✓ reachable (${esc(j.via || 'spark')})` : `⚠ ${esc(j.error || 'unreachable')}`; }
-        catch (e) { m.textContent = '⚠ ' + (e.message || e); }
-      });
-      // Dirty-state editing: fields are prefilled with the effective config; the Save bar appears only once
-      // a field actually changes, and Save sends ONLY the changed fields (so an env-inherited field isn't
-      // turned into a needless override just by saving).
-      const FIELDS = { 'st-spark-host': 'host', 'st-spark-ip': 'ip', 'st-spark-engine': 'ttsEngine', 'st-spark-voice': 'ttsVoice', 'st-spark-instr': 'ttsInstruct' };
-      const dirtyEl = $('#st-spark-dirty');
-      const changed = () => Object.entries(FIELDS).filter(([id]) => { const el = $('#' + id); return el && el.value.trim() !== (el.dataset.vcInit || '').trim(); });
-      const refreshDirty = () => { if (dirtyEl) dirtyEl.hidden = changed().length === 0; };
-      for (const id of Object.keys(FIELDS)) { const el = $('#' + id); if (el) el.oninput = refreshDirty; }
-      $('#st-spark-testdraft') && ($('#st-spark-testdraft').onclick = () => playTts(em, { engine: $('#st-spark-engine')?.value.trim() || undefined, voice: $('#st-spark-voice')?.value.trim() || undefined, instruct: $('#st-spark-instr')?.value.trim() || undefined }));
-      $('#st-spark-discard') && ($('#st-spark-discard').onclick = () => loadVoice());
-      $('#st-spark-save') && ($('#st-spark-save').onclick = async () => {
-        const patch = Object.fromEntries(changed().map(([id, key]) => [key, $('#' + id).value.trim()]));
-        if (!Object.keys(patch).length) { refreshDirty(); return; }
-        if (em) em.textContent = 'saving…';
-        try { const j = await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }); if (!j.ok) throw new Error(j.error || 'failed'); loadVoice(); }
-        catch (e) { if (em) em.textContent = '⚠ ' + (e.message || e); }
-      });
-      // Per-field reset: clear just that field's override -> re-inherit the data/aios.env value.
-      for (const b of document.querySelectorAll('[data-vc-reset]')) b.onclick = async () => {
-        try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [b.dataset.vcReset]: '' }) }); loadVoice(); }
-        catch (e) { if (m) m.textContent = '⚠ ' + (e.message || e); }
-      };
-    }
+    // ---- provider config wiring ----
+    wireSpark(spk);
+    wireCloud(sp);
+    const macTest = $('#st-macos-test');
+    if (macTest) macTest.onclick = () => playTts($('#st-macos-msg'), { backend: 'local' });
+  } catch (e) {
+    if ($('#st-voicecard')) $('#st-voicecard').textContent = 'voice settings unavailable';
+  }
+}
 
-    // ---- Cloud fallback provider actions ----
-    const showForm = () => { $('#st-sp-form').hidden = false; $('#st-sp-base')?.focus(); };
-    $('#st-sp-add-btn') && ($('#st-sp-add-btn').onclick = showForm);
-    $('#st-sp-edit-btn') && ($('#st-sp-edit-btn').onclick = () => { const f = $('#st-sp-form'); f.hidden = !f.hidden; });
-    $('#st-sp-cancel') && ($('#st-sp-cancel').onclick = () => { if (sp?.base_url || spark) $('#st-sp-form').hidden = true; });
-    $('#st-sp-save').onclick = async () => {
-      const msg = $('#st-sp-msg'); msg.textContent = 'testing tts…';
-      try {
-        const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-          base_url: $('#st-sp-base').value.trim(), stt_base_url: $('#st-sp-sttbase').value.trim(), api_key: $('#st-sp-key').value,
-          stt_model: $('#st-sp-sttm').value.trim(), tts_model: $('#st-sp-ttsm').value.trim(),
-          tts_voice: $('#st-sp-voice').value.trim(), tts_instructions: $('#st-sp-instr').value.trim(),
-        }) });
-        if (!j.ok) throw new Error(j.error || 'failed');
-        msg.textContent = '✓ saved'; loadVoice();
-      } catch (e) { msg.textContent = '⚠ ' + (e.message || e); }
-    };
-    if (sp?.base_url) {
-      const m = $('#st-sp-rowmsg');
-      $('#st-sp-sample').onclick = () => playTts(m, { backend: 'provider' });
-      $('#st-sp-stt').onclick = () => roundTripStt(m, 'provider');
-      armConfirm($('#st-sp-del'), 'Confirm remove', async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadVoice(); });
-    }
-  } catch (e) { if (host) $('#st-voicecard').textContent = 'unavailable'; }
+// Spark provider config: inline dirty-tracked editor + tests + per-field env reset (unchanged behavior,
+// just no longer gated behind a "card"). No-op if Spark isn't configured (no editor rendered).
+function wireSpark(spk) {
+  const m = $('#st-spark-msg');
+  if (!m) return;
+  const em = $('#st-spark-editmsg');
+  $('#st-spark-sample') && ($('#st-spark-sample').onclick = () => playTts(m, { backend: 'spark' }));
+  $('#st-spark-stt') && ($('#st-spark-stt').onclick = () => roundTripStt(m));
+  $('#st-spark-health') && ($('#st-spark-health').onclick = async () => {
+    m.textContent = 'checking…';
+    try { const j = await api('api/spark/health'); m.textContent = j.status && j.status < 400 ? `✓ reachable (${esc(j.via || 'spark')})` : `⚠ ${esc(j.error || 'unreachable')}`; }
+    catch (e) { m.textContent = '⚠ ' + (e.message || e); }
+  });
+  const FIELDS = { 'st-spark-host': 'host', 'st-spark-ip': 'ip', 'st-spark-engine': 'ttsEngine', 'st-spark-voice': 'ttsVoice', 'st-spark-instr': 'ttsInstruct' };
+  const dirtyEl = $('#st-spark-dirty');
+  const changed = () => Object.entries(FIELDS).filter(([id]) => { const el = $('#' + id); return el && el.value.trim() !== (el.dataset.vcInit || '').trim(); });
+  const refresh = () => { if (dirtyEl) dirtyEl.hidden = changed().length === 0; };
+  for (const id of Object.keys(FIELDS)) { const el = $('#' + id); if (el) el.oninput = refresh; }
+  $('#st-spark-testdraft') && ($('#st-spark-testdraft').onclick = () => playTts(em, { backend: 'spark', engine: $('#st-spark-engine')?.value.trim() || undefined, voice: $('#st-spark-voice')?.value.trim() || undefined, instruct: $('#st-spark-instr')?.value.trim() || undefined }));
+  $('#st-spark-discard') && ($('#st-spark-discard').onclick = () => loadVoice());
+  $('#st-spark-save') && ($('#st-spark-save').onclick = async () => {
+    const patch = Object.fromEntries(changed().map(([id, key]) => [key, $('#' + id).value.trim()]));
+    if (!Object.keys(patch).length) { refresh(); return; }
+    if (em) em.textContent = 'saving…';
+    try { const j = await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) }); if (!j.ok) throw new Error(j.error || 'failed'); loadVoice(); }
+    catch (e) { if (em) em.textContent = '⚠ ' + (e.message || e); }
+  });
+  for (const b of document.querySelectorAll('[data-vc-reset]')) b.onclick = async () => {
+    try { await api('api/models/voice', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ [b.dataset.vcReset]: '' }) }); loadVoice(); }
+    catch (e) { if (m) m.textContent = '⚠ ' + (e.message || e); }
+  };
+}
+
+// Cloud (OpenAI-compatible) provider config: add/edit form + tests + remove (unchanged behavior).
+function wireCloud(sp) {
+  const showForm = () => { const f = $('#st-sp-form'); if (f) { f.hidden = false; $('#st-sp-base')?.focus(); } };
+  $('#st-sp-add-btn') && ($('#st-sp-add-btn').onclick = showForm);
+  $('#st-sp-edit-btn') && ($('#st-sp-edit-btn').onclick = () => { const f = $('#st-sp-form'); if (f) f.hidden = !f.hidden; });
+  $('#st-sp-cancel') && ($('#st-sp-cancel').onclick = () => { const f = $('#st-sp-form'); if (f) f.hidden = true; });
+  $('#st-sp-save') && ($('#st-sp-save').onclick = async () => {
+    const msg = $('#st-sp-msg'); msg.textContent = 'testing tts…';
+    try {
+      const j = await api('api/models/speech', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+        base_url: $('#st-sp-base').value.trim(), stt_base_url: $('#st-sp-sttbase').value.trim(), api_key: $('#st-sp-key').value,
+        stt_model: $('#st-sp-sttm').value.trim(), tts_model: $('#st-sp-ttsm').value.trim(),
+        tts_voice: $('#st-sp-voice').value.trim(), tts_instructions: $('#st-sp-instr').value.trim(),
+      }) });
+      if (!j.ok) throw new Error(j.error || 'failed');
+      msg.textContent = '✓ saved'; loadVoice();
+    } catch (e) { msg.textContent = '⚠ ' + (e.message || e); }
+  });
+  if (sp?.base_url) {
+    const m = $('#st-sp-rowmsg');
+    $('#st-sp-sample') && ($('#st-sp-sample').onclick = () => playTts(m, { backend: 'provider' }));
+    $('#st-sp-stt') && ($('#st-sp-stt').onclick = () => roundTripStt(m, 'provider'));
+    armConfirm($('#st-sp-del'), 'Confirm remove', async () => { await api('api/models/speech', { method: 'DELETE' }).catch(() => {}); loadVoice(); });
+  }
 }
 
 // ---- Remote access -------------------------------------------------------------------------------

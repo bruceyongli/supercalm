@@ -215,12 +215,13 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.equal(getSpeech(), null);
   const sparkSrc = readFileSync(new URL('../src/spark.js', import.meta.url), 'utf8');
   assert.match(sparkSrc, /transcribeWithProvider/, 'STT provider path exists');
-  assert.match(sparkSrc, /no speech-to-text configured/, 'helpful 502 when nothing is configured');
+  assert.match(sparkSrc, /no speech-to-text available/, 'helpful 502 when nothing is configured');
   assert.match(sparkSrc, /import \{[^}]*\bgetSpeech\b[^}]*\} from '\.\/model_providers\.js'/, 'spark imports the store (a use-without-import once shipped; co-imports like getVoiceOverride are fine)');
   const ttsSrc = readFileSync(new URL('../src/tts.js', import.meta.url), 'utf8');
   assert.match(ttsSrc, /speakProvider/, 'TTS provider path exists');
   assert.match(ttsSrc, /import \{[^}]*\bgetSpeech\b[^}]*\} from '\.\/model_providers\.js'/, 'tts imports the store');
-  assert.match(ttsSrc, /wantSpark && sparkEnabled\(\)/, 'spark only attempted when configured (and not muted)');
+  assert.match(ttsSrc, /if \(!sparkEnabled\(\)\) continue/, 'spark TTS only attempted when configured (and not muted)');
+  assert.match(ttsSrc, /resolveChain|ttsServerChain/, 'TTS walks the resolved provider chain');
   const mapi = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(mapi, /api\/models\/speech/, 'speech config routes exist');
   assert.match(mapi, /spark_configured/, 'settings can tell whether a Spark device takes precedence');
@@ -230,9 +231,11 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const settingsSrc = readFileSync(new URL('../web/views/settings.js', import.meta.url), 'utf8');
   assert.match(settingsSrc, /api\/models\/speech/, 'settings owns the speech form');
   assert.match(settingsSrc, /tts_instructions/, 'settings edits speaking-style instructions');
-  // the migrated sections must manage in place (sign-in links to auth elsewhere are legitimate)
+  // the migrated sections manage config IN PLACE (Spark host/voice + the cloud speech provider); only
+  // subscription sign-in (Codex OAuth) legitimately links to the auth page — the speech provider does not.
   const managed = settingsSrc.slice(settingsSrc.indexOf('async function loadProviders'), settingsSrc.indexOf('async function loadRemote'));
-  assert.ok(managed.length > 100 && !/href="auth"/.test(managed), 'providers + voice sections never bounce to the auth page');
+  assert.ok(managed.length > 100, 'providers + voice sections are substantial');
+  assert.match(managed, /st-sp-save/, 'the speech provider is edited IN PLACE (not bounced to auth)');
   const routerSrc = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
   assert.match(routerSrc, /scrollIntoView/, 'hash links scroll in place (base-tag would send them home)');
   await new Promise((ok) => mock3.close(ok));

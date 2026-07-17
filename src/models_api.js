@@ -3,7 +3,7 @@
 // registered before any :id patterns (router matches in registration order).
 
 import { route, json } from './server.js';
-import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech, listBuiltinProviders, setBuiltinEnabled, getVoiceOverride, setVoiceOverride, clearVoiceOverride } from './model_providers.js';
+import { listProviders, getProvider, upsertProvider, deleteProvider, probeProvider, PROVIDER_KINDS, getSpeech, setSpeech, clearSpeech, probeSpeech, listBuiltinProviders, setBuiltinEnabled, getVoiceOverride, setVoiceOverride, clearVoiceOverride, getVoiceConfig, setVoiceConfig } from './model_providers.js';
 import { currentProviders, listProxyModels } from './model_catalog.js';
 import { pricingStatus, refreshPrices, clearPricing, SUPERCALM_PRICES_URL } from './pricing.js';
 import { bus } from './bus.js';
@@ -130,6 +130,21 @@ route('DELETE', '/api/models/voice', (req, res) => {
   bus.emit('changed');
   return json(res, 200, { ok: true });
 });
+
+// Voice config v2 — the provider-centric TTS/STT SELECTION (primary + fallbacks per capability).
+// Body: { tts?: {primary?, fallbacks?[]}, stt?: {primary?, fallbacks?[]} }. Provider config stays on
+// /api/models/voice (Spark) and /api/models/speech (cloud); this is routing only.
+route('POST', '/api/voice/config', async (req, res) => {
+  const b = await bodyJson(req);
+  try {
+    const cfg = setVoiceConfig(b);
+    bus.emit('changed');
+    return json(res, 200, { ok: true, config: cfg });
+  } catch (e) {
+    return json(res, 400, { ok: false, error: String(e.message || e).slice(0, 200) });
+  }
+});
+route('GET', '/api/voice/config', (req, res) => json(res, 200, { ok: true, config: getVoiceConfig() }));
 
 // Add / update. With probe:true (default) the provider is verified first and its live model list
 // captured — a bad key/URL never lands in the registry silently.

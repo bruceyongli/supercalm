@@ -11,7 +11,7 @@
 
 import { readFileSync, writeFileSync, existsSync, chmodSync, renameSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, SPARK } from './config.js';
 import { id as genId, now } from './util.js';
 import { registerUserRoutes } from './model_catalog.js';
 
@@ -228,6 +228,76 @@ export function clearVoiceOverride() {
   const data = readAll();
   delete data.voice;
   writeAll(data);
+}
+
+// ---- voice config v2: per-capability selection (primary + fallbacks) ------------------------------
+// The provider-centric model (docs/specs/voice-providers-redesign.md): TTS and STT are chosen
+// INDEPENDENTLY, each as a primary provider + an ordered fallback list. Provider CONFIG (Spark host,
+// cloud key) stays under .voice.spark / .speech — this is only the ROUTING. Migrated once from the old
+// card-choice + sttSource + sparkDisabled tangle; a `_legacyVoice` blob is kept for one release.
+const TTS_PRIMARIES = new Set(['spark', 'cloud', 'macos', 'browser']);
+const STT_PRIMARIES = new Set(['match-agent', 'spark', 'codex', 'cloud', 'browser']); // claude is never available → not selectable
+const CHAIN_PROVIDERS = new Set(['spark', 'codex', 'cloud', 'macos', 'browser']);
+const dedupeChain = (arr, not) => [...new Set(arr.filter((x) => x && x !== not && CHAIN_PROVIDERS.has(x)))];
+
+function defaultVoiceConfig() {
+  const spark = !!SPARK.ip;
+  return {
+    version: 2,
+    tts: { primary: spark ? 'spark' : 'browser', fallbacks: spark ? ['macos', 'browser'] : ['macos'] },
+    stt: { primary: 'match-agent', fallbacks: spark ? ['spark', 'browser'] : ['browser'] },
+  };
+}
+
+// v = the old .voice object; hasCloud = a speech provider is configured. Never auto-adds cloud to a chain
+// (privacy) — cloud only becomes a primary if it was the old active choice.
+function migrateVoiceConfig(v, hasCloud) {
+  const sparkConfigured = !!(v?.spark?.ip || SPARK.ip);
+  const sparkMuted = !!v?.sparkDisabled;
+  const ttsPrimary = sparkConfigured && !sparkMuted ? 'spark' : hasCloud ? 'cloud' : 'browser';
+  const sttMap = { auto: 'match-agent', codex: 'codex', claude: 'match-agent', spark: 'spark', provider: 'cloud' };
+  const sttPrimary = sttMap[v?.sttSource] || 'match-agent';
+  return {
+    version: 2,
+    tts: { primary: ttsPrimary, fallbacks: dedupeChain(['spark', 'macos', 'browser'], ttsPrimary) },
+    stt: { primary: sttPrimary, fallbacks: dedupeChain(['spark', 'browser'], sttPrimary) },
+    _legacyVoice: { sttSource: v?.sttSource ?? null, sparkDisabled: sparkMuted, migratedAt: now() },
+  };
+}
+
+export function getVoiceConfig() {
+  const data = readAll();
+  const v = data.voice || {};
+  if (v.version === 2 && v.tts?.primary && v.stt?.primary) return { version: 2, tts: v.tts, stt: v.stt };
+  // migrate once + persist (keep the spark override; un-mute spark so it can be a fallback — the old
+  // sparkDisabled meaning moved into tts.primary), then stamp v2 so this never re-runs.
+  const hadV1 = v.sttSource !== undefined || v.sparkDisabled !== undefined || v.spark;
+  const m = hadV1 ? migrateVoiceConfig(v, !!data.speech?.base_url) : defaultVoiceConfig();
+  const next = { ...v, version: 2, tts: m.tts, stt: m.stt, sparkDisabled: false };
+  if (m._legacyVoice) next._legacyVoice = m._legacyVoice;
+  data.voice = next;
+  writeAll(data);
+  return { version: 2, tts: next.tts, stt: next.stt };
+}
+
+export function setVoiceConfig(patch = {}) {
+  const base = getVoiceConfig(); // ensures v2 shape + migration
+  const data = readAll();
+  const sanitize = (sel, primaries) => {
+    if (!sel || typeof sel !== 'object') return null;
+    const out = {};
+    if (typeof sel.primary === 'string' && primaries.has(sel.primary)) out.primary = sel.primary;
+    if (Array.isArray(sel.fallbacks)) out.fallbacks = [...new Set(sel.fallbacks.filter((x) => CHAIN_PROVIDERS.has(x)))].slice(0, 5);
+    return Object.keys(out).length ? out : null;
+  };
+  const next = { ...(data.voice || {}), version: 2, tts: { ...base.tts }, stt: { ...base.stt } };
+  const tts = sanitize(patch.tts, TTS_PRIMARIES);
+  const stt = sanitize(patch.stt, STT_PRIMARIES);
+  if (tts) next.tts = { ...next.tts, ...tts };
+  if (stt) next.stt = { ...next.stt, ...stt };
+  data.voice = next;
+  writeAll(data);
+  return { version: 2, tts: next.tts, stt: next.stt };
 }
 
 // Probe: synthesize a one-word clip (the only check that proves TTS actually works; /v1/models is

@@ -2,7 +2,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { route, json, readJson } from './server.js';
 import { sparkRequest, sparkEnabled, effectiveSpark } from './spark.js';
-import { getSpeech, getVoiceOverride } from './model_providers.js';
+import { getSpeech, getVoiceOverride, getVoiceConfig } from './model_providers.js';
+import { resolveChain } from './voice_chain.js';
+import { voiceProviders, availabilityMap } from './voice_providers.js';
 
 // TTS for the voice concierge. Two backends:
 //   'spark' (default) — Spark server TTS at /v1/audio/speech, reached via tailnet IP+SNI
@@ -139,53 +141,54 @@ async function speakProvider(sp, text, format, instruct = '') {
   return { audio: Buffer.from(await r.arrayBuffer()), contentType: r.headers.get('content-type') || '' };
 }
 
-// Browser POSTs text here; we synthesize and return mp3 (Spark primary, local fallback).
+// Which server-side TTS providers to try, in order. Normally the resolved TTS chain (Speaks selection),
+// filtered to the ones the SERVER can run (spark/cloud/macos — 'browser' is client-side). A `b.backend`
+// value forces ONE provider (the Settings/ops Test buttons: spark | provider/api → cloud | local → macos).
+async function ttsServerChain(b) {
+  const forced = b.backend ? ({ spark: 'spark', provider: 'cloud', api: 'cloud', local: 'macos' })[b.backend] : null;
+  if (forced) return [forced];
+  const avail = availabilityMap(await voiceProviders());
+  const cfg = getVoiceConfig();
+  return resolveChain({ capability: 'tts', primary: cfg.tts.primary, fallbacks: cfg.tts.fallbacks, avail })
+    .filter((id) => id !== 'browser'); // browser TTS is the client's job
+}
+
+// Browser POSTs text here; we synthesize and return mp3, walking the resolved TTS chain with fallback.
 route('POST', '/api/tts', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   const text = String(b.text || '').slice(0, 4000);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  const vc = voiceConfig(); // effective TTS config (UI override merged over env) — so edits + disable apply
+  const vc = voiceConfig(); // effective Spark TTS voice/engine (override merged over env)
   const engine = normalizeEngine(b.engine || b.model || vc.ttsEngine);
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
   const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
-  const wantSpark = (b.backend || vc.backend) === 'spark';
 
-  let audio = null;
-  let responseHeaders = null;
-  if (wantSpark && sparkEnabled()) {
+  const chain = await ttsServerChain(b);
+  let audio = null, responseHeaders = null, lastErr = '';
+  for (const name of chain) {
     try {
-      const result = await speakSpark(text, voice, engine, format, b.instruct ?? vc.ttsInstruct);
-      audio = result.audio;
-      responseHeaders = proxyTtsHeaders(result.headers, 'spark', format);
-    } catch (e) {
-      console.error('[aios] spark tts failed, trying provider/local:', e.message);
-    }
-  }
-  if (!audio) {
-    const speech = getSpeech({ redact: false });
-    if (speech?.enabled && speech.base_url) {
-      try {
-        const result = await speakProvider(speech, text, format, b.instruct);
-        audio = result.audio;
-        responseHeaders = proxyTtsHeaders({}, 'api', format);
-        responseHeaders['x-tts-backend'] = 'api';
-        responseHeaders['x-tts-engine'] = speech.tts_model || 'tts-1';
-        if (result.contentType) responseHeaders['content-type'] = result.contentType;
-      } catch (e) {
-        console.error('[aios] provider tts failed, falling back to local say:', e.message);
+      if (name === 'spark') {
+        if (!sparkEnabled()) continue;
+        const r = await speakSpark(text, voice, engine, format, b.instruct ?? vc.ttsInstruct);
+        audio = r.audio; responseHeaders = proxyTtsHeaders(r.headers, 'spark', format); break;
       }
-    }
-  }
-  if (!audio) {
-    try {
-      audio = await speakLocal(text);
-      responseHeaders = proxyTtsHeaders({}, 'local', 'mp3');
-      responseHeaders['x-tts-engine'] = 'local';
-      responseHeaders['x-tts-backend'] = 'macos-say';
+      if (name === 'cloud') {
+        const speech = getSpeech({ redact: false });
+        if (!(speech?.enabled && speech.base_url)) continue;
+        const r = await speakProvider(speech, text, format, b.instruct);
+        audio = r.audio; responseHeaders = proxyTtsHeaders({}, 'api', format);
+        responseHeaders['x-tts-backend'] = 'api'; responseHeaders['x-tts-engine'] = speech.tts_model || 'tts-1';
+        if (r.contentType) responseHeaders['content-type'] = r.contentType; break;
+      }
+      if (name === 'macos') {
+        audio = await speakLocal(text); responseHeaders = proxyTtsHeaders({}, 'local', 'mp3');
+        responseHeaders['x-tts-engine'] = 'local'; responseHeaders['x-tts-backend'] = 'macos-say'; break;
+      }
     } catch (e) {
-      return json(res, 502, { error: 'tts unavailable (spark + local both failed): ' + e.message });
+      lastErr = e.message; console.error(`[aios] tts ${name} failed, falling through:`, e.message);
     }
   }
+  if (!audio) return json(res, 502, { error: 'tts unavailable: ' + (lastErr || 'no server TTS provider available — using device voice') });
   res.writeHead(200, responseHeaders || proxyTtsHeaders({}, 'unknown'));
   res.end(audio);
 });
@@ -199,11 +202,13 @@ route('POST', '/api/tts/stream', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   const text = String(b.text || '').slice(0, 4000);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  // Same effective config as /api/tts (Settings → Voice override merged over env) — streams used to
-  // read raw env only, so a UI-configured voice/engine/IP/mute applied to short lines but not long ones.
-  // A muted Spark 409s like a non-spark backend; the client falls back to single-shot /api/tts.
+  // Streaming only works via Spark, so it kicks in only when Spark is the EFFECTIVE primary server-TTS
+  // (the resolved TTS chain leads with spark). Otherwise 409 → the client uses single-shot /api/tts,
+  // which walks the full chain (cloud/macos). So a user whose Speaks primary is cloud never gets spark
+  // audio on long text.
   const vc = voiceConfig();
-  if ((b.backend || vc.backend) !== 'spark' || !sparkEnabled()) return json(res, 409, { error: 'streaming requires the spark backend' });
+  const chain = await ttsServerChain(b);
+  if (chain[0] !== 'spark' || !sparkEnabled()) return json(res, 409, { error: 'streaming requires the spark backend' });
   const engine = normalizeEngine(b.engine || b.model || vc.ttsEngine);
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
   const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
