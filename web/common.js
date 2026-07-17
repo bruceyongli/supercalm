@@ -271,9 +271,20 @@ export function createLiveSpeechRecognizer({ onUpdate, onStatus } = {}) {
   };
 }
 
-function setTextWithLivePreview(target, baseText, liveText) {
-  const next = [baseText, liveText].map((s) => String(s || '').trim()).filter(Boolean).join(' ');
-  target.value = next;
+// Insert dictated text at the ANCHOR (the caret/selection captured when recording started), keeping the
+// surrounding content VERBATIM — including newlines. The old code trimmed the whole field and space-joined,
+// which deleted the user's newlines and always appended at the end, ignoring the cursor. A single space is
+// added only to avoid gluing words together; punctuation/whitespace edges are respected. Caret ends after
+// the inserted text so the user can keep typing.
+function insertAtAnchor(target, anchor, dictated) {
+  const ins = String(dictated || '');
+  const before = anchor.before || '';
+  const after = anchor.after || '';
+  const glueBefore = before && !/\s$/.test(before) && ins && !/^[\s.,!?;:)]/.test(ins) ? ' ' : '';
+  const glueAfter = after && !/^\s/.test(after) && ins && !/\s$/.test(ins) ? ' ' : '';
+  const head = before + glueBefore + ins;
+  target.value = head + glueAfter + after;
+  try { target.selectionStart = target.selectionEnd = head.length; } catch {}
   target.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
@@ -292,7 +303,7 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
     stream = null,
     startedAt = 0,
     live = null,
-    baseText = '';
+    anchor = { before: '', after: '' }; // caret split captured at record start; dictation inserts here
   const setState = (s) => {
     btn.classList.toggle('rec', s === 'recording');
     btn.disabled = s === 'busy';
@@ -309,9 +320,14 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
       return;
     }
     chunks = [];
-    baseText = target.value.trim();
+    // Capture the caret split NOW (textareas keep their selection across the button tap's blur). Dictation
+    // inserts between `before` and `after`, so newlines and text on both sides of the cursor survive.
+    const len = target.value.length;
+    const selStart = Number.isInteger(target.selectionStart) ? target.selectionStart : len;
+    const selEnd = Number.isInteger(target.selectionEnd) ? target.selectionEnd : len;
+    anchor = { before: target.value.slice(0, selStart), after: target.value.slice(selEnd) };
     live = createLiveSpeechRecognizer({
-      onUpdate: (text) => setTextWithLivePreview(target, baseText, text),
+      onUpdate: (text) => insertAtAnchor(target, anchor, text),
       onStatus: (status) => {
         if (!statusEl || rec?.state === 'inactive') return;
         if (status === 'live') statusEl.textContent = '● live preview…';
@@ -344,8 +360,7 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
           alert('No speech detected — try again.');
           return;
         }
-        target.value = [baseText, text].map((s) => String(s || '').trim()).filter(Boolean).join(' ');
-        target.dispatchEvent(new Event('input', { bubbles: true }));
+        insertAtAnchor(target, anchor, text); // insert at the caret, preserving newlines + text around it
         target.focus();
       } catch (e) {
         alert('Transcription failed: ' + e.message);
