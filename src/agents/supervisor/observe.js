@@ -1,4 +1,5 @@
 import { recentOperatorSignals } from '../live_context.js';
+import { detectRepeatedComplaint } from './repeat_complaint.js';
 import { db } from '../../store.js';
 import { classifyAgentText, intentForDecision, latestOperatorIntentFromSignals } from './interpret.js';
 import { parseSupervisionDoc, criteriaTexts } from './doc_model.js';
@@ -90,6 +91,7 @@ export function buildSupervisorSnapshot(ctx, {
       exitCode: session.exit_code ?? null,
     },
     operator: {
+      repeatedComplaint: detectRepeatedComplaint((signals.messages || []).map((m) => ({ ts: m.ts, text: m.text }))),
       lastMessageTs: lastOperator?.ts || null,
       lastMessageText: line(lastOperator?.text || ''),
       recentSignals: (signals.messages || []).slice(0, 8).map((m) => ({ ts: m.ts, text: line(m.text, 220) })),

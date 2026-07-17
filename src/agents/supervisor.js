@@ -31,6 +31,7 @@ import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective } from './
 import { readRecentCommits, detectThrash, checkpointRepo } from './supervisor/thrash.js';
 import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
 import { tickSignature, gateTick, HEARTBEAT_MS } from './supervisor/event_gate.js';
+import { detectRepeatedComplaint } from './supervisor/repeat_complaint.js';
 import { ACTIVE_RX, CONTEXT_WEDGE_RX, ERR_CLEARED_RX, ERR_NONRETRYABLE, ERR_SCHEDULES, HARD_ERR_RX, HTTP_STATUS_LINE_RX, OWN_NUDGE_RX, SESSION_AUTH_RX, classifyErrorType, detectSessionError, errNudgeFor, looksLikeSessionError, sessionRecovered } from './supervisor/session_errors.js';
 import {
   VERIFY_EVIDENCE_VERSION,
@@ -1542,6 +1543,17 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
   const attempt = st.exitRecoveryKey === exitKey ? Number(st.exitRecoveryAttempt || 0) : 0;
   const fp = progressFp(ev);
   const operatorIntent = latestOperatorIntent(ctx.sessionId, t);
+  // REPEATED COMPLAINT (Phase 4, A4): the operator re-raised the same issue across a real gap —
+  // machine-detectable now; escalate ONCE per repeat pair and put it on top. The repeat IS the evidence.
+  {
+    const rc = snapshotProbe(ctx, st);
+    if (rc?.repeated && st.repeatComplaintKey !== rc.key) {
+      st = applySupervisorState(ctx, { repeatComplaintKey: rc.key });
+      logIntervention(ctx, { kind: 'escalate', trigger: 'repeated-complaint', model: null, verdict: 'escalated', assessment: `The operator has raised this at least twice (similarity ${rc.similarity}): earlier "${rc.earlier.text}" — latest "${rc.latest.text}". Treat it as the top-priority gap; repeated re-reporting means prior fixes did not land.`, message: '', sent: 0 });
+      ctx.notifyOperator('Repeated issue detected', 'You have reported this twice — the supervisor has flagged it top priority: ' + rc.latest.text.slice(0, 100));
+      ctx.emit('review', { verdict: 'escalated', summary: 'operator re-raised the same issue — flagged top priority' });
+    }
+  }
   const snapshot = snapshotFor(ctx, cfg, ev, st, fp, gateKey, operatorIntent, t);
   const decision = decideSupervisorAction(snapshot, { allowExitRecovery: canSend(ctx, cfg, 'recover') && attempt < EXIT_RECOVERY_MAX_ATTEMPTS });
 
@@ -1816,6 +1828,13 @@ function applyActiveCard(ctx, cfg) {
   }
 }
 
+function snapshotProbe(ctx, st) {
+  try {
+    const sig = recentOperatorSignals({ db, sessionId: ctx.sessionId, maxMsgs: 8 });
+    return detectRepeatedComplaint((sig.messages || []).map((m) => ({ ts: m.ts, text: m.text })));
+  } catch { return null; }
+}
+
 export async function onTick(ctx) {
   const s = ctx.session();
   const cfg = ctx.getConfig();
@@ -1939,6 +1958,17 @@ export async function onTick(ctx) {
   }
 
   const operatorIntent = latestOperatorIntent(ctx.sessionId, t);
+  // REPEATED COMPLAINT (Phase 4, A4): the operator re-raised the same issue across a real gap —
+  // machine-detectable now; escalate ONCE per repeat pair and put it on top. The repeat IS the evidence.
+  {
+    const rc = snapshotProbe(ctx, st);
+    if (rc?.repeated && st.repeatComplaintKey !== rc.key) {
+      st = applySupervisorState(ctx, { repeatComplaintKey: rc.key });
+      logIntervention(ctx, { kind: 'escalate', trigger: 'repeated-complaint', model: null, verdict: 'escalated', assessment: `The operator has raised this at least twice (similarity ${rc.similarity}): earlier "${rc.earlier.text}" — latest "${rc.latest.text}". Treat it as the top-priority gap; repeated re-reporting means prior fixes did not land.`, message: '', sent: 0 });
+      ctx.notifyOperator('Repeated issue detected', 'You have reported this twice — the supervisor has flagged it top priority: ' + rc.latest.text.slice(0, 100));
+      ctx.emit('review', { verdict: 'escalated', summary: 'operator re-raised the same issue — flagged top priority' });
+    }
+  }
   st = await updateOperatorStance(ctx, cfg, st, t); // durable stance from any new operator message → drives decide.js
   let fp = progressFp(ev);
   let gateKey = cfg.doc && cfg.doc.trim() ? gateScopeKey(cfg.doc) : '';
