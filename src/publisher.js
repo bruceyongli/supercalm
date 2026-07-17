@@ -19,10 +19,10 @@
 // GATED: the whole path is inert unless AIOS_AUTO_PUBLISH is on (default OFF) — auto-deploying the live
 // service is the highest-risk action, so it ships proven-but-off and the operator flips the capability.
 // servedSha / spawnDeploy are injectable so the flow is testable without touching the live service.
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { COMMIT_SHA, BOOT_ID, VERSION, DATA_DIR } from './config.js';
+import { COMMIT_SHA, BOOT_ID, VERSION, DATA_DIR, ROOT } from './config.js';
 import { gitOut } from './git.js';
 import { defaultBranch } from './worktrees.js';
 import { now } from './util.js';
@@ -175,9 +175,16 @@ const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path :
 // production. Bless it: write the stable marker for the running version so `config.releaseChannel()` returns
 // 'stable' and the new-version toast fires even for "stable only" viewers (routine `bin/deploy` dev pushes
 // stay 'every'). LOCAL marker only — no public GitHub Release (that stays the maintainer's `bin/release`).
-function blessStable() {
-  try { writeFileSync(join(DATA_DIR, 'release_channel.json'), JSON.stringify({ version: VERSION, channel: 'stable', at: new Date().toISOString() }) + '\n'); }
-  catch (e) { console.error('[aios] blessStable failed:', e?.message || e); }
+const sameRepo = (a, b) => { if (!a || !b) return false; try { return realpathSync(a) === realpathSync(b); } catch { return a === b; } };
+function blessStable(it) {
+  // The release-channel toast (version-badge.js + data/release_channel.json + config.VERSION) is AIOS's OWN
+  // release mechanism. Bless a stable release ONLY when this is AIOS deploying ITSELF — i.e. the integration's
+  // project repo IS the running Supercalm checkout (ROOT). A different project has its own release story (or
+  // none); never write AIOS's `stable` marker with AIOS's VERSION onto someone else's deploy.
+  try {
+    if (!sameRepo(repoOf(it), ROOT)) return;
+    writeFileSync(join(DATA_DIR, 'release_channel.json'), JSON.stringify({ version: VERSION, channel: 'stable', at: new Date().toISOString() }) + '\n');
+  } catch (e) { console.error('[aios] blessStable failed:', e?.message || e); }
 }
 
 const _verifying = new Set(); // one soak loop per integration
@@ -204,7 +211,7 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawn
     I.recordProbe(intId, { bootId: BOOT_ID, servedSha: servedSha(), status: ok ? 'ok' : 'fail', detail });
     I.heartbeat(intId, fenceToken);
     consecutive = ok ? consecutive + 1 : 0;
-    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); blessStable(); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
+    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); blessStable(it); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
     if (now() > it.health_deadline) { await onVerifyFail(intId, fenceToken, episode, { consecutive, detail, servedSha, spawnDeploy }); return done(); }
     const t = setTimeout(() => { tick().catch(() => done()); }, PROBE_MS);
     if (t.unref) t.unref();
