@@ -6,6 +6,7 @@ import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'n
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
+import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
 import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
 import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
 import * as store from './store.js';
@@ -549,6 +550,13 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
     orchestration,
   });
   if (wt) store.updateSession(sid, { worktree_path: wt.path, branch: wt.branch }); // source of truth for confinement + resume
+  // LAUNCH CONTRACT (launch_contract.js): the immutable birth record resume() verifies against.
+  writeManifest(sid, {
+    tool, project_path: project?.path || null, cwd: wt?.path || project?.path || null,
+    worktree_path: wt?.path || null, branch: wt?.branch || null,
+    autonomy, effort, model, orchestration, fastMode: activeFastMode,
+    task_head: String(task || '').slice(0, 400),
+  }).catch((e) => console.error('[aios] manifest write failed (fail-open):', e?.message || e));
   store.addEvent(sid, 'launch', { tool, dir: wt?.path || project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration, worktree: wt?.path || null, branch: wt?.branch || null });
   if (task) store.addMessage(sid, 'in', 'task', task);
   register(s);
@@ -583,6 +591,25 @@ export async function resume(sid, { force = false } = {}) {
       const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
       cwd = wt?.path;
     } catch (e) { console.error('[aios] worktree resume reuse failed (fail-open):', e?.message || e); }
+  }
+  // VERIFIED RESUME (v4 Phase 3, launch_contract.js): heal silently-lost flags from the manifest
+  // (the lost-autonomy-flags incident class); refuse identity drift loudly instead of degrading.
+  {
+    const manifest = await readManifest(sid);
+    let actualBranch = null;
+    if (cwd) { try { actualBranch = (await exec('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 8000 })).stdout.trim(); } catch {} }
+    const v = verifyResume(manifest, s, { branch: actualBranch });
+    if (Object.keys(v.restore).length) {
+      store.updateSession(sid, v.restore);
+      store.addEvent(sid, 'manifest-restored', v.restore);
+      console.log(`[aios] resume ${sid}: restored ${Object.keys(v.restore).join(', ')} from the launch manifest`);
+    }
+    if (!v.ok && !force) {
+      store.addEvent(sid, 'resume-refused', { mismatches: v.mismatches });
+      const err = new Error('resume refused — launch-contract mismatch: ' + v.mismatches.join(' ; ') + ' (retry with force to override)');
+      err.code = 'manifest-mismatch';
+      throw err;
+    }
   }
   // codex resume is global-most-recent by default; pin it to THIS project's conversation — prefer the
   // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup (worktree-aware).
