@@ -1254,6 +1254,9 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     baseRef,
   });
   const { images = [], ...ctxData } = ev;
+  // SYSTEM PROBES (Phase 2, A1/A5): provenance envelopes ride the evidence — the verifier judges
+  // "committed/deployed/serving" gates against these, not the agent's narrative.
+  try { ctxData.probes = await ctx.runProbes({ urls: [cfg.preview_url].filter(Boolean) }); } catch { ctxData.probes = []; }
   const canSee = modelChain(cfg, ctx.session()).some((m) => ctx.visionRoute(m)); // any model in the chain can see the screenshot
   const sendable = images.filter((i) => i.dataUrl);
   const productAudits = images.filter((i) => i.kind === 'product-audit' && i.audit).map((i) => ({ label: i.label, audit: i.audit }));
@@ -1312,6 +1315,7 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     hasVisualProof,
     hasPriorVerifications: !!prior,
     hasFailurePatterns: !!patterns,
+    hasProbes: (ctxData.probes || []).length > 0,
   });
   let sys = verifyPrompt.systemPrompt;
   if (ctx.__activeCard) {

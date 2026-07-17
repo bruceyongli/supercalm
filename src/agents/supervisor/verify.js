@@ -69,9 +69,12 @@ export function isVisualWork(ctxData, extraText = '') {
   return UI_WORD_RX.test(String(extraText || ''));
 }
 
-export function buildVerifierSystemPrompt({ hasDefinitionOfDone = false, visualWork = false, hasVisualProof = false, hasPriorVerifications = false, hasFailurePatterns = false } = {}) {
+const SYS_VERIFY_PROBES = `SYSTEM PROBES — evidence.probes are provenance envelopes COLLECTED BY THE SUPERVISING SYSTEM, outside the agent's control: git truth (HEAD sha, branch, dirty state) and URL liveness (status, body digest). They outrank terminal prose. A "committed/pushed/deployed/serving" gate whose probe contradicts it (dirty tree, unreachable URL, wrong sha) is NOT met regardless of the agent's narrative; cite the probe digest when you rely on one.`;
+
+export function buildVerifierSystemPrompt({ hasDefinitionOfDone = false, visualWork = false, hasVisualProof = false, hasPriorVerifications = false, hasFailurePatterns = false, hasProbes = false } = {}) {
   const addenda = [];
   if (hasDefinitionOfDone) addenda.push({ id: 'definition_of_done', text: SYS_VERIFY_DOD });
+  if (hasProbes) addenda.push({ id: 'system_probes', text: SYS_VERIFY_PROBES });
   if (visualWork && !hasVisualProof) addenda.push({ id: 'visual_proof_required', text: SYS_VERIFY_VISUAL });
   if (hasPriorVerifications) addenda.push({ id: 'prior_verifications', text: SYS_VERIFY_LEDGER });
   if (hasFailurePatterns) addenda.push({ id: 'failure_patterns', text: SYS_VERIFY_PATTERNS });
