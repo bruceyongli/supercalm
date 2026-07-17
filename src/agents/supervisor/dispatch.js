@@ -1,6 +1,7 @@
 import { makeDecision, persistDecision, updateDecisionSend } from './decision_records.js';
 import { cardLifecycleDirective } from './send_policy.js';
 import { guardSupervisorSendContext } from './context_guard.js';
+import { renderIntent } from '../intents.js';
 
 function line(s, max = 1500) {
   return String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
@@ -57,6 +58,7 @@ export async function dispatchSupervisorSend(ctx, {
   ruleId = '',
   actionType = 'nudge',
   text = '',
+  intent: typedIntent = null, // Phase 1: {name, params} — template-rendered; overrides free text
   sendOptions = {},
   allowedSend = false,
   suppressionReason = '',
@@ -65,11 +67,23 @@ export async function dispatchSupervisorSend(ctx, {
   reasons = [],
   statePatch = {},
 } = {}) {
+  // Typed-intent path (v4 Phase 1, intents.js): the caller proposes an intent, the template renders
+  // the exact outbound text, and a render refusal (unknown intent, bad params, placeholder content)
+  // becomes a recorded non-send — never improvised text. Free-text callers keep working during the
+  // strangler migration; by end of Phase 1 the kernel requires an intent on autonomous lanes.
+  let renderedKind = null;
+  let renderRefusal = '';
+  if (typedIntent) {
+    const r = renderIntent(typedIntent.name, typedIntent.params || {});
+    if (r.ok) { text = r.text; renderedKind = r.kind; }
+    else { renderRefusal = r.error || 'intent render refused'; text = ''; }
+  }
   const msg = line(text);
   const intent = latestOperatorIntent || operatorIntentFromSnapshot(snapshot);
   let allowed = !!allowedSend;
   let suppressed = suppressionReason || '';
   let guardedReasons = [];
+  if (renderRefusal) { allowed = false; suppressed = suppressed || `intent-render-refused: ${renderRefusal}`.slice(0, 160); }
   if (!msg) { allowed = false; suppressed = suppressed || 'empty-message'; }
   if (!intent) { allowed = false; suppressed = suppressed || 'missing-operator-intent'; }
   const guard = guardSupervisorSendContext({ snapshot, actionType, text: msg, triggeringSignal, allowedSend: allowed });
@@ -99,17 +113,18 @@ export async function dispatchSupervisorSend(ctx, {
     triggeringSignal,
     reasons: [...(Array.isArray(reasons) ? reasons : [String(reasons || '')].filter(Boolean)), ...guardedReasons],
     statePatch,
-    payload: { text: msg, sendOptions },
+    payload: { text: msg, sendOptions, intent: typedIntent ? { name: typedIntent.name } : undefined },
   });
   if (!allowed) {
     const result = { sent: false, reason: suppressed || 'blocked', message: '' };
     updateDecisionSend(decision.decisionId, result);
     return result;
   }
-  // Typed send lane for the kernel (context.js): the operator relay is the operator's own words
-  // (kernel-exempt); everything else maps from the decision's actionType, defaulting to the most
-  // restricted lane. An unmapped/unknown kind fails closed downstream.
-  const kind = sendOptions.kind
+  // Typed send lane for the kernel (context.js): a rendered intent carries its own lane; the operator
+  // relay is the operator's own words (kernel-exempt); everything else maps from the decision's
+  // actionType, defaulting to the most restricted lane. Unknown kinds fail closed downstream.
+  const kind = renderedKind
+    || sendOptions.kind
     || (ruleId === 'hold.resolve_send' ? 'operator' : ({ answer: 'answer', challenge: 'challenge', recover: 'recover' })[actionType] || 'nudge');
   const result = await ctx.sendToAgent(msg, { ...sendOptions, kind });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
