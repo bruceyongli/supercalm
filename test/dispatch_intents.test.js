@@ -82,4 +82,26 @@ const snapshot = {
   assert.equal(ctx.sent[0].opts.kind, 'answer');
 }
 
+// ---- lease pass-through (Phase 1): reasoned sends carry the tick's pane signature; recovery doesn't ----
+{
+  const ctx = fakeCtx();
+  ctx.__tickPaneSig = 'pane-at-tick-start';
+  const r = await dispatchSupervisorSend(ctx, {
+    snapshot, ruleId: 'stuck.keep_working', actionType: 'nudge', allowedSend: true,
+    intent: { name: 'CONTINUE', params: { reason: 'leases must ride along' } },
+    triggeringSignal: { type: 'stall', summary: 's', ts: 3 },
+  });
+  assert.equal(r.sent, true);
+  assert.deepEqual(ctx.sent[0].opts.lease, { paneSig: 'pane-at-tick-start' }, 'nudge carries the tick lease');
+
+  const ctx2 = fakeCtx();
+  ctx2.__tickPaneSig = 'pane-at-tick-start';
+  await dispatchSupervisorSend(ctx2, {
+    snapshot, ruleId: 'recover.api', actionType: 'recover', allowedSend: true,
+    text: 'retry now, the limit cleared',
+    triggeringSignal: { type: 'api_error', summary: 'x', ts: 4 },
+  });
+  assert.equal(ctx2.sent[0].opts.lease, null, 'recovery sends carry NO lease (time-critical on a changing pane)');
+}
+
 console.log('dispatch_intents: all assertions passed');

@@ -31,6 +31,7 @@ export const KERNEL_DEFAULTS = {
   dedupeWindowMs: Number(process.env.AIOS_SEND_KERNEL_DEDUPE_MS || 10 * 60_000), // identical text blocked within this window even if the pane changed
   breakerThreshold: Number(process.env.AIOS_SEND_KERNEL_BREAKER_N || 3), // consecutive no-effect sends before the circuit opens
   ringSize: 20, // remembered recent sends
+  receiptTimeoutMs: Number(process.env.AIOS_SEND_KERNEL_RECEIPT_MS || 5 * 60_000), // a send unacknowledged by ANY pane movement for this long resolves received:false
 };
 
 export function kernelEnabled() {
@@ -87,63 +88,86 @@ export function emptyKernelState() {
     ring: [], // { h, sig, ts } of recent sends (bounded)
     circuit: { open: false, sigAtOpen: '', openedAt: 0, escalated: false },
     escalated: {}, // reason-class -> last escalation ts (one notification per incident)
+    pending: null, // last allowed send awaiting a RECEIPT: { id, sig, ts } — resolved on the next evaluation
   };
 }
 
-// The transition function. proposal: { kind, text, paneSig }. Returns a NEW state (never mutates).
-// `escalate` is true when this block is worth exactly one operator notification; the wrapper uses
-// `escalateKey` to keep it to one per incident.
+// The transition function. proposal: { kind, text, paneSig, lease? } where lease = { paneSig } captured
+// when the proposing brain STARTED reasoning. Returns a NEW state (never mutates). `escalate` is true when
+// this block is worth exactly one operator notification (escalateKey dedupes). `receipt` reports the FATE
+// of the previous allowed send, resolved by observation: the pane moved since → received; nothing moved
+// within the timeout → not received (S3 metric: sends-without-receipt).
 export function evaluateSend(state, proposal, t, cfg = {}) {
   const c = { ...KERNEL_DEFAULTS, ...cfg };
   const st = state && typeof state === 'object' ? state : emptyKernelState();
   const kind = String(proposal?.kind || '');
   const text = String(proposal?.text || '');
   const paneSig = String(proposal?.paneSig || '');
+  const leaseSig = String(proposal?.lease?.paneSig || '');
 
   // Operator relays are the operator's own words — never kernel business, never budgeted.
-  if (kind === 'operator') return { allowed: true, reason: '', escalate: false, escalateKey: '', state: st };
+  if (kind === 'operator') return { allowed: true, reason: '', escalate: false, escalateKey: '', receipt: null, state: st };
 
-  if (!kernelEnabled()) return { allowed: true, reason: 'kernel-disabled', escalate: false, escalateKey: '', state: st };
+  if (!kernelEnabled()) return { allowed: true, reason: 'kernel-disabled', escalate: false, escalateKey: '', receipt: null, state: st };
 
-  const verdict = (allowed, reason, escalate = false, escalateKey = '', next = st) =>
-    ({ allowed, reason, escalate, escalateKey, state: next });
+  // 0) RECEIPT resolution for the previous allowed send — pure observation bookkeeping that happens
+  //    regardless of this proposal's fate. Receipt = the stabilized pane moved after the send.
+  let receipt = null;
+  let base = st;
+  if (st.pending) {
+    if (paneSig && st.pending.sig && paneSig !== st.pending.sig) {
+      receipt = { id: st.pending.id, received: true, ms: t - st.pending.ts };
+      base = { ...st, pending: null };
+    } else if (t - st.pending.ts > c.receiptTimeoutMs) {
+      receipt = { id: st.pending.id, received: false, ms: t - st.pending.ts };
+      base = { ...st, pending: null };
+    }
+  }
+
+  const verdict = (allowed, reason, escalate = false, escalateKey = '', next = base) =>
+    ({ allowed, reason, escalate, escalateKey, receipt, state: next });
 
   // 1) kind allowlist — an undeclared/unknown kind is a programming error upstream; fail closed.
   if (!SEND_KINDS.includes(kind)) return verdict(false, 'kernel-kind-not-allowlisted');
 
-  // 2) reserved actions — structurally unsendable; escalate once per class per open incident.
+  // 2) LEASE (CAS semantics): the proposal was computed against a pane that has since moved — the
+  //    operator typed, a menu appeared, the agent progressed. Refuse; the pane change itself fires the
+  //    next brain pass (event gate), which re-decides against reality. No state consumed.
+  if (leaseSig && paneSig && leaseSig !== paneSig) return verdict(false, 'kernel-lease-expired');
+
+  // 3) reserved actions — structurally unsendable; escalate once per class per open incident.
   const reserved = reservedActionClass(text);
   if (reserved) {
     const key = `reserved:${reserved}`;
     const last = st.escalated?.[key] || 0;
     const escalate = t - last > 60 * 60_000; // re-notify at most hourly if the brain keeps trying
-    const next = escalate ? { ...st, escalated: { ...st.escalated, [key]: t } } : st;
+    const next = escalate ? { ...base, escalated: { ...st.escalated, [key]: t } } : base;
     return verdict(false, `kernel-${key}`, escalate, key, next);
   }
 
-  // 3) circuit maintenance — the pane changing is the ONLY thing that closes an open circuit.
+  // 4) circuit maintenance — the pane changing is the ONLY thing that closes an open circuit.
   let circuit = st.circuit || emptyKernelState().circuit;
   if (circuit.open && paneSig && paneSig !== circuit.sigAtOpen) {
     circuit = { open: false, sigAtOpen: '', openedAt: 0, escalated: false };
   }
   if (circuit.open) {
     const escalate = !circuit.escalated;
-    const next = { ...st, circuit: { ...circuit, escalated: true } };
-    return verdict(false, 'kernel-circuit-open', escalate, 'circuit', escalate ? next : { ...st, circuit });
+    const next = { ...base, circuit: { ...circuit, escalated: true } };
+    return verdict(false, 'kernel-circuit-open', escalate, 'circuit', escalate ? next : { ...base, circuit });
   }
 
-  // 4) no-effect breaker — this proposal would be one more send into a pane that hasn't changed
+  // 5) no-effect breaker — this proposal would be one more send into a pane that hasn't changed
   //    since the last `breakerThreshold` sends. Open instead of sending.
   const ring = Array.isArray(st.ring) ? st.ring : [];
   if (paneSig && ring.length >= c.breakerThreshold) {
     const tail = ring.slice(-c.breakerThreshold);
     if (tail.every((r) => r.sig && r.sig === paneSig)) {
       const opened = { open: true, sigAtOpen: paneSig, openedAt: t, escalated: true };
-      return verdict(false, 'kernel-circuit-open', true, 'circuit', { ...st, circuit: opened });
+      return verdict(false, 'kernel-circuit-open', true, 'circuit', { ...base, circuit: opened });
     }
   }
 
-  // 5) dedupe — identical text into an unchanged pane never re-sends; identical text anywhere is
+  // 6) dedupe — identical text into an unchanged pane never re-sends; identical text anywhere is
   //    windowed so "the pane moved" doesn't relicense verbatim spam.
   const hash = h32(normText(text));
   for (const r of ring) {
@@ -152,18 +176,19 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
     if (t - r.ts < c.dedupeWindowMs) return verdict(false, 'kernel-duplicate-recent');
   }
 
-  // 6) rate bounds.
+  // 7) rate bounds.
   if (st.lastSendTs && t - st.lastSendTs < c.minGapMs) return verdict(false, 'kernel-rate-min-gap');
   const hour = (Array.isArray(st.hour) ? st.hour : []).filter((ts) => t - ts < 60 * 60_000);
   if (hour.length >= c.hourlyCap) return verdict(false, 'kernel-rate-hourly-cap');
 
-  // Allowed — record the send.
+  // Allowed — record the send; it becomes the pending receipt until the pane is observed to move.
   const next = {
-    ...st,
+    ...base,
     lastSendTs: t,
     hour: [...hour, t],
     ring: [...ring, { h: hash, sig: paneSig, ts: t }].slice(-c.ringSize),
     circuit,
+    pending: { id: `${hash}.${t.toString(36)}`, sig: paneSig, ts: t },
   };
   return verdict(true, '', false, '', next);
 }

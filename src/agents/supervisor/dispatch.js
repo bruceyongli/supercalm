@@ -126,7 +126,14 @@ export async function dispatchSupervisorSend(ctx, {
   const kind = renderedKind
     || sendOptions.kind
     || (ruleId === 'hold.resolve_send' ? 'operator' : ({ answer: 'answer', challenge: 'challenge', recover: 'recover' })[actionType] || 'nudge');
-  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind });
+  // LEASE (Phase 1): answers/challenges/nudges were reasoned against the pane as it stood when this
+  // pass began (ctx.__tickPaneSig, captured in onTick) — if it moved since, the kernel refuses the
+  // stale send. Recovery is time-critical on a CHANGING pane and the operator relay is the operator's
+  // own words: neither carries a lease.
+  const lease = (kind === 'recover' || kind === 'operator' || !ctx.__tickPaneSig)
+    ? (sendOptions.lease ?? null)
+    : (sendOptions.lease ?? { paneSig: ctx.__tickPaneSig });
+  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
   return result;
 }

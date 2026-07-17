@@ -129,6 +129,39 @@ function sendOk(st, p, t) {
   assert.equal(v.allowed, true, 'a pane change is the ONLY thing that closes the circuit');
 }
 
+// ---- LEASE (Phase 1, CAS semantics): a proposal computed against a moved pane never sends ----
+{
+  let st = emptyKernelState();
+  const ok = evaluateSend(st, prop({ lease: { paneSig: 'sigA' }, paneSig: 'sigA' }), T0);
+  assert.equal(ok.allowed, true, 'matching lease sends');
+  st = ok.state;
+  const stale = evaluateSend(st, prop({ text: 'different message', lease: { paneSig: 'sigA' }, paneSig: 'sigMOVED' }), T0 + MIN_GAP + 1000);
+  assert.equal(stale.allowed, false, 'stale lease refuses');
+  assert.equal(stale.reason, 'kernel-lease-expired');
+  const noLease = evaluateSend(st, prop({ text: 'different message', paneSig: 'sigMOVED' }), T0 + MIN_GAP + 1000);
+  assert.equal(noLease.allowed, true, 'lease is opt-in: no lease, no CAS check');
+}
+
+// ---- RECEIPT: the previous send resolves by observation — pane moved => received; timeout => not ----
+{
+  let st = emptyKernelState();
+  let v = evaluateSend(st, prop({ paneSig: 'sig1' }), T0);
+  assert.equal(v.allowed, true);
+  assert.ok(v.state.pending, 'an allowed send becomes the pending receipt');
+  st = v.state;
+
+  v = evaluateSend(st, prop({ text: 'next message', paneSig: 'sig2' }), T0 + MIN_GAP + 1000);
+  assert.ok(v.receipt, 'next evaluation resolves the pending receipt');
+  assert.equal(v.receipt.received, true, 'pane moved after the send => received');
+  assert.ok(v.receipt.ms > 0);
+
+  // timeout path: pane never moves within the receipt window
+  st = evaluateSend(emptyKernelState(), prop({ paneSig: 'frozen' }), T0).state;
+  v = evaluateSend(st, prop({ text: 'later message', paneSig: 'frozen' }), T0 + KERNEL_DEFAULTS.receiptTimeoutMs + 1000);
+  assert.ok(v.receipt, 'timeout resolves the receipt');
+  assert.equal(v.receipt.received, false, 'nothing moved within the window => not received');
+}
+
 // ---- state is never mutated in place (pure transition) ----
 {
   const st = emptyKernelState();

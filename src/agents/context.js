@@ -50,11 +50,14 @@ function oneLine(s) {
 // Every verdict is audited to the events table; blocks that merit operator attention notify once
 // per incident (the kernel's escalateKey dedupes).
 const kernelStates = new Map(); // session_id -> kernel state
-function mediateSend(agent, session_id, s, kind, text) {
+function mediateSend(agent, session_id, s, kind, text, lease) {
   const st = kernelStates.get(session_id) || emptyKernelState();
-  const v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id) }, now());
+  const v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease }, now());
   kernelStates.set(session_id, v.state);
   addEvent(session_id, 'send-kernel', { agent: agent.id, kind, allowed: v.allowed, reason: v.reason || '' });
+  // Receipt of the PREVIOUS allowed send, resolved by observation (pane moved / timeout) — the S3
+  // metric row: sends-without-receipt must be zero on a healthy session.
+  if (v.receipt) addEvent(session_id, 'send-receipt', { agent: agent.id, id: v.receipt.id, received: v.receipt.received, ms: v.receipt.ms });
   if (!v.allowed && v.escalate) {
     bus.emit('notify', {
       title: 'Supervisor send blocked',
@@ -166,7 +169,7 @@ export function makeContext(agent, session_id, extra = {}) {
     // `kind` is the send's typed lane (send_policy SEND_KINDS); the kernel fails closed on unknown
     // kinds, so callers must declare what a send IS, not just what it says. 'operator' = the
     // operator's own relayed words — kernel-exempt.
-    async sendToAgent(text, { guarded = true, blockDecision = guarded, kind = 'nudge' } = {}) {
+    async sendToAgent(text, { guarded = true, blockDecision = guarded, kind = 'nudge', lease = null } = {}) {
       requireCap('send-input');
       const s = getSession(session_id);
       if (!s) throw new Error('session not found');
@@ -174,9 +177,10 @@ export function makeContext(agent, session_id, extra = {}) {
       if (!msg) return { sent: false, reason: 'empty' };
       // `guarded` = never interrupt a working agent (require waiting). `blockDecision` (defaults to
       // guarded) = don't answer a question the agent is asking the user; callers can opt to send anyway.
+      // `lease` = { paneSig } from when the proposer started reasoning — CAS: stale pane, no send.
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
       if (blockDecision && s.category === 'decision') return { sent: false, reason: 'decision' };
-      const k = mediateSend(agent, session_id, s, kind, msg);
+      const k = mediateSend(agent, session_id, s, kind, msg, lease);
       if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, `[${agent.name || agent.id}] ${msg}`);
       addMessage(session_id, 'in', `agent:${agent.id}`, msg);
@@ -194,7 +198,7 @@ export function makeContext(agent, session_id, extra = {}) {
       const c = oneLine(cmd).slice(0, 120);
       if (!c.startsWith('/')) return { sent: false, reason: 'not-a-command' };
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
-      const k = mediateSend(agent, session_id, s, kind, c);
+      const k = mediateSend(agent, session_id, s, kind, c, null); // recovery is time-critical: no lease
       if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, c);
       addEvent(session_id, 'agent-command', { agent: agent.id, cmd: c });

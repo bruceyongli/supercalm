@@ -1952,12 +1952,15 @@ export async function onTick(ctx) {
   // live (backoff timers are minute-granular), or the heartbeat elapsed. The heartbeat tightens to
   // the stuck/checkpoint timers so their latency contracts survive the gate. A skipped tick writes
   // nothing — state churn per skip would just relocate the waste the gate exists to remove.
+  // Captured ONCE per pass: the lease every dispatch send carries (Phase 1). If the pane moves while
+  // a brain is reasoning, the kernel refuses the stale send and the pane change itself fires the next pass.
+  ctx.__tickPaneSig = typeof ctx.paneSig === 'function' ? ctx.paneSig() : '';
   const gateSig = tickSignature({
     status: s.status,
     question: s.question,
     category: s.category,
     stage: s.stage,
-    paneSig: typeof ctx.paneSig === 'function' ? ctx.paneSig() : '',
+    paneSig: ctx.__tickPaneSig,
     docRev: h32(cfg.doc || ''),
     stanceTs: h32(JSON.stringify(st.operatorStance || '')),
     activeTaskId: st.activeTaskId || '',
