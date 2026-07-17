@@ -1280,6 +1280,16 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
       // later if this COMPLETE is re-opened — the (input, target) pair a future verify-optimizer trains on.
       if (workFp) recordVerifySnapshot({ session_id: ctx.sessionId, work_fp: workFp, git_sha: sha, evidenceText: textPart, hadScreenshot: hasVisualProof, verdict: 'complete', score: parsed.score ?? null });
     } catch (e) { ctx.log('ledger/snapshot record failed:', e.message); }
+    // L3 AUTO-TRIGGER: a gate-verified COMPLETE is the milestone — fire the deep review once per gate
+    // scope (fire-and-forget; propose-only findings land as an l3-review row + one notification).
+    try {
+      const st3 = ctx.getState();
+      const gk3 = cfg.doc && cfg.doc.trim() ? gateScopeKey(cfg.doc) : 'nodoc';
+      if (st3.l3ReviewedGateKey !== gk3) {
+        applySupervisorState(ctx, { l3ReviewedGateKey: gk3 });
+        actions['deep-review'](ctx, { trigger: 'completion' }).catch((e) => ctx.log('l3 deep-review failed (fail-open):', e?.message || e));
+      }
+    } catch (e) { ctx.log('l3 trigger skipped:', e?.message || e); }
   }
   if (ctx.__activeCard) {
     try {
