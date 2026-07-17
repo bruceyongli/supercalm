@@ -18,8 +18,8 @@ process.env.AIOS_DATA = mkdtempSync(join(tmpdir(), 'pub-db-'));
 process.env.AIOS_WORKTREE_ROOT = mkdtempSync(join(tmpdir(), 'pub-wt-'));
 process.env.AIOS_VERIFY_PROBE_MS = '15';
 process.env.AIOS_VERIFY_SUCCESSES = '3';
-process.env.AIOS_VERIFY_RESTART_MS = '60';
-process.env.AIOS_VERIFY_WINDOW_MS = '160';
+process.env.AIOS_VERIFY_RESTART_MS = '800';   // generous headroom: the deadline is set at drivePublish but
+process.env.AIOS_VERIFY_WINDOW_MS = '800';    // verify starts later (after the fake deploy runs), and a git
 delete process.env.AIOS_AUTO_PUBLISH;           // capability starts OFF (case A)
 
 const store = await import('../src/store.js');
@@ -83,7 +83,7 @@ const fakeDeploy = (repoPath, sha) => { execFileSync('git', ['-C', repoPath, 'me
 const rB = await P.drivePublish(iB.id, { servedSha: () => WRONG, spawnDeploy: fakeDeploy });
 assert.equal(rB.stage, 'RESTART_REQUESTED', 'happy path reaches RESTART_REQUESTED (got ' + rB.stage + '/' + rB.failure_code + ')');
 assert.equal(g('rev-parse', 'main'), cB, 'fake deploy fast-forwarded main to the candidate');
-await P.reconcile({ servedSha: () => cB }); // the reborn server now serves the candidate
+await P.reconcile({ servedSha: () => cB, spawnDeploy: fakeDeploy }); // the reborn server now serves the candidate
 const greenB = await waitFor(iB.id, ['GREEN', 'HELD', 'REJECTED']);
 assert.equal(greenB.stage, 'GREEN', 'served candidate + sustained health → GREEN (got ' + greenB.stage + '/' + greenB.failure_code + ')');
 const probes = I.eventsFor(iB.id).filter((e) => e.to_stage === 'GREEN');
@@ -95,7 +95,7 @@ const cC = candidateCommit('cC', 'c.txt');
 const iC = approved(cC, 'cC');
 const rC = await P.drivePublish(iC.id, { servedSha: () => WRONG, spawnDeploy: () => 7 }); // deploy no-ops (never advances/serves)
 assert.equal(rC.stage, 'RESTART_REQUESTED', 'reaches RESTART_REQUESTED');
-await P.reconcile({ servedSha: () => WRONG }); // reborn server still serves the OLD sha
+await P.reconcile({ servedSha: () => WRONG, spawnDeploy: () => 0 }); // reborn server still serves the OLD sha
 const heldC = await waitFor(iC.id, ['HELD', 'GREEN', 'REJECTED']);
 assert.equal(heldC.stage, 'HELD', 'never-served deploy → HELD, never GREEN (got ' + heldC.stage + ')');
 assert.equal(heldC.failure_code, 'deploy_not_served', 'failure_code deploy_not_served');
@@ -151,7 +151,7 @@ const rF = await P.drivePublish(iF.id, { servedSha: () => WRONG, spawnDeploy: bu
 assert.equal(rF.stage, 'RESTART_REQUESTED', 'bump path reaches RESTART_REQUESTED');
 const deployedF = g('rev-parse', 'main');
 assert.notEqual(deployedF, cF, 'the deploy bumped: served HEAD sits above the candidate');
-await P.reconcile({ servedSha: () => deployedF }); // reborn server serves the bump commit (a descendant of cF)
+await P.reconcile({ servedSha: () => deployedF, spawnDeploy: bumpDeploy }); // reborn server serves the bump commit (a descendant of cF)
 const greenF = await waitFor(iF.id, ['GREEN', 'HELD', 'REJECTED']);
 assert.equal(greenF.stage, 'GREEN', 'candidate is an ancestor of the served bump commit → GREEN (got ' + greenF.stage + '/' + greenF.failure_code + ')');
 clear(iF.id);

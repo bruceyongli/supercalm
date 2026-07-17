@@ -61,6 +61,12 @@ function defaultSpawnDeploy(repoPath, candidateSha) {
     stdio: 'ignore',
     env: { ...process.env, AIOS_DEPLOY_SHA: candidateSha },
   });
+  // Spawn failures (ENOENT/EACCES — bin/deploy missing/unexecutable) arrive ASYNC on a detached child;
+  // unhandled they throw uncaughtException — crashing the test harness (the publisher.test flake) and, on
+  // the live daemon, letting the deploy silently never run. Log it; the health deadline then HOLDs the
+  // integration (deploy_not_served) — the designed no-false-green outcome. (Guard from the operator's
+  // fix/publisher-spawn-guard review branch.)
+  child.on('error', (e) => console.error('[aios] deploy spawn failed:', e?.message || e));
   child.unref();
   return child.pid || null;
 }
@@ -146,11 +152,19 @@ function walkTo(intId, targetStage, path) {
 // tested candidate, so served===candidate no longer holds. Verify instead that the candidate is an ANCESTOR
 // of the served HEAD — it is provably in the deployed history; the only delta is bin/version's package.json
 // bump. repoPath = the project repo; served = the running server's HEAD sha.
+let _ancCache = { expected: null, served: null, ok: false };
 async function servedHasCandidate(repoPath, expected, served) {
   if (!expected || !served) return false;
   if (expected === served) return true;               // fast path (no-bump deploys / tests)
   if (!repoPath) return false;
-  return !(await gitOut(repoPath, ['merge-base', '--is-ancestor', expected, served])).error;
+  // Cache the (expected, served) → ancestor result: during a soak both are STABLE (the served HEAD only
+  // changes on a restart, which bumps the fence + stops this loop), so verifyLoop must not fork a git
+  // subprocess on EVERY probe — that slowed the loop enough to miss the deadline and spuriously roll back
+  // (the second source of the publisher.test flake). Recompute only when either sha changes.
+  if (_ancCache.expected === expected && _ancCache.served === served) return _ancCache.ok;
+  const ok = !(await gitOut(repoPath, ['merge-base', '--is-ancestor', expected, served])).error;
+  _ancCache = { expected, served, ok };
+  return ok;
 }
 const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path : null) || null;
 
