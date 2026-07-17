@@ -3277,6 +3277,24 @@ fileInput.onchange = () => {
 installFileTarget(messageBox);
 installFileTarget(document.querySelector('.session-main'));
 addEventListener('resize', autoExpandReply, { signal: _sig });
+// iOS Safari: the on-screen keyboard fires visualViewport 'resize'/'scroll' — NOT window 'resize' — and a
+// `height:100dvh` grid does NOT re-settle after the keyboard COLLAPSES without a re-layout, so the footer
+// composer + its tap targets (mic/send) stay mispositioned until an orientationchange forces one. That is
+// the operator's "rotate the iPad to click the mic" workaround. Pin the shell to the real visible height on
+// every visualViewport change and re-run the size sync, so collapsing the keyboard settles it immediately.
+// Touch-only (the bug is iOS-keyboard-specific); desktop keeps the CSS 100dvh untouched.
+if (window.visualViewport && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches) {
+  const vv = window.visualViewport;
+  const applyViewport = () => {
+    const shell = document.querySelector('.session-shell');
+    if (shell) { try { shell.style.height = Math.round(vv.height) + 'px'; } catch {} }
+    autoExpandReply();
+    scheduleSyncSize(120);
+  };
+  vv.addEventListener('resize', applyViewport, { signal: _sig });
+  vv.addEventListener('scroll', applyViewport, { signal: _sig });
+  applyViewport();
+}
 compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
 wireMic(micBtn, reply, $('#mic-status'), { hold: true, hint: () => latestSessionInfo?.tool }); // hold on touch; ?agent= matches THIS session's agent for STT
 syncReplyPlaceholder();
