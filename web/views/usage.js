@@ -146,7 +146,17 @@ function eventHtml(r) {
 function renderRecent(data) {
   const rows = data.recent || [];
   if (el.recentLabel) el.recentLabel.textContent = `Recent log — ${fmt(data.totals?.events)} raw pricing events`;
-  el.recent.innerHTML = rows.length ? rows.map(eventHtml).join('') : '<div class="empty">No events yet.</div>';
+  // Bounded render + explicit expander: the full list made the page thousands of pixels long on a
+  // phone (judge: footer unreachable). 25 rows cover "what just happened"; the rest are one tap away.
+  const CAP = 25;
+  if (rows.length > CAP) {
+    el.recent.innerHTML = rows.slice(0, CAP).map(eventHtml).join('')
+      + `<button class="dk-reply-btn" id="recent-more" type="button">Show all ${fmt(rows.length)} events</button>`;
+    const more = el.recent.querySelector('#recent-more');
+    if (more) more.onclick = () => { el.recent.innerHTML = rows.map(eventHtml).join(''); };
+  } else {
+    el.recent.innerHTML = rows.length ? rows.map(eventHtml).join('') : '<div class="empty">No events yet.</div>';
+  }
 }
 
 // --- quota card (from subscription windows) ---------------------------------

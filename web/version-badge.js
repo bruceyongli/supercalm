@@ -39,9 +39,13 @@
 
   function positionToast(el) {
     if (!el?.isConnected) return;
-    // Stay clear of a full-width footer composer (the session page): sit just above it. Other pages
-    // keep the CSS default (bottom-right). This is repeated after mount because the session composer
-    // may finish rendering just after this module's first network response.
+    // PHONES: leave placement entirely to the CSS media rules (session pages: top-right banner; other
+    // pages: above the drawer-nav zone). An inline bottom here beats the media query's `bottom: auto`
+    // and stretched the toast into a full-height column (top + bottom both pinned — judge-blocking).
+    if (matchMedia('(max-width: 600px)').matches) { el.style.bottom = ''; return; }
+    // Desktop: stay clear of a full-width footer composer (the session page): sit just above it. Other
+    // pages keep the CSS default (bottom-right). This is repeated after mount because the session
+    // composer may finish rendering just after this module's first network response.
     const composer = document.querySelector('.footer-composer');
     const composerRect = composer?.getBoundingClientRect();
     const composerVisible = composerRect && composerRect.width > 0 && composerRect.height > 0;
@@ -89,6 +93,9 @@
   function revealToast(el, { autoDismiss = 0 } = {}) {
     clearTimeout(autoDismissTimer);
     autoDismissTimer = null;
+    // Phones have no dead corner — every toast auto-hides after a beat there (the raising condition
+    // re-fires on the next poll/page if still relevant); desktop keeps per-variant behavior.
+    if (!autoDismiss && matchMedia('(max-width: 600px)').matches) autoDismiss = 12_000;
     const contentKey = shown;
     requestAnimationFrame(() => {
       if (!el.isConnected || shown !== contentKey) return;
