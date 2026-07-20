@@ -92,6 +92,7 @@ export const PROXY_PROVIDERS = [
     port: 8788,
     nativeFor: ['codex'],
     models: [
+      { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', recommended: true, pinned: true }, // operator pick 2026-07-20
       { id: 'gpt-5.5', label: 'GPT-5.5', recommended: true },
       { id: 'gpt-5.4', label: 'GPT-5.4' },
       { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
@@ -109,6 +110,7 @@ export const PROXY_PROVIDERS = [
     port: 8789,
     nativeFor: ['claude'],
     models: [
+      { id: 'claude-fable-5', label: 'Claude Fable 5', recommended: true, pinned: true }, // operator pick 2026-07-20
       { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', recommended: true },
       { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
       { id: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
@@ -124,10 +126,15 @@ export const PROXY_PROVIDERS = [
     port: 8790,
     nativeFor: [],
     models: [
-      { id: 'qwen3.7-max', label: 'Qwen3.7-Max', recommended: true },
+      // Operator picks (2026-07-20): Aliyun's top two. NB qwen3.8-max-preview currently returns 403
+      // from the fleet proxy — an ACCOUNT entitlement (enable it on the Aliyun console); glm-5.2 is
+      // verified working via passthrough. Listed so they're selectable the moment access exists.
+      { id: 'qwen3.8-max-preview', label: 'Qwen3.8-Max (preview)', recommended: true, pinned: true },
+      { id: 'glm-5.2', label: 'GLM-5.2', recommended: true, pinned: true },
+      { id: 'qwen3.7-max', label: 'Qwen3.7-Max' },
       { id: 'qwen3.6-plus', label: 'Qwen3.6-Plus' },
       { id: 'qwen3.6-flash', label: 'Qwen3.6-Flash' },
-      { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro', recommended: true },
+      { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
       { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
       { id: 'kimi-k2.6', label: 'Kimi K2.6' },
       { id: 'glm-5.1', label: 'GLM-5.1' },
@@ -213,6 +220,20 @@ export function applyCatalog(providers, meta = {}) {
         })),
     }));
   if (!clean.length || !clean.some((p) => p.models.length)) return false;
+  // OPERATOR PINS: seed entries marked pinned:true persist through rescans even when the provider's
+  // /v1/models omits them (verified-passthrough or awaiting-entitlement models, 2026-07-20 picks).
+  for (const p of clean) {
+    const seed = PROXY_PROVIDERS.find((sp) => sp.proxy === p.proxy);
+    if (!seed) continue;
+    const pinned = seed.models.filter((m) => m.pinned);
+    if (!pinned.length) continue;
+    const have = new Map(p.models.map((m) => [m.id, m]));
+    for (const pin of pinned) {
+      const existing = have.get(pin.id);
+      if (existing) { existing.pinned = true; existing.recommended = true; } // the scan lists it — the pin outranks stale scan flags
+      else p.models.unshift({ id: pin.id, label: pin.label || pin.id, recommended: true, kind: pin.kind || 'chat', role: pin.role || null, pinned: true });
+    }
+  }
   PROVIDERS = clean;
   CATALOG_META = { scannedAt: meta.scannedAt || new Date().toISOString(), source: meta.source || 'scan' };
   rebuildIndex();
@@ -223,14 +244,25 @@ export function applyCatalog(providers, meta = {}) {
 // a fleet-less install marks EVERY fleet provider down on its first scan). Pickers that offer models to
 // RUN pass liveOnly — offering a down provider's model is a guaranteed failure (first-time-user report:
 // "showed all models, and most are not available"). Admin/label surfaces keep the full catalog.
-export function listProxyModels({ providers = null, includeImages = false, liveOnly = false } = {}) {
+// `top`: cap the SELECTABLE list at the best N chat models per provider (recommended first, then the
+// provider's own order — the fleet operator curates that order). 0 = uncapped; routing/resolution
+// callers must stay uncapped or running sessions on older models would stop resolving.
+export function listProxyModels({ providers = null, includeImages = false, liveOnly = false, top = 0 } = {}) {
   const allow = providers ? new Set(providers) : null;
   return PROVIDERS
     .filter((p) => !allow || allow.has(p.proxy))
     .filter((p) => !liveOnly || p.up !== false)
-    .flatMap((p) =>
-      p.models
-        .filter((m) => includeImages || (m.kind || 'chat') !== 'image')
+    .flatMap((p) => {
+      let models = p.models.filter((m) => includeImages || (m.kind || 'chat') !== 'image');
+      if (top > 0) {
+        const chat = models.filter((m) => (m.kind || 'chat') === 'chat');
+        // operator pins > recommended > the fleet's own order; dedupe BEFORE slicing or a model in
+        // two tiers eats a slot (sol is pinned AND recommended -> codex offered one model, not two).
+        const ranked = [...new Map([...chat.filter((m) => m.pinned), ...chat.filter((m) => m.recommended), ...chat].map((m) => [m.id, m])).keys()];
+        const keep = new Set(ranked.slice(0, top));
+        models = models.filter((m) => (m.kind || 'chat') !== 'chat' || keep.has(m.id));
+      }
+      return models
         .map((m) => {
           // "Claude / Claude Opus 4.8" -> "Claude / Opus 4.8" (drop the redundant prefix)
           const short = String(m.label || m.id).replace(new RegExp(`^${p.label}\\s+`, 'i'), '');
@@ -245,8 +277,8 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
             kind: m.kind || 'chat',
             supportsFast: p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id),
           };
-        })
-    )
+        });
+    })
     // user API providers ride every listing (panel pickers, /api/models) unless a fleet filter excludes them
     .concat((!allow || allow.has('api')) ? userRoutes().map((r) => ({
       id: r.id,
@@ -262,7 +294,7 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
 }
 
 export function toolModels(tool) {
-  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'] }); // agy-native — its CLI login serves these
+  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'], top: 2 }); // agy-native — its CLI login serves these
 
   // Alias entries replace their concrete targets (don't ALSO list claude-opus-4-8 when
   // "opus" maps to it — duplicate rows with near-identical labels confuse the picker).
@@ -284,12 +316,12 @@ export function toolModels(tool) {
   // offers exactly what its CLIs can actually run instead of the whole static seed.
   const native =
     tool === 'codex'
-      ? listProxyModels({ providers: ['codex'] })
+      ? listProxyModels({ providers: ['codex'], top: 2 })
       : tool === 'claude'
-        ? [...nativeAliases, ...listProxyModels({ providers: ['claude'] })]
+        ? [...nativeAliases, ...listProxyModels({ providers: ['claude'], top: 2 })]
         : [];
   const ownProvider = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : null;
-  const rest = listProxyModels({ liveOnly: true }).filter((m) => m.provider !== ownProvider);
+  const rest = listProxyModels({ liveOnly: true, top: 2 }).filter((m) => m.provider !== ownProvider); // operator rule (2026-07-20): only each provider's top two are offered
   return [...native, ...rest].filter((m) => {
     if (seen.has(m.id)) return false;
     seen.add(m.id);

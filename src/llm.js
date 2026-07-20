@@ -16,7 +16,7 @@ import { callProxyModel, isRouteDenied, markRouteDenied, isAccessDenied } from '
 // glm-5.1 emits no parseable JSON; the 8787 gemini-cli pool was rate-limited (429) at
 // bench time. Override the chain with AIOS_VOICE_CHAIN ("port:model,port:model,...").
 export const VOICE_CHAIN = (process.env.AIOS_VOICE_CHAIN ||
-  '8791:gemini-3.1-flash-lite,8790:kimi-k2.6,8789:claude-haiku-4-5')
+  '8790:glm-5.2,8790:kimi-k2.6,8789:claude-haiku-4-5') // antigravity (8791) down 2026-07-20 — chain starts at live aliyun
   .split(',')
   .map((s) => {
     // "8791:model" = fleet port entry; a bare model id (or "api:model") = user API provider route.

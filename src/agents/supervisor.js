@@ -68,7 +68,7 @@ import { currentOperatorRequirements, formatOperatorRequirements } from './opera
 // It touches the session ONLY through `ctx` and owns two domain tables (intervention log + templates).
 // Scheduler/episode state lives in ctx grant state (baseRef, progress fingerprints, gate phase, caps).
 
-const DEFAULT_MODEL = process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'gemini-pro-agent';
+const DEFAULT_MODEL = process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'glm-5.2'; // antigravity down (2026-07-20); glm-5.2 = verified-working aliyun top pick
 const MAX_NUDGES = Number(process.env.AIOS_SUPERVISOR_MAX_NUDGES || 3); // corrective sends per work-state (resets on real progress)
 const BLIND_LIMIT = Number(process.env.AIOS_SUPERVISOR_BLIND_LIMIT || 2); // blind verifies on a work-state before escalating the real blocker (vs re-demanding unreadable evidence)
 const WEDGE_STUCK_MS = Number(process.env.AIOS_SUPERVISOR_WEDGE_STUCK_MS || 120000); // a real overflow error must persist with a FROZEN screen this long before we act (vs a still-working agent)

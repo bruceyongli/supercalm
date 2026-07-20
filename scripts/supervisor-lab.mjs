@@ -26,7 +26,7 @@ const { detectSessionError } = await import('../src/agents/supervisor/session_er
 const { routeForModel } = await import('../src/model_catalog.js');
 const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js');
 
-const MODEL = process.env.AIOS_LAB_MODEL || process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'gemini-pro-agent';
+const MODEL = process.env.AIOS_LAB_MODEL || process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'glm-5.2';
 const results = [];
 const now = Date.now();
 

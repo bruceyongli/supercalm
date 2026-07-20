@@ -15,7 +15,7 @@ export function isVisionRoute(route) {
   if (proxy === 'api') return false; // user API providers: text-only transport in v1 (no image translation)
   const id = String(route?.model || route?.id || '').toLowerCase();
   if (['antigravity', 'gemini', 'codex', 'claude'].includes(proxy)) return true;
-  if (proxy === 'aliyun') return /max|plus|-vl|vision/.test(id);
+  if (proxy === 'aliyun') return /max|plus|-vl|vision|glm/.test(id); // glm-5.x is multimodal; images fail-soft upstream if not
   return false;
 }
 
