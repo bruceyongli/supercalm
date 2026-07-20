@@ -133,7 +133,10 @@ export async function dispatchSupervisorSend(ctx, {
   const lease = (kind === 'recover' || kind === 'operator' || !ctx.__tickPaneSig)
     ? (sendOptions.lease ?? null)
     : (sendOptions.lease ?? { paneSig: ctx.__tickPaneSig });
-  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease, intentName: typedIntent?.name || sendOptions.intentName || (ruleId === 'hold.resolve_send' ? 'OPERATOR_RELAY' : '') });
+  // CLAIM-BOUND BUDGET (S4): challenges and nudges bind to their WORK ITEM (ruleId; call sites may
+  // pass a finer sendOptions.budgetKey e.g. the gate scope). Rewording never resets the budget.
+  const budgetKey = sendOptions.budgetKey || ((kind === 'challenge' || kind === 'nudge') && ruleId !== 'hold.resolve_send' ? ruleId : '');
+  const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease, budgetKey, intentName: typedIntent?.name || sendOptions.intentName || (ruleId === 'hold.resolve_send' ? 'OPERATOR_RELAY' : '') });
   updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
   return { ...result, draft: msg }; // draft = the rendered text, for caller logging even on kernel blocks
 }

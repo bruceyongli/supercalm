@@ -65,7 +65,8 @@
     "test:send-kernel": "node test/send_kernel.test.js && node test/send_kernel_mediation.test.js",
     "test:event-gate": "node test/supervisor_event_gate.test.js",
     "test:intents": "node test/intents.test.js",
-    "test:dispatch-intents": "node test/dispatch_intents.test.js"
+    "test:dispatch-intents": "node test/dispatch_intents.test.js",
+    "test:session-errors-anchor": "node test/session_errors_anchor.test.js"
   },
   "dependencies": {
     "@ag-ui/client": "^0.0.56",

@@ -17,8 +17,24 @@
 // off bare codes — but only runs on a line already confirmed to be a real error here.)
 export const HARD_ERR_RX = /\bAPI Error\b|\b(rate_limit|permission|billing|invalid_request|authentication|api|server|overloaded)_error\b|status\s*code\s*:?\s*\d|stream (error|disconnect)|connection (error|reset|refused)|\beconn(reset|refused)\b|\betimedout\b|upstream[^.\n]{0,24}(error|timeout|reset|disconnect|unavailable|connect|gateway|503|502|500)|temporarily unavailable|service unavailable|credit balance|insufficient (credit|fund)/i;
 export const HTTP_STATUS_LINE_RX = /\b(40[123]|429|5\d\d)\s+(forbidden|unauthorized|payment required|too many requests|internal server error|bad gateway|service unavailable|gateway time-?out)\b/i;
+// A CLI renders its OWN errors anchored: on a tool bullet (⏺ API Error: …), an error glyph, or at/near
+// the start of the line. Error vocabulary sitting DEEP in a line is almost always DISPLAYED DATA — SQL
+// rows, test fixtures, grep output, JSON — the R-2 class (quoted-error false episodes: a meta-session
+// working ON error handling got 6+ phantom retry nudges from its own tool output, 2026-07-17).
+const LIVE_ERR_ANCHOR_RX = /^\s*[⏺⎿✘✖⚠×]|^\s*\[?(?:api\s+error|stream\s+error|server\s+error|fatal|error)\b/i;
+const ANCHOR_DEPTH = 24; // a genuine CLI error line leads with the error, not buries it
+// Lines shaped like DATA — JSON/arrays/quotes/table pipes/timestamps — are transcripts of something,
+// never the CLI's own error rendering, whatever vocabulary they contain.
+const DATA_SHAPE_RX = /^\s*[{\["|]|^\s*\d{4}-\d{2}-\d{2}[ T]|^\s*\d+\s*[|:]/;
 export function looksLikeSessionError(l) {
-  return HARD_ERR_RX.test(l) || HTTP_STATUS_LINE_RX.test(l);
+  const line = String(l || '');
+  const m = line.match(HARD_ERR_RX) || line.match(HTTP_STATUS_LINE_RX);
+  if (!m) return false;
+  if (LIVE_ERR_ANCHOR_RX.test(line)) return true;
+  if (DATA_SHAPE_RX.test(line)) return false;
+  const pre = line[(m.index ?? 0) - 1];
+  if (pre === '"' || pre === "'" || pre === '\u0060') return false; // quoted vocabulary = someone talking ABOUT an error
+  return (m.index ?? 0) <= ANCHOR_DEPTH;
 }
 // A line can MENTION an error code while reporting it's GONE: the agent narrating "Retried. No 429.",
 // "Continued after the 429", "not a 429", or its done banner "Goal achieved (8h 29m)" is NOT a live error.

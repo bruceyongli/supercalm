@@ -52,9 +52,9 @@ function oneLine(s) {
 // Every verdict is audited to the events table; blocks that merit operator attention notify once
 // per incident (the kernel's escalateKey dedupes).
 const kernelStates = new Map(); // session_id -> kernel state
-function mediateSend(agent, session_id, s, kind, text, lease, intentName) {
+function mediateSend(agent, session_id, s, kind, text, lease, intentName, budgetKey) {
   const st = kernelStates.get(session_id) || emptyKernelState();
-  let v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName }, now());
+  let v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName, budgetKey }, now());
   // CAPABILITY CONSULT (S1): a reserved block converts to a send IFF an operator-minted capability
   // for exactly this class + scope consumes. Re-evaluate with the waiver so lease/dedupe/rate/breaker
   // still apply — authority covers the action, not spam. v1's state (escalation bump) is discarded on
@@ -64,7 +64,7 @@ function mediateSend(agent, session_id, s, kind, text, lease, intentName) {
     let cap = null;
     try { cap = consumeCapability({ sessionId: session_id, action: cls, scopeText: text }); } catch (e) { console.error('[aios] capability consult failed:', e?.message || e); }
     if (cap) {
-      v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName, reservedWaiver: cls }, now());
+      v = evaluateSend(st, { kind, text, paneSig: paneSig(session_id), lease, intentName, budgetKey, reservedWaiver: cls }, now());
       addEvent(session_id, 'capability-consumed', { agent: agent.id, capability: cap.id, action: cls, minted_by: cap.minted_by, allowed: v.allowed });
     }
   }
@@ -198,7 +198,7 @@ export function makeContext(agent, session_id, extra = {}) {
     // `kind` is the send's typed lane (send_policy SEND_KINDS); the kernel fails closed on unknown
     // kinds, so callers must declare what a send IS, not just what it says. 'operator' = the
     // operator's own relayed words — kernel-exempt.
-    async sendToAgent(text, { guarded = true, blockDecision = guarded, kind = 'nudge', lease = null, intentName = '' } = {}) {
+    async sendToAgent(text, { guarded = true, blockDecision = guarded, kind = 'nudge', lease = null, intentName = '', budgetKey = '' } = {}) {
       requireCap('send-input');
       const s = getSession(session_id);
       if (!s) throw new Error('session not found');
@@ -209,7 +209,7 @@ export function makeContext(agent, session_id, extra = {}) {
       // `lease` = { paneSig } from when the proposer started reasoning — CAS: stale pane, no send.
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
       if (blockDecision && s.category === 'decision') return { sent: false, reason: 'decision' };
-      const k = mediateSend(agent, session_id, s, kind, msg, lease, intentName);
+      const k = mediateSend(agent, session_id, s, kind, msg, lease, intentName, budgetKey);
       if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, `[${agent.name || agent.id}] ${msg}`);
       addMessage(session_id, 'in', `agent:${agent.id}`, msg);
@@ -227,7 +227,7 @@ export function makeContext(agent, session_id, extra = {}) {
       const c = oneLine(cmd).slice(0, 120);
       if (!c.startsWith('/')) return { sent: false, reason: 'not-a-command' };
       if (guarded && s.status !== 'waiting') return { sent: false, reason: 'not-waiting' };
-      const k = mediateSend(agent, session_id, s, kind, c, null, 'RECOVER_COMMAND'); // slash-commands ARE the recover intent; no lease (time-critical)
+      const k = mediateSend(agent, session_id, s, kind, c, null, 'RECOVER_COMMAND', ''); // slash-commands ARE the recover intent; no lease (time-critical)
       if (!k.allowed) return { sent: false, reason: k.reason, kernel: true };
       await sendText(s.tmux, c);
       addEvent(session_id, 'agent-command', { agent: agent.id, cmd: c });

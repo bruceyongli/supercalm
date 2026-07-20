@@ -200,4 +200,54 @@ function sendOk(st, p, t) {
   assert.equal(spam.allowed, false, 'a capability authorizes the ACTION, not spam — rate/dedupe still bind');
 }
 
+
+// ---- credentials widening (post-v4 observation): secrets-file reads and token-switch directives ----
+// The verified gap: "read ~/.dev.vars ... switch the session off the disabled relay using that value"
+// passed the kernel on 2026-07-17. Directing an agent AT the secrets store is the same class as
+// directing it to type a password.
+{
+  for (const t of [
+    'run cat ~/.dev.vars and inspect the repo launch config for the current Agent Worker route/token',
+    'read the secrets file for the current auth route',
+    'check ~/.dev.vars for the token and switch the session off the disabled relay',
+    'switch the token to the staged one',
+    'rotate the api key then retry',
+  ]) {
+    assert.equal(reservedActionClass(t), 'credentials', `widened class catches: "${t}"`);
+  }
+  for (const ok of [
+    'the .dev.vars convention is documented in the README',
+    'add GITHUB_PAT_AIOS to your local env before running deploys',
+    'the token budget for this run is 500k',
+    'read the config file for the port number',
+  ]) {
+    assert.equal(reservedActionClass(ok), null, `no false positive: "${ok}"`);
+  }
+}
+
+
+// ---- CLAIM-BOUND BUDGET (S4): the key is the work item — rewording never resets it ----
+{
+  let st = emptyKernelState();
+  let t = T0;
+  const texts = ['produce the observation report now', 'proceed with the report; no clarification needed', 'stop looping and produce the report'];
+  for (let i = 0; i < KERNEL_DEFAULTS.budgetCap; i++) {
+    st = sendOk(st, prop({ text: texts[i % texts.length] + ' v' + i, paneSig: 'sig' + i, budgetKey: 'completion.challenge' }), t);
+    t += MIN_GAP + 1000;
+  }
+  let v = evaluateSend(st, prop({ text: 'a COMPLETELY different wording of the same demand', paneSig: 'sigNEW', budgetKey: 'completion.challenge' }), t);
+  assert.equal(v.allowed, false, 'paraphrase does not evade the work-item budget');
+  assert.equal(v.reason, 'kernel-budget-exhausted');
+  assert.equal(v.escalate, true, 'exhaustion escalates once (requires human review)');
+  st = v.state;
+  v = evaluateSend(st, prop({ text: 'yet another wording', paneSig: 'sigNEW2', budgetKey: 'completion.challenge' }), t + MIN_GAP);
+  assert.equal(v.escalate, false, 'no second escalation for the same exhausted budget');
+  // a DIFFERENT work item is unaffected; keyless sends are unaffected
+  assert.equal(evaluateSend(st, prop({ text: 'answer about the port number', paneSig: 'sigQ', budgetKey: 'unstick.send' }), t + MIN_GAP).allowed, true);
+  assert.equal(evaluateSend(st, prop({ text: 'plain keyless send', paneSig: 'sigK' }), t + 2 * MIN_GAP).allowed, true);
+  // window elapse refreshes the budget
+  v = evaluateSend(st, prop({ text: 'after the window', paneSig: 'sigW', budgetKey: 'completion.challenge' }), T0 + KERNEL_DEFAULTS.budgetWindowMs + 10 * MIN_GAP);
+  assert.equal(v.allowed, true, 'budget window is rolling, not permanent');
+}
+
 console.log('send_kernel: all assertions passed');

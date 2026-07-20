@@ -32,6 +32,8 @@ export const KERNEL_DEFAULTS = {
   breakerThreshold: Number(process.env.AIOS_SEND_KERNEL_BREAKER_N || 3), // consecutive no-effect sends before the circuit opens
   ringSize: 20, // remembered recent sends
   receiptTimeoutMs: Number(process.env.AIOS_SEND_KERNEL_RECEIPT_MS || 5 * 60_000), // a send unacknowledged by ANY pane movement for this long resolves received:false
+  budgetCap: Number(process.env.AIOS_SEND_KERNEL_BUDGET_CAP || 3), // allowed sends per budget key per window — the key is the WORK ITEM, so rewording never resets it
+  budgetWindowMs: Number(process.env.AIOS_SEND_KERNEL_BUDGET_MS || 6 * 3600_000),
 };
 
 // Phase-1 end-state, ON by default now that every agent send path declares an intent (supervisor via
@@ -75,7 +77,7 @@ function normText(s) {
 // ---------------------------------------------------------------------------
 const RESERVED_RX = {
   deploy: /\b(deploy|redeploy|re-deploy)\b(?![^.!?\n]{0,40}\b(?:plan|doc|breaker|pipeline|api|key)\b)|\bbin\/deploy\b|\bship\s+it\b|\bpush\s+(?:it\s+)?to\s+(?:prod|production|main|origin)\b/i,
-  credentials: /\b(?:use|enter|type|paste|input|login\s+with|log\s*in\s+with)\b[^.!?\n]{0,50}\b(?:password|passcode|credential|secret|api[-_ ]?key|token)\b|\b(?:password|passcode|credential)\b[^.!?\n]{0,50}\b(?:use|enter|type|paste|input)\b|\blog\s*in\s+as\s+\w+|登录.{0,20}密码|密码.{0,20}登录/i,
+  credentials: /\b(?:use|enter|type|paste|input|login\s+with|log\s*in\s+with)\b[^.!?\n]{0,50}\b(?:password|passcode|credential|secret|api[-_ ]?key|token)\b|\b(?:password|passcode|credential)\b[^.!?\n]{0,50}\b(?:use|enter|type|paste|input)\b|\blog\s*in\s+as\s+\w+|\b(?:cat|read|open|inspect|grep|check)\b[^.!?\n]{0,60}(?:\.dev\.vars|\bsecrets?\s+file|\bcredential\s+(?:file|store)|\.env\b)|\b(?:switch|swap|rotate|replace|apply)\b[^.!?\n]{0,40}\b(?:token|api[-_ ]?key|credential)\b|\.dev\.vars\b[^.!?\n]{0,60}\b(?:token|key|credential|auth|route)\b|登录.{0,20}密码|密码.{0,20}登录/i,
   survey: /\b(?:answer|select|choose|press|pick)\b[^.!?\n]{0,40}\b(?:survey|rating|feedback\s+form)\b|\b(?:survey|rating\s+prompt)\b[^.!?\n]{0,40}\b(?:answer|select|choose|press|pick)\b/i,
   git_destructive: /\bpush\b[^.!?\n]{0,30}--force\b(?!-with-lease)|--force\b[^.!?\n]{0,20}\bpush\b|\breset\s+--hard\b|\bclean\s+-[a-z]*f[a-z]*\b|\bbranch\s+-D\b|\brm\s+-rf\s+[^ ]*\.git\b/i,
 };
@@ -97,6 +99,7 @@ export function emptyKernelState() {
     circuit: { open: false, sigAtOpen: '', openedAt: 0, escalated: false },
     escalated: {}, // reason-class -> last escalation ts (one notification per incident)
     pending: null, // last allowed send awaiting a RECEIPT: { id, sig, ts } — resolved on the next evaluation
+    budgets: {}, // budgetKey -> { count, firstTs, escalated } — claim-bound send budgets (S4: paraphrase-proof)
   };
 }
 
@@ -114,6 +117,7 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
   const leaseSig = String(proposal?.lease?.paneSig || '');
   const intentName = String(proposal?.intentName || '');
   const reservedWaiver = String(proposal?.reservedWaiver || ''); // set by the wrapper AFTER consuming a matching operator-minted capability — never by a brain
+  const budgetKey = String(proposal?.budgetKey || ''); // the WORK ITEM this send serves (rule/gate scope) — budgets bind here, not to wording (S4)
 
   // Operator relays are the operator's own words — never kernel business, never budgeted.
   if (kind === 'operator') return { allowed: true, reason: '', escalate: false, escalateKey: '', receipt: null, state: st };
@@ -193,7 +197,21 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
     if (t - r.ts < c.dedupeWindowMs) return verdict(false, 'kernel-duplicate-recent');
   }
 
-  // 7) rate bounds.
+  // 7) CLAIM-BOUND BUDGET (S4 completion, post-v4 observation): N allowed sends per WORK ITEM per
+  //    window — rewording a demand does not reset it (the ~8-paraphrase "produce the report now"
+  //    cluster, 2026-07-17). Exhaustion blocks with ONE escalation: requires human review.
+  let budgets = st.budgets || {};
+  if (budgetKey) {
+    let b = budgets[budgetKey];
+    if (b && t - b.firstTs > c.budgetWindowMs) b = null; // window elapsed -> fresh budget
+    if (b && b.count >= c.budgetCap) {
+      const escalate = !b.escalated;
+      const next = { ...base, budgets: { ...budgets, [budgetKey]: { ...b, escalated: true } } };
+      return verdict(false, 'kernel-budget-exhausted', escalate, `budget:${budgetKey}`, escalate ? next : base);
+    }
+  }
+
+  // 8) rate bounds.
   if (st.lastSendTs && t - st.lastSendTs < c.minGapMs) return verdict(false, 'kernel-rate-min-gap');
   const hour = (Array.isArray(st.hour) ? st.hour : []).filter((ts) => t - ts < 60 * 60_000);
   if (hour.length >= c.hourlyCap) return verdict(false, 'kernel-rate-hourly-cap');
@@ -206,6 +224,9 @@ export function evaluateSend(state, proposal, t, cfg = {}) {
     ring: [...ring, { h: hash, sig: paneSig, ts: t }].slice(-c.ringSize),
     circuit,
     pending: { id: `${hash}.${t.toString(36)}`, sig: paneSig, ts: t },
+    budgets: budgetKey
+      ? { ...budgets, [budgetKey]: (() => { const b = budgets[budgetKey]; return b && t - b.firstTs <= c.budgetWindowMs ? { ...b, count: b.count + 1 } : { count: 1, firstTs: t, escalated: false }; })() }
+      : budgets,
   };
   return verdict(true, '', false, '', next);
 }
