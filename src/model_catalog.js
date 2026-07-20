@@ -215,7 +215,9 @@ export function applyCatalog(providers, meta = {}) {
           id: String(m.id),
           label: m.label || String(m.id),
           recommended: !!m.recommended,
-          kind: m.kind || 'chat',
+          // Utility models (STT/TTS on the spark box) arrive untyped from /v1/models and were leaking
+          // into chat pickers (whisper offered as a coding-session model). Type them by id.
+          kind: /whisper|kokoro|-tts-|\btts\b/i.test(String(m.id)) ? 'utility' : (m.kind || 'chat'), // override: earlier scans persisted these as 'chat'
           role: m.role || null,
         })),
     }));
