@@ -21,7 +21,10 @@ export const HTTP_STATUS_LINE_RX = /\b(40[123]|429|5\d\d)\s+(forbidden|unauthori
 // the start of the line. Error vocabulary sitting DEEP in a line is almost always DISPLAYED DATA — SQL
 // rows, test fixtures, grep output, JSON — the R-2 class (quoted-error false episodes: a meta-session
 // working ON error handling got 6+ phantom retry nudges from its own tool output, 2026-07-17).
-const LIVE_ERR_ANCHOR_RX = /^\s*[⏺⎿✘✖⚠×]|^\s*\[?(?:api\s+error|stream\s+error|server\s+error|fatal|error)\b/i;
+// A bullet glyph alone is NOT an anchor — claude renders TOOL CALLS on the same ⏺ bullet
+// (⏺ Bash(grep "…error…")), so the error token must directly follow the glyph, or lead the line.
+const LIVE_ERR_ANCHOR_RX = /^\s*[⏺⎿✘✖⚠×]\s*\[?(?:api\s+error|[a-z_]+_error\b|error\b|\d{3}\b|stream\s+(?:error|disconnect)|overloaded)/i;
+const LEAD_ERR_RX = /^\s*\[?(?:api\s+error|stream\s+error|server\s+error|fatal|error)\b/i;
 const ANCHOR_DEPTH = 24; // a genuine CLI error line leads with the error, not buries it
 // Lines shaped like DATA — JSON/arrays/quotes/table pipes/timestamps — are transcripts of something,
 // never the CLI's own error rendering, whatever vocabulary they contain.
@@ -30,7 +33,7 @@ export function looksLikeSessionError(l) {
   const line = String(l || '');
   const m = line.match(HARD_ERR_RX) || line.match(HTTP_STATUS_LINE_RX);
   if (!m) return false;
-  if (LIVE_ERR_ANCHOR_RX.test(line)) return true;
+  if (LIVE_ERR_ANCHOR_RX.test(line) || LEAD_ERR_RX.test(line)) return true;
   if (DATA_SHAPE_RX.test(line)) return false;
   const pre = line[(m.index ?? 0) - 1];
   if (pre === '"' || pre === "'" || pre === '\u0060') return false; // quoted vocabulary = someone talking ABOUT an error

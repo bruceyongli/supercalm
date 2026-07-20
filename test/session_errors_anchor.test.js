@@ -22,6 +22,8 @@ for (const data of [
   '{"payload":{"reason":"API Error: 529 overloaded"},"session":"s_lab"}',
   'the review corpus counted 27 lines matching API Error before the kernel landed',
   'grep -n "connection error" src/agents/supervisor.js | head',
+  '⏺ Bash(grep -c "stream error" lib/ && echo done)', // tool-call bullet: glyph + tool, error inside args
+  '⏺ Read(docs/errors.md — the API Error taxonomy)',
 ]) {
   assert.equal(looksLikeSessionError(data), false, `displayed data must NOT detect: "${data}"`);
 }
