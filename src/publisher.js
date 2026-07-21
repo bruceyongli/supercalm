@@ -127,11 +127,12 @@ export async function watchdog() {
     console.error(`[aios] watchdog: ${occ.id} stuck in ${occ.stage} past deadline → HELD`);
     return;
   }
-  // A HELD MECHANICAL stall that's been sitting a while (orphaned by a dead boot, or aged past the stale
-  // window) — resolve it so a dead deploy can't wedge the queue forever. Age-based so it's robust even if
-  // boot-recovery re-owns the row.
+  // A HELD MECHANICAL stall that's wedged — resolve it so a dead deploy can't hold the queue forever. Primary
+  // signal is health_deadline (set once at PUBLISHING, never reset), so it survives boot-recovery re-owning
+  // the row + resetting updated_at; orphaned-boot / aged updated_at are fallbacks for pre-deadline holds.
+  const deadlinePassed = occ.health_deadline && now() > occ.health_deadline + STALE_HOLD_MS;
   const stuckMechanical = occ.stage === 'HELD' && MECHANICAL_STUCK.has(occ.failure_code)
-    && ((occ.owner_boot_id && occ.owner_boot_id !== BOOT_ID) || (now() - (occ.updated_at || now()) > STALE_HOLD_MS));
+    && (deadlinePassed || (occ.owner_boot_id && occ.owner_boot_id !== BOOT_ID) || (now() - (occ.updated_at || now()) > STALE_HOLD_MS));
   if (!stuckMechanical) return; // other HELDs (publish_disabled, gate/protected-path holds) are the operator's call
   const proj = occ.project_id ? store.getProject(occ.project_id) : null;
   const name = proj?.name || occ.project_id || 'project';
