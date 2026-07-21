@@ -121,10 +121,19 @@ const PROBES = {
   }),
   'home-flip': () => ({
     url: `${BASE}/?desktop=1`,
-    actions: async () => { await new Promise((r) => setTimeout(r, 2500)); },
+    actions: async (page) => {
+      await new Promise((r) => setTimeout(r, 1200));
+      await page.eval("document.body.classList.contains('dk-collapsed') && document.querySelector('#dk-expand')?.click()");
+      await new Promise((r) => setTimeout(r, 300));
+      await page.eval(`window.__homeCollapse = { before: (() => { const v=document.querySelector('#view').getBoundingClientRect(); return {left:v.left,width:v.width}; })() }; document.querySelector('[data-dk-collapse]')?.click()`);
+      await new Promise((r) => setTimeout(r, 350));
+      await page.eval(`window.__homeCollapse.after = (() => { const v=document.querySelector('#view').getBoundingClientRect(), main=document.querySelector('.dk-main')?.getBoundingClientRect(), ex=document.querySelector('#dk-expand')?.getBoundingClientRect(); return {left:v.left,width:v.width,mainWidth:main?.width||0,expandTop:ex?.top,expandDisplay:getComputedStyle(document.querySelector('#dk-expand')).display,token:getComputedStyle(document.body).getPropertyValue('--rail-width').trim()}; })(); document.querySelector('#dk-expand')?.click()`);
+    },
     probes: [
       ["root serves the shell", "!!document.querySelector('[data-dk-sidebar]')"],
       ["classic escape link present", "!!document.querySelector('.dk-classic')"],
+      ["home collapse expands #view instead of auto-placing it in the zero-width rail track", "window.__homeCollapse.before.left > 200 && window.__homeCollapse.after.left === 0 && window.__homeCollapse.after.width > window.__homeCollapse.before.width + 200 && window.__homeCollapse.after.mainWidth > 900 && window.__homeCollapse.after.token === '0px'"],
+      ["restore tab appears at the top near the former collapse control", "window.__homeCollapse.after.expandDisplay === 'flex' && window.__homeCollapse.after.expandTop >= 14 && window.__homeCollapse.after.expandTop <= 18"],
       ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
     ],
   }),

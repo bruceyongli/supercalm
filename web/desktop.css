@@ -11,7 +11,11 @@
    blank strip (operator screenshot, 2026-07-20). */
 body.dk-collapsed { --rail-width: 0px; }
 body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13.5px; }
-.dk-shell { display: grid; grid-template-columns: var(--rail-width) 1fr; min-height: 100vh; }
+.dk-shell { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); min-height: 100vh; }
+/* Keep shell content in column 2 even when the column-1 sidebar is display:none. Without explicit
+   placement, CSS grid auto-placement moves the remaining #view/.dk-main into the collapsed 0px first
+   column — the home-page blank/zero-width layout from the operator screenshot (2026-07-21). */
+.dk-shell > .dk-view, .dk-shell > .dk-main { grid-column: 2; }
 
 /* ---- sidebar (236px, chrome) ---- */
 .dk-side { background: #0c1017; border-right: 1px solid #161d27; padding: 16px 12px; display: flex; flex-direction: column; gap: 10px; position: sticky; top: 0; height: 100vh; overflow-y: auto; }
@@ -20,7 +24,7 @@ body { margin: 0; background: #0a0e14; color: #b9c4d4; font-family: 'IBM Plex Sa
    the session grid; a fixed left-edge tab restores it (doesn't collide with the session header's back arrow). */
 .dk-collapse { margin-left: auto; align-self: center; background: none; border: 0; color: #4b5567; font: inherit; font-size: 10.5px; cursor: pointer; padding: 2px 5px; border-radius: 6px; white-space: nowrap; }
 .dk-collapse:hover { color: #8a95a5; background: #131a24; }
-.dk-expand { display: none; position: fixed; top: 50%; left: 0; transform: translateY(-50%); z-index: 60; width: 20px; height: 54px; border: 1px solid #232c38; border-left: 0; border-radius: 0 8px 8px 0; background: #0c1017; color: #8a95a5; cursor: pointer; align-items: center; justify-content: center; font-size: 15px; padding: 0; }
+.dk-expand { display: none; position: fixed; top: 16px; left: 0; z-index: 60; width: 24px; height: 34px; border: 1px solid #232c38; border-left: 0; border-radius: 0 8px 8px 0; background: #0c1017; color: #8a95a5; cursor: pointer; align-items: center; justify-content: center; font-size: 15px; padding: 0; }
 .dk-expand:hover { color: #e2e8f1; background: #131a24; }
 /* Phone-companion route = a drawer SYSTEM nav row, phones only. (The old floating bottom-right pill
    sat over table values / provider controls at every scroll end — a nav row can't cover content.) */
@@ -36,6 +40,8 @@ body.dk-collapsed .dk-expand { display: flex; }
 @media (max-width: 720px) {
   body:not(.session-page) .dk-shell,
   body:not(.session-page).dk-collapsed .dk-shell { grid-template-columns: 1fr; }
+  body:not(.session-page) .dk-shell > .dk-view,
+  body:not(.session-page) .dk-shell > .dk-main { grid-column: 1; }
   body:not(.session-page) .dk-main { max-width: 100%; padding: 18px 15px 90px; }
   body:not(.session-page) .dk-side,
   body:not(.session-page).dk-collapsed .dk-side {

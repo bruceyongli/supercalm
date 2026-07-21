@@ -64,6 +64,9 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(/:root\s*\{[^}]*--rail-width:\s*280px/.test(dcss), 'desktop.css defines the expanded shared --rail-width token');
   assert.ok(/body\.dk-collapsed\s*\{[^}]*--rail-width:\s*0px/.test(dcss), 'collapsed state zeroes the shared token once');
   assert.ok(/\.dk-shell\s*\{[^}]*grid-template-columns:\s*var\(--rail-width\)/.test(dcss), '.dk-shell rail width uses var(--rail-width)');
+  assert.ok(/\.dk-shell > \.dk-view, \.dk-shell > \.dk-main\s*\{[^}]*grid-column:\s*2/.test(dcss), 'normal shell content is pinned to column 2 — hiding column-1 sidebar cannot auto-place it into the 0px track');
+  assert.ok(/body:not\(\.session-page\) \.dk-shell > \.dk-view,[\s\S]{0,100}grid-column:\s*1/.test(dcss), 'mobile single-column shell resets content to column 1');
+  assert.ok(/\.dk-expand\s*\{[^}]*top:\s*16px/.test(dcss) && !/\.dk-expand\s*\{[^}]*top:\s*50%/.test(dcss), 'restore tab sits at the top near the former collapse control, not mid-screen');
   assert.ok(/body\.session-page #view\.dk-view\s*\{[^}]*left:\s*var\(--rail-width\)/.test(dcss), 'fixed session #view offset uses the SAME token');
   assert.ok(!/body\.dk-collapsed \.dk-shell\s*\{[^}]*grid-template-columns/.test(dcss), 'no separate collapsed grid geometry can drift');
   assert.ok(!/body\.dk-collapsed\.session-page #view\.dk-view\s*\{[^}]*left/.test(dcss), 'no separate collapsed #view offset can drift');
