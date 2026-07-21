@@ -24,6 +24,7 @@ import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { COMMIT_SHA, BOOT_ID, VERSION, DATA_DIR, ROOT } from './config.js';
 import { gitOut } from './git.js';
+import { bus } from './bus.js';
 import { defaultBranch } from './worktrees.js';
 import { now } from './util.js';
 import { db } from './store.js';
@@ -84,6 +85,69 @@ function dbSmoke(intId) {
 function safeHold(intId, fenceToken, code, data) {
   try { return I.transition(intId, 'HELD', { fenceToken, patch: { failure_code: code }, data }); }
   catch (e) { console.error('[aios] publisher safeHold failed:', e?.message || e); return null; }
+}
+
+// --- WATCHDOG ---------------------------------------------------------------
+// The deploy is a DETACHED bin/deploy that restarts us; reconcile() finishes the job in the reborn process.
+// But if that deploy dies BEFORE it restarts us (e.g. the clean-tree guard aborts it because the canonical
+// tree is dirty — the 2026-07-21 wedge), the server never reboots, reconcile never runs, and the integration
+// SITS in an in-flight stage holding the single-active lock indefinitely: "no watchdog on main". This runs in
+// the LIVE server off the orchestrator tick and closes that gap. Mechanical, never-shipped stalls are safe to
+// reset (the branch/work is untouched → re-integrate to retry); anything that reached main is escalated, not
+// auto-touched.
+const MECHANICAL_STUCK = new Set(['deploy_died_before_restart', 'deploy_not_served', 'not_fast_forward', 'no_repo_or_candidate']);
+const WATCHDOG_MARGIN_MS = Number(process.env.AIOS_WATCHDOG_MARGIN_MS || 60000); // grace past the health deadline before acting
+const STALE_HOLD_MS = Number(process.env.AIOS_WATCHDOG_STALE_MS || 120000);       // a mechanical HELD sitting this long is wedged (boot-ownership-independent)
+const _watchdogNotified = new Set(); // escalate-once per integration
+
+// Did the candidate actually reach the live product? served-SHA == candidate, or candidate is on main HEAD.
+async function candidateOnMain(repoPath, candidate) {
+  if (!candidate) return null;
+  if (defaultServed() === candidate) return true;
+  if (!repoPath || !existsSync(repoPath)) return null;
+  try {
+    const base = await defaultBranch(repoPath);
+    const head = (await gitOut(repoPath, ['rev-parse', base])).text.trim();
+    if (!head) return null;
+    if (head === candidate) return true;
+    return !(await gitOut(repoPath, ['merge-base', '--is-ancestor', candidate, head])).error;
+  } catch { return null; }
+}
+
+export async function watchdog() {
+  const occ = I.occupiedBy();
+  if (!occ) return;
+  const activeStuck = !['QUEUED', 'GREEN', 'REJECTED', 'ROLLED_BACK', 'HELD'].includes(occ.stage)
+    && occ.health_deadline && now() > occ.health_deadline + WATCHDOG_MARGIN_MS;
+  if (activeStuck) {
+    // In-flight past its deadline with no reconcile (the deploy died before restart) → park it HELD so it
+    // stops silently holding the lock; the HELD branch below resolves it next tick.
+    safeHold(occ.id, occ.fence_token, occ.failure_code || 'deploy_died_before_restart',
+      { watchdog: true, from: occ.stage, note: 'stuck past health deadline; no reconcile — deploy likely died before restart' });
+    console.error(`[aios] watchdog: ${occ.id} stuck in ${occ.stage} past deadline → HELD`);
+    return;
+  }
+  // A HELD MECHANICAL stall that's been sitting a while (orphaned by a dead boot, or aged past the stale
+  // window) — resolve it so a dead deploy can't wedge the queue forever. Age-based so it's robust even if
+  // boot-recovery re-owns the row.
+  const stuckMechanical = occ.stage === 'HELD' && MECHANICAL_STUCK.has(occ.failure_code)
+    && ((occ.owner_boot_id && occ.owner_boot_id !== BOOT_ID) || (now() - (occ.updated_at || now()) > STALE_HOLD_MS));
+  if (!stuckMechanical) return; // other HELDs (publish_disabled, gate/protected-path holds) are the operator's call
+  const proj = occ.project_id ? store.getProject(occ.project_id) : null;
+  const name = proj?.name || occ.project_id || 'project';
+  const onMain = await candidateOnMain(proj?.path, occ.candidate_sha);
+  if (onMain === false) {
+    // Nothing shipped → close the failed attempt + release the lock. The branch/work is untouched.
+    try {
+      I.transition(occ.id, 'REJECTED', { fenceToken: occ.fence_token, patch: {},
+        data: { watchdog: true, was: occ.failure_code, reason: 'orphaned mechanical stall; candidate never reached main — lock released so the queue proceeds; re-integrate to retry' } });
+      console.error(`[aios] watchdog: released orphaned stuck integration ${occ.id} (${name}, ${occ.failure_code}) — candidate never shipped; lock freed.`);
+      bus.emit('notify', { title: `Deploy lock released: ${name}`, body: `A stuck deploy (${occ.failure_code}) blocked the queue and never reached main. Supercalm reset it — the session can re-integrate. Nothing shipped.`, url: 'projects', tag: `watchdog-${occ.id}` });
+    } catch (e) { console.error('[aios] watchdog reject failed:', e?.message || e); }
+  } else if (!_watchdogNotified.has(occ.id)) {
+    _watchdogNotified.add(occ.id); // escalate once — it may have shipped; the operator accepts or rolls back
+    bus.emit('notify', { title: `Deploy needs review: ${name}`, body: `Integration ${occ.id} is HELD (${occ.failure_code}) and holding the queue; it may have reached main. Review it (accept or roll back).`, url: 'projects', tag: `watchdog-${occ.id}` });
+  }
 }
 
 // APPROVED → RESTART_REQUESTED (+ spawn the deploy). Everything up to the spawn is fenced state-machine

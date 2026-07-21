@@ -8,7 +8,7 @@ import * as store from './store.js';
 import { helperEnabled } from './project_helpers.js';
 import { breakerBlocks } from './deploy_breaker.js';
 import { driveGate } from './integrator.js';
-import { drivePublish, publishEnabled } from './publisher.js';
+import { drivePublish, publishEnabled, watchdog } from './publisher.js';
 
 const TICK_MS = Number(process.env.AIOS_DEPLOY_TICK_MS || 20000);
 let _busy = false;
@@ -66,6 +66,11 @@ function recoverGateOnBoot() {
 
 if (!process.env.AIOS_NO_LISTEN) {
   recoverGateOnBoot();
-  const iv = setInterval(() => orchestrateOnce().catch(() => {}), TICK_MS);
+  // Each tick: WATCHDOG first (free a lock wedged by a silently-dead deploy — a stuck deploy can't hold the
+  // fleet hostage), THEN drive the queue. Both fail-soft so one never blocks the other.
+  const iv = setInterval(async () => {
+    try { await watchdog(); } catch (e) { console.error('[aios] watchdog error:', e?.message || e); }
+    try { await orchestrateOnce(); } catch {}
+  }, TICK_MS);
   if (iv.unref) iv.unref();
 }
