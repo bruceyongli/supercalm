@@ -27,6 +27,7 @@ const PROJECTS_CSS = `
     .pj-rel-status { font-weight: 600; color: #5c6675; }
     .pj-rel-btn { background: #16202c; border: 1px solid #2a3a4c; border-radius: 6px; color: #9fb0c0; padding: 3px 9px; cursor: pointer; font-size: 11px; }
     .pj-rel-btn:hover { border-color: #2fd6be; color: #d7e2ee; }
+    .pj-isogap { display: block; font-size: 11px; color: #e2b23e; margin-top: 2px; }
 `;
 
 let host = null;
@@ -55,6 +56,7 @@ async function load() {
           <input type="checkbox" data-pj-iso="${esc(p.project_id)}"> multi-session isolation
           <span class="pj-iso-hint">— own worktree + branch per session</span>
         </label>
+        <span class="pj-isogap" data-pj-isogap="${esc(p.project_id)}" style="display:none"></span>
         <label class="pj-iso pj-pub" title="Auto-merge & deploy THIS project's approved work to the live service (deterministic gate → publish → sustained health, with auto-rollback + a circuit breaker). Requires multi-session isolation (turned on with it). Highest-risk — off by default.">
           <input type="checkbox" data-pj-pub="${esc(p.project_id)}"> autonomous deploy
           <span class="pj-iso-hint">— approved work self-deploys</span>
@@ -103,7 +105,21 @@ async function load() {
       const iso = document.querySelector(`[data-pj-iso="${p.project_id}"]`);
       const pub = document.querySelector(`[data-pj-pub="${p.project_id}"]`);
       if (iso) iso.checked = !!(r?.helpers?.isolation);
-      if (pub) pub.checked = !!(r?.helpers?.auto_publish);
+      // Autonomous deploy: honest state. Only Supercalm's own checkout is self-deployable today — elsewhere
+      // the flag is inert, so disable the box and say so instead of showing a checkbox that does nothing.
+      if (pub) {
+        const deployable = !!r?.deployable;
+        pub.checked = deployable && !!(r?.helpers?.auto_publish);
+        pub.disabled = !deployable;
+        const lbl = pub.closest('.pj-pub');
+        const hint = lbl?.querySelector('.pj-iso-hint');
+        if (hint) hint.textContent = deployable ? '— approved work self-deploys' : '— only Supercalm self-deploys today';
+        if (lbl) lbl.style.opacity = deployable ? '' : '0.55';
+      }
+      // Isolation gap: live sessions sharing the tree despite isolation being on (false-safety warning).
+      const gap = r?.isolation_gap || 0;
+      const gapEl = document.querySelector(`[data-pj-isogap="${p.project_id}"]`);
+      if (gapEl) { gapEl.textContent = gap ? `⚠ ${gap} live session${gap > 1 ? 's' : ''} not isolated — sharing this tree (launched before isolation; relaunch to isolate)` : ''; gapEl.style.display = gap ? 'block' : 'none'; }
     }).catch(() => {});
   }
   // Release-check config: reflect status, save on change, check-now button, load state after paint.

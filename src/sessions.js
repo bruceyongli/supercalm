@@ -1,14 +1,14 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile } from 'node:fs/promises';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, statSync, realpathSync } from 'node:fs';
 import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
 import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
-import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
+import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
@@ -2328,16 +2328,31 @@ route('POST', '/api/project/:id/wiki/rebuild', async (req, res, { id: pid }) => 
 });
 
 // Per-project helper enables + models (context-inject / preflight / wiki-MCP) — the panel's on/off + config.
+// Is a project's checkout the running Supercalm one? Only that project can use the autonomous deploy
+// pipeline today (it bin/deploys + health-verifies THIS service). Keeps the auto_publish toggle honest
+// instead of a checkbox that silently does nothing (the 'auto_publish on share/proxy' surprise).
+const _selfDeployable = (projPath) => { if (!projPath) return false; try { return realpathSync(projPath) === realpathSync(ROOT); } catch { return projPath === ROOT; } };
+// Live sessions on this project NOT isolated (null worktree) despite isolation being on — they share the
+// one checkout and can clobber each other's tree/branch (the false-safety gap behind the wrong-tree deploy).
+function isolationGap(pid) {
+  if (!helperEnabled(pid, 'isolation')) return 0;
+  try { return store.listLiveSessions().filter((s) => s.project_id === pid && !s.worktree_path).length; } catch { return 0; }
+}
 route('GET', '/api/project/:id/helpers', (req, res, { id: pid }) => {
   const p = store.getProject(pid);
   if (!p) return json(res, 404, { error: 'no such project' });
-  json(res, 200, { ok: true, helpers: getHelpers(pid), models: listProxyModels({ includeImages: false, liveOnly: true }) });
+  json(res, 200, { ok: true, helpers: getHelpers(pid), deployable: _selfDeployable(p.path), isolation_gap: isolationGap(pid), models: listProxyModels({ includeImages: false, liveOnly: true }) });
 });
 route('POST', '/api/project/:id/helpers', async (req, res, { id: pid }) => {
   const p = store.getProject(pid);
   if (!p) return json(res, 404, { error: 'no such project' });
   const b = await readJson(req).catch(() => ({}));
-  json(res, 200, { ok: true, helpers: setHelpers(pid, b) });
+  // Honesty gate: autonomous deploy only works for Supercalm's own self-deploy today. Refuse enabling it
+  // elsewhere instead of storing a flag the pipeline will always skip. Gate/isolation/monitor still work.
+  if ((b.auto_publish || b.autoPublish) && !_selfDeployable(p.path)) {
+    return json(res, 400, { error: "autonomous deploy isn't available for this project yet — the pipeline can only self-deploy Supercalm's own checkout (it bin/deploys + health-verifies THIS service). Use the release-check monitor to catch stale deploys; the project's own agent still deploys it." });
+  }
+  json(res, 200, { ok: true, helpers: setHelpers(pid, b), deployable: _selfDeployable(p.path), isolation_gap: isolationGap(pid) });
 });
 
 route('POST', '/api/session/:id/key', async (req, res, { id: sid }) => {
