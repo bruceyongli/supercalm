@@ -25,6 +25,7 @@ async function discover() {
   const sessions = state.sessions || [];
   const withCard = [];
   const between = [];
+  const anyLive = sessions.find((s) => s.status === 'working' || s.status === 'waiting')?.id || null;
   // Only LIVE sessions carry the supervisor panel an operator actually sees; an exited scratch
   // session on a shared project still returns the project's archived cards and would be mis-picked
   // as a between-tasks fixture (observed: the R2 verifier's exited fixture session).
@@ -37,7 +38,7 @@ async function discover() {
       else if (t.lastClosed || (t.archived || []).length) between.push(s.id);
     } catch {}
   }
-  return { withCard: withCard[0], between: between[0] };
+  return { withCard: withCard[0], between: between[0], anyLive };
 }
 
 const PROBES = {
@@ -64,28 +65,45 @@ const PROBES = {
   // approval controls still present and functional-looking, zero console errors.
   // Home flip: / serves the new shell; ?classic=1 still serves the pre-redesign dashboard.
   // Doctrine tab on /decisions: segmented, rule cards with WHEN + approve controls, triage actions.
-  // Session mini-rail: collapse to 56px, xterm survives (rows render), peek overlays without reflow.
-  'session-mini-rail': (sid) => ({
+  // Shared session sidebar collapse: the rail, fixed #view offset, terminal, and composer must release
+  // the SAME width. This replaces the stale removed mini-rail controls and catches the operator's exact
+  // screenshot regression (sidebar hidden, but #view still left:280px → blank dark strip).
+  'session-sidebar-collapse': (sid) => ({
     url: `${BASE}/session?id=${sid}&desktop=1`,
     actions: async (page) => {
-      await page.eval("localStorage.removeItem('aios.session.railMode')");
-      await page.eval("document.querySelector('[data-story-toggle] [data-mode=terminal]')?.click()");
-      await new Promise((r) => setTimeout(r, 1200));
-      // R2 T1: docked is the DEFAULT on every entry — no pin step needed (pin removed in T2)
-      await page.eval("window.__termW1 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#rail-collapse')?.click()");
-      await new Promise((r) => setTimeout(r, 900));
-      await page.eval("window.__termW2 = document.querySelector('#term')?.getBoundingClientRect().width; document.querySelector('#mini-peek')?.click()");
+      // Normalize expanded through the real restore control, never by mutating classes/storage directly.
+      await page.eval("document.body.classList.contains('dk-collapsed') && document.querySelector('#dk-expand')?.click()");
       await new Promise((r) => setTimeout(r, 500));
-      await page.eval("window.__termW3 = document.querySelector('#term')?.getBoundingClientRect().width");
+      await page.eval(`window.__collapseGeom = { expanded: (() => {
+        const side = document.querySelector('.dk-side')?.getBoundingClientRect();
+        const view = document.querySelector('#view.dk-view')?.getBoundingClientRect();
+        const composer = document.querySelector('.footer-composer')?.getBoundingClientRect();
+        return { token: parseFloat(getComputedStyle(document.body).getPropertyValue('--rail-width')), side, view, composer };
+      })() }; document.querySelector('[data-dk-collapse]')?.click()`);
+      await new Promise((r) => setTimeout(r, 650));
+      await page.eval(`window.__collapseGeom.collapsed = (() => {
+        const view = document.querySelector('#view.dk-view')?.getBoundingClientRect();
+        const composer = document.querySelector('.footer-composer')?.getBoundingClientRect();
+        const side = document.querySelector('.dk-side'); const expand = document.querySelector('#dk-expand');
+        return { token: parseFloat(getComputedStyle(document.body).getPropertyValue('--rail-width')), view, composer,
+          sideDisplay: side && getComputedStyle(side).display, expandDisplay: expand && getComputedStyle(expand).display,
+          persisted: localStorage.getItem('aios.rail.collapsed') };
+      })(); document.querySelector('#dk-expand')?.click()`);
+      await new Promise((r) => setTimeout(r, 650));
+      await page.eval(`window.__collapseGeom.restored = (() => { const view = document.querySelector('#view.dk-view')?.getBoundingClientRect(); return { token: parseFloat(getComputedStyle(document.body).getPropertyValue('--rail-width')), view, persisted: localStorage.getItem('aios.rail.collapsed') }; })();
+        document.dispatchEvent(new KeyboardEvent('keydown', { code:'Backslash', key:'\\\\', metaKey:true, bubbles:true }))`);
+      await new Promise((r) => setTimeout(r, 650));
+      await page.eval(`window.__collapseGeom.shortcut = (() => { const view = document.querySelector('#view.dk-view')?.getBoundingClientRect(); return { collapsed: document.body.classList.contains('dk-collapsed'), token: parseFloat(getComputedStyle(document.body).getPropertyValue('--rail-width')), view, persisted: localStorage.getItem('aios.rail.collapsed') }; })(); document.querySelector('#dk-expand')?.click()`);
     },
     probes: [
-      ["docked by default on entry (R2 T1)", "window.__termW1 < innerWidth - 700"],
-      ["mini rail column present", "!document.querySelector('[data-rail-mini]')?.hidden"],
-      ["pin button removed (R2 T2)", "!document.querySelector('#rail-pin')"],
-      ["collapse returns space to the terminal (docked 280 → mini 56)", "window.__termW2 > window.__termW1 + 100"],
-      ["peek overlays with ZERO terminal reflow", "Math.abs(window.__termW3 - window.__termW2) < 2"],
-      ["peek shows the full rail list", "!!document.querySelector('.session-rail.peek .rail-list')"],
-      ["xterm still renders rows", "document.querySelectorAll('#term .xterm-rows > div').length > 10"],
+      ["expanded view begins at the shared rail width", "Math.abs(window.__collapseGeom.expanded.view.left - window.__collapseGeom.expanded.token) < 2"],
+      ["collapsed token is zero and sidebar is hidden", "window.__collapseGeom.collapsed.token === 0 && window.__collapseGeom.collapsed.sideDisplay === 'none'"],
+      ["collapsed #view reaches the viewport left edge", "Math.abs(window.__collapseGeom.collapsed.view.left) < 2"],
+      ["collapse returns approximately the rail width to #view", "Math.abs((window.__collapseGeom.collapsed.view.width - window.__collapseGeom.expanded.view.width) - window.__collapseGeom.expanded.token) < 3"],
+      ["composer reaches the collapsed view with only its intentional inset", "window.__collapseGeom.collapsed.composer.left - window.__collapseGeom.collapsed.view.left >= 0 && window.__collapseGeom.collapsed.composer.left - window.__collapseGeom.collapsed.view.left <= 12 && window.__collapseGeom.collapsed.composer.right <= innerWidth + 2"],
+      ["restore tab visible and collapsed state persisted", "window.__collapseGeom.collapsed.expandDisplay === 'flex' && window.__collapseGeom.collapsed.persisted === '1'"],
+      ["restore returns expanded geometry + persistence", "Math.abs(window.__collapseGeom.restored.view.left - window.__collapseGeom.restored.token) < 2 && window.__collapseGeom.restored.persisted === '0'"],
+      ["Cmd+Backslash toggles the same zero-width geometry", "window.__collapseGeom.shortcut.collapsed && window.__collapseGeom.shortcut.token === 0 && Math.abs(window.__collapseGeom.shortcut.view.left) < 2 && window.__collapseGeom.shortcut.persisted === '1'"],
       ["zero console errors", '(window.__uiLabErrors||[]).length === 0'],
     ],
   }),
@@ -298,7 +316,7 @@ async function visionGrade(b64, label) {
 }
 
 // ---- run ---------------------------------------------------------------------------------------------
-const { withCard, between } = await discover();
+const { withCard, between, anyLive } = await discover();
 const plan = [];
 if (between) plan.push(['between-tasks-state', between]);
 if (withCard) plan.push(['active-card-state', withCard]);
@@ -311,7 +329,7 @@ plan.push(['records-page', 'global']);
 plan.push(['system-pages-skin', 'global']);
 plan.push(['home-flip', 'global']);
 plan.push(['doctrine-tab', 'global']);
-if (withCard || between) plan.push(['session-mini-rail', withCard || between]);
+if (anyLive) plan.push(['session-sidebar-collapse', anyLive]);
 if (!plan.length) { console.error('no suitable sessions found to probe'); process.exit(1); }
 
 const results = [];

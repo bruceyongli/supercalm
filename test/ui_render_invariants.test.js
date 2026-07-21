@@ -57,12 +57,23 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 
 // ONE unified sidebar width: both shells derive from a single --rail-width token so the dashboard and
 // session rails can't drift to two widths again (operator: "why maintain two sidebars … different width").
+// Collapse must change that ONE token — separate grid/#view overrides desynchronized into the screenshot's
+// hidden sidebar + 280px blank strip (2026-07-20).
 {
   const dcss = read('desktop.css');
-  assert.ok(/--rail-width\s*:/.test(dcss), 'desktop.css defines the shared --rail-width token');
+  assert.ok(/:root\s*\{[^}]*--rail-width:\s*280px/.test(dcss), 'desktop.css defines the expanded shared --rail-width token');
+  assert.ok(/body\.dk-collapsed\s*\{[^}]*--rail-width:\s*0px/.test(dcss), 'collapsed state zeroes the shared token once');
   assert.ok(/\.dk-shell\s*\{[^}]*grid-template-columns:\s*var\(--rail-width\)/.test(dcss), '.dk-shell rail width uses var(--rail-width)');
+  assert.ok(/body\.session-page #view\.dk-view\s*\{[^}]*left:\s*var\(--rail-width\)/.test(dcss), 'fixed session #view offset uses the SAME token');
+  assert.ok(!/body\.dk-collapsed \.dk-shell\s*\{[^}]*grid-template-columns/.test(dcss), 'no separate collapsed grid geometry can drift');
+  assert.ok(!/body\.dk-collapsed\.session-page #view\.dk-view\s*\{[^}]*left/.test(dcss), 'no separate collapsed #view offset can drift');
   const scss = read('styles.css');
   assert.ok(/--session-rail-width:\s*var\(--rail-width/.test(scss), 'the session shell derives its rail width from the shared --rail-width token');
+  assert.ok(/\.session-shell\.embedded\s*\{[^}]*--session-rail-width:\s*0px/.test(scss), 'embedded SPA session still suppresses the second/internal rail');
+
+  const shell = read('shell.js');
+  assert.ok(/const setCollapsed = \(v\)/.test(shell) && /aios\.rail\.collapsed/.test(shell), 'one persisted setCollapsed transition owns the state');
+  assert.ok(/e\.code === 'Backslash'/.test(shell) && /setCollapsed\(!document\.body\.classList\.contains\('dk-collapsed'\)\)/.test(shell), 'Cmd/Ctrl+Backslash reuses setCollapsed');
 }
 
 // Story-view session-switch race: refreshStory() reads the module-level `sid` before AND after an

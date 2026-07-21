@@ -296,8 +296,19 @@ async function load() {
 export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   onData = cb;
   if (activeNav) for (const a of document.querySelectorAll('.dk-nav-item')) a.classList.toggle('active', a.dataset.nav === activeNav);
+  // One persisted transition owns every collapse entry point (button, restore tab, shortcut). CSS turns
+  // this class into --rail-width:0, so every geometry consumer releases the space together.
+  const COLLAPSE_KEY = 'aios.rail.collapsed';
+  const setCollapsed = (v) => { document.body.classList.toggle('dk-collapsed', v); try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
+  try { document.body.classList.toggle('dk-collapsed', localStorage.getItem(COLLAPSE_KEY) === '1'); } catch {}
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); $('#dk-palette')?.hidden ? openPalette() : closePalette(); }
+    // Documented session shortcut: Cmd/Ctrl+\ toggles the same persisted collapse path as the buttons.
+    if (document.body.classList.contains('session-page') && (e.metaKey || e.ctrlKey) && (e.code === 'Backslash' || e.key === '\\')) {
+      e.preventDefault();
+      setCollapsed(!document.body.classList.contains('dk-collapsed'));
+      return;
+    }
     if (e.key === 'Escape') closePalette();
     if ($('#dk-palette') && !$('#dk-palette').hidden) {
       const items = paletteItems($('#dk-palette-q').value);
@@ -318,11 +329,8 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     const a = e.target.closest?.('[data-dk-sess]'); if (!a) return;
     try { prefetchStory(new URL(a.href, location.href).searchParams.get('id')); } catch {}
   });
-  // Sidebar collapse (design: "‹ collapse" in the brand row). Toggles a body class that hides the rail on
-  // both the shared-shell grid and the session grid; a left-edge tab restores it. Persisted per browser.
-  const COLLAPSE_KEY = 'aios.rail.collapsed';
-  const setCollapsed = (v) => { document.body.classList.toggle('dk-collapsed', v); try { localStorage.setItem(COLLAPSE_KEY, v ? '1' : '0'); } catch {} };
-  try { document.body.classList.toggle('dk-collapsed', localStorage.getItem(COLLAPSE_KEY) === '1'); } catch {}
+  // Sidebar collapse (design: "‹ collapse" in the brand row). The body class sets the ONE shared
+  // --rail-width token to zero; a fixed left-edge tab restores it. Persisted per browser.
   for (const c of document.querySelectorAll('[data-dk-collapse]')) c.onclick = () => setCollapsed(true);
   if (!document.getElementById('dk-expand')) {
     const ex = document.createElement('button');
