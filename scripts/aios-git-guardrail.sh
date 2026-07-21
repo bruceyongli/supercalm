@@ -30,6 +30,34 @@ fi
 [ -z "$reason" ] && m 'git +gc +.*--prune=now'                      && reason="gc --prune=now"
 [ -z "$reason" ] && m 'rm +-[rfRF]+ +[^ ]*\.git([ /]|$)'            && reason="removing .git"
 
+# --- deploy-source guardrail (opt-in: active only when a release contract was injected at launch) --------
+# Prevents the wrong-tree/wrong-branch deploy class (2026-07-17 OpenHand: a Pages deploy from the main
+# checkout on the old branch served the old UI for 3 days). Best-effort + FAIL-OPEN: scoped to DIRECT deploy
+# tools whose source IS the cwd (wrangler/vercel/netlify — NOT opaque `npm run deploy`), and any ambiguity
+# (explicit dir arg, unresolvable path) -> allow, so a legitimate deploy is never blocked.
+if [ -z "$reason" ] && [ -n "${AIOS_DEPLOY_SOURCE_DIR:-}" ] \
+   && m '(^|[;&| ])(wrangler +(pages +)?deploy|vercel( +(deploy|--prod|-p)|$)|netlify +deploy)([ ]|$)'; then
+  if printf '%s' "$norm" | grep -Eq -- '--(dir|cwd)[ =]|deploy +[^-][^ ]*/'; then
+    : # explicit target dir on the command -> can't judge the source safely -> allow (fail-open)
+  else
+    cdd="$(printf '%s' "$norm" | sed -nE 's/^[[:space:]]*cd[[:space:]]+([^ ;&|]+).*/\1/p')"
+    eff="${cdd:-$(pwd)}"
+    effr="$(cd "$eff" 2>/dev/null && pwd -P || true)"
+    srcr="$(cd "$AIOS_DEPLOY_SOURCE_DIR" 2>/dev/null && pwd -P || true)"
+    if [ -n "$effr" ] && [ -n "$srcr" ]; then
+      case "$effr/" in
+        "$srcr/"*) : ;; # deploying from the declared product tree (or a subdir) -> OK
+        *) reason="deploy from '$effr', but this project deploys ONLY from '$srcr' (Supercalm release contract). cd into the product tree first, or fix the contract in Projects." ;;
+      esac
+    fi
+    if [ -z "$reason" ] && [ -n "${AIOS_DEPLOY_BRANCH:-}" ] && [ -n "$effr" ]; then
+      br="$(git -C "$effr" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+      [ -n "$br" ] && [ "$br" != "$AIOS_DEPLOY_BRANCH" ] \
+        && reason="deploy while on branch '$br', but this project deploys ONLY from '$AIOS_DEPLOY_BRANCH' (Supercalm release contract). Switch branches first."
+    fi
+  fi
+fi
+
 if [ -n "$reason" ]; then
   msg="Supercalm guardrail blocked: $reason. This is irreversible — use a safer alternative, or ask the operator to disable Supercalm git guardrails."
   jq -nc --arg r "$msg" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null \

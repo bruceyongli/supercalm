@@ -35,6 +35,7 @@ import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, codexRolloutFiles } from './codex_rollouts.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
+import { deployContract } from './release_monitor.js';
 import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
@@ -481,7 +482,14 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // canonical main checkout). A speed-bump, not a sandbox: the agent could `cd ~/aios && unset` it — real
   // enforcement needs separate unix users/containers (out of scope). Integration is an operator-gated action.
   const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
-  const line = `export PATH="${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
+  // Deploy-source contract (release_targets, set in the Projects UI): injected so the git-guardrail hook can
+  // block a DIRECT deploy from the wrong tree/branch (the wrong-tree-deploy class). Inert unless the project
+  // declared a contract AND the hook is installed (claudeHooks + gitGuardrails). Rebuilt on resume too.
+  const contract = deployContract(project?.id);
+  const deployEnv = contract
+    ? (contract.source_dir ? `AIOS_DEPLOY_SOURCE_DIR=${shquote(contract.source_dir)} ` : '') + (contract.source_branch ? `AIOS_DEPLOY_BRANCH=${shquote(contract.source_branch)} ` : '')
+    : '';
+  const line = `export PATH="${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}${deployEnv}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
   // NEVER type the full launch line into the pane: a long task pushes it past the kernel's
   // canonical-mode line limit (MAX_CANON = 1024 on macOS) — the freshly-spawned shell hasn't
   // entered raw mode yet, so everything beyond 1KB is silently dropped and the truncated,

@@ -24,6 +24,8 @@ const PROJECTS_CSS = `
     .pj-rel input { background: #0d1219; border: 1px solid #22303f; border-radius: 6px; color: #c9d4e0; padding: 3px 7px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
     .pj-rel .pj-rel-url { flex: 1; min-width: 150px; }
     .pj-rel .pj-rel-exp { width: 180px; }
+    .pj-rel .pj-rel-src { width: 200px; }
+    .pj-rel .pj-rel-br { width: 96px; }
     .pj-rel-status { font-weight: 600; color: #5c6675; }
     .pj-rel-btn { background: #16202c; border: 1px solid #2a3a4c; border-radius: 6px; color: #9fb0c0; padding: 3px 9px; cursor: pointer; font-size: 11px; }
     .pj-rel-btn:hover { border-color: #2fd6be; color: #d7e2ee; }
@@ -66,6 +68,8 @@ async function load() {
           <input class="pj-rel-url" data-rel-url="${esc(p.project_id)}" placeholder="live URL to verify" spellcheck="false" autocomplete="off">
           <input class="pj-rel-exp" data-rel-exp="${esc(p.project_id)}" placeholder="expected marker (build id / component / version)" spellcheck="false" autocomplete="off">
           <button class="pj-rel-btn" data-rel-check="${esc(p.project_id)}">check now</button>
+          <input class="pj-rel-src" data-rel-src="${esc(p.project_id)}" placeholder="deploy ONLY from dir (guardrail)" title="If set, Supercalm's guardrail blocks a direct deploy (wrangler/vercel/netlify) run from outside this tree — the wrong-tree-deploy guard. Requires the git-guardrail hook." spellcheck="false" autocomplete="off">
+          <input class="pj-rel-br" data-rel-br="${esc(p.project_id)}" placeholder="…on branch" title="Optional: block a deploy unless the tree is on this branch." spellcheck="false" autocomplete="off">
         </div>
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
@@ -134,12 +138,11 @@ async function load() {
     el.title = t?.last_checked ? `checked ${fmtAgo(t.last_checked)} ago` : '';
   };
   const saveRel = (pid) => {
-    const url = document.querySelector(`[data-rel-url="${pid}"]`)?.value.trim() || '';
-    const expect = document.querySelector(`[data-rel-exp="${pid}"]`)?.value || '';
-    return api(`api/project/${pid}/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ live_url: url, expect }) });
+    const g = (k) => document.querySelector(`[data-rel-${k}="${pid}"]`)?.value ?? '';
+    return api(`api/project/${pid}/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ live_url: g('url').trim(), expect: g('exp'), source_dir: g('src').trim(), source_branch: g('br').trim() }) });
   };
-  for (const i of document.querySelectorAll('[data-rel-url],[data-rel-exp]')) i.onchange = async () => {
-    const pid = i.dataset.relUrl || i.dataset.relExp;
+  for (const i of document.querySelectorAll('[data-rel-url],[data-rel-exp],[data-rel-src],[data-rel-br]')) i.onchange = async () => {
+    const pid = i.dataset.relUrl || i.dataset.relExp || i.dataset.relSrc || i.dataset.relBr;
     try { const r = await saveRel(pid); relStatus(pid, r?.target); } catch (e) { const el = document.querySelector(`[data-rel-status="${pid}"]`); if (el) { el.style.color = '#e5484d'; el.textContent = '✕ ' + String(e.message || 'save failed').slice(0, 40); } }
   };
   for (const b of document.querySelectorAll('[data-rel-check]')) b.onclick = async () => {
@@ -154,6 +157,8 @@ async function load() {
       const t = r?.target; if (!t) return;
       const u = document.querySelector(`[data-rel-url="${p.project_id}"]`); if (u && t.live_url) u.value = t.live_url;
       const ex = document.querySelector(`[data-rel-exp="${p.project_id}"]`); if (ex && t.expect) ex.value = t.expect;
+      const sr = document.querySelector(`[data-rel-src="${p.project_id}"]`); if (sr && t.source_dir) sr.value = t.source_dir;
+      const br = document.querySelector(`[data-rel-br="${p.project_id}"]`); if (br && t.source_branch) br.value = t.source_branch;
       relStatus(p.project_id, t);
     }).catch(() => {});
   }
