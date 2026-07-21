@@ -1,5 +1,11 @@
 # General deploy/release safety — for ANY project AIOS supervises
 
+> **STATUS: shipped v0.3.208–210.** Slice 1 monitor (v0.3.208), Slice 3 config-sanity + isolation
+> surfacing (v0.3.209), Slice 2 deploy-source guardrail (v0.3.210). All verified (monitor: ok/stale/down +
+> alert/recovery; guardrail: 10 unit cases; config: deployable gate + isolation_gap live). Kill-switches:
+> `AIOS_RELEASE_MONITOR=0`, guardrail via `gitGuardrails` flag.
+
+
 ## Why
 AIOS supervises coding agents that deploy **their own** projects (Cloudflare Pages/Workers, Vercel, npm,
 docker, `bin/deploy`, …). AIOS's autonomous pipeline is AIOS-self-only and always will be (a universal
