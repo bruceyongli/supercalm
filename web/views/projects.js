@@ -20,6 +20,13 @@ const PROJECTS_CSS = `
     .pj-iso input { accent-color: #2fd6be; margin: 0; }
     .pj-iso-hint { color: #5c6675; }
     .pj-pub input { accent-color: #e2b23e; }
+    .pj-rel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; font-size: 11.5px; }
+    .pj-rel input { background: #0d1219; border: 1px solid #22303f; border-radius: 6px; color: #c9d4e0; padding: 3px 7px; font-size: 11px; font-family: 'JetBrains Mono', monospace; }
+    .pj-rel .pj-rel-url { flex: 1; min-width: 150px; }
+    .pj-rel .pj-rel-exp { width: 180px; }
+    .pj-rel-status { font-weight: 600; color: #5c6675; }
+    .pj-rel-btn { background: #16202c; border: 1px solid #2a3a4c; border-radius: 6px; color: #9fb0c0; padding: 3px 9px; cursor: pointer; font-size: 11px; }
+    .pj-rel-btn:hover { border-color: #2fd6be; color: #d7e2ee; }
 `;
 
 let host = null;
@@ -52,6 +59,12 @@ async function load() {
           <input type="checkbox" data-pj-pub="${esc(p.project_id)}"> autonomous deploy
           <span class="pj-iso-hint">— approved work self-deploys</span>
         </label>
+        <div class="pj-rel" data-pj-rel="${esc(p.project_id)}" title="Release check: AIOS periodically fetches this live URL and verifies the marker is present, alerting you if the live product goes stale/wrong after a deploy (the '3-days-serving-the-old-UI' class). Prefer the DIRECT deployment URL over a CDN-cached custom domain.">
+          <span class="pj-rel-status" data-rel-status="${esc(p.project_id)}">○ release check</span>
+          <input class="pj-rel-url" data-rel-url="${esc(p.project_id)}" placeholder="live URL to verify" spellcheck="false" autocomplete="off">
+          <input class="pj-rel-exp" data-rel-exp="${esc(p.project_id)}" placeholder="expected marker (build id / component / version)" spellcheck="false" autocomplete="off">
+          <button class="pj-rel-btn" data-rel-check="${esc(p.project_id)}">check now</button>
+        </div>
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
       <button class="dk-new sm" data-pj-launch="${esc(p.project_id)}">+ session</button>
@@ -91,6 +104,41 @@ async function load() {
       const pub = document.querySelector(`[data-pj-pub="${p.project_id}"]`);
       if (iso) iso.checked = !!(r?.helpers?.isolation);
       if (pub) pub.checked = !!(r?.helpers?.auto_publish);
+    }).catch(() => {});
+  }
+  // Release-check config: reflect status, save on change, check-now button, load state after paint.
+  const relStatus = (pid, t) => {
+    const el = document.querySelector(`[data-rel-status="${pid}"]`);
+    if (!el) return;
+    const s = t?.last_status && t?.live_url ? t.last_status : (t?.live_url ? 'unknown' : 'off');
+    const map = { ok: ['#2fd6be', '● current'], stale: ['#e2b23e', '⚠ stale/wrong'], down: ['#e5484d', '✕ unreachable'], unknown: ['#8a95a5', '○ not checked yet'], off: ['#5c6675', '○ release check'] };
+    const [c, label] = map[s] || map.off;
+    el.style.color = c;
+    el.textContent = label + (t?.last_detail && (s === 'stale' || s === 'down') ? ` — ${String(t.last_detail).slice(0, 60)}` : '');
+    el.title = t?.last_checked ? `checked ${fmtAgo(t.last_checked)} ago` : '';
+  };
+  const saveRel = (pid) => {
+    const url = document.querySelector(`[data-rel-url="${pid}"]`)?.value.trim() || '';
+    const expect = document.querySelector(`[data-rel-exp="${pid}"]`)?.value || '';
+    return api(`api/project/${pid}/release`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ live_url: url, expect }) });
+  };
+  for (const i of document.querySelectorAll('[data-rel-url],[data-rel-exp]')) i.onchange = async () => {
+    const pid = i.dataset.relUrl || i.dataset.relExp;
+    try { const r = await saveRel(pid); relStatus(pid, r?.target); } catch (e) { const el = document.querySelector(`[data-rel-status="${pid}"]`); if (el) { el.style.color = '#e5484d'; el.textContent = '✕ ' + String(e.message || 'save failed').slice(0, 40); } }
+  };
+  for (const b of document.querySelectorAll('[data-rel-check]')) b.onclick = async () => {
+    const pid = b.dataset.relCheck, prev = b.textContent;
+    b.textContent = 'checking…'; b.disabled = true;
+    try { await saveRel(pid); const r = await api(`api/project/${pid}/release/check`, { method: 'POST' }); relStatus(pid, r?.target); }
+    catch (e) { const el = document.querySelector(`[data-rel-status="${pid}"]`); if (el) { el.style.color = '#e5484d'; el.textContent = '✕ ' + String(e.message || 'check failed').slice(0, 40); } }
+    finally { b.textContent = prev; b.disabled = false; }
+  };
+  for (const p of health.graphs || []) {
+    api(`api/project/${p.project_id}/release`).then((r) => {
+      const t = r?.target; if (!t) return;
+      const u = document.querySelector(`[data-rel-url="${p.project_id}"]`); if (u && t.live_url) u.value = t.live_url;
+      const ex = document.querySelector(`[data-rel-exp="${p.project_id}"]`); if (ex && t.expect) ex.value = t.expect;
+      relStatus(p.project_id, t);
     }).catch(() => {});
   }
 }
