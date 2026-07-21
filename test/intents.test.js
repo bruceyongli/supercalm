@@ -61,18 +61,34 @@ for (const name of INTENT_NAMES) {
 
 // ---- named template + passthrough lanes (call-site migration) ----
 {
-  const kw = renderIntent('KEEP_WORKING', { focus: 'Execute Supervisor v4 Phase 1' });
+  const CHECKED = 'git a1b2c3d clean, last commit 42m ago, 2 criteria open';
+  const kw = renderIntent('KEEP_WORKING', { focus: 'Execute Supervisor v4 Phase 1', checked: CHECKED });
   assert.equal(kw.ok, true);
   assert.equal(kw.kind, 'nudge');
   assert.ok(kw.text.startsWith('You stopped mid-task') && kw.text.includes('Phase 1'), 'verbatim template + focus interpolation');
-  assert.equal(renderIntent('KEEP_WORKING', {}).ok, true, 'focus is optional');
+  assert.ok(kw.text.includes(`[checked: ${CHECKED}]`), 'the send CITES the observed reality');
+  assert.equal(renderIntent('KEEP_WORKING', { checked: CHECKED }).ok, true, 'focus is optional');
 
-  const un = renderIntent('UNSTICK_DIRECTION', { text: 'Run the failing test first, then fix the import cycle.' });
+  const un = renderIntent('UNSTICK_DIRECTION', { text: 'Run the failing test first, then fix the import cycle.', checked: CHECKED });
   assert.deepEqual([un.ok, un.kind], [true, 'nudge']);
-  assert.equal(renderIntent('UNSTICK_DIRECTION', { text: 'see /path/to/model' }).ok, false, 'passthrough hygiene holds');
+  assert.ok(un.text.includes('[checked:'), 'unstick cites reality too');
+  assert.equal(renderIntent('UNSTICK_DIRECTION', { text: 'see /path/to/model', checked: CHECKED }).ok, false, 'passthrough hygiene holds');
 
   const rn = renderIntent('RECOVER_NOTE', { text: 'Session resumed after unexpected exit; continue the active task.' });
   assert.deepEqual([rn.ok, rn.kind], [true, 'recover']);
+}
+
+// ---- CHECK-BEFORE-SEND (2026-07-21 incident: "never done the check, just blindly sending") ----
+// A push that cannot cite observed reality is structurally unrenderable — no checked, no send.
+{
+  assert.equal(renderIntent('KEEP_WORKING', { focus: 'anything' }).ok, false, 'blind keep-working refused');
+  assert.equal(renderIntent('KEEP_WORKING', { focus: 'x', checked: '' }).ok, false, 'empty citation refused');
+  assert.equal(renderIntent('KEEP_WORKING', { focus: 'x', checked: 'n/a' }).ok, false, 'token citation refused (min length)');
+  assert.equal(renderIntent('UNSTICK_DIRECTION', { text: 'Try the other branch first.' }).ok, false, 'blind unstick refused');
+  assert.equal(renderIntent('CHALLENGE_TEXT', { text: 'Account for criteria 1-3 before claiming done.' }).ok, false, 'blind challenge refused');
+  const ch = renderIntent('CHALLENGE_TEXT', { text: 'Account for criteria 1-3 before claiming done.', checked: 'git 9f8e7d6 dirty(3), last commit 190m ago, 3 criteria open' });
+  assert.equal(ch.ok, true);
+  assert.ok(ch.text.includes('[checked: git 9f8e7d6'), 'challenge cites reality');
 }
 
 console.log('intents: all assertions passed');

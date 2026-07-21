@@ -30,7 +30,7 @@ const MODEL = process.env.AIOS_LAB_MODEL || process.env.AIOS_SUPERVISOR_DEFAULT_
 const results = [];
 const now = Date.now();
 
-function makeCtx({ sid, session = {}, project = null, state = {}, evidence = {}, betweenTasks = false }) {
+function makeCtx({ sid, session = {}, project = null, state = {}, evidence = {}, betweenTasks = false, probes = null }) {
   let st = { ...state };
   const sends = [];
   const notes = [];
@@ -56,6 +56,10 @@ function makeCtx({ sid, session = {}, project = null, state = {}, evidence = {},
       }
     },
     sendToAgent: async (msg) => { sends.push(msg); return { sent: true, message: msg }; },
+    // ctx-contract parity for check-before-send (2026-07-21): the live ctx serves provenance
+    // envelopes; lab sessions default to a STALE repo (90m since last commit, work open) so push
+    // paths still fire unless a scenario overrides `probes` to model fresh progress.
+    runProbes: async () => probes || [{ type: 'git', result: { ok: true, sha: 'lab0000cafe', branch: 'main', dirty: true, dirtyFiles: 2, lastCommitAt: Date.now() - 90 * 60_000 } }],
     hasCap: () => true, // lab sessions hold every capability (send-input etc.)
     notifyOperator: (title, body) => { notes.push(`${title}: ${body}`); },
     emit: () => {},
@@ -571,6 +575,40 @@ await verifyScenario('21-reflect-injected-defect', {
     if (r3.sent) problems.push('near-identical re-send (digits-only delta) delivered');
     if (!c1.sent || !c2.sent) problems.push('error-recovery retries were suppressed (must stay exempt)');
     results.push({ name, ok: !problems.length, problems, sends: ctx._sends });
+    console.log(`${problems.length ? '✗' : '✓'} ${name}${problems.length ? ' — ' + problems.join('; ') : ''}`);
+  }
+}
+
+// 25. CHECK-BEFORE-SEND (incident 2026-07-21, operator screenshot: a 7:47 AM KEEP_WORKING push
+// re-demanded work that had shipped hours earlier — "never done the check, just blindly sending").
+// The keep-working path must OBSERVE reality before pushing: fresh commits = the "you stopped"
+// premise is false = no send; probe outage = fail-CLOSED (no observation, no push); genuinely
+// stale = push fires AND cites what it checked. Deterministic (no brain call).
+{
+  const name = '25-blind-keepworking-check-before-send';
+  if (includeScenario(name)) {
+    const problems = [];
+    const cfg = baseCfg({ stuck_timeout_sec: 300 });
+    const kwSession = { status: 'waiting', category: 'working', question: '', summary: '' };
+
+    // A: work landed 3 minutes ago — the agent has NOT stopped; pushing is the incident.
+    const fresh = makeCtx({ sid: 's_lab_kw_fresh', session: kwSession, probes: [{ type: 'git', result: { ok: true, sha: 'fresh00beef', branch: 'main', dirty: false, dirtyFiles: 0, lastCommitAt: Date.now() - 3 * 60_000 } }] });
+    await __lab.runKeepWorking(fresh, cfg, SNAPSHOT());
+    if (fresh._sends.length) problems.push(`pushed despite 3m-old commit (${fresh._sends[0]?.slice(0, 80)})`);
+
+    // B: no observation possible — fail-closed, never nudge blind.
+    const blind = makeCtx({ sid: 's_lab_kw_blind', session: kwSession });
+    blind.runProbes = async () => { throw new Error('probe outage'); };
+    await __lab.runKeepWorking(blind, cfg, SNAPSHOT());
+    if (blind._sends.length) problems.push('pushed with NO observation (fail-open)');
+
+    // C: genuinely stale (90m default) — the push fires and CITES the observed reality.
+    const stale = makeCtx({ sid: 's_lab_kw_stale', session: kwSession });
+    await __lab.runKeepWorking(stale, cfg, SNAPSHOT());
+    if (!stale._sends.length) problems.push('stale-repo push suppressed (over-blocking)');
+    else if (!/\[checked: git /.test(stale._sends[0])) problems.push(`push carries no reality citation: ${stale._sends[0]?.slice(0, 100)}`);
+
+    results.push({ name, ok: !problems.length, problems, sends: [...fresh._sends, ...blind._sends, ...stale._sends] });
     console.log(`${problems.length ? '✗' : '✓'} ${name}${problems.length ? ' — ' + problems.join('; ') : ''}`);
   }
 }

@@ -70,16 +70,25 @@ export const INTENTS = {
   // bearing — it pushes back on fake-done drift; keep it intact.
   KEEP_WORKING: {
     kind: 'nudge',
-    params: { focus: (v) => v == null || typeof v === 'string' },
-    render: (p) => `You stopped mid-task but the work is not finished. Resume now — take the next concrete step on the current focus${p.focus && String(p.focus).trim() ? ': ' + clamp(p.focus, 200) : ''}. If that step is genuinely the operator's (an approval, a credential, access), say so explicitly and ask them — do not idle silently. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing.`,
+    params: {
+      focus: (v) => v == null || typeof v === 'string',
+      // CHECK-BEFORE-SEND (2026-07-21, operator: "never done the check, just blindly sending"): the
+      // caller must CITE the reality it verified (git age, open criteria, pane stillness). A nudge
+      // that cannot name unfinished evidence is structurally unrenderable.
+      checked: (v) => typeof v === 'string' && v.trim().length >= 8,
+    },
+    render: (p) => `You stopped mid-task but the work is not finished. Resume now — take the next concrete step on the current focus${p.focus && String(p.focus).trim() ? ': ' + clamp(p.focus, 200) : ''}. If that step is genuinely the operator's (an approval, a credential, access), say so explicitly and ask them — do not idle silently. If the current phase is done, continue into the next unblocked sequenced/future/when-ready phase instead of stopping on the label. Keep going until every acceptance criterion is met with REAL evidence (files, command output, passing tests), not prose; if you hit a genuine blocker, state it specifically instead of pausing. [checked: ${clamp(p.checked, 160)}]`,
   },
   // LLM-authored content lanes (like ANSWER_QUESTION): declared passthroughs with hygiene screens —
   // the unstick brain's specific direction, and recovery context notes. Both remain kernel-scanned,
   // dedupe/rate/breaker-bounded, and lease-carrying (unstick) per dispatch rules.
   UNSTICK_DIRECTION: {
     kind: 'nudge',
-    params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
-    render: (p) => clamp(p.text, 600),
+    params: {
+      text: (v) => typeof v === 'string' && v.trim().length >= 3,
+      checked: (v) => typeof v === 'string' && v.trim().length >= 8, // check-before-send (see KEEP_WORKING)
+    },
+    render: (p) => `${clamp(p.text, 600)} [checked: ${clamp(p.checked, 160)}]`,
   },
   RECOVER_NOTE: {
     kind: 'recover',
@@ -91,8 +100,11 @@ export const INTENTS = {
   // Phase-2 claim budgets. Hygiene-screened + clamped; the kernel's dedupe/budget bounds re-challenges.
   CHALLENGE_TEXT: {
     kind: 'challenge',
-    params: { text: (v) => typeof v === 'string' && v.trim().length >= 3 },
-    render: (p) => clamp(p.text, 900),
+    params: {
+      text: (v) => typeof v === 'string' && v.trim().length >= 3,
+      checked: (v) => typeof v === 'string' && v.trim().length >= 8, // check-before-send (see KEEP_WORKING)
+    },
+    render: (p) => `${clamp(p.text, 900)} [checked: ${clamp(p.checked, 160)}]`,
   },
   // Council decision handoff (code-authored shape; the body is the council's captured outcome doc).
   COUNCIL_OUTCOME: {

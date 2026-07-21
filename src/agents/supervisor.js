@@ -1125,7 +1125,7 @@ async function runUnstick(ctx, cfg, ev, stuckMs, snapshot = null) {
     snapshot,
     ruleId: 'unstick.send',
     actionType: 'nudge',
-    intent: { name: 'UNSTICK_DIRECTION', params: { text: message } },
+    intent: { name: 'UNSTICK_DIRECTION', params: { text: message, checked: (await realityCheck(ctx))?.checked || '' } },
     sendOptions: { guarded: false },
     allowedSend: gate.allowed,
     suppressionReason: gate.reason,
@@ -1845,6 +1845,29 @@ function snapshotProbe(ctx, st) {
   } catch { return null; }
 }
 
+
+// CHECK-BEFORE-SEND (2026-07-21, operator: "never done the check, just blindly sending"): every
+// push (keep-working / unstick / challenge) must OBSERVE reality first and cite it in the send.
+// Returns { checked, freshMs } or null when nothing could be observed — callers treat null as
+// fail-CLOSED (no citation, no push; the intents refuse to render without one). freshMs = time
+// since the last commit; a push premised on "you stopped" is FALSE when work landed recently.
+async function realityCheck(ctx) {
+  try {
+    const probes = await ctx.runProbes({});
+    const g = probes.find((p) => p.type === 'git')?.result;
+    if (!g || !g.ok) return null;
+    const ageMs = g.lastCommitAt ? Date.now() - g.lastCommitAt : null;
+    const card = ctx.__activeCard;
+    const open = card?.criteria ? card.criteria.filter((c) => !c.satisfied_at).length : null;
+    const parts = [
+      `git ${String(g.sha || '').slice(0, 7)} ${g.dirty ? `dirty(${g.dirtyFiles})` : 'clean'}`,
+      ageMs != null ? `last commit ${Math.round(ageMs / 60000)}m ago` : 'no commit age',
+      open != null ? `${open} criteria open` : null,
+    ].filter(Boolean);
+    return { checked: parts.join(', '), freshMs: ageMs };
+  } catch { return null; }
+}
+
 export async function onTick(ctx) {
   const s = ctx.session();
   const cfg = ctx.getConfig();
@@ -2389,7 +2412,7 @@ export async function onTick(ctx) {
         snapshot,
         ruleId: 'verify.corrective_gap',
         actionType: 'challenge',
-        intent: { name: 'CHALLENGE_TEXT', params: { text: gap } },
+        intent: { name: 'CHALLENGE_TEXT', params: { text: gap, checked: (await realityCheck(ctx))?.checked || '' } },
         sendOptions: { guarded: true, blockDecision: false },
         allowedSend: gate.allowed,
         suppressionReason: gate.reason,
@@ -2448,7 +2471,7 @@ export async function onTick(ctx) {
           snapshot,
           ruleId: 'checkpoint.corrective_push',
           actionType: 'challenge',
-          intent: { name: 'CHALLENGE_TEXT', params: { text: checkpointGap } },
+          intent: { name: 'CHALLENGE_TEXT', params: { text: checkpointGap, checked: (await realityCheck(ctx))?.checked || '' } },
           sendOptions: { guarded: false, blockDecision: false },
           allowedSend: allowed,
           suppressionReason: allowed ? '' : blockedReason(ctx, cfg, 'nudge'),
@@ -2529,7 +2552,7 @@ async function runGateChallenge(ctx, cfg, snapshot = null) {
     snapshot,
     ruleId: 'completion.challenge',
     actionType: 'challenge',
-    intent: { name: 'CHALLENGE_TEXT', params: { text: msg } },
+    intent: { name: 'CHALLENGE_TEXT', params: { text: msg, checked: (await realityCheck(ctx))?.checked || '' } },
     sendOptions: { guarded: true, blockDecision: false },
     allowedSend: allowed,
     suppressionReason: allowed ? '' : blockedReason(ctx, cfg, 'challenge'),
@@ -2594,6 +2617,14 @@ function buildCodexContextHandoff(ctx, cfg, ev = {}) {
 // reliable; the "real evidence, not prose" framing also pushes back on agents that drift toward fake-done.
 async function runKeepWorking(ctx, cfg, snapshot = null) {
   const focus = focusLine(cfg.doc);
+  // Reality first: no observation -> no push (fail-closed); fresh commits -> the "you stopped"
+  // premise is FALSE -> stand down this tick instead of nagging a working agent.
+  const reality = await realityCheck(ctx);
+  if (!reality) { logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: null, verdict: 'held', assessment: 'Keep-working push withheld: reality check unavailable (no git observation) — refusing to nudge blind.', message: '', sent: 0 }); return false; }
+  if (reality.freshMs != null && reality.freshMs < Math.max(60_000, Number(cfg.stuck_timeout_sec || 300) * 1000)) {
+    logIntervention(ctx, { kind: 'keepworking', trigger: 'idle', model: null, verdict: 'held', assessment: `Keep-working push withheld: work landed ${Math.round(reality.freshMs / 60000)}m ago (${reality.checked}) — the agent has not stopped.`, message: '', sent: 0 });
+    return false;
+  }
   let sent = 0;
   let sent_text = '';
   const allowed = canSend(ctx, cfg, 'nudge');
@@ -2601,7 +2632,7 @@ async function runKeepWorking(ctx, cfg, snapshot = null) {
     snapshot,
     ruleId: 'idle.keepworking',
     actionType: 'nudge',
-    intent: { name: 'KEEP_WORKING', params: { focus } },
+    intent: { name: 'KEEP_WORKING', params: { focus, checked: reality?.checked || '' } },
     sendOptions: { guarded: true, blockDecision: false },
     allowedSend: allowed,
     suppressionReason: allowed ? '' : blockedReason(ctx, cfg, 'nudge'),
@@ -3001,4 +3032,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, maybeRecoverApiError, checkThrash, onTick, latestOperatorIntent };
+export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, runKeepWorking, maybeRecoverApiError, checkThrash, onTick, latestOperatorIntent };
