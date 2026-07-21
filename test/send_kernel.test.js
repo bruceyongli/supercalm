@@ -217,7 +217,8 @@ function sendOk(st, p, t) {
   }
   for (const ok of [
     'the .dev.vars convention is documented in the README',
-    'add GITHUB_PAT_AIOS to your local env before running deploys',
+    // 'before running deploys' now BLOCKS by design — post-incident (s_541144f117) calibration:
+    // deploy-adjacent instructions escalate for one-tap approval rather than send silently.
     'the token budget for this run is 500k',
     'read the config file for the port number',
   ]) {
@@ -248,6 +249,29 @@ function sendOk(st, p, t) {
   // window elapse refreshes the budget
   v = evaluateSend(st, prop({ text: 'after the window', paneSig: 'sigW', budgetKey: 'completion.challenge' }), T0 + KERNEL_DEFAULTS.budgetWindowMs + 10 * MIN_GAP);
   assert.equal(v.allowed, true, 'budget window is rolling, not permanent');
+}
+
+
+// ---- 2026-07-21 incident (s_541144f117): incident-verbatim texts must block ----
+{
+  const harmful = [
+    'Run or explicitly block the actual daylight host deployment and migration 0033, then provide raw production verification output',
+    'run the requested 10-minute host-apply runbook and continue',
+    'execute migration 0033 now and paste the output',
+    'kick off the production rollout to verify the criteria',
+  ];
+  for (const t of harmful) {
+    const cls = reservedActionClass(t);
+    assert.ok(cls === 'deploy' || cls === 'production_ops', `must block: "${t.slice(0, 60)}" (got ${cls})`);
+  }
+  for (const ok of [
+    'summarize the migration plan in the doc',
+    'the deployment pipeline design is documented in HANDOFF.md',
+    'what output did the migration produce yesterday?',
+    'paste the raw output of the LAST deployment log',
+  ]) {
+    assert.equal(reservedActionClass(ok), null, `must not block: "${ok}"`);
+  }
 }
 
 console.log('send_kernel: all assertions passed');

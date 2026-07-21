@@ -76,9 +76,14 @@ function normText(s) {
 //                    this covers the SUPERVISOR telling the agent to do it
 // ---------------------------------------------------------------------------
 const RESERVED_RX = {
-  deploy: /\b(deploy|redeploy|re-deploy)\b(?![^.!?\n]{0,40}\b(?:plan|doc|breaker|pipeline|api|key)\b)|\bbin\/deploy\b|\bship\s+it\b|\bpush\s+(?:it\s+)?to\s+(?:prod|production|main|origin)\b/i,
+  deploy: /\b(deploy(?:ment|s)?|redeploy(?:ment)?|re-deploy)\b(?![^.!?\n]{0,40}\b(?:plan|doc|breaker|pipeline|api|key|log|logs|output|history|record|status)\b)|\bbin\/deploy\b|\bship\s+it\b|\bpush\s+(?:it\s+)?to\s+(?:prod|production|main|origin)\b/i,
   credentials: /\b(?:use|enter|type|paste|input|login\s+with|log\s*in\s+with)\b[^.!?\n]{0,50}\b(?:password|passcode|credential|secret|api[-_ ]?key|token)\b|\b(?:password|passcode|credential)\b[^.!?\n]{0,50}\b(?:use|enter|type|paste|input)\b|\blog\s*in\s+as\s+\w+|\b(?:cat|read|open|inspect|grep|check)\b[^.!?\n]{0,60}(?:\.dev\.vars|\bsecrets?\s+file|\bcredential\s+(?:file|store)|\.env\b)|\b(?:switch|swap|rotate|replace|apply)\b[^.!?\n]{0,40}\b(?:token|api[-_ ]?key|credential)\b|\.dev\.vars\b[^.!?\n]{0,60}\b(?:token|key|credential|auth|route)\b|登录.{0,20}密码|密码.{0,20}登录/i,
   survey: /\b(?:answer|select|choose|press|pick)\b[^.!?\n]{0,40}\b(?:survey|rating|feedback\s+form)\b|\b(?:survey|rating\s+prompt)\b[^.!?\n]{0,40}\b(?:answer|select|choose|press|pick)\b/i,
+  // 2026-07-21 incident (s_541144f117): the completion gate DIRECTED "run the daylight host deployment
+  // and migration 0033" / "run the host-apply runbook" — production operations commanded to
+  // manufacture sign-off evidence, and the agent complied. Challenges may ask what HAPPENED; they may
+  // never command state-changing production work. Verb+target pairing keeps discussion/plans sendable.
+  production_ops: /\b(?:run|execute|apply|perform|start|kick\s*off|trigger)\b[^.!?\n]{0,60}\b(?:migration\s*\d*|host[- ]apply|runbook|rollout|cut[- ]?over|production\s+(?:change|update|push))\b|\b(?:migration\s*\d+)\b[^.!?\n]{0,40}\b(?:run|execute|apply|now)\b/i,
   git_destructive: /\bpush\b[^.!?\n]{0,30}--force\b(?!-with-lease)|--force\b[^.!?\n]{0,20}\bpush\b|\breset\s+--hard\b|\bclean\s+-[a-z]*f[a-z]*\b|\bbranch\s+-D\b|\brm\s+-rf\s+[^ ]*\.git\b/i,
 };
 
