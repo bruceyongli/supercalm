@@ -55,6 +55,12 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const dash = read('web/views/dashboard.js');
   assert.match(dash, /function reconcile\(/, 'dashboard has keyed reconciliation');
   assert.match(dash, /data-dk-row data-sid=/, 'session rows have stable session keys');
+  const records = read('web/views/records.js');
+  assert.match(records, /let viewGeneration = 0/, 'Records view versions its asynchronous mounts');
+  assert.match(records, /if \(!host \|\| token !== viewGeneration\) return/,
+    'Records fetch continuations stop after teardown or remount');
+  assert.match(records, /viewGeneration\+\+;\s*\n\s*host = null;/,
+    'Records teardown invalidates every in-flight continuation before dropping its host');
 }
 
 // Observability excludes persistent SSE lifetimes from ordinary request latency.

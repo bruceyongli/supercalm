@@ -1,7 +1,8 @@
 // SPA records view. Mounts into #view; rich filter card (project/session/tool/model/source/direction +
 // dates + text) + record cards from /api/records. Faithful port of the standalone records.js — the
 // module-top filter wiring + initial load are moved into init() so DOM lookups resolve against the
-// freshly-rendered markup; the search-debounce timeout is captured and cleared in teardown().
+// freshly-rendered markup; async work is generation-gated and the search-debounce timeout is captured
+// and cleared in teardown(), so a fast route change cannot resume into a removed filter form.
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml as esc, fmtAgo } from '../common.js';
 
@@ -25,11 +26,13 @@ const RECORDS_CSS = `
 let host = null;
 let offset = 0, lastQuery = '';
 let searchTimer = null;
-const $ = (s) => document.querySelector(s);
+let viewGeneration = 0;
+const $ = (s) => host?.querySelector(s);
 const localToMs = (v) => (v ? new Date(v).getTime() : 0);
 const SELECTS = ['rc-project', 'rc-session', 'rc-tool', 'rc-model', 'rc-source', 'rc-dir'];
 
 function queryString() {
+  if (!host || !$('#rc-project')) return null;
   const p = new URLSearchParams();
   const set = (k, v) => { if (v) p.set(k, v); };
   set('project', $('#rc-project').value);
@@ -46,11 +49,13 @@ function queryString() {
   return p.toString();
 }
 
-async function load(append = false) {
+async function load(append = false, token = viewGeneration) {
   const qs = queryString();
+  if (qs == null) return;
   lastQuery = qs;
   let r = { records: [] };
   try { r = await api('api/records?' + qs); } catch {}
+  if (!host || token !== viewGeneration) return;
   const cards = (r.records || []).map((x) => `
     <div class="rc-card" data-rc-card>
       <div class="rc-top">
@@ -67,13 +72,24 @@ async function load(append = false) {
   if (!list) return;
   if (append) list.insertAdjacentHTML('beforeend', cards);
   else list.innerHTML = cards || '<div class="dk-allclear">No records match.</div>';
-  $('#rc-more').style.display = (r.records || []).length === 40 ? '' : 'none';
+  const more = $('#rc-more');
+  if (more) more.style.display = (r.records || []).length === 40 ? '' : 'none';
 }
 
-async function populate() {
+async function populate(token) {
   try {
     const st = await api('api/state');
-    const fill = (sel, items) => { const el = $(sel); for (const it of items) { const o = document.createElement('option'); o.value = it.value; o.textContent = it.label; el.appendChild(o); } };
+    if (!host || token !== viewGeneration) return;
+    const fill = (sel, items) => {
+      const el = $(sel);
+      if (!el) return;
+      for (const it of items) {
+        const o = document.createElement('option');
+        o.value = it.value;
+        o.textContent = it.label;
+        el.appendChild(o);
+      }
+    };
     fill('#rc-project', (st.projects || []).map((p) => ({ value: p.id, label: p.name })));
     fill('#rc-session', (st.sessions || []).map((s) => ({ value: s.id, label: `${s.project ? s.project.name : 'adhoc'} · ${s.tool} · ${s.id.slice(0, 8)}` })));
     fill('#rc-tool', [...new Set((st.sessions || []).map((s) => s.tool))].filter(Boolean).map((t) => ({ value: t, label: t })));
@@ -84,6 +100,7 @@ async function populate() {
 
 export function init(el) {
   host = el;
+  const token = ++viewGeneration;
   offset = 0; lastQuery = '';
   if (!document.getElementById('view-records-css')) {
     const st = document.createElement('style');
@@ -115,16 +132,20 @@ export function init(el) {
       <div class="rc-more"><button class="dk-reply-btn" id="rc-more">Load more</button></div>
     </div>`;
 
-  for (const id of [...SELECTS, 'rc-since', 'rc-until']) $('#' + id).onchange = () => { offset = 0; load(); };
-  $('#rc-q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset = 0; load(); }, 350); };
-  $('#rc-clear').onclick = () => { for (const id of [...SELECTS, 'rc-since', 'rc-until', 'rc-q']) $('#' + id).value = ''; offset = 0; load(); };
-  $('#rc-more').onclick = () => { offset += 40; load(true); };
+  for (const id of [...SELECTS, 'rc-since', 'rc-until']) $('#' + id).onchange = () => { offset = 0; load(false, token); };
+  $('#rc-q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset = 0; load(false, token); }, 350); };
+  $('#rc-clear').onclick = () => { for (const id of [...SELECTS, 'rc-since', 'rc-until', 'rc-q']) $('#' + id).value = ''; offset = 0; load(false, token); };
+  $('#rc-more').onclick = () => { offset += 40; load(true, token); };
   $('#rc-export').onclick = () => { location.href = 'api/records?' + lastQuery.replace(/limit=40/, 'limit=2000'); };
-  (async () => { await populate(); load(); })();
+  (async () => {
+    await populate(token);
+    if (host && token === viewGeneration) await load(false, token);
+  })().catch(() => {});
 }
 
 export function teardown() {
   clearTimeout(searchTimer);
   searchTimer = null;
+  viewGeneration++;
   host = null;
 }

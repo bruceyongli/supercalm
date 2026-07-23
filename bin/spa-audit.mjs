@@ -45,7 +45,7 @@ try {
 
   const audit = `(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const rep = { steps: [], stopped: {}, actions: [] };
+    const rep = { steps: [], stopped: {}, actions: [], churn: {} };
     window.__spaSentinel = 'SENT_' + Math.floor(performance.now());
     const side = document.querySelector('.dk-side');
     if (side) side.dataset.persistId = 'PID_' + Math.floor(performance.now());
@@ -67,6 +67,28 @@ try {
       const sideNow = document.querySelector('.dk-side');
       rep.steps.push({ nav, path: location.pathname, viewSwapped: view.firstElementChild !== before, sideSameNode: sideNow === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length });
     }
+    // Now hammer the asynchronous Records initializer specifically: 20ms is deliberately shorter than
+    // its state/records requests, so every pass tears it down with work in flight. The slower tour above
+    // proves each screen renders; this loop proves late continuations respect teardown.
+    const recordsNav = document.querySelector('.dk-nav-item[data-nav="records"]');
+    const usageNav = document.querySelector('.dk-nav-item[data-nav="usage"]');
+    let churnIterations = 0;
+    if (recordsNav && usageNav) {
+      for (let n = 0; n < 6; n++) {
+        recordsNav.click();
+        await sleep(20);
+        usageNav.click();
+        await sleep(180);
+        churnIterations++;
+      }
+    }
+    rep.churn = {
+      iterations: churnIterations,
+      path: location.pathname,
+      sideSameNode: document.querySelector('.dk-side') === side,
+      sentinel: window.__spaSentinel,
+      navEntries: performance.getEntriesByType('navigation').length,
+    };
     const home = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home) { home.click(); await sleep(450); }
     // Exercise the non-default persisted view too. A prior regression declared session state after
     // setMainView(), so Story mounted successfully while Terminal aborted with a temporal-dead-zone
@@ -150,6 +172,9 @@ try {
   if (!sessionStep?.sessionShell) fails.push('persisted Terminal session route did not mount #session-shell');
   if (sessionStep?.viewError) fails.push('persisted Terminal session route rendered a View error');
   if (!sessionStep?.terminalActive) fails.push('persisted Terminal preference was not active after session mount');
+  if (rep.churn?.iterations !== 6) fails.push(`Records teardown churn ran ${rep.churn?.iterations || 0}/6 iterations`);
+  if (!rep.churn?.sideSameNode) fails.push('Records teardown churn re-created the sidebar');
+  if (rep.churn?.sentinel !== s0 || rep.churn?.navEntries !== 1) fails.push('Records teardown churn replaced the document');
   const launch = rep.actions.find((a) => a.action === 'launch');
   const killed = rep.actions.find((a) => a.action === 'kill');
   if (!launch || launch.id !== 's_spa_audit_fake' || !launch.viewSwapped) fails.push('launch action did not route to the accepted starting session in place');
@@ -165,7 +190,7 @@ try {
   if (rep.stopped.total > cap && rep.stopped.shownCollapsed > cap) fails.push(`stopped list not capped: showing ${rep.stopped.shownCollapsed} of ${rep.stopped.total} (cap ${cap})`);
   if (rep.stopped.total > cap && !rep.stopped.hasExpander) fails.push(`stopped list has ${rep.stopped.total} but no "show all" expander`);
 
-  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
+  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps, churn: rep.churn, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
   if (fails.length) { console.error('\nSPA AUDIT FAIL:\n - ' + fails.join('\n - ')); process.exitCode = 1; }
   else console.log('\nSPA AUDIT PASS — one document, one persistent sidebar, no reloads, stopped list bounded, zero page exceptions.');
 } catch (e) {
