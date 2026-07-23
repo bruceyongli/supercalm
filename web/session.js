@@ -3,6 +3,7 @@ import { initAgentPanel } from './agents/host.js';
 import { getLaunchOptions, mountShell, subscribeSessionEvents, upsertSession } from './shell.js';
 import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
+import { FILE_REFERENCE_RX, cleanFileReference, localFilePath } from './file-reference.js';
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
 // app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
@@ -2670,14 +2671,10 @@ function openComposerAttachmentDetail(a) {
 
 // --- click a file path in the terminal to see what the agent wrote -------------------------------
 // The agent prints paths like "docs/specs/foo.md" but there's no way to read them from here. Make
-// path-like tokens in the terminal clickable -> a viewer modal backed by the project-root-confined
+// path-like tokens in the terminal clickable -> a viewer modal backed by the session-scoped
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
 // it's rendered as escaped text (never HTML). Also drives the Knowledge "Files" list via the same viewer.
-const FILE_TOKEN_RX = /[\w./@~+-]*\w\.[A-Za-z0-9]{1,10}/g;
 const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf']);
-function cleanFileToken(t) {
-  return String(t || '').replace(/^[('"`\[<{]+/, '').replace(/[)'"`\]>}.,;:]+$/, '').trim();
-}
 function looksLikeFile(raw) {
   if (!raw || raw.includes('://')) return false;
   const ext = (raw.split('.').pop() || '').toLowerCase();
@@ -2685,7 +2682,7 @@ function looksLikeFile(raw) {
 }
 let fileViewerBusy = false;
 async function openFileViewer(rawPath) {
-  const rel = cleanFileToken(rawPath);
+  const rel = localFilePath(rawPath);
   if (!rel || fileViewerBusy) return;
   fileViewerBusy = true;
   let meta = null;
@@ -2693,7 +2690,7 @@ async function openFileViewer(rawPath) {
   try {
     const r = await fetch(`api/session/${id}/file?path=${encodeURIComponent(rel)}`);
     if (r.ok) meta = await r.json();
-    else errText = r.status === 403 ? 'That path is outside the project root.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
+    else errText = r.status === 403 ? 'That file path was not produced by this session.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
   } catch { errText = 'Could not reach the server.'; }
   fileViewerBusy = false;
   // Text files get a toolbar: markdown renders as a PREVIEW by default (raw on toggle), any text can
@@ -2764,6 +2761,18 @@ async function openFileViewer(rawPath) {
 // Let other panels (e.g. Knowledge "Files") open a file in this same viewer.
 window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileViewer(e.detail.path); }, { signal: _sig });
 
+// Story markdown normally opens links in a new browser tab. A file path — including a full URL to
+// this same host such as https://bb1…/tmp/report.png — belongs in the session viewer instead.
+document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
+  const link = e.target.closest?.('.story-body.md a[href]');
+  if (!link) return;
+  const path = localFilePath(link.getAttribute('href'));
+  if (!path || !looksLikeFile(path)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openFileViewer(path);
+}, { signal: _sig });
+
 // Underline path-like tokens in the terminal and open the viewer on click. Works on the alt screen too.
 if (typeof term.registerLinkProvider === 'function') {
   term.registerLinkProvider({
@@ -2774,10 +2783,11 @@ if (typeof term.registerLinkProvider === 'function') {
       const text = line.translateToString(true);
       const links = [];
       let m;
-      FILE_TOKEN_RX.lastIndex = 0;
-      while ((m = FILE_TOKEN_RX.exec(text))) {
+      FILE_REFERENCE_RX.lastIndex = 0;
+      while ((m = FILE_REFERENCE_RX.exec(text))) {
         const raw = m[0];
-        if (!looksLikeFile(cleanFileToken(raw))) continue;
+        const path = localFilePath(cleanFileReference(raw));
+        if (!looksLikeFile(path)) continue;
         links.push({
           range: { start: { x: m.index + 1, y: bufferLineNumber }, end: { x: m.index + raw.length, y: bufferLineNumber } },
           text: raw,

@@ -1,9 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { stat, open, writeFile, readdir, mkdir, readFile } from 'node:fs/promises';
+import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { existsSync, statSync, realpathSync } from 'node:fs';
 import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
@@ -149,6 +149,99 @@ function resolveInRoot(root, p) {
   const target = normalize(isAbsolute(p) ? p : join(base, p));
   if (target !== base && !target.startsWith(base + sep)) return null;
   return target;
+}
+
+function pathInside(root, target) {
+  return target === root || target.startsWith(root + sep);
+}
+
+let tempFileRootsPromise = null;
+async function tempFileRoots() {
+  if (!tempFileRootsPromise) {
+    tempFileRootsPromise = Promise.all([tmpdir(), '/tmp'].map(async (p) => {
+      const raw = normalize(p);
+      try { return [raw, normalize(await realpath(p))]; } catch { return [raw]; }
+    })).then((roots) => [...new Set(roots.flat())]);
+  }
+  return tempFileRootsPromise;
+}
+
+// A session may display absolute artifacts created in the host temp directory, but only after that
+// exact path appeared in the session's own messages/events/terminal. This supports agent-generated
+// screenshots and reports without turning the viewer into a general-purpose host file browser.
+const tempFileGrants = new Map();
+const TEMP_FILE_GRANT_MS = 5 * 60 * 1000;
+async function sessionMentionsFile(s, requested, target) {
+  const key = `${s.id}\0${target}`;
+  if ((tempFileGrants.get(key) || 0) > Date.now()) return true;
+  const needles = [...new Set([
+    String(requested || ''),
+    normalize(String(requested || '')),
+    target,
+    target.startsWith('/private/tmp/') ? target.slice('/private'.length) : '',
+  ].filter(Boolean))];
+  const mentions = (text) => {
+    const haystack = String(text || '');
+    return needles.some((needle) => {
+      let at = haystack.indexOf(needle);
+      while (at >= 0) {
+        const after = haystack[at + needle.length];
+        if (!after || /[\s"'`)\]}>?,;:#]/.test(after)) return true;
+        at = haystack.indexOf(needle, at + needle.length);
+      }
+      return false;
+    });
+  };
+  const evidence = [
+    s.title, s.summary, s.question,
+    ...store.recentMessagesFor(s.id, 500).map((m) => m.text),
+    ...store.eventsFor(s.id, 1000).map((e) => e.payload),
+  ];
+  let found = evidence.some(mentions);
+  if (!found) {
+    try { found = mentions((await terminalLogTail(s.id, 4 * 1024 * 1024))?.text); } catch {}
+  }
+  if (found) {
+    tempFileGrants.set(key, Date.now() + TEMP_FILE_GRANT_MS);
+    if (tempFileGrants.size > 1000) {
+      const t = Date.now();
+      for (const [k, expires] of tempFileGrants) if (expires <= t) tempFileGrants.delete(k);
+    }
+  }
+  return found;
+}
+
+async function resolveSessionFile(s, requested) {
+  const root = projectFileRoot(s);
+  const candidate = normalize(isAbsolute(requested) ? requested : join(root, requested));
+  let target;
+  try { target = normalize(await realpath(candidate)); } catch {
+    // Preserve the old not-found behavior for plausible project/temp paths without probing arbitrary
+    // host paths. The route's stat() below produces the actual 404.
+    const projectCandidate = resolveInRoot(root, requested);
+    const tempCandidate = isAbsolute(requested)
+      && (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, candidate));
+    return (projectCandidate || tempCandidate)
+      ? { target: candidate, displayPath: requested, scope: projectCandidate ? 'project' : 'temp' }
+      : null;
+  }
+
+  let projectRoot;
+  try { projectRoot = normalize(await realpath(root)); } catch { projectRoot = normalize(root); }
+  if (pathInside(projectRoot, target)) {
+    return {
+      target,
+      displayPath: relative(projectRoot, target) || basename(target),
+      scope: 'project',
+    };
+  }
+
+  // Only an explicitly absolute temp path can cross the project boundary. A relative symlink in the
+  // project that escapes into /tmp stays denied.
+  if (!isAbsolute(requested)) return null;
+  const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, target));
+  if (!inTemp || !(await sessionMentionsFile(s, requested, target))) return null;
+  return { target, displayPath: requested, scope: 'temp' };
 }
 
 // A classifier (set by detect.js in Phase C) decides working/waiting + question.
@@ -2296,9 +2389,9 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   const raw = u.searchParams.get('raw') === '1';
   const download = u.searchParams.get('download') === '1';
   if (!rel) return json(res, 400, { error: 'path required' });
-  const root = projectFileRoot(s);
-  const target = resolveInRoot(root, rel);
-  if (!target) return json(res, 403, { error: 'path is outside the project root' });
+  const resolved = await resolveSessionFile(s, rel);
+  if (!resolved) return json(res, 403, { error: 'path is outside the session file scope' });
+  const { target, displayPath } = resolved;
   let st;
   try { st = await stat(target); } catch { return json(res, 404, { error: 'file not found' }); }
   if (st.isDirectory()) return json(res, 400, { error: 'path is a directory' });
@@ -2316,7 +2409,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
       kind = (st.size === 0 || (head && !head.includes("\u0000"))) ? "text" : "binary";
     }
     return json(res, 200, {
-      path: relative(root, target) || basename(target), rel, name: basename(target),
+      path: displayPath, rel, name: basename(target),
       bytes: st.size, mtime: st.mtimeMs, contentKind: kind, binary: kind === 'binary',
       truncated: st.size > FILE_VIEW_MAX_BYTES,
       viewUrl: `${viewBase}&raw=1`, downloadUrl: `${viewBase}&raw=1&download=1`,
