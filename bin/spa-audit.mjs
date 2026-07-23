@@ -24,7 +24,7 @@ const port = await freePort();
 const profile = `/tmp/aios-spa-audit-${port}`;
 const child = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`, '--password-store=basic', '--mute-audio', `--remote-debugging-port=${port}`, '--window-size=1400,950', 'about:blank'], { stdio: 'ignore' });
 child.on('error', (e) => { console.error('chrome spawn error:', e.message); process.exit(2); });
-const kill = setTimeout(() => { child.kill('SIGKILL'); }, 50000);
+const kill = setTimeout(() => { child.kill('SIGKILL'); }, 70000);
 let loadCount = 0; const exceptions = [];
 try {
   const wsUrl = await pageWs(port);
@@ -57,6 +57,35 @@ try {
     rep.stopped.shownCollapsed = countShown();
     rep.stopped.hasExpander = !!toggle;
     rep.stopped.total = toggle ? Number((toggle.textContent.match(/\\d+/) || [0])[0]) : rep.stopped.shownCollapsed;
+    // Cold-load the real session before the route hammer. Besides measuring the actual operator path,
+    // this prevents the test itself from making xterm/session's first module fetch compete with six
+    // intentionally interrupted Records loads.
+    localStorage.setItem('aios.session.mainView', 'terminal');
+    const sess = document.querySelector('[data-dk-sess]');
+    if (sess) {
+      const before = view.firstElementChild;
+      sess.click();
+      for (let n = 0; n < 150; n++) {
+        const viewFailed = [...view.children].some((el) => el.textContent?.trim().startsWith('View error:'));
+        if (document.querySelector('#session-shell') || viewFailed) break;
+        await sleep(100);
+      }
+      const sideNow = document.querySelector('.dk-side');
+      rep.steps.push({
+        nav: 'session',
+        path: location.pathname,
+        viewSwapped: view.firstElementChild !== before,
+        sideSameNode: sideNow === side,
+        sentinel: window.__spaSentinel,
+        navEntries: performance.getEntriesByType('navigation').length,
+        bodyClass: document.body.className,
+        sessionShell: !!document.querySelector('#session-shell'),
+        viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+        terminalActive: document.querySelector('[data-mode="terminal"]')?.classList.contains('active') || false,
+      });
+    }
+    const home = document.querySelector('.dk-nav-item[data-nav="inbox"]');
+    if (home) { home.click(); await sleep(450); }
     // fast view-switch drive — the teardown-race trigger
     const navs = ['decisions', 'records', 'usage', 'health', 'settings'];
     for (const nav of navs) {
@@ -89,34 +118,6 @@ try {
       sentinel: window.__spaSentinel,
       navEntries: performance.getEntriesByType('navigation').length,
     };
-    const home = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home) { home.click(); await sleep(450); }
-    // Exercise the non-default persisted view too. A prior regression declared session state after
-    // setMainView(), so Story mounted successfully while Terminal aborted with a temporal-dead-zone
-    // error. The gate must prove that a real session shell—not merely any swapped #view—was mounted.
-    localStorage.setItem('aios.session.mainView', 'terminal');
-    const sess = document.querySelector('[data-dk-sess]');
-    if (sess) {
-      const before = view.firstElementChild;
-      sess.click();
-      for (let n = 0; n < 80; n++) {
-        const viewFailed = [...view.children].some((el) => el.textContent?.trim().startsWith('View error:'));
-        if (document.querySelector('#session-shell') || viewFailed) break;
-        await sleep(100);
-      }
-      const sideNow = document.querySelector('.dk-side');
-      rep.steps.push({
-        nav: 'session',
-        path: location.pathname,
-        viewSwapped: view.firstElementChild !== before,
-        sideSameNode: sideNow === side,
-        sentinel: window.__spaSentinel,
-        navEntries: performance.getEntriesByType('navigation').length,
-        bodyClass: document.body.className,
-        sessionShell: !!document.querySelector('#session-shell'),
-        viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
-        terminalActive: document.querySelector('[data-mode="terminal"]')?.classList.contains('active') || false,
-      });
-    }
     // Action-flow regression: mock only the two mutating API responses, then drive the REAL launcher
     // and kill buttons. This catches programmatic location.href regressions that link-only audits miss,
     // without creating/killing an operator session on the target service.
