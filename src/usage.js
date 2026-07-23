@@ -8,13 +8,14 @@ import { recordAgyStatuslinePayload, rescanUsage, startUsageCollector, subscript
 
 function filters(q) {
   const range = q.get('range') || '7d';
-  let since = Number(q.get('since')) || 0;
+  const requestedSince = Number(q.get('since')) || 0;
+  let since = requestedSince;
   const until = Number(q.get('until')) || 0;
   if (!since && range !== 'all') {
     const days = range === '24h' ? 1 : range === '30d' ? 30 : 7;
     since = Date.now() - days * 86400 * 1000;
   }
-  return {
+  const out = {
     range,
     since,
     until,
@@ -26,6 +27,14 @@ function filters(q) {
     q: q.get('q') || '',
     limit: Number(q.get('limit')) || 80,
   };
+  // Relative ranges move forward continuously, but they are still the same dashboard query.
+  // Keep this internal marker out of API responses and worker payloads while allowing the
+  // snapshot cache to survive the old five-minute timestamp bucket boundary.
+  Object.defineProperty(out, 'relativeRange', {
+    value: !requestedSince && !until && range !== 'all',
+    enumerable: false,
+  });
+  return out;
 }
 
 route('GET', '/api/usage', (req, res, _params, url) => {
@@ -44,8 +53,8 @@ const summaryFlights = new Map();
 function summaryKey(f) {
   return JSON.stringify({
     range: f.range,
-    since: Math.floor(Number(f.since || 0) / 300000),
-    until: Math.floor(Number(f.until || 0) / 300000),
+    since: f.relativeRange ? 0 : Math.floor(Number(f.since || 0) / 300000),
+    until: f.relativeRange ? 0 : Math.floor(Number(f.until || 0) / 300000),
     project: f.project, session: f.session, tool: f.tool, model: f.model, source: f.source, q: f.q, limit: f.limit,
   });
 }

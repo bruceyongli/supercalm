@@ -127,6 +127,12 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(usageApi, /new Worker\(new URL\('\.\/usage_summary_worker\.js'/, 'cold analytics run outside the request event loop');
   assert.match(usageApi, /Stale-while-revalidate/, 'expired analytics render from cache while refreshing off-thread');
   assert.match(usageApi, /warmSummaryTimer/, 'the default Usage range is prewarmed after boot');
+  assert.match(usageApi, /relativeRange/, 'relative Usage ranges keep a stable snapshot-cache identity');
+  assert.match(
+    usageApi,
+    /since:\s*f\.relativeRange\s*\?\s*0\s*:/,
+    'the Usage cache does not expire solely because a relative timestamp crosses a bucket boundary',
+  );
   const usageView = read('web/views/usage.js');
   assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
   assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),
