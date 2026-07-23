@@ -131,11 +131,18 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(usageApi, /relativeRange/, 'relative Usage ranges keep a stable snapshot-cache identity');
   assert.match(
     usageApi,
-    /since:\s*f\.relativeRange\s*\?\s*0\s*:/,
+    /since:\s*f\.relativeRange\s*\?\s*0\s*:\s*Number\(f\.since/,
     'the Usage cache does not expire solely because a relative timestamp crosses a bucket boundary',
+  );
+  assert.doesNotMatch(
+    usageApi,
+    /Math\.floor\(Number\(f\.(?:since|until)[\s\S]*?300000/,
+    'explicit Usage windows retain exact bounds and cannot collide inside a five-minute bucket',
   );
   const usageView = read('web/views/usage.js');
   assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
+  assert.match(usageView, /\.recent\[hidden\]\s*\{\s*display:\s*none/, 'the SPA recent-events disclosure is actually hidden when closed');
+  assert.match(read('web/usage.html'), /\.recent\[hidden\]\s*\{\s*display:\s*none/, 'the legacy recent-events disclosure is actually hidden when closed');
   assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),
     'quota and usage requests start concurrently');
   const usageCollector = read('src/usage_collect.js');

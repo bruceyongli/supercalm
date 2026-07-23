@@ -53,8 +53,8 @@ const summaryFlights = new Map();
 function summaryKey(f) {
   return JSON.stringify({
     range: f.range,
-    since: f.relativeRange ? 0 : Math.floor(Number(f.since || 0) / 300000),
-    until: f.relativeRange ? 0 : Math.floor(Number(f.until || 0) / 300000),
+    since: f.relativeRange ? 0 : Number(f.since || 0),
+    until: f.relativeRange ? 0 : Number(f.until || 0),
     project: f.project, session: f.session, tool: f.tool, model: f.model, source: f.source, q: f.q, limit: f.limit,
   });
 }

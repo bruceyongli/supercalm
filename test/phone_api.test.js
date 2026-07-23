@@ -9,6 +9,7 @@ const port = 30000 + Math.floor(Math.random() * 9000);
 process.env.AIOS_PORT = String(port); // phone_api pulls in server.js — keep it off the live port
 
 const { db, addMessage } = await import('../src/store.js');
+const { recordUsage } = await import('../src/usage_store.js');
 const { unreadBySession } = await import('../src/phone_api.js');
 const { bus } = await import('../src/bus.js');
 
@@ -119,6 +120,23 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   const body = await response.json();
   assert.equal(body.ok, true);
   assert.equal(Number(body.totals?.sessions || 0), 0);
+}
+
+// Explicit windows inside the same five-minute interval are distinct cache entries.
+{
+  const bucket = Math.floor(Date.now() / 300000) * 300000;
+  recordUsage({ source_id: 'explicit-a', source: 'test', ts: bucket + 10_500, total_tokens: 11 });
+  recordUsage({ source_id: 'explicit-b', source: 'test', ts: bucket + 12_500, total_tokens: 29 });
+  const getWindow = async (since, until) => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/usage/summary?range=all&since=${since}&until=${until}`);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const first = await getWindow(bucket + 10_000, bucket + 11_000);
+  const second = await getWindow(bucket + 12_000, bucket + 13_000);
+  assert.equal(first.totals.total_tokens, 11);
+  assert.equal(second.totals.total_tokens, 29, 'an explicit window never reuses a neighboring cached report');
+  assert(second.recent.every((row) => row.ts >= bucket + 12_000 && row.ts <= bucket + 13_000));
 }
 
 console.log('phone_api.test ok');

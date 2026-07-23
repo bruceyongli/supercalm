@@ -47,6 +47,14 @@ const server = createServer(async (req, res) => {
   if (path === '/aios/api/auth/status') return sendJson(res, { mode: 'cli' });
   if (path === '/aios/api/version') return sendJson(res, { version: 'test' });
   if (path === '/aios/api/launch-options') return sendJson(res, { projects: [], tools: [] });
+  if (path === '/aios/api/usage/summary') return sendJson(res, {
+    ok: true,
+    totals: { events: 1, sessions: 1, total_tokens: 10, cached_input_tokens: 2, output_tokens: 1 },
+    byModel: [{ name: 'test-model', total_tokens: 10 }],
+    byProject: [{ name: 'test-project', total_tokens: 10 }],
+    recent: [{ id: 1, ts: now, event_type: 'usage', model: 'test-model', project: 'test-project', total_tokens: 10, message: 'test event' }],
+  });
+  if (path === '/aios/api/usage/subscriptions') return sendJson(res, { ok: true, subscriptions: [] });
   if (path === '/aios/api/tools/versions') return sendJson(res, { tools: [{ installed: true }] });
   if (path === '/aios/api/models/providers') return sendJson(res, { providers: [{ id: 'test' }] });
   const story = path.match(/^\/aios\/api\/session\/([^/]+)\/story$/);
@@ -130,6 +138,24 @@ try {
   assert.equal(dismissBodies[0].through_id, 12, 'dismissal is bounded to the visible report');
   assert.equal(await page.locator('[data-dk-row][data-sid="s_done"]').count(), 1, 'dismissal leaves the session itself in the list');
   await page.close();
+
+  for (const relative of ['usage', 'usage.html']) {
+    const usage = await browser.newPage({ viewport: { width: 1320, height: 900 } });
+    await usage.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
+    await usage.goto(base + relative, { waitUntil: 'domcontentloaded' });
+    const recent = usage.locator('#recent');
+    const toggle = usage.locator('#recent-toggle');
+    await recent.waitFor({ state: 'attached' });
+    await usage.waitForFunction(() => document.querySelector('#recent')?.children.length > 0);
+    assert.equal(await recent.getAttribute('hidden'), '', `${relative}: recent events start closed`);
+    assert.equal(await recent.evaluate((el) => getComputedStyle(el).display), 'none', `${relative}: hidden disclosure has no layout`);
+    await toggle.click();
+    assert.equal(await recent.getAttribute('hidden'), null, `${relative}: toggle removes the hidden attribute`);
+    assert.equal(await recent.evaluate((el) => getComputedStyle(el).display), 'grid', `${relative}: open disclosure renders its rows`);
+    await toggle.click();
+    assert.equal(await recent.evaluate((el) => getComputedStyle(el).display), 'none', `${relative}: closing the disclosure removes it from layout`);
+    await usage.close();
+  }
 
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await phone.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());

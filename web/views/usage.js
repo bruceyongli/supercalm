@@ -53,6 +53,7 @@ const USAGE_CSS = `
       .u-recent { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--u-line); border-radius: 8px; background: var(--u-panel); padding: 12px; }
       .u-recent #recent-label { color: var(--u-soft); font-size: 12.5px; }
       .recent { display: grid; gap: 6px; margin-top: 10px; }
+      .recent[hidden] { display: none; }
       .event { border: 1px solid var(--u-line); border-radius: 8px; background: var(--u-panel); padding: 8px 10px; }
       .event .eh { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; color: var(--u-soft); font-size: 11px; margin-bottom: 3px; }
       .event .msg { color: var(--u-text); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
