@@ -58,6 +58,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_usage_events_external_ts ON usage_events(event_type, external_session_id, ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_tool_project_ts ON usage_events(event_type, tool, project_id, ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_tool_cwd_ts ON usage_events(event_type, tool, cwd, ts);
+  -- Interactive Usage aggregates must never walk the 13GB table rows that also contain raw CLI
+  -- payloads. This compact covering index keeps the screen's grouping/sum fields on narrow pages.
+  CREATE INDEX IF NOT EXISTS idx_usage_events_dashboard ON usage_events(
+    event_type, ts, model, project, provider, tool,
+    input_tokens, cached_input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+    output_tokens, reasoning_tokens, total_tokens
+  );
 `);
 
 const _insertUsage = db.prepare(`
@@ -307,6 +314,49 @@ export function usageReport(filters = {}) {
     recent,
     summaries,
     pricing: pricingCatalog(),
+  };
+}
+
+// The Usage screen consumes a deliberately small projection. The historical report above remains
+// available for API consumers, but it performs many independent groupings (and the old route also
+// scanned the entire 13GB table for filter options the screen never rendered). One grouped pass feeds
+// totals + model + project costs here; two bounded queries supply the session count and recent rows.
+export function usageDashboardReport(filters = {}) {
+  const { W, args } = filtersWhere(filters);
+  const parts = db.prepare(`
+    SELECT
+      COALESCE(model, '(unknown)') model_name,
+      COALESCE(project, '(unknown)') project_name,
+      provider, tool, model, ${TOTAL_SQL}
+    FROM usage_events ${W}
+    GROUP BY COALESCE(model, '(unknown)'), COALESCE(project, '(unknown)'), provider, tool, model
+  `).all(...args);
+  const totalRow = {};
+  let totalCost = {};
+  for (const part of parts) {
+    addUsage(totalRow, part);
+    totalCost = mergeCost(totalCost, priceUsage(part));
+  }
+  const sessionRow = db.prepare(`
+    SELECT COUNT(DISTINCT COALESCE(external_session_id, session_id, request_id, source_id)) sessions
+    FROM usage_events ${W}
+  `).get(...args);
+  const recentWhere = filtersWhere(filters, { usageOnly: false });
+  const recent = db.prepare(`
+    SELECT id, source_id, source, event_type, ts, session_id, external_session_id, request_id,
+      tool, provider, model, project_id, project, cwd,
+      input_tokens, cached_input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+      output_tokens, reasoning_tokens, total_tokens, message
+    FROM usage_events ${recentWhere.W}
+    ${recentWhere.W ? 'AND' : 'WHERE'} (event_type != 'usage' OR total_tokens > 0 OR input_tokens > 0 OR cached_input_tokens > 0 OR output_tokens > 0)
+    ORDER BY ts DESC
+    LIMIT ?
+  `).all(...recentWhere.args, Math.min(300, Math.max(1, Number(filters.limit) || 80))).map(enrichEventCost);
+  return {
+    totals: { ...withCost(totalRow, totalCost), sessions: Number(sessionRow?.sessions || 0) },
+    byModel: sessionUsageGroup(parts, 'model_name', 20),
+    byProject: sessionUsageGroup(parts, 'project_name', 20),
+    recent,
   };
 }
 

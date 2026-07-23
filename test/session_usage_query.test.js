@@ -7,7 +7,7 @@ process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-session-usage-'));
 process.env.AIOS_SESSION_USAGE_CACHE_MS = '60000';
 
 const { db, createProject, createSession, updateSession } = await import('../src/store.js');
-const { recordUsage, usageForSession } = await import('../src/usage_store.js');
+const { recordUsage, usageDashboardReport, usageForSession } = await import('../src/usage_store.js');
 
 createProject({ id: 'p_usage', name: 'Usage', path: '/tmp/usage-project' });
 createSession({ id: 's_usage', project_id: 'p_usage', tool: 'codex', tmux: 'tmux-usage', status: 'working', model: 'gpt-5.5', codex_uuid: 'uuid-usage' });
@@ -19,7 +19,7 @@ for (let i = 0; i < 12000; i++) {
     source: i % 2 ? 'codex-rollout' : 'proxy',
     ts: ts + i,
     session_id: 's_usage',
-    tool: 'codex', provider: 'openai', model: 'gpt-5.5', project_id: 'p_usage', cwd: '/tmp/usage-project',
+    tool: 'codex', provider: 'openai', model: 'gpt-5.5', project_id: 'p_usage', project: 'Usage', cwd: '/tmp/usage-project',
     input_tokens: 10, cached_input_tokens: 2, output_tokens: 3, total_tokens: 13,
     raw: { deliberately: 'not returned by the session usage endpoint' },
   });
@@ -78,5 +78,23 @@ recordUsage({ source_id: 'late-external', source: 'codex-jsonl', ts, external_se
 const rebound = usageForSession('s_late_usage');
 assert.equal(rebound.totals.events, 1, 'capturing a UUID invalidates the cached heuristic association');
 assert.equal(rebound.totals.total_tokens, 7);
+
+// The interactive Usage screen gets one grouped projection, not the exhaustive analytics report.
+const dashboard = usageDashboardReport({ since: ts - 1, until: ts + 20000, limit: 25 });
+assert.equal(dashboard.totals.events, 12007, 'screen totals include every usage event in the selected window');
+assert.equal(dashboard.totals.sessions, 8, 'distinct collector identities remain available without returning a giant session list');
+assert.equal(dashboard.byModel[0].name, 'gpt-5.5');
+assert(dashboard.byProject.some((row) => row.name === 'Usage'));
+assert(dashboard.recent.length <= 25);
+assert(dashboard.recent.every((row) => !Object.hasOwn(row, 'raw')), 'screen projection never reads raw payload blobs');
+assert.equal(Object.hasOwn(dashboard, 'byTool'), false, 'unused exhaustive groupings stay off the interactive path');
+assert.equal(Object.hasOwn(dashboard, 'options'), false, 'unused all-history filter scans stay off the interactive path');
+const dashboardPlan = db.prepare(`EXPLAIN QUERY PLAN
+  SELECT model, project, provider, tool, SUM(total_tokens)
+  FROM usage_events
+  WHERE event_type='usage' AND ts>=?
+  GROUP BY model, project, provider, tool`).all(ts - 1);
+assert(dashboardPlan.some((row) => /COVERING INDEX idx_usage_events_dashboard/.test(row.detail)),
+  'interactive aggregates stay on the narrow covering index instead of reading raw table rows');
 
 console.log('session_usage_query.test ok');

@@ -629,16 +629,27 @@ function secondsReset(sec) {
   return sec == null ? null : now() + Number(sec) * 1000;
 }
 
-export async function subscriptionStatus() {
+async function buildSubscriptionStatus() {
   const out = {
     generatedAt: now(),
     routing: null,
     subscriptions: [],
     errors: [],
   };
+  const settledFetch = (url, timeout) => fetchJson(url, timeout).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  // Start every independent fleet probe before awaiting any of them. These used to run serially, so
+  // the Usage screen paid the sum of three proxy latencies instead of only the slowest one.
+  const codexRequest = settledFetch('http://127.0.0.1:8788/admin/limits');
+  const claudeRequest = settledFetch('http://127.0.0.1:8789/admin/limits');
+  const overviewRequest = settledFetch('http://127.0.0.1:8791/admin/overview', 3500);
 
   try {
-    const c = await fetchJson('http://127.0.0.1:8788/admin/limits');
+    const result = await codexRequest;
+    if (result.error) throw result.error;
+    const c = result.value;
     const u = c.usage || {};
     const rl = u.rate_limit || {};
     out.subscriptions.push({
@@ -659,7 +670,9 @@ export async function subscriptionStatus() {
   }
 
   try {
-    const c = await fetchJson('http://127.0.0.1:8789/admin/limits');
+    const result = await claudeRequest;
+    if (result.error) throw result.error;
+    const c = result.value;
     const u = c.usage || {};
     const win = (name, o) => o && {
       name,
@@ -685,7 +698,9 @@ export async function subscriptionStatus() {
   }
 
   try {
-    const ov = await fetchJson('http://127.0.0.1:8791/admin/overview', 3500);
+    const result = await overviewRequest;
+    if (result.error) throw result.error;
+    const ov = result.value;
     out.routing = ov.routing || null;
     for (const p of ov.providers || []) {
       const id = p.id || p.proxy || p.name || p.label || `provider-${out.subscriptions.length}`;
@@ -738,6 +753,21 @@ export async function subscriptionStatus() {
   }
 
   return out;
+}
+
+const SUBSCRIPTION_CACHE_MS = Math.max(1000, Number(process.env.AIOS_SUBSCRIPTION_CACHE_MS || 30000));
+let subscriptionCache = null;
+let subscriptionFlight = null;
+export async function subscriptionStatus() {
+  if (subscriptionCache && now() - subscriptionCache.at < SUBSCRIPTION_CACHE_MS) return subscriptionCache.value;
+  if (subscriptionFlight) return subscriptionFlight;
+  subscriptionFlight = buildSubscriptionStatus()
+    .then((value) => {
+      subscriptionCache = { at: now(), value };
+      return value;
+    })
+    .finally(() => { subscriptionFlight = null; });
+  return subscriptionFlight;
 }
 
 export function startUsageCollector() {

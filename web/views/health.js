@@ -126,14 +126,14 @@ function render(h) {
     btn.textContent = 're-indexing…';
     const stale = (h.graphs || []).filter((g) => g.stale && g.project_id);
     await Promise.all(stale.map((g) => api(`api/project/${g.project_id}/graph/rebuild`, { method: 'POST' }).catch(() => {})));
-    load();
+    load(true);
   }));
 }
 
-async function load() {
+async function load(force = false) {
   if (!root || !pill) return;
   try {
-    const data = await api('api/product/health');
+    const data = await api(`api/product/health${force ? '?fresh=1' : ''}`);
     if (!root || !pill) return; // torn down mid-fetch → sentinels nulled by teardown()
     render(data);
   } catch (e) {

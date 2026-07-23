@@ -46,8 +46,17 @@ async function authSnapshot() {
   };
 }
 
-async function graphSnapshots(projects) {
-  const rows = await Promise.all(projects.map(async (p) => {
+const GRAPH_SNAPSHOT_CACHE_MS = Math.max(1000, Number(process.env.AIOS_GRAPH_SNAPSHOT_CACHE_MS || 15000));
+let graphSnapshotCache = null;
+let graphSnapshotFlight = null;
+
+async function graphSnapshots(projects, { force = false } = {}) {
+  const key = projects.map((p) => `${p.id}:${p.path}`).join('\n');
+  if (!force && graphSnapshotCache?.key === key && now() - graphSnapshotCache.at < GRAPH_SNAPSHOT_CACHE_MS) {
+    return graphSnapshotCache.rows;
+  }
+  if (graphSnapshotFlight?.key === key) return graphSnapshotFlight.promise;
+  const promise = Promise.all(projects.map(async (p) => {
     try {
       const s = await projectGraphSummary(p);
       return {
@@ -65,8 +74,14 @@ async function graphSnapshots(projects) {
     } catch (e) {
       return { project_id: p.id, name: p.name, path: p.path, ok: false, status: 'error', stale: true, stale_reasons: [String(e.message || e).slice(0, 120)], counts: {} };
     }
-  }));
-  return rows.sort((a, b) => Number(b.name === 'aios') - Number(a.name === 'aios') || a.name.localeCompare(b.name));
+  })).then((rows) => {
+    rows.sort((a, b) => Number(b.name === 'aios') - Number(a.name === 'aios') || a.name.localeCompare(b.name));
+    graphSnapshotCache = { key, at: now(), rows };
+    return rows;
+  });
+  graphSnapshotFlight = { key, promise };
+  try { return await promise; }
+  finally { if (graphSnapshotFlight?.promise === promise) graphSnapshotFlight = null; }
 }
 
 function issueList({ auth, graphs }) {
@@ -86,12 +101,12 @@ function issueList({ auth, graphs }) {
   return issues;
 }
 
-route('GET', '/api/product/health', async (req, res) => {
+route('GET', '/api/product/health', async (req, res, _params, url) => {
   const projects = listProjects();
   const sessions = listSessions();
   const [authResult, graphs] = await Promise.all([
     authSnapshot().catch((e) => ({ error: String(e.message || e) })),
-    graphSnapshots(projects),
+    graphSnapshots(projects, { force: url.searchParams.get('fresh') === '1' }),
   ]);
   const auth = authResult?.error ? null : authResult;
   const issues = issueList({ auth, graphs });

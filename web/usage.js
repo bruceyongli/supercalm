@@ -69,7 +69,7 @@ function renderOverview(data) {
 const metric = (k, v) => `<div class="metric mini"><div class="k">${escapeHtml(k)}</div><div class="v">${escapeHtml(v)}</div></div>`;
 function renderTiles(data) {
   const t = data.totals || {};
-  const sessions = data.bySession?.length ?? n(t.sessions);
+  const sessions = n(t.sessions);
   el.cards.innerHTML = [
     metric('Inferred tokens', short(t.total_tokens)),
     metric('Cache read', short(t.cached_input_tokens)),
@@ -127,12 +127,13 @@ function renderQuota(data = {}) {
 async function load() {
   if (loading) return;
   loading = true;
+  const quotaPromise = api('api/usage/subscriptions').catch(() => null);
   if (el.scanMsg) el.scanMsg.textContent = 'loading…';
   el.costCard.innerHTML = metric('Estimated API-equivalent cost', 'loading');
   el.quotaCard.innerHTML = metric('Quota status', 'loading');
   el.projectCard.innerHTML = metric('Top project', 'loading');
   try {
-    const data = await api(`api/usage?${query()}`);
+    const data = await api(`api/usage/summary?${query()}`);
     renderOverview(data);
     renderTiles(data);
     renderByModel(data.byModel);
@@ -143,8 +144,9 @@ async function load() {
   } finally {
     loading = false;
   }
-  try { renderQuota(await api('api/usage/subscriptions')); }
-  catch { el.quotaCard.innerHTML = `<div class="k">Quota status</div><div class="v">—</div><div class="subtext">Subscription windows not reachable.</div>`; }
+  const quota = await quotaPromise;
+  if (quota) renderQuota(quota);
+  else el.quotaCard.innerHTML = `<div class="k">Quota status</div><div class="v">—</div><div class="subtext">Subscription windows not reachable.</div>`;
 }
 
 async function rescan() {

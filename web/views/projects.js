@@ -4,7 +4,7 @@
 // freshly-rendered markup. No timers/streams, so teardown just nulls module state.
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml as esc, fmtAgo } from '../common.js';
-import { openLaunch } from '../shell.js';
+import { getHome, openLaunch } from '../shell.js';
 
 const PROJECTS_CSS = `
     .pj-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; }
@@ -35,10 +35,10 @@ const PROJECTS_CSS = `
 let host = null;
 const $ = (s) => document.querySelector(s);
 
-async function load() {
-  let health = { projects: [] }, home = { sessions: [] };
-  try { health = await api('api/product/health'); } catch {}
-  try { home = await api('api/phone/home'); } catch {}
+async function load(force = false) {
+  let health = { projects: [] };
+  try { health = await api(`api/product/health${force ? '?fresh=1' : ''}`); } catch {}
+  const home = getHome();
   const liveByPath = {};
   for (const s of home.sessions || []) if (s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
   const rows = (health.graphs || []).map((p) => {
@@ -81,7 +81,7 @@ async function load() {
   list.innerHTML = rows || '<div class="dk-allclear">No projects yet — start a session and type a new path; the project is created on the spot.</div>';
   for (const b of document.querySelectorAll('[data-pj-index]')) b.onclick = async () => {
     b.textContent = 'indexing…';
-    try { await api(`api/project/${b.dataset.pjIndex}/graph/rebuild`, { method: 'POST' }); b.textContent = 'indexed ✓'; setTimeout(load, 800); }
+    try { await api(`api/project/${b.dataset.pjIndex}/graph/rebuild`, { method: 'POST' }); b.textContent = 'indexed ✓'; setTimeout(() => load(true), 800); }
     catch (e) { b.textContent = '⚠ ' + (e.message || e).slice(0, 30); }
   };
   // "+ session" opens the launch modal HERE with that project preselected. It used to navigate to the

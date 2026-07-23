@@ -96,6 +96,11 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 {
   const phone = read('src/phone_api.js');
   assert.doesNotMatch(phone, /storyFor|story_api|deriveQuestion/, 'home never parses transcripts');
+  assert.match(phone, /WITH last_in AS/, 'home unread state is computed with a set-based aggregate');
+  assert.doesNotMatch(phone, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'home has no per-message correlated reply lookup');
+  const projects = read('web/views/projects.js');
+  assert.match(projects, /getHome\(\)/, 'Projects reuses the normalized shell snapshot');
+  assert.doesNotMatch(projects, /api\('api\/phone\/home'\)/, 'Projects does not refetch the session collection');
   const sessions = read('src/sessions.js');
   assert.match(sessions, /function reserveLaunch[\s\S]*?status: 'starting'/, 'launch reserves the row in starting state');
   assert.match(sessions, /queueLaunch\([\s\S]*?setImmediate/, 'expensive launch completion runs after the response path');
@@ -112,6 +117,23 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 {
   const usage = read('src/usage_store.js');
   assert.match(usage, /idx_usage_events_session_ts/, 'session usage has a matching composite index');
+  assert.match(usage, /idx_usage_events_dashboard/, 'interactive aggregates have a covering index that excludes raw payloads');
+  assert.match(usage, /export function usageDashboardReport/, 'Usage has a lean screen projection');
+  const usageApi = read('src/usage.js');
+  assert.match(usageApi, /\/api\/usage\/summary/, 'the screen has a dedicated summary endpoint');
+  const usageView = read('web/views/usage.js');
+  assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
+  assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),
+    'quota and usage requests start concurrently');
+  const collector = read('src/usage_collect.js');
+  assert.match(collector, /const codexRequest[\s\S]*const claudeRequest[\s\S]*const overviewRequest[\s\S]*await codexRequest/,
+    'independent quota probes start before the first await');
+  assert.match(collector, /SUBSCRIPTION_CACHE_MS/, 'slow fleet quota probes have a bounded cache');
+  const health = read('src/product_health.js');
+  assert.match(health, /GRAPH_SNAPSHOT_CACHE_MS/, 'project graph status is reused across nearby views');
+  const graph = read('src/project_graph_core.js');
+  assert.match(graph, /mapLimit\(candidates, 8/, 'multi-repo project discovery is bounded and parallel');
+  assert.match(graph, /status', '--porcelain=v2', '--branch'/, 'graph freshness gets identity and changes in one git process');
   const sessionUsage = usage.slice(usage.indexOf('export function usageForSession'), usage.indexOf('function usageSessions'));
   assert.doesNotMatch(sessionUsage, /SELECT \*/, 'session usage never selects raw payload blobs');
   assert.match(sessionUsage, /SESSION_USAGE_CACHE_MS/, 'session aggregates are TTL cached');

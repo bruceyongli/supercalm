@@ -2,7 +2,7 @@
 // from the local proxy fleet. The collectors live in usage_collect.js so they can also run one-off.
 
 import { route, json, readJson } from './server.js';
-import { usageOptions, usageReport } from './usage_store.js';
+import { usageDashboardReport, usageOptions, usageReport } from './usage_store.js';
 import { recordAgyStatuslinePayload, rescanUsage, startUsageCollector, subscriptionStatus } from './usage_collect.js';
 
 function filters(q) {
@@ -31,6 +31,15 @@ route('GET', '/api/usage', (req, res, _params, url) => {
   try {
     const f = filters(url.searchParams);
     json(res, 200, { ok: true, filters: f, ...usageReport(f), options: usageOptions() });
+  } catch (e) {
+    json(res, 500, { error: String(e.message || e) });
+  }
+});
+
+route('GET', '/api/usage/summary', (req, res, _params, url) => {
+  try {
+    const f = filters(url.searchParams);
+    json(res, 200, { ok: true, filters: f, ...usageDashboardReport(f) });
   } catch (e) {
     json(res, 500, { error: String(e.message || e) });
   }

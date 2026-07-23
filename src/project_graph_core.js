@@ -122,26 +122,71 @@ async function git(cwd, args, { maxBuffer = 4_000_000, timeout = 5000 } = {}) {
   return String(r.stdout || '');
 }
 
-async function isGitRepo(cwd) {
-  try { return (await git(cwd, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 128000, timeout: 1500 })).trim() === 'true'; }
-  catch { return false; }
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      out[index] = await fn(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return out;
 }
 
-async function discoverRepos(root) {
-  if (await isGitRepo(root)) {
-    const head = await git(root, ['rev-parse', 'HEAD'], { maxBuffer: 128000, timeout: 1500 }).then((s) => s.trim()).catch(() => '');
-    return [{ prefix: '', cwd: root, name: '.', head }];
+function parseGitStatus(out) {
+  const rows = String(out || '').split('\0').filter(Boolean);
+  const changed = [];
+  let head = '';
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    if (row.startsWith('# branch.oid ')) {
+      const oid = row.slice(13).trim();
+      head = oid === '(initial)' ? '' : oid;
+      continue;
+    }
+    const kind = row[0];
+    if (!['1', '2', 'u', '?'].includes(kind)) continue;
+    const fields = row.split(' ');
+    const pathAt = kind === '1' ? 8 : kind === '2' ? 9 : kind === 'u' ? 10 : 1;
+    const path = fields.slice(pathAt).join(' ');
+    if (path) changed.push({ path, status: kind === '?' ? '??' : fields[1] || kind });
+    if (kind === '2' && rows[i + 1] && !/^[#12u?!] /.test(rows[i + 1])) i++; // original rename path
   }
+  return { head, changed };
+}
+
+async function inspectRepo(cwd, { changes = false } = {}) {
+  try {
+    if (changes) {
+      const out = await git(cwd, ['status', '--porcelain=v2', '--branch', '-z'], { timeout: 2500, maxBuffer: 2_000_000 });
+      return parseGitStatus(out);
+    }
+    const out = await git(cwd, ['rev-parse', '--is-inside-work-tree', 'HEAD'], { maxBuffer: 128000, timeout: 1500 });
+    const lines = out.trim().split(/\s+/);
+    return lines[0] === 'true' ? { head: lines[1] || '', changed: [] } : null;
+  } catch {
+    // An unborn repository has no HEAD yet, but `git status` still succeeds and identifies it.
+    try {
+      const out = await git(cwd, ['status', '--porcelain=v2', '--branch', '-z', '--untracked-files=no'], { timeout: 1500, maxBuffer: 128000 });
+      return parseGitStatus(out);
+    } catch { return null; }
+  }
+}
+
+async function discoverRepos(root, { changes = false } = {}) {
+  const rootState = await inspectRepo(root, { changes });
+  if (rootState) return [{ prefix: '', cwd: root, name: '.', ...rootState }];
   let kids = [];
   try { kids = await readdir(root, { withFileTypes: true }); } catch { return []; }
-  const repos = [];
-  for (const d of kids.filter((x) => x.isDirectory() && !x.name.startsWith('.')).slice(0, 80)) {
+  const candidates = kids.filter((x) => x.isDirectory() && !x.name.startsWith('.')).slice(0, 80);
+  const inspected = await mapLimit(candidates, 8, async (d) => {
     const cwd = join(root, d.name);
-    if (!(await isGitRepo(cwd))) continue;
-    const head = await git(cwd, ['rev-parse', 'HEAD'], { maxBuffer: 128000, timeout: 1500 }).then((s) => s.trim()).catch(() => '');
-    repos.push({ prefix: d.name, cwd, name: d.name, head });
-  }
-  return repos;
+    const state = await inspectRepo(cwd, { changes });
+    return state ? { prefix: d.name, cwd, name: d.name, ...state } : null;
+  });
+  return inspected.filter(Boolean);
 }
 
 async function repoFiles(repo) {
@@ -332,19 +377,13 @@ function insertEdge(pid, e, t) {
 
 async function currentProjectState(project) {
   const root = cleanProjectPath(project.path);
-  const repos = await discoverRepos(root);
+  const repos = await discoverRepos(root, { changes: true });
   const changed = [];
   for (const repo of repos) {
-    const out = await git(repo.cwd, ['status', '--porcelain=v1', '-z'], { timeout: 2500, maxBuffer: 2_000_000 }).catch(() => '');
-    const parts = out.split('\0').filter(Boolean);
-    for (let i = 0; i < parts.length; i++) {
-      const rec = parts[i];
-      if (rec.length < 4) continue;
-      const status = rec.slice(0, 2).trim() || rec.slice(0, 2);
-      let path = rec.slice(3);
-      if (/^[RC]/.test(status) && parts[i + 1]) path = parts[++i];
-      changed.push({ path: slash(repo.prefix ? `${repo.prefix}/${path}` : path), status });
-    }
+    for (const row of repo.changed || []) changed.push({
+      path: slash(repo.prefix ? `${repo.prefix}/${row.path}` : row.path),
+      status: row.status,
+    });
   }
   const head = repos.length
     ? repos.map((r) => `${r.name}:${r.head || 'unknown'}`).join(',')

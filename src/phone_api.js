@@ -31,10 +31,17 @@ function readBody(req) {
 // than the operator's last reply in that session (an answer marks everything before it read — the
 // design's "replying clears unread", enforced structurally).
 const _unread = db.prepare(`
+  WITH last_in AS (
+    SELECT session_id, MAX(ts) last_ts
+    FROM messages
+    WHERE direction = 'in'
+    GROUP BY session_id
+  )
   SELECT m.session_id sid, COUNT(*) n, MAX(m.ts) last_ts
   FROM messages m
+  LEFT JOIN last_in i ON i.session_id = m.session_id
   WHERE m.direction = 'out' AND m.read_at IS NULL
-    AND m.ts > COALESCE((SELECT MAX(ts) FROM messages i WHERE i.session_id = m.session_id AND i.direction = 'in'), 0)
+    AND m.ts > COALESCE(i.last_ts, 0)
   GROUP BY m.session_id`);
 const _lastKey = db.prepare(`
   SELECT id, text, ts FROM messages
@@ -90,7 +97,7 @@ route('POST', '/api/messages/read', async (req, res) => {
 route('GET', '/api/phone/home', async (req, res) => {
   const unread = unreadBySession();
   const rows = db.prepare(`
-    SELECT s.id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, p.name AS project
+    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, p.name AS project
     FROM sessions s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.last_activity DESC LIMIT 120`).all();
   const sessions = rows.map((s) => {
     const u = unread.get(s.id);
