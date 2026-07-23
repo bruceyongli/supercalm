@@ -100,6 +100,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.doesNotMatch(phone, /storyFor|story_api|deriveQuestion/, 'home never parses transcripts');
   assert.match(phone, /WITH last_in AS/, 'home unread state is computed with a set-based aggregate');
   assert.doesNotMatch(phone, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'home has no per-message correlated reply lookup');
+  assert.match(phone, /idx_messages_unread_out_session_ts/, 'home unread scanning stays on a compact partial index');
   const projects = read('web/views/projects.js');
   assert.match(projects, /getHome\(\)/, 'Projects reuses the normalized shell snapshot');
   assert.doesNotMatch(projects, /api\('api\/phone\/home'\)/, 'Projects does not refetch the session collection');
@@ -123,6 +124,9 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(usage, /export function usageDashboardReport/, 'Usage has a lean screen projection');
   const usageApi = read('src/usage.js');
   assert.match(usageApi, /\/api\/usage\/summary/, 'the screen has a dedicated summary endpoint');
+  assert.match(usageApi, /new Worker\(new URL\('\.\/usage_summary_worker\.js'/, 'cold analytics run outside the request event loop');
+  assert.match(usageApi, /Stale-while-revalidate/, 'expired analytics render from cache while refreshing off-thread');
+  assert.match(usageApi, /warmSummaryTimer/, 'the default Usage range is prewarmed after boot');
   const usageView = read('web/views/usage.js');
   assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
   assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),

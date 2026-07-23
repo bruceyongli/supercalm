@@ -27,6 +27,16 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
 {
   const u = unreadBySession().get('s_ph');
   assert.equal(u.n, 2, 'the pre-reply report is structurally read (answering clears history)');
+  const plan = db.prepare(`EXPLAIN QUERY PLAN
+    WITH last_in AS (
+      SELECT session_id, MAX(ts) last_ts FROM messages WHERE direction='in' GROUP BY session_id
+    )
+    SELECT m.session_id
+    FROM messages m LEFT JOIN last_in i ON i.session_id=m.session_id
+    WHERE m.direction='out' AND m.read_at IS NULL AND m.ts>COALESCE(i.last_ts,0)
+    GROUP BY m.session_id`).all();
+  assert(plan.some((row) => /idx_messages_in_session_ts/.test(row.detail)), 'last replies use the compact partial index');
+  assert(plan.some((row) => /idx_messages_unread_out_session_ts/.test(row.detail)), 'unread reports use the compact partial index');
 }
 
 // ---- read_at column exists (additive migration) and the read UPDATE clears by ids and by session ---
@@ -83,6 +93,8 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.match(src, /read_at IS NULL/, 'unread respects server-side read state');
   assert.match(src, /WITH last_in AS/, 'unread derives the last operator reply once per session');
   assert.doesNotMatch(src, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'unread never repeats a correlated MAX query for every message');
+  assert.match(src, /idx_messages_in_session_ts/, 'last replies use a compact partial index');
+  assert.match(src, /idx_messages_unread_out_session_ts/, 'unread reports use a compact partial index');
   assert.match(src, /s\.project_id/, 'home rows retain their project identity for keyed project counts');
   const ph = readFileSync(new URL('../web/phone.js', import.meta.url), 'utf8');
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
@@ -98,6 +110,15 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
     assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\('phone'\)/, page + ' redirects a phone to the phone triage dashboard');
   }
   assert.match(readFileSync(new URL('../web/session.html', import.meta.url), 'utf8'), /get\('phone'\)[\s\S]*?phone#s\//, 'session.html: ?phone=1 opens the phone session, desktop story otherwise');
+}
+
+// The lean Usage projection is computed in a worker and remains callable in an isolated install.
+{
+  const response = await fetch(`http://127.0.0.1:${port}/api/usage/summary?range=30d`);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(Number(body.totals?.sessions || 0), 0);
 }
 
 console.log('phone_api.test ok');

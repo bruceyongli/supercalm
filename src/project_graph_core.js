@@ -158,11 +158,13 @@ function parseGitStatus(out) {
 }
 
 async function inspectRepo(cwd, { changes = false } = {}) {
-  try {
-    if (changes) {
+  if (changes) {
+    try {
       const out = await git(cwd, ['status', '--porcelain=v2', '--branch', '-z'], { timeout: 2500, maxBuffer: 2_000_000 });
       return parseGitStatus(out);
-    }
+    } catch { return null; } // status already handles unborn repositories; never pay a duplicate timeout
+  }
+  try {
     const out = await git(cwd, ['rev-parse', '--is-inside-work-tree', 'HEAD'], { maxBuffer: 128000, timeout: 1500 });
     const lines = out.trim().split(/\s+/);
     return lines[0] === 'true' ? { head: lines[1] || '', changed: [] } : null;

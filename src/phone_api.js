@@ -22,6 +22,12 @@ function deMarkdown(s) {
 }
 // additive migration: read_at on messages (nullable; desktop ignores it)
 try { db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER'); } catch {}
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_messages_in_session_ts
+    ON messages(session_id, ts) WHERE direction = 'in';
+  CREATE INDEX IF NOT EXISTS idx_messages_unread_out_session_ts
+    ON messages(session_id, ts) WHERE direction = 'out' AND read_at IS NULL;
+`);
 
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
