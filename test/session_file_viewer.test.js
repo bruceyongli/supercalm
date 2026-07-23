@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FILE_REFERENCE_RX, localFilePath } from '../web/file-reference.js';
+import { renderMarkdown } from '../web/common.js';
 
 // Full URLs printed by an agent on this host map back to their local absolute path. Other hosts never
 // do, and the terminal matcher keeps the full URL as one link instead of dropping the "https:" prefix.
@@ -16,6 +17,15 @@ import { FILE_REFERENCE_RX, localFilePath } from '../web/file-reference.js';
   assert.equal(localFilePath('https://elsewhere.test/tmp/secret.txt', host), '');
   FILE_REFERENCE_RX.lastIndex = 0;
   assert.equal(FILE_REFERENCE_RX.exec(`result: ${full}`)?.[0], full);
+}
+
+// Story reports autolink ordinary bare URLs into safe new-tab anchors without nesting an existing
+// markdown link or turning inline code into a link.
+{
+  const html = renderMarkdown('Docs: https://example.com/guide?q=one&x=two. [Status](https://status.example.com) `https://code.example.com`');
+  assert.match(html, /href="https:\/\/example\.com\/guide\?q=one&amp;x=two" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/guide\?q=one&amp;x=two<\/a>\./);
+  assert.equal((html.match(/<a /g) || []).length, 2, 'bare URL plus markdown link, with no nested/double link');
+  assert.match(html, /<code>https:\/\/code\.example\.com<\/code>/, 'inline-code URLs stay code');
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'aios-session-files-'));
@@ -91,8 +101,12 @@ async function waitForRoutes() {
 {
   const src = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
   assert.match(src, /story-body\.md a\[href\]/);
-  assert.match(src, /localFilePath\(link\.getAttribute\('href'\)\)/);
+  assert.match(src, /const href = link\.getAttribute\('href'\)/);
+  assert.match(src, /const path = localFilePath\(href\)/);
+  assert.match(src, /shouldUseFileViewer\(href, path\)/);
   assert.match(src, /openFileViewer\(path\)/);
+  assert.match(src, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/, 'terminal web URLs open in a safe new tab');
+  assert.match(src, /target="_blank" rel="noopener">Open tab ↗<\/a>/, 'file viewer offers a new-tab action');
 }
 
 console.log('session_file_viewer.test ok');

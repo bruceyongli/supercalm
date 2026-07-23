@@ -2756,10 +2756,30 @@ function openComposerAttachmentDetail(a) {
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
 // it's rendered as escaped text (never HTML). Also drives the Knowledge "Files" list via the same viewer.
 const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf']);
+function hasKnownFileExtension(raw) {
+  const path = String(raw || '').split(/[?#]/)[0];
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  return FILE_TOKEN_EXTS.has(ext);
+}
 function looksLikeFile(raw) {
   if (!raw || raw.includes('://')) return false;
-  const ext = (raw.split('.').pop() || '').toLowerCase();
-  return raw.includes('/') || FILE_TOKEN_EXTS.has(ext);
+  return raw.includes('/') || hasKnownFileExtension(raw);
+}
+function isUrlReference(raw) {
+  return /^(?:https?:)?\/\//i.test(cleanFileReference(raw));
+}
+function shouldUseFileViewer(reference, path) {
+  if (!path) return false;
+  if (!isUrlReference(reference)) return looksLikeFile(path);
+  // A same-host URL with a file extension (or an explicit host temp path) is an artifact link.
+  // Same-host application/web routes remain ordinary URLs and open in a new tab.
+  return hasKnownFileExtension(path) || /^\/(?:private\/)?tmp\//.test(path);
+}
+function openUrlInNewTab(raw) {
+  const url = cleanFileReference(raw);
+  if (!/^https?:\/\//i.test(url)) return;
+  const tab = window.open(url, '_blank', 'noopener,noreferrer');
+  if (tab) tab.opener = null;
 }
 let fileViewerBusy = false;
 async function openFileViewer(rawPath) {
@@ -2808,6 +2828,7 @@ async function openFileViewer(rawPath) {
       ${isMd ? `<button class="btn ghost sm on" type="button" data-fv="preview">Preview</button><button class="btn ghost sm" type="button" data-fv="raw">Raw</button>` : ''}
       ${isText ? `<button class="btn ghost sm" type="button" data-fv="copy">Copy</button>` : ''}
       <button class="btn ghost sm" type="button" data-fv="full" title="Fullscreen reading">⛶ Fullscreen</button>
+      <a class="btn ghost sm" href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open tab ↗</a>
       <a class="btn ghost sm" href="${escapeHtml(meta.downloadUrl)}" download>Download</a>
       <span class="count" data-fv="msg"></span>
     </div>`;
@@ -2857,8 +2878,9 @@ window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileV
 document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
   const link = e.target.closest?.('.story-body.md a[href]');
   if (!link) return;
-  const path = localFilePath(link.getAttribute('href'));
-  if (!path || !looksLikeFile(path)) return;
+  const href = link.getAttribute('href');
+  const path = localFilePath(href);
+  if (!shouldUseFileViewer(href, path)) return;
   e.preventDefault();
   e.stopPropagation();
   openFileViewer(path);
@@ -2878,11 +2900,17 @@ if (typeof term.registerLinkProvider === 'function') {
       while ((m = FILE_REFERENCE_RX.exec(text))) {
         const raw = m[0];
         const path = localFilePath(cleanFileReference(raw));
-        if (!looksLikeFile(path)) continue;
+        const fileLink = shouldUseFileViewer(raw, path);
+        const webLink = isUrlReference(raw) && !fileLink;
+        if (!fileLink && !webLink) continue;
         links.push({
           range: { start: { x: m.index + 1, y: bufferLineNumber }, end: { x: m.index + raw.length, y: bufferLineNumber } },
           text: raw,
-          activate: (ev) => { try { ev.preventDefault(); } catch {} openFileViewer(raw); },
+          activate: (ev) => {
+            try { ev.preventDefault(); } catch {}
+            if (fileLink) openFileViewer(raw);
+            else openUrlInNewTab(raw);
+          },
         });
       }
       callback(links.length ? links : undefined);
