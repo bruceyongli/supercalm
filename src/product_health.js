@@ -27,7 +27,9 @@ async function authSnapshot() {
   const base = await withTimeout('auth', authStatus(), 5000);
   const providers = await withTimeout(
     'auth providers',
-    Promise.all(listProviders().map(async (p) => ({ ...p, ...(await providerStatus(p.id)) }))),
+    // Health/Projects need the credential state, not a deep CLI subprocess probe. Antigravity's
+    // `agy models` verification can take seconds and remains available on Auth and at launch time.
+    Promise.all(listProviders().map(async (p) => ({ ...p, ...(await providerStatus(p.id, { includeExtra: false })) }))),
     6000
   );
   return {

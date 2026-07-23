@@ -87,13 +87,13 @@ export async function loggedIn(pid) {
   return !!(cache.get(pid)?.cred || (await readCred(pid)));
 }
 
-export async function status(pid) {
+export async function status(pid, { includeExtra = true } = {}) {
   const p = getProvider(pid);
   const cred = cache.get(pid)?.cred || (await readCred(pid));
   if (!cred) return { loggedIn: false };
   const s = p.status(cred);
   let extra = {};
-  if (typeof p.extraStatus === 'function') {
+  if (includeExtra && typeof p.extraStatus === 'function') {
     const extras = {};
     for (const path of p.extraCredPaths || []) {
       try {

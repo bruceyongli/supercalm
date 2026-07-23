@@ -137,6 +137,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(collector, /SUBSCRIPTION_CACHE_MS/, 'slow fleet quota probes have a bounded cache');
   const health = read('src/product_health.js');
   assert.match(health, /GRAPH_SNAPSHOT_CACHE_MS/, 'project graph status is reused across nearby views');
+  assert.match(health, /providerStatus\(p\.id, \{ includeExtra: false \}\)/,
+    'Health never blocks page rendering on a deep CLI sign-in subprocess');
   const graph = read('src/project_graph_core.js');
   assert.match(graph, /mapLimit\(candidates, 8/, 'multi-repo project discovery is bounded and parallel');
   assert.match(graph, /status', '--porcelain=v2', '--branch'/, 'graph freshness gets identity and changes in one git process');
