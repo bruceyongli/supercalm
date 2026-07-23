@@ -40,6 +40,10 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.doesNotMatch(session, /api\('api\/launch-options'\)/, 'session mount has no independent launch-options fetch');
   assert.match(session, /if \(storyLoadPromise\) return storyLoadPromise/, 'Story initialization is in-flight coalesced');
   assert.match(session, /latestSessionInfo\.status === 'starting'/, 'terminal SSE is deferred while launch is Starting');
+  const infoDeclaration = session.indexOf('let latestSessionInfo = null');
+  const initialViewMount = session.indexOf('setMainView(activeMainView);');
+  assert.ok(infoDeclaration >= 0 && infoDeclaration < initialViewMount,
+    'session info state is initialized before a persisted Terminal view can synchronously read it');
   assert.match(session, /termTextarea\.name = 'terminal-input'/, 'xterm helper has a stable form-field name');
   assert.match(session, /<select name="session-\$\{escapeHtml\(key\)\}"/, 'dynamic session setting selects have stable names');
   const phoneUi = read('web/phone.js');

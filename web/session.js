@@ -160,6 +160,11 @@ export function mountSession(hostEl, { id: startId = '', embedded = true } = {})
   const _sig = _ac.signal;
   const _timers = [];
   const _obs = [];
+  // Initialize session identity state before setMainView() can synchronously enter the persisted
+  // Terminal view. ensureTerminalData() reads this state, so declaring it with the header helpers
+  // below left Terminal-preferring mounts in the temporal dead zone and aborted the entire view.
+  let latestSessionInfo = null;
+  let sessionInfoRequest = null;
 
 // ---- split layout -----------------------------------------------------------
 const shell = $('#session-shell');
@@ -1582,8 +1587,6 @@ const TITLE_ICON_SAVE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2
 const TITLE_ICON_CANCEL = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18"></path><path d="M6 6l12 12"></path></svg>';
 let titleEditing = false;
 let titleBusy = false;
-let latestSessionInfo = null;
-let sessionInfoRequest = null;
 
 function fetchSessionInfo(reqId = id) {
   if (sessionInfoRequest?.id === reqId) return sessionInfoRequest.promise;
