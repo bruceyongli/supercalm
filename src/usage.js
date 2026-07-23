@@ -140,6 +140,7 @@ route('POST', '/api/hook/agy/statusline', async (req, res) => {
 startUsageCollector();
 const warmSummaryTimer = setTimeout(() => {
   refreshSummary(filters(new URLSearchParams({ range: '30d' }))).catch(() => {});
+  subscriptionStatus().catch(() => {});
 }, 1000);
 warmSummaryTimer.unref?.();
 console.log('[aios] usage monitor ready (/api/usage)');

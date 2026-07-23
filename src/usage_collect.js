@@ -758,8 +758,7 @@ async function buildSubscriptionStatus() {
 const SUBSCRIPTION_CACHE_MS = Math.max(1000, Number(process.env.AIOS_SUBSCRIPTION_CACHE_MS || 30000));
 let subscriptionCache = null;
 let subscriptionFlight = null;
-export async function subscriptionStatus() {
-  if (subscriptionCache && now() - subscriptionCache.at < SUBSCRIPTION_CACHE_MS) return subscriptionCache.value;
+function refreshSubscriptionStatus() {
   if (subscriptionFlight) return subscriptionFlight;
   subscriptionFlight = buildSubscriptionStatus()
     .then((value) => {
@@ -768,6 +767,18 @@ export async function subscriptionStatus() {
     })
     .finally(() => { subscriptionFlight = null; });
   return subscriptionFlight;
+}
+
+export async function subscriptionStatus() {
+  if (subscriptionCache) {
+    // Quota probes include external CLI/proxy calls. Once a snapshot exists, keep the Usage
+    // screen instant and refresh an expired snapshot in the background.
+    if (now() - subscriptionCache.at >= SUBSCRIPTION_CACHE_MS) {
+      refreshSubscriptionStatus().catch(() => {});
+    }
+    return subscriptionCache.value;
+  }
+  return refreshSubscriptionStatus();
 }
 
 export function startUsageCollector() {

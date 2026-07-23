@@ -127,6 +127,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(usageApi, /new Worker\(new URL\('\.\/usage_summary_worker\.js'/, 'cold analytics run outside the request event loop');
   assert.match(usageApi, /Stale-while-revalidate/, 'expired analytics render from cache while refreshing off-thread');
   assert.match(usageApi, /warmSummaryTimer/, 'the default Usage range is prewarmed after boot');
+  assert.match(usageApi, /subscriptionStatus\(\)\.catch/, 'the Usage quota snapshot is prewarmed after boot');
   assert.match(usageApi, /relativeRange/, 'relative Usage ranges keep a stable snapshot-cache identity');
   assert.match(
     usageApi,
@@ -137,6 +138,13 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
   assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),
     'quota and usage requests start concurrently');
+  const usageCollector = read('src/usage_collect.js');
+  assert.match(usageCollector, /refreshSubscriptionStatus\(\)\.catch/, 'stale quota snapshots refresh in the background');
+  assert.match(
+    usageCollector,
+    /if \(subscriptionCache\)[\s\S]*return subscriptionCache\.value/,
+    'an expired quota snapshot remains immediately renderable while its refresh runs',
+  );
   const collector = read('src/usage_collect.js');
   assert.match(collector, /const codexRequest[\s\S]*const claudeRequest[\s\S]*const overviewRequest[\s\S]*await codexRequest/,
     'independent quota probes start before the first await');
