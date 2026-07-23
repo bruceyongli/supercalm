@@ -1,7 +1,7 @@
 // Desktop home = the app-shell (web/shell.js) + the Inbox triage in the main column. The shell (left
 // sidebar, ⌘K palette, launch modal, toast, live loop) is shared with every other page; this file only
 // owns the Inbox. Data: the phone contract's triage endpoint via the shell's load, handed to renderInbox.
-import { mountShell, getHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
+import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
@@ -115,10 +115,7 @@ async function answer(card, text) {
   const reportId = Number(getHome().sessions?.find((s) => s.id === sid)?.last_key?.id) || null;
   try {
     await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, source: 'text' }) });
-    card.style.opacity = '0.55';
-    card.querySelector('.dk-card-actions').innerHTML = `<span class="dk-answered">✓ answered "${esc(text.slice(0, 24))}" — session resumed</span>`;
-    card.querySelector('.dk-card-opts')?.remove();
-    card.querySelector('.dk-reply')?.remove();
+    upsertSession({ id: sid, status: 'working', question: null, summary: null, category: null, unread: 0 });
     toast('Sent — session resumed');
     api('api/messages/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }) }).catch(() => {});
   } catch (e) { toast('⚠ ' + (e.message || e)); }
@@ -218,3 +215,12 @@ mountShell({ onData: renderInbox, activeNav: 'inbox' });
 // dropped in the home-flip to this shell). Reuses the existing voice concierge.
 const voiceBtn = document.getElementById('dk-voice');
 if (voiceBtn) voiceBtn.onclick = () => startVoiceMode();
+const refreshBtn = document.getElementById('dk-needs-refresh');
+if (refreshBtn) refreshBtn.onclick = async () => {
+  refreshBtn.disabled = true;
+  refreshBtn.textContent = '↻ Refreshing…';
+  const ok = await refreshHome();
+  refreshBtn.disabled = false;
+  refreshBtn.textContent = '↻ Refresh';
+  toast(ok ? 'Needs you refreshed' : 'Refresh failed — showing the last known list');
+};

@@ -1,7 +1,7 @@
 // SPA dashboard view (the "Needs you" inbox + sessions list). Mounts into #view; subscribes to the shared
 // home-data loop; tears the subscription down on leave. Logic mirrors the legacy desktop.js (which the
 // server cutover will retire). View contract: export init(host, params) + teardown().
-import { getHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
+import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
 // cards/rows show the full first line (the rail keeps shortTitle); CSS ellipsizes/clamps per width
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
@@ -174,10 +174,9 @@ async function answer(card, text) {
   const reportId = Number(getHome().sessions?.find((s) => s.id === sid)?.last_key?.id) || null;
   try {
     await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, source: 'text' }) });
-    card.style.opacity = '0.55';
-    card.querySelector('.dk-card-actions').innerHTML = `<span class="dk-answered">✓ answered "${esc(text.slice(0, 24))}" — session resumed</span>`;
-    card.querySelector('.dk-card-opts')?.remove();
-    card.querySelector('.dk-reply')?.remove();
+    // The send succeeded, so clear this report from the shared queue immediately instead of leaving an
+    // "answered" card behind until a later SSE event or the two-minute recovery poll.
+    upsertSession({ id: sid, status: 'working', question: null, summary: null, category: null, unread: 0 });
     toast('Sent — session resumed');
     api('api/messages/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }) }).catch(() => {});
   } catch (e) { toast('⚠ ' + (e.message || e)); }
@@ -284,7 +283,10 @@ export function init(el) {
       <section id="dk-inbox" data-dk-inbox>
         <div class="dk-page-head">
           <h1>Needs you <span class="dk-badge warn" id="dk-needs-count" hidden></span></h1>
-          <button class="dk-voice" id="dk-voice" title="Hands-free pass over the needs-you queue">● Voice</button>
+          <div class="dk-page-actions">
+            <button class="dk-refresh" id="dk-needs-refresh" title="Refresh Needs you from the server">↻ Refresh</button>
+            <button class="dk-voice" id="dk-voice" title="Hands-free pass over the needs-you queue">● Voice</button>
+          </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
         <div class="dk-sec-row">SESSIONS</div>
@@ -293,6 +295,17 @@ export function init(el) {
     </div>`;
   const voice = $('#dk-voice');
   if (voice) voice.onclick = () => startVoiceMode();
+  const refresh = $('#dk-needs-refresh');
+  if (refresh) refresh.onclick = async () => {
+    refresh.disabled = true;
+    refresh.textContent = '↻ Refreshing…';
+    const ok = await refreshHome();
+    if (host) {
+      refresh.disabled = false;
+      refresh.textContent = '↻ Refresh';
+    }
+    toast(ok ? 'Needs you refreshed' : 'Refresh failed — showing the last known list');
+  };
   unsub = subscribeHome(renderInbox); // fires immediately with current home, then on every poll
 }
 

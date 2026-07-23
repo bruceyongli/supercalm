@@ -480,8 +480,13 @@ export function toast(msg) {
 let loadPromise = null;
 async function load() {
   if (loadPromise) return loadPromise;
-  loadPromise = api('api/phone/home').then(replaceHome).catch(() => {}).finally(() => { loadPromise = null; });
+  loadPromise = api('api/phone/home').then((next) => { replaceHome(next); return true; }).catch(() => false).finally(() => { loadPromise = null; });
   return loadPromise;
+}
+// Explicit operator recovery path for the Needs-you queue. SSE remains the ordinary update transport;
+// this fetches the authoritative home projection immediately when the operator suspects a missed event.
+export async function refreshHome() {
+  return load();
 }
 
 // Mount the shell on the current page. `onData(home)` runs after each refresh (pages render their own

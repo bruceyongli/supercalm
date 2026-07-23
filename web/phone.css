@@ -49,6 +49,9 @@ a { color: var(--blue); text-decoration: none; }
 .home-scroll { padding: 14px 14px calc(var(--sab) + 70px); display: flex; flex-direction: column; gap: 10px; }
 .sec-label { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; color: var(--tx-mut); padding: 0 4px; display: flex; align-items: center; gap: 8px; }
 .sec-label .cnt { min-width: 18px; height: 18px; border-radius: 9px; background: rgba(226,178,62,.16); color: var(--yellow); font-size: 11px; display: inline-flex; align-items: center; justify-content: center; padding: 0 5px; }
+.ph-needs-refresh { margin-left: auto; border: 1px solid var(--bd-strong); border-radius: 9px; background: var(--bg-row); color: var(--tx-mut); min-height: 34px; padding: 5px 9px; font-size: 10.5px; font-weight: 700; letter-spacing: 0; }
+.ph-needs-refresh:active { background: var(--bd-soft2); color: var(--tx); }
+.ph-needs-refresh:disabled { opacity: .55; }
 .needcard { position: relative; background: var(--bg-card); border: 1px solid var(--bd-card); border-radius: 14px; padding: 13px 13px 12px 17px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .needcard:active { background: #131a24; }
 .needcard .strip { position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; }

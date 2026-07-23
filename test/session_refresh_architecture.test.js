@@ -78,9 +78,15 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(shell, /s\.status === 'working' \? 'ok pulse'/, 'working rail dots use the slow pulse');
   assert.match(shell, /patchRailSession\(el, fresh\)/, 'sidebar activity patches retain the existing session row');
   assert.match(shell, /syncAttributes\(currentDot, nextDot\)/, 'sidebar status changes patch the connected dot instead of recreating it');
+  assert.match(shell, /export async function refreshHome/, 'Needs you exposes an explicit server-truth refresh path');
   assert.match(css, /\.dk-dot\s*\{[^}]*flex:\s*0 0 7px[^}]*border-radius:\s*50%/, 'status dots cannot flex-shrink into pipes');
   assert.match(css, /\.dk-dot\.pulse\s*\{[^}]*2\.8s/, 'working status uses a slow blink instead of rapid flashing');
   assert.match(dash, /data-dk-dismiss/, 'Needs-you cards have a visible dismiss action');
+  assert.match(dash, /id="dk-needs-refresh"/, 'desktop Needs you has a visible manual refresh control');
+  assert.match(dash, /upsertSession\(\{ id: sid, status: 'working', question: null, summary: null, category: null, unread: 0 \}\)/,
+    'a successful text reply immediately clears its answered report from the shared queue');
+  const phoneUi = read('web/phone.js');
+  assert.match(phoneUi, /id="refresh-needs"/, 'phone Needs you has a visible manual refresh control');
   assert.match(dash, /through_id:\s*reportId/, 'dismissal is bounded to the currently visible report');
   assert.match(dash, /upsertSession\(\{ id: sid, unread:/, 'dismissal removes the report without mutating lifecycle status');
   assert.doesNotMatch(dash.slice(dash.indexOf('async function dismiss'), dash.indexOf('function wireCards')), /stop|kill/i,

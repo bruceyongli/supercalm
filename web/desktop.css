@@ -157,6 +157,10 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-main > header .spacer { display: none; }
 .dk-page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; }
 .dk-page-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0; display: flex; align-items: center; gap: 10px; }
+.dk-page-actions { display: flex; align-items: center; gap: 8px; }
+.dk-refresh { background: none; border: 1px solid #303b4a; color: #9aa7b8; border-radius: 10px; padding: 7px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.dk-refresh:hover { background: #131a24; color: #d4dbe5; }
+.dk-refresh:disabled { opacity: .55; cursor: wait; }
 .dk-voice { background: none; border: 1px solid #2ea043; color: #4ecb6c; border-radius: 10px; padding: 7px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .dk-voice:hover { background: rgba(63, 191, 95, .08); }
 .dk-voice.listening { border-color: #f2554d; color: #f2554d; animation: dkpulse 1.4s ease-in-out infinite; }

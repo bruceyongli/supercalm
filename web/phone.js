@@ -119,6 +119,7 @@ function digestOf(text) {
 
 // ---- data --------------------------------------------------------------------------------------
 async function loadHome() {
+  let ok = false;
   try {
     const next = await api('api/phone/home');
     if (S.home?.sessions?.length && next?.sessions?.length) {
@@ -131,8 +132,10 @@ async function loadHome() {
       next.sessions = [...newcomers, ...retained, ...next.sessions.filter((session) => !placed.has(session.id))];
     }
     S.home = next;
+    ok = true;
   } catch { /* keep stale */ }
   if (S.screen === 'home') renderSoft();
+  return ok;
 }
 async function loadDetail(sid) {
   try {
@@ -615,7 +618,7 @@ function renderHome() {
       <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
     </div>
     <div class="scroll home-scroll">
-      <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span></div>
+      <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span><button class="ph-needs-refresh" id="refresh-needs" aria-label="Refresh Needs you from the server">↻ Refresh</button></div>
       ${needs.length ? needCards : `
         <div class="allclear"><span class="check">✓</span><span class="t">All clear — nothing needs you.</span></div>`}
       ${stale.length ? `<div class="stale-strip">▸ ${stale.length} stale session${stale.length === 1 ? '' : 's'} waiting — no touch from you in days (replying re-heats)</div>` : ''}
@@ -826,6 +829,12 @@ function mountPanels() {
 // ---- wiring (event delegation after each render) ---------------------------------------------------
 function wire() {
   // home
+  $('#refresh-needs')?.addEventListener('click', async () => {
+    const button = $('#refresh-needs');
+    if (button) { button.disabled = true; button.textContent = '↻ Refreshing…'; }
+    const ok = await loadHome();
+    toast(ok ? 'Needs you refreshed' : 'Refresh failed — showing the last known list');
+  });
   $('#play-home')?.addEventListener('click', () => {
     if (V.on) return voiceModeEnd('user');
     voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
