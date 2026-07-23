@@ -344,6 +344,7 @@ term.open(termEl);
 // via keydown below and forward them to the live pane, which keeps the terminal interactive.
 const termTextarea = term.textarea;
 if (termTextarea) {
+  termTextarea.name = 'terminal-input';
   termTextarea.readOnly = true;
   termTextarea.tabIndex = -1;
   termTextarea.setAttribute('aria-hidden', 'true');
@@ -2351,7 +2352,7 @@ async function loadMap() {
 function renderSettings(s, tmeta) {
   const box = $('#s-settings');
   const sel = (label, key, options, cur) =>
-    `<label class="setting setting-select setting-${escapeHtml(key)}"><select data-set="${key}" aria-label="${escapeHtml(label)}">` +
+    `<label class="setting setting-select setting-${escapeHtml(key)}"><select name="session-${escapeHtml(key)}" data-set="${key}" aria-label="${escapeHtml(label)}">` +
     options.map((o) => `<option value="${escapeHtml(o.v)}" ${o.v === cur ? 'selected' : ''}>${escapeHtml(o.l)}</option>`).join('') +
     `</select></label>`;
   const toggle = (label, key, on) =>

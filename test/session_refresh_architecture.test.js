@@ -40,6 +40,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.doesNotMatch(session, /api\('api\/launch-options'\)/, 'session mount has no independent launch-options fetch');
   assert.match(session, /if \(storyLoadPromise\) return storyLoadPromise/, 'Story initialization is in-flight coalesced');
   assert.match(session, /latestSessionInfo\.status === 'starting'/, 'terminal SSE is deferred while launch is Starting');
+  assert.match(session, /termTextarea\.name = 'terminal-input'/, 'xterm helper has a stable form-field name');
+  assert.match(session, /<select name="session-\$\{escapeHtml\(key\)\}"/, 'dynamic session setting selects have stable names');
   const phoneUi = read('web/phone.js');
   assert.doesNotMatch(phoneUi, /loadUsage\(\)/, 'phone navigation does not eagerly load hidden Usage');
   const dash = read('web/views/dashboard.js');
