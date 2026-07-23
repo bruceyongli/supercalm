@@ -41,6 +41,14 @@ import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
 import { isGitRepo, ensureWorktree, removeWorktree } from './worktrees.js';
+import {
+  attentionUnreadCount,
+  clearAttentionDismissal,
+  createAttentionReport,
+  getAttentionDismissal,
+  markAttentionReportRead,
+} from './attention_store.js';
+import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -468,7 +476,7 @@ function register(s) {
     offset: 0,
     subscribers: new Set(),
     lastHash: null,
-    lastChange: now(),
+    lastChange: initialMonitorLastChange(s),
     startedAt: now(), // (re)launch time — the SHELLS-exit check is graced for LAUNCH_GRACE_MS after this
   };
   try {
@@ -1172,11 +1180,7 @@ async function pollOnce() {
       }
     }
     const h = hash(stableSnap(snap));
-    const changed = h !== entry.lastHash;
-    if (changed) {
-      entry.lastHash = h;
-      entry.lastChange = now();
-    }
+    const changed = observeMonitorSnapshot(entry, h, s.status);
     const idleMs = now() - entry.lastChange;
 
     // PARKED lifecycle (park.js, traceability A3): byte-still beyond the threshold -> flag + one
@@ -1259,7 +1263,8 @@ async function pollOnce() {
 function applyStatus(s, status, question, activityBump) {
   const patch = {};
   if (status && status !== s.status) patch.status = status;
-  if ((question ?? null) !== (s.question ?? null)) patch.question = question ?? null;
+  const questionChanged = (question ?? null) !== (s.question ?? null);
+  if (questionChanged) patch.question = question ?? null;
   if (activityBump) patch.last_activity = now();
   const wasWaiting = s.status === 'waiting';
   const nowWaiting = status === 'waiting';
@@ -1276,8 +1281,14 @@ function applyStatus(s, status, question, activityBump) {
   // longer invalidates or refetches a list; clients update only this session's keyed row.
   emitSessionStatus(updated, { previousStatus: s.status, source: 'poll' });
   if (nowWaiting && !wasWaiting) {
-    const reportMessage = question ? store.addMessage(s.id, 'out', 'detect', question) : null;
-    runSummary(s.id, reportMessage); // async: LLM summary+category, then fires 'waiting' (push)
+    const report = createAttentionReport(s.id, question || s.question || s.title || 'Waiting for your input');
+    runSummary(s.id, report); // async: LLM summary+category, then fires 'waiting' (push)
+  } else if (nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal(s.id)) {
+    // Some TUIs replace one prompt with another without an observable Working interval. A changed,
+    // persisted ask is still a new attention episode; an exact detector/summary wording round-trip is
+    // rejected by createAttentionReport and leaves the dismissal intact.
+    const report = createAttentionReport(s.id, question);
+    if (report.created) runSummary(s.id, report);
   }
   bus.emit('changed');
 }
@@ -1308,7 +1319,7 @@ export function noteReply(sid) {
 }
 
 // Summarize a freshly-waiting session via the proxy LLM, then notify (once per episode).
-async function runSummary(sid, reportMessage = null) {
+async function runSummary(sid, report = null) {
   let snap = '';
   try {
     snap = await snapshot(sid);
@@ -1328,11 +1339,16 @@ async function runSummary(sid, reportMessage = null) {
   // reparsing a growing transcript every time a browser wants a status row.
   const curatedQuestion = String(result?.ask || cur.question || summary).replace(/\s+/g, ' ').trim().slice(0, 2000);
   const updated = store.updateSession(sid, { summary, category, stage, question: curatedQuestion || null });
+  const isNewAttention = category !== 'working' && !!report?.created;
+  if (isNewAttention) clearAttentionDismissal(sid);
+  if (category === 'working' && report?.created && report?.message?.id) {
+    markAttentionReportRead(report.message.id);
+  }
   // Record the decision event: the model-distilled CORE ask (the agent's reasoning + background +
   // the actual question — NO terminal trash) plus the summary/category. Your reply is linked later
   // (answerPendingDecision). For quick history + future decision-model training.
   try {
-    if (category !== 'working') { // a real ask (decision/action/review), not a working false-positive
+    if (isNewAttention) { // a real new ask, not a working false-positive or duplicate report
       const ask = String(curatedQuestion || summary || '').trim().slice(0, 2000);
       const project = cur.project_id ? store.getProject(cur.project_id) : null;
       store.createDecision({ session_id: sid, project_id: cur.project_id, project: project?.name || null, tool: cur.tool, model: cur.model, asked_at: now(), category, summary, question: curatedQuestion || null, ask });
@@ -1340,13 +1356,18 @@ async function runSummary(sid, reportMessage = null) {
   } catch (e) {
     console.error('[aios] record decision failed:', e.message);
   }
-  bus.emit('waiting', { session: sid, summary, category });
+  if (isNewAttention) bus.emit('waiting', { session: sid, summary, category });
+  const dismissal = getAttentionDismissal(sid);
   emitSessionStatus(updated, {
     previousStatus: 'waiting',
     source: 'summary',
     extra: {
-      unread: 1,
-      ...(reportMessage ? { last_key: { id: reportMessage.id, text: curatedQuestion || summary, ts: reportMessage.ts } } : {}),
+      unread: attentionUnreadCount(sid),
+      dismissed: !!dismissal,
+      dismissed_at: dismissal?.dismissed_at || null,
+      dismissed_report_id: dismissal?.report_id || null,
+      dismissed_report_text: dismissal?.report_text || null,
+      ...(report?.message ? { last_key: { id: report.message.id, text: curatedQuestion || summary, ts: report.message.ts } } : {}),
     },
   });
   bus.emit('changed');

@@ -70,6 +70,7 @@ try {
   for (const id of [
     '0001_sessions_complete_shape',
     '0002_message_read_state',
+    '0003_attention_dismissals',
     '0100_project_helpers_complete_shape',
     '0101_session_labels_semantic_grouping',
     '0102_session_label_preferences',

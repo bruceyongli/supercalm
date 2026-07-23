@@ -1,7 +1,7 @@
 // Desktop home = the app-shell (web/shell.js) + the Inbox triage in the main column. The shell (left
 // sidebar, ⌘K palette, launch modal, toast, live loop) is shared with every other page; this file only
 // owns the Inbox. Data: the phone contract's triage endpoint via the shell's load, handed to renderInbox.
-import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
+import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
@@ -10,6 +10,7 @@ const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e']
 const $ = (s) => document.querySelector(s);
 const STOPPED_SHOWN = 10; // how many stopped sessions to show before the "show all N" toggle
 let stoppedExpanded = false; // persists across SSE re-renders so the list doesn't collapse under the user
+let dismissedExpanded = false;
 const choiceSelections = new Map();
 
 // ---- inbox -----------------------------------------------------------------------------------------
@@ -82,6 +83,19 @@ function renderInbox(home) {
        <button class="dk-new" id="dk-hero-start">▶ Start first session</button>
        <span class="foot">⌘K jumps anywhere · Settings keeps every setup step</span></div>`
     : '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>');
+  const dismissed = dismissedAttention();
+  $('#dk-dismissed-section').hidden = !dismissed.length;
+  $('#dk-dismissed-count').textContent = dismissed.length;
+  $('#dk-dismissed-toggle').setAttribute('aria-expanded', dismissedExpanded ? 'true' : 'false');
+  $('[data-dk-dismissed-chevron]').textContent = dismissedExpanded ? '▾' : '▸';
+  const dismissedRows = $('#dk-dismissed-rows');
+  dismissedRows.hidden = !dismissedExpanded;
+  dismissedRows.innerHTML = dismissed.map((s) => `
+    <div class="dk-dismissed-row" data-dk-dismissed-row data-sid="${esc(s.id)}">
+      <a href="session?id=${esc(s.id)}"><span class="dk-dismissed-name">${esc(shortTitle(s))}</span><span class="dk-dismissed-msg">${esc((s.dismissed_report_text || s.question || s.summary || '').slice(0, 220))}</span></a>
+      <span class="dk-dismissed-time">${fmtAgo(s.dismissed_at)} ago</span>
+      <button data-dk-restore title="Put this unresolved report back in Needs you">Restore</button>
+    </div>`).join('');
   // Sessions list lives HERE in the page body (not the side rail): live sessions first, then a muted
   // STOPPED section (operator: stopped sessions belong on the page, not crammed into the nav rail).
   const all = home.sessions || [];
@@ -130,12 +144,34 @@ async function dismiss(card) {
     const result = await api('api/messages/read', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }),
+      body: JSON.stringify({ session_id: sid, dismiss: true, ...(reportId ? { through_id: reportId } : {}) }),
     });
-    upsertSession({ id: sid, unread: Number(result?.unread) || 0 });
-    toast('Dismissed — it will return when there is a new report');
+    const wasDismissed = result?.dismissal?.dismissed !== false;
+    upsertSession({
+      id: sid,
+      unread: Number(result?.unread) || 0,
+      dismissed: wasDismissed,
+      dismissed_at: wasDismissed ? (result?.dismissal?.dismissed_at || Date.now()) : null,
+      dismissed_report_id: wasDismissed ? (result?.dismissal?.report_id || reportId) : null,
+      dismissed_report_text: wasDismissed ? (result?.dismissal?.report_text || null) : null,
+    });
+    toast(wasDismissed ? 'Dismissed — it will return when there is a new report' : 'A newer report arrived — still in Needs you');
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Dismiss'; }
+    toast('⚠ ' + (e.message || e));
+  }
+}
+
+async function restoreDismissed(row) {
+  const sid = row.dataset.sid;
+  const button = row.querySelector('[data-dk-restore]');
+  if (button) { button.disabled = true; button.textContent = 'Restoring…'; }
+  try {
+    const result = await api(`api/attention/${sid}/restore`, { method: 'POST' });
+    upsertSession({ id: sid, unread: Number(result?.unread) || 0, dismissed: false, dismissed_at: null, dismissed_report_id: null, dismissed_report_text: null });
+    toast(result?.reopened ? 'Restored to Needs you' : 'Removed from Dismissed');
+  } catch (e) {
+    if (button) { button.disabled = false; button.textContent = 'Restore'; }
     toast('⚠ ' + (e.message || e));
   }
 }
@@ -178,6 +214,15 @@ async function submitChoices(card, session, questions) {
 function wireCards() {
   const hero = document.getElementById('dk-hero-start');
   if (hero) hero.onclick = () => openLaunch(); // not a direct handler — the click event must not become openLaunch's opts
+  const dismissedToggle = $('#dk-dismissed-toggle');
+  if (dismissedToggle) dismissedToggle.onclick = () => {
+    dismissedExpanded = !dismissedExpanded;
+    renderInbox(getHome());
+  };
+  for (const row of document.querySelectorAll('[data-dk-dismissed-row]')) {
+    const restore = row.querySelector('[data-dk-restore]');
+    if (restore) restore.onclick = () => restoreDismissed(row);
+  }
   for (const card of document.querySelectorAll('[data-dk-card]')) {
     const session = getHome().sessions?.find((s) => s.id === card.dataset.sid);
     const questions = session ? optionQuestions(session) : [];

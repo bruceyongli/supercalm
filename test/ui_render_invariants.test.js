@@ -49,7 +49,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const desk = read('desktop.js');
   const ri = desk.indexOf('function renderInbox');
   assert.ok(ri > 0, 'renderInbox exists');
-  const inbox = desk.slice(ri, ri + 4200);
+  const inbox = desk.slice(ri, ri + 7000);
   assert.ok(/!== 'working'/.test(inbox) && /!== 'waiting'/.test(inbox), 'renderInbox keeps a stopped bucket for the page body');
   assert.ok(/STOPPED/.test(inbox), 'renderInbox renders a STOPPED section in the page body (#dk-rows)');
   assert.ok(/dk-rows/.test(inbox), 'the STOPPED section targets the page-body #dk-rows list');

@@ -35,6 +35,7 @@ const S = {
   rec: { t0: 0, timer: null, media: null, chunks: [] }, draft: '',
   killArmed: false, killTimer: null,
   toast: '', toastTimer: null,
+  dismissedOpen: false,
 };
 
 // ---- utils -------------------------------------------------------------------------------------
@@ -162,6 +163,7 @@ function patchSession(payload) {
     waiting: sessions.filter((s) => s.status === 'waiting').length,
     working: sessions.filter((s) => s.status === 'working').length,
     live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
+    dismissed: sessions.filter((s) => s.dismissed).length,
   };
   if (S.detail?.id === payload.session) S.detail = { ...S.detail, ...patch };
   if (S.screen === 'home' || S.sid === payload.session) renderSoft();
@@ -541,8 +543,10 @@ function renderHome() {
   const sessions = S.home?.sessions || [];
   const counts = S.home?.counts || { waiting: 0, working: 0, live: 0 };
   const live = sessions.filter((s) => ['working', 'waiting'].includes(s.status) && !s.parked);
-  const needs = live.filter((s) => s.unread > 0 && s.status === 'waiting');
-  const stale = sessions.filter((s) => (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
+  const needs = live.filter((s) => !s.dismissed && s.unread > 0 && s.status === 'waiting');
+  const dismissed = sessions.filter((s) => s.dismissed)
+    .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
+  const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
   const playing = S.playScope === 'home' || V.on;
   const playLabel = V.on ? '■ End voice session' : totalUnread ? `▶ Play ${totalUnread} unread` : 'Voice — ask anything';
@@ -591,6 +595,15 @@ function renderHome() {
       </div>
     </div>`;
   }).join('');
+  const dismissedRows = dismissed.map((s) => `
+    <div class="ph-dismissed-row" data-open="${esc(s.id)}">
+      <div class="ph-dismissed-copy">
+        <b>${esc(s.title || s.id)}</b>
+        <span>${esc(String(s.dismissed_report_text || s.question || s.summary || '').slice(0, 180))}</span>
+      </div>
+      <span class="ph-dismissed-time">${ago(s.dismissed_at)}</span>
+      <button data-restore-attention="${esc(s.id)}">Restore</button>
+    </div>`).join('');
 
   const sessRow = (s) => `
     <button class="sessrow" data-open="${esc(s.id)}">
@@ -600,7 +613,7 @@ function renderHome() {
       <span class="sessstatus" style="color:${statusColor(s.status)}">${statusWord(s.status)}</span>
       <span class="sesstime">${ago(s.last_activity)}</span>
     </button>`;
-  const rows = live.filter((s) => !needs.includes(s)).map(sessRow).join('');
+  const rows = live.filter((s) => !needs.includes(s) && !s.dismissed).map(sessRow).join('');
   // Every session, not just the live ones (operator: the mobile view must reach ALL sessions).
   const others = sessions.filter((s) => !['working', 'waiting'].includes(s.status));
   const otherRows = others.map(sessRow).join('');
@@ -622,6 +635,12 @@ function renderHome() {
       ${needs.length ? needCards : `
         <div class="allclear"><span class="check">✓</span><span class="t">All clear — nothing needs you.</span></div>`}
       ${stale.length ? `<div class="stale-strip">▸ ${stale.length} stale session${stale.length === 1 ? '' : 's'} waiting — no touch from you in days (replying re-heats)</div>` : ''}
+      ${dismissed.length ? `<section class="ph-dismissed">
+        <button class="ph-dismissed-toggle" id="toggle-dismissed" aria-expanded="${S.dismissedOpen ? 'true' : 'false'}">
+          <span>${S.dismissedOpen ? '▾' : '▸'}</span> DISMISSED <span class="cnt neutral">${dismissed.length}</span>
+        </button>
+        ${S.dismissedOpen ? `<div class="ph-dismissed-rows">${dismissedRows}</div>` : ''}
+      </section>` : ''}
       <div class="sec-label" style="padding-top:10px">SESSIONS</div>
       ${rows || '<div class="stale-strip">no other live sessions</div>'}
       <div class="sec-label" style="padding-top:12px">SYSTEM</div>
@@ -829,6 +848,31 @@ function mountPanels() {
 // ---- wiring (event delegation after each render) ---------------------------------------------------
 function wire() {
   // home
+  $('#toggle-dismissed')?.addEventListener('click', () => {
+    S.dismissedOpen = !S.dismissedOpen;
+    render(); // explicit disclosure action: paint immediately even inside the interaction guard window
+  });
+  for (const el of app.querySelectorAll('[data-restore-attention]')) el.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const sid = el.dataset.restoreAttention;
+    el.disabled = true;
+    try {
+      const result = await api(`api/attention/${sid}/restore`, { method: 'POST' });
+      patchSession({
+        session: sid,
+        unread: Number(result?.unread) || 0,
+        dismissed: false,
+        dismissed_at: null,
+        dismissed_report_id: null,
+        dismissed_report_text: null,
+        source: 'attention-restore',
+      });
+      toast(result?.reopened ? 'Restored to Needs you' : 'Removed from Dismissed');
+    } catch (error) {
+      el.disabled = false;
+      toast('Restore failed: ' + (error.message || error));
+    }
+  });
   $('#refresh-needs')?.addEventListener('click', async () => {
     const button = $('#refresh-needs');
     if (button) { button.disabled = true; button.textContent = '↻ Refreshing…'; }
@@ -912,10 +956,19 @@ function wire() {
       const result = await api('api/messages/read', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ session_id: session.id, ...(session.last_key?.id ? { through_id: session.last_key.id } : {}) }),
+        body: JSON.stringify({ session_id: session.id, dismiss: true, ...(session.last_key?.id ? { through_id: session.last_key.id } : {}) }),
       });
-      patchSession({ session: session.id, unread: Number(result?.unread) || 0, source: 'dismiss' });
-      toast('Dismissed until the next report');
+      const wasDismissed = result?.dismissal?.dismissed !== false;
+      patchSession({
+        session: session.id,
+        unread: Number(result?.unread) || 0,
+        dismissed: wasDismissed,
+        dismissed_at: wasDismissed ? (result?.dismissal?.dismissed_at || Date.now()) : null,
+        dismissed_report_id: wasDismissed ? (result?.dismissal?.report_id || session.last_key?.id || null) : null,
+        dismissed_report_text: wasDismissed ? (result?.dismissal?.report_text || null) : null,
+        source: 'dismiss',
+      });
+      toast(wasDismissed ? 'Dismissed until the next report' : 'A newer report arrived — still needs you');
     } catch (error) {
       el.disabled = false;
       toast('Dismiss failed: ' + (error.message || error));

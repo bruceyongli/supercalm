@@ -1,7 +1,7 @@
 // SPA dashboard view (the "Needs you" inbox + sessions list). Mounts into #view; subscribes to the shared
 // home-data loop; tears the subscription down on leave. Logic mirrors the legacy desktop.js (which the
 // server cutover will retire). View contract: export init(host, params) + teardown().
-import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
+import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, toast } from '../shell.js';
 // cards/rows show the full first line (the rail keeps shortTitle); CSS ellipsizes/clamps per width
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
@@ -35,6 +35,7 @@ function paintSetupLine(el) {
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const STOPPED_SHOWN = 10;
 let stoppedExpanded = false;
+let dismissedExpanded = false;
 let unsub = null;
 let host = null;
 const choiceSelections = new Map(); // sid -> { reportKey, questions: Map<questionIndex, Set<optionIndex>> }
@@ -140,6 +141,28 @@ function renderInbox(home) {
     ? { key: 'empty:first', html: `<div class="dk-hero" data-dk-allclear><span data-dk-setupline><span class="ok">✓ this box is yours</span></span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>` }
     : { key: 'empty:clear', html: '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>' });
   if (cardsEl) reconcile(cardsEl, cardSpecs);
+  const dismissed = dismissedAttention();
+  const dismissedSection = $('#dk-dismissed-section');
+  const dismissedCount = $('#dk-dismissed-count');
+  const dismissedToggle = $('#dk-dismissed-toggle');
+  const dismissedRows = $('#dk-dismissed-rows');
+  if (dismissedSection) dismissedSection.hidden = !dismissed.length;
+  if (dismissedCount) dismissedCount.textContent = dismissed.length;
+  if (dismissedToggle) {
+    dismissedToggle.setAttribute('aria-expanded', dismissedExpanded ? 'true' : 'false');
+    dismissedToggle.querySelector('[data-dk-dismissed-chevron]').textContent = dismissedExpanded ? '▾' : '▸';
+  }
+  if (dismissedRows) {
+    dismissedRows.hidden = !dismissedExpanded;
+    reconcile(dismissedRows, dismissed.map((s) => ({
+      key: `dismissed:${s.id}`,
+      html: `<div class="dk-dismissed-row" data-dk-dismissed-row data-sid="${esc(s.id)}">
+        <a href="session?id=${esc(s.id)}"><span class="dk-dismissed-name">${esc(fullTitle(s))}</span><span class="dk-dismissed-msg">${esc((s.dismissed_report_text || s.question || s.summary || '').slice(0, 220))}</span></a>
+        <span class="dk-dismissed-time">${fmtAgo(s.dismissed_at)} ago</span>
+        <button data-dk-restore title="Put this unresolved report back in Needs you">Restore</button>
+      </div>`,
+    })));
+  }
   const all = home.sessions || [];
   const live = all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
   const stopped = all.filter((s) => !['starting', 'working', 'waiting'].includes(s.status));
@@ -191,14 +214,43 @@ async function dismiss(card) {
     const result = await api('api/messages/read', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }),
+      body: JSON.stringify({ session_id: sid, dismiss: true, ...(reportId ? { through_id: reportId } : {}) }),
     });
+    const wasDismissed = result?.dismissal?.dismissed !== false;
     // The session keeps running/waiting. Only its visible report boundary is marked read; if a newer
     // report raced the click, the API returns a nonzero count and the card correctly remains/reappears.
-    upsertSession({ id: sid, unread: Number(result?.unread) || 0 });
-    toast('Dismissed — it will return when there is a new report');
+    upsertSession({
+      id: sid,
+      unread: Number(result?.unread) || 0,
+      dismissed: wasDismissed,
+      dismissed_at: wasDismissed ? (result?.dismissal?.dismissed_at || Date.now()) : null,
+      dismissed_report_id: wasDismissed ? (result?.dismissal?.report_id || reportId) : null,
+      dismissed_report_text: wasDismissed ? (result?.dismissal?.report_text || null) : null,
+    });
+    toast(wasDismissed ? 'Dismissed — it will return when there is a new report' : 'A newer report arrived — still in Needs you');
   } catch (e) {
     if (btn) { btn.disabled = false; btn.textContent = 'Dismiss'; }
+    toast('⚠ ' + (e.message || e));
+  }
+}
+
+async function restoreDismissed(row) {
+  const sid = row.dataset.sid;
+  const button = row.querySelector('[data-dk-restore]');
+  if (button) { button.disabled = true; button.textContent = 'Restoring…'; }
+  try {
+    const result = await api(`api/attention/${sid}/restore`, { method: 'POST' });
+    upsertSession({
+      id: sid,
+      unread: Number(result?.unread) || 0,
+      dismissed: false,
+      dismissed_at: null,
+      dismissed_report_id: null,
+      dismissed_report_text: null,
+    });
+    toast(result?.reopened ? 'Restored to Needs you' : 'Removed from Dismissed');
+  } catch (e) {
+    if (button) { button.disabled = false; button.textContent = 'Restore'; }
     toast('⚠ ' + (e.message || e));
   }
 }
@@ -243,6 +295,15 @@ function wireCards() {
   if (hero) hero.onclick = () => openLaunch();
   const setupEl = host.querySelector('[data-dk-setupline]');
   if (setupEl) { paintSetupLine(setupEl); checkSetup(); }
+  const dismissedToggle = $('#dk-dismissed-toggle');
+  if (dismissedToggle) dismissedToggle.onclick = () => {
+    dismissedExpanded = !dismissedExpanded;
+    renderInbox(getHome());
+  };
+  for (const row of host.querySelectorAll('[data-dk-dismissed-row]')) {
+    const restore = row.querySelector('[data-dk-restore]');
+    if (restore) restore.onclick = () => restoreDismissed(row);
+  }
   for (const card of host.querySelectorAll('[data-dk-card]')) {
     const session = getHome().sessions?.find((s) => s.id === card.dataset.sid);
     const questions = session ? optionQuestions(session) : [];
@@ -278,6 +339,7 @@ function wireCards() {
 export function init(el) {
   host = el;
   stoppedExpanded = false;
+  dismissedExpanded = false;
   host.innerHTML = `
     <div class="dk-main">
       <section id="dk-inbox" data-dk-inbox>
@@ -289,6 +351,12 @@ export function init(el) {
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
+        <section class="dk-dismissed" id="dk-dismissed-section" hidden>
+          <button class="dk-dismissed-toggle" id="dk-dismissed-toggle" aria-expanded="false">
+            <span data-dk-dismissed-chevron>▸</span> Dismissed <span id="dk-dismissed-count">0</span>
+          </button>
+          <div id="dk-dismissed-rows" hidden></div>
+        </section>
         <div class="dk-sec-row">SESSIONS</div>
         <div id="dk-rows"></div>
       </section>

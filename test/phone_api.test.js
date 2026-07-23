@@ -73,14 +73,46 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   const response = await fetch(`http://127.0.0.1:${port}/api/messages/read`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ session_id: 's_ph', through_id: boundary }),
+    body: JSON.stringify({ session_id: 's_ph', through_id: boundary, dismiss: true }),
   });
   assert.equal(response.status, 200);
   const result = await response.json();
   assert.equal(result.marked, 2, 'dismissal marks every unread report through the visible boundary');
   assert.equal(result.unread, 1, 'a newer report survives and can reopen Needs you');
+  assert.equal(result.dismissal.dismissed, false, 'a report racing the click cancels the dismissal episode');
   assert.equal(unreadBySession().get('s_ph').n, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM attention_dismissals WHERE session_id='s_ph'").get().n, 0);
   assert.equal(db.prepare("SELECT status FROM sessions WHERE id='s_ph'").get().status, 'exited', 'dismissal never mutates lifecycle status');
+}
+
+// ---- durable dismissal is visible to every home fetch and Restore removes the shared record -------
+{
+  const boundary = db.prepare("SELECT MAX(id) id FROM messages WHERE session_id='s_ph' AND direction='out'").get().id;
+  const event = new Promise((resolve) => bus.once('session-status', resolve));
+  const response = await fetch(`http://127.0.0.1:${port}/api/messages/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's_ph', through_id: boundary, dismiss: true }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.dismissal.dismissed, true);
+  const patch = await Promise.race([event, new Promise((_, reject) => setTimeout(() => reject(new Error('missing scoped dismissal event')), 1000))]);
+  assert.deepEqual(
+    { session: patch.session, unread: patch.unread, dismissed: patch.dismissed, source: patch.source },
+    { session: 's_ph', unread: 0, dismissed: true, source: 'dismiss' },
+  );
+  for (let i = 0; i < 2; i++) {
+    const home = await fetch(`http://127.0.0.1:${port}/api/phone/home`).then((r) => r.json());
+    const row = home.sessions.find((session) => session.id === 's_ph');
+    assert.equal(row.dismissed, true, `home fetch ${i + 1} sees the same server-side dismissal`);
+    assert.equal(row.dismissed_report_id, boundary);
+  }
+  const restore = await fetch(`http://127.0.0.1:${port}/api/attention/s_ph/restore`, { method: 'POST' });
+  assert.equal(restore.status, 200);
+  assert.equal((await restore.json()).reopened, false, 'an exited session is removed from history without becoming a false need');
+  const home = await fetch(`http://127.0.0.1:${port}/api/phone/home`).then((r) => r.json());
+  assert.equal(home.sessions.find((session) => session.id === 's_ph').dismissed, false);
 }
 
 // ---- route + payload locks --------------------------------------------------------------------------
@@ -89,12 +121,15 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   const migrations = readFileSync(new URL('../src/schema_migrations.js', import.meta.url), 'utf8');
   assert.match(migrations, /ensureColumn\(db, 'messages', 'read_at'/, 'read state belongs to the central migration ledger');
   assert.equal(db.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id='0002_message_read_state'").get().n, 1, 'read-state migration is recorded');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id='0003_attention_dismissals'").get().n, 1, 'attention-dismissal migration is recorded');
   assert.match(src, /\/api\/messages\/read/, 'read route exists');
   assert.match(src, /through_id/, 'read route supports report-bounded inbox dismissal');
+  assert.match(src, /\/api\/attention\/:id\/restore/, 'dismissed attention can be explicitly restored');
   assert.match(src, /\/api\/phone\/home/, 'lean home route exists');
   assert.match(src, /bus\.emit\('session-status'/, 'read state publishes a scoped keyed patch');
   assert.match(src, /read_at IS NULL/, 'unread respects server-side read state');
   assert.match(src, /WITH last_in AS/, 'unread derives the last operator reply once per session');
+  assert.match(src, /MAX\(id\) last_id/, 'message ids preserve reply/report order even inside one millisecond');
   assert.doesNotMatch(src, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'unread never repeats a correlated MAX query for every message');
   assert.match(migrations, /idx_messages_in_session_ts/, 'last replies use a compact partial index');
   assert.match(migrations, /idx_messages_unread_out_session_ts/, 'unread reports use a compact partial index');

@@ -102,14 +102,22 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(css, /\.dk-dot\s*\{[^}]*flex:\s*0 0 7px[^}]*border-radius:\s*50%/, 'status dots cannot flex-shrink into pipes');
   assert.match(css, /\.dk-dot\.pulse\s*\{[^}]*2\.8s/, 'working status uses a slow blink instead of rapid flashing');
   assert.match(dash, /data-dk-dismiss/, 'Needs-you cards have a visible dismiss action');
+  assert.match(dash, /id="dk-dismissed-section"/, 'desktop keeps a quiet recoverable Dismissed section');
+  assert.match(shell, /!s\.dismissed && s\.status === 'waiting'/, 'persistently dismissed reports cannot enter Needs you');
+  assert.match(shell, /export function dismissedAttention/, 'all views derive dismissed history from the shared normalized store');
   assert.match(dash, /id="dk-needs-refresh"/, 'desktop Needs you has a visible manual refresh control');
   assert.match(dash, /upsertSession\(\{ id: sid, status: 'working', question: null, summary: null, category: null, unread: 0 \}\)/,
     'a successful text reply immediately clears its answered report from the shared queue');
   const phoneUi = read('web/phone.js');
   assert.match(phoneUi, /id="refresh-needs"/, 'phone Needs you has a visible manual refresh control');
+  const sessions = read('src/sessions.js');
+  assert.match(sessions, /nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal/,
+    'a genuinely changed prompt reopens a dismissed waiting session even without a Working transition');
   assert.match(dash, /through_id:\s*reportId/, 'dismissal is bounded to the currently visible report');
-  assert.match(dash, /upsertSession\(\{ id: sid, unread:/, 'dismissal removes the report without mutating lifecycle status');
-  assert.doesNotMatch(dash.slice(dash.indexOf('async function dismiss'), dash.indexOf('function wireCards')), /stop|kill/i,
+  const dismissPath = dash.slice(dash.indexOf('async function dismiss'), dash.indexOf('async function restoreDismissed'));
+  assert.match(dismissPath, /dismiss:\s*true/, 'Dismiss is an explicit durable attention action, not generic read state');
+  assert.match(dismissPath, /upsertSession\(\{[\s\S]*?id:\s*sid,[\s\S]*?unread:/, 'dismissal removes the report without mutating lifecycle status');
+  assert.doesNotMatch(dismissPath, /stop|kill/i,
     'dismissal does not stop or kill the session');
 }
 

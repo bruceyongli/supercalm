@@ -76,8 +76,35 @@ const server = createServer(async (req, res) => {
     return sendJson(res, { ok: true });
   }
   if (path === '/aios/api/messages/read' && req.method === 'POST') {
-    dismissBodies.push(JSON.parse(await readBody(req)));
-    return sendJson(res, { ok: true, marked: 1, unread: 0 });
+    const body = JSON.parse(await readBody(req));
+    dismissBodies.push(body);
+    const session = sessions.find((item) => item.id === body.session_id);
+    const dismissedAt = Date.now();
+    if (body.dismiss && session) Object.assign(session, {
+      unread: 0,
+      dismissed: true,
+      dismissed_at: dismissedAt,
+      dismissed_report_id: body.through_id,
+      dismissed_report_text: session.question,
+    });
+    return sendJson(res, {
+      ok: true,
+      marked: 1,
+      unread: 0,
+      ...(body.dismiss ? { dismissal: { dismissed: true, dismissed_at: dismissedAt, report_id: body.through_id, report_text: session?.question || '' } } : {}),
+    });
+  }
+  const restore = path.match(/^\/aios\/api\/attention\/([^/]+)\/restore$/);
+  if (restore && req.method === 'POST') {
+    const session = sessions.find((item) => item.id === restore[1]);
+    if (session) Object.assign(session, {
+      unread: 1,
+      dismissed: false,
+      dismissed_at: null,
+      dismissed_report_id: null,
+      dismissed_report_text: null,
+    });
+    return sendJson(res, { ok: true, restored: true, reopened: true, unread: 1 });
   }
   if (path.startsWith('/aios/api/')) return sendJson(res, {});
 
@@ -161,8 +188,12 @@ try {
   await doneCard.waitFor({ state: 'detached' });
   const dismissal = dismissBodies.find((body) => body.session_id === 's_done');
   assert.equal(dismissal?.session_id, 's_done');
+  assert.equal(dismissal?.dismiss, true, 'Dismiss is persisted as an explicit attention decision');
   assert.equal(dismissal?.through_id, 12, 'dismissal is bounded to the visible report');
   assert.equal(await page.locator('[data-dk-row][data-sid="s_done"]').count(), 1, 'dismissal leaves the session itself in the list');
+  await page.locator('#dk-dismissed-toggle').click();
+  assert.equal(await page.locator('[data-dk-dismissed-row][data-sid="s_done"]').count(), 1, 'desktop archives the handled report in Dismissed');
+  await page.screenshot({ path: join(outDir, 'dismissed-section.png'), fullPage: true });
   await page.close();
 
   for (const relative of ['usage']) {
@@ -187,6 +218,12 @@ try {
   await phone.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
   await phone.goto(base + 'phone', { waitUntil: 'domcontentloaded' });
   await phone.locator('.needcard[data-open="s_opt"] .needqs').waitFor();
+  assert.equal(await phone.locator('.needcard[data-open="s_done"]').count(), 0, 'a second device respects the server-side dismissal');
+  await phone.locator('#toggle-dismissed').click();
+  assert.equal(await phone.locator('.ph-dismissed-row[data-open="s_done"]').count(), 1, 'the second device can find the dismissed session');
+  await phone.screenshot({ path: join(outDir, 'phone-dismissed-section.png'), fullPage: true });
+  await phone.locator('[data-restore-attention="s_done"]').click();
+  await phone.locator('.needcard[data-open="s_done"]').waitFor();
   await phone.screenshot({ path: join(outDir, 'phone-needs-you-options.png'), fullPage: true });
   const phoneRequestsBeforeRefresh = homeRequests;
   const phoneRefreshResponse = phone.waitForResponse((response) => response.url().endsWith('/api/phone/home'));

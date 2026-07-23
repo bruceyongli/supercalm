@@ -82,6 +82,7 @@ function recalcHome() {
       waiting: sessions.filter((s) => s.status === 'waiting').length,
       working: sessions.filter((s) => s.status === 'working').length,
       live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
+      dismissed: sessions.filter((s) => s.dismissed).length,
     },
   };
 }
@@ -162,7 +163,13 @@ export function shortTitle(s) {
 }
 
 export function needsYou() {
-  return (home.sessions || []).filter((s) => s.status === 'waiting' && s.unread && s.category && s.category !== 'working');
+  return (home.sessions || []).filter((s) => !s.dismissed && s.status === 'waiting' && s.unread && s.category && s.category !== 'working');
+}
+
+export function dismissedAttention() {
+  return (home.sessions || [])
+    .filter((s) => s.dismissed)
+    .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
 }
 
 // ---- sidebar --------------------------------------------------------------------------------------
