@@ -3,12 +3,14 @@
 // toast + the live data loop. Extracted from desktop.js so EVERY page that shows the shell renders the
 // SAME sidebar from ONE source — the home page and the session page had diverged (session dropped the
 // shell entirely), which is exactly the drift this module exists to prevent. Mount with mountShell().
-import { api, coalesce, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
+import { api, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
+import { navigate } from './navigation.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
 
 let home = { sessions: [], counts: {} };
+const sessionsById = new Map();
 let onData = null; // per-page hook run after each data refresh (e.g. the inbox render)
 
 export function getHome() { return home; }
@@ -18,6 +20,77 @@ export function getHome() { return home; }
 // home so a freshly-mounted view paints without waiting for the next poll.
 const homeSubs = new Set();
 export function subscribeHome(cb) { homeSubs.add(cb); try { cb(home); } catch {} return () => homeSubs.delete(cb); }
+const sessionEventSubs = new Set();
+export function subscribeSessionEvents(cb, { replayId = null } = {}) {
+  sessionEventSubs.add(cb);
+  // A session view can mount after the shared EventSource already consumed Starting -> Working. Replay
+  // the normalized row once so subscribing is race-free without another broad fetch.
+  if (replayId) {
+    const row = sessionsById.get(replayId);
+    if (row) queueMicrotask(() => {
+      if (!sessionEventSubs.has(cb)) return;
+      const payload = {
+        ...row,
+        session: row.id,
+        previousStatus: row.status,
+        project: row.project ? { name: row.project } : null,
+        source: 'store-replay',
+      };
+      try { cb(payload, row); } catch {}
+    });
+  }
+  return () => sessionEventSubs.delete(cb);
+}
+
+function normalizeSession(s) {
+  if (!s?.id) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(s)) if (v !== undefined) out[k] = v;
+  if (Object.hasOwn(s, 'project')) out.project = typeof s.project === 'object' ? (s.project?.name || '') : (s.project || '');
+  return out;
+}
+function recalcHome() {
+  const sessions = [...sessionsById.values()].sort((a, b) => Number(b.last_activity || 0) - Number(a.last_activity || 0));
+  home = {
+    ...home,
+    sessions,
+    counts: {
+      waiting: sessions.filter((s) => s.status === 'waiting').length,
+      working: sessions.filter((s) => s.status === 'working').length,
+      live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
+    },
+  };
+}
+function publishHome(change = { type: 'replace', ids: [] }) {
+  renderSide(change);
+  onData?.(home, change);
+  for (const cb of homeSubs) { try { cb(home, change); } catch {} }
+}
+function replaceHome(next) {
+  sessionsById.clear();
+  for (const raw of next?.sessions || []) { const s = normalizeSession(raw); if (s) sessionsById.set(s.id, s); }
+  home = { ...(next || {}), sessions: [] };
+  recalcHome();
+  publishHome({ type: 'replace', ids: [...sessionsById.keys()] });
+}
+export function upsertSession(raw, { publish = true } = {}) {
+  let patch = normalizeSession(raw);
+  if (!patch) return null;
+  const current = sessionsById.get(patch.id) || {};
+  if (!current.id && !patch.status) return null; // a scoped metadata patch cannot construct a session row
+  // POST /api/session returns a Starting projection while the status SSE can win the network race and
+  // publish Working first. Never let that older, unversioned response roll lifecycle state backward.
+  if (patch.status === 'starting' && current.status && current.status !== 'starting'
+      && (!patch.ts || Number(patch.ts) < Number(current.ts || 0))) {
+    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
+    patch = Object.fromEntries(Object.entries(patch).filter(([key]) => !lifecycle.has(key)));
+  }
+  const next = { ...current, ...patch };
+  sessionsById.set(next.id, next);
+  recalcHome();
+  if (publish) publishHome({ type: current.id ? 'patch' : 'create', ids: [next.id] });
+  return next;
+}
 
 // The sidebar markup — the single source for pages that INJECT the shell (the system pages). Home and
 // session carry a static copy in their HTML for first-paint; this keeps injected pages identical to them.
@@ -96,6 +169,29 @@ export function needsYou() {
 }
 
 // ---- sidebar --------------------------------------------------------------------------------------
+function keyedNode(html, key) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  const node = t.content.firstElementChild;
+  node.dataset.key = key;
+  node.dataset.render = html;
+  return node;
+}
+function reconcileKeyed(container, specs) {
+  const existing = new Map([...container.children].map((el) => [el.dataset.key, el]));
+  const wanted = new Set(specs.map((s) => s.key));
+  for (const [key, el] of existing) if (!wanted.has(key)) el.remove();
+  specs.forEach((spec, i) => {
+    let el = existing.get(spec.key);
+    if (!el || el.dataset.render !== spec.html) {
+      const fresh = keyedNode(spec.html, spec.key);
+      if (el) el.replaceWith(fresh);
+      el = fresh;
+    }
+    if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
+  });
+}
+
 function renderSide() {
   if (!$('#dk-counters')) return; // page without the shell mounted
   const c = home.counts || {};
@@ -108,15 +204,16 @@ function renderSide() {
   const cur = new URLSearchParams(location.search).get('id');
   // The rail lists only LIVE sessions (working/waiting) — a lean quick-nav. Stopped/parked sessions are
   // browsed on the dashboard page body (desktop.js #dk-rows), not stuffed into the nav rail.
-  const live = (home.sessions || []).filter((s) => s.status === 'working' || s.status === 'waiting');
+  const live = (home.sessions || []).filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
   // Rail rows (operator, 2026-07-16): the dot IS the status — no Working/Waiting words; the freed
   // width goes to the title (flex) and a right-aligned last-activity age (the triage signal the rail
   // lacked: waiting 30s and waiting 2h are different urgencies).
-  $('#dk-sessions').innerHTML = live.map((s) => `
-    <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess>
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : 'warn'}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
-      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || s.title || '').slice(0, 64))}</span>
-    </a>`).join('') || '<div class="dk-empty-side">no live sessions</div>';
+  const specs = live.length ? live.map((s) => ({ key: s.id, html: `
+    <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess data-sid="${esc(s.id)}">
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : s.status === 'waiting' ? 'warn' : ''}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
+      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || (s.status === 'starting' ? 'Starting…' : '') || s.title || '').slice(0, 64))}</span>
+    </a>` })) : [{ key: '__empty', html: '<div class="dk-empty-side">no live sessions</div>' }];
+  reconcileKeyed($('#dk-sessions'), specs);
   // Footer = the important stuff only (operator): the running build (version, was the hostname) + the
   // REAL auth mode (fetched below; the old chip was a hardcoded green "proxy" dot). The wall clock is
   // gone — the OS shows the time.
@@ -154,8 +251,10 @@ export function prefetchStory(id) {
   _prefetched.add(id);
   api(`api/session/${id}/story`).then((r) => {
     if (!r || !Array.isArray(r.events) || !r.events.length) return;
-    const payload = JSON.stringify({ events: r.events, trimmed: !!(r.meta && r.meta.trimmed), working: r.status === 'working', liveStatus: r.liveStatus || null });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story4_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v4)
+    const storySource = r.meta?.source || 'transcript';
+    const payload = JSON.stringify({ events: r.events, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
+      storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story5_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v5)
   }).catch(() => _prefetched.delete(id));
 }
 
@@ -163,12 +262,12 @@ export function prefetchStory(id) {
 const SCREENS = [['Inbox', './'], ['Projects', 'projects'], ['Decisions', 'decisions'], ['Records', 'records'], ['Usage', 'usage'], ['Health', 'health'], ['Settings', 'settings']];
 function paletteItems(q) {
   const items = [];
-  for (const [label, href] of SCREENS) items.push({ kind: 'go', label, run: () => (location.href = href) });
+  for (const [label, href] of SCREENS) items.push({ kind: 'go', label, run: () => navigate(href) });
   items.push({ kind: 'action', label: 'New session', run: () => { closePalette(); openLaunch(); } });
   items.push({ kind: 'action', label: 'Re-auth CLIs', run: () => (location.href = 'auth') });
   for (const s of home.sessions || []) {
-    if (s.status !== 'working' && s.status !== 'waiting') continue;
-    items.push({ kind: 'session', label: shortTitle(s), sub: (s.summary || '').slice(0, 60), run: () => (location.href = `session?id=${s.id}`) });
+    if (!['starting', 'working', 'waiting'].includes(s.status)) continue;
+    items.push({ kind: 'session', label: shortTitle(s), sub: (s.summary || '').slice(0, 60), run: () => navigate(`session?id=${s.id}`) });
   }
   const needle = q.trim().toLowerCase();
   return (needle ? items.filter((i) => (i.label + ' ' + (i.sub || '')).toLowerCase().includes(needle)) : items).slice(0, 12);
@@ -192,13 +291,25 @@ function closePalette() { if ($('#dk-palette')) $('#dk-palette').hidden = true; 
 // "+ new project…" with the path prefilled. Both optional — the plain open picks the first project,
 // or "+ new project…" on a fresh install with none.
 let stateCache = null;
+let launchOptionsAt = 0;
+let launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; }).catch(() => { launchOptionsPromise = null; return null; });
+export function getLaunchOptions() {
+  if (stateCache && Date.now() - launchOptionsAt < 30000) return Promise.resolve(stateCache);
+  if (!stateCache && launchOptionsPromise) return launchOptionsPromise;
+  launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; }).catch(() => { launchOptionsPromise = null; return null; });
+  return launchOptionsPromise;
+}
 export async function openLaunch(opts = {}) {
   document.body.classList.remove('dk-drawer'); // launched from the phone drawer: close it so the modal isn't buried under it
-  try { stateCache = await api('api/state'); } catch { stateCache = { projects: [], tools: [] }; }
+  document.getElementById('dk-launch')?.remove();
   const m = document.createElement('div');
   m.className = 'dk-palette';
   m.id = 'dk-launch';
   m.setAttribute('data-dk-launch', '');
+  m.innerHTML = '<div class="dk-palette-box dk-launch-box"><div class="dk-launch-h">New session</div><div class="dk-hint">Loading session options…</div></div>';
+  document.body.appendChild(m); // modal appears immediately; only its small option list loads asynchronously
+  stateCache = await getLaunchOptions() || { projects: [], tools: [] };
+  if (!m.isConnected) return;
   const projects = stateCache.projects || [];
   const tools = stateCache.tools || [];
   m.innerHTML = `
@@ -233,7 +344,6 @@ export async function openLaunch(opts = {}) {
         <button class="dk-new" id="nl-go" data-dk-launch-go>Launch</button>
       </div>
     </div>`;
-  document.body.appendChild(m);
   const q = (sel) => m.querySelector(sel);
   const toolBtns = [...m.querySelectorAll('#nl-tool [data-tool]')];
   const fillModels = () => {
@@ -270,7 +380,10 @@ export async function openLaunch(opts = {}) {
       if (isNew && q('#nl-kb').checked) body.kb = true;
       const r = await api('api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       if (!r?.id) throw new Error(r?.error || 'launch failed');
-      location.href = `session?id=${r.id}`;
+      if (isNew) launchOptionsAt = 0;
+      upsertSession(r);
+      closeLaunch();
+      navigate(`session?id=${r.id}`);
     } catch (e) { q('#nl-gate').textContent = '⚠ ' + (e.message || e); q('#nl-go').textContent = 'Launch'; }
   };
 }
@@ -287,14 +400,18 @@ export function toast(msg) {
 }
 
 // ---- data loop + wiring ---------------------------------------------------------------------------
+let loadPromise = null;
 async function load() {
-  try { const r = await api('api/phone/home'); home = r || home; renderSide(); onData?.(home); for (const cb of homeSubs) { try { cb(home); } catch {} } } catch {}
+  if (loadPromise) return loadPromise;
+  loadPromise = api('api/phone/home').then(replaceHome).catch(() => {}).finally(() => { loadPromise = null; });
+  return loadPromise;
 }
 
 // Mount the shell on the current page. `onData(home)` runs after each refresh (pages render their own
 // main content there). `activeNav` marks the matching SYSTEM/Inbox nav row active.
 export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   onData = cb;
+  window.addEventListener('aios:navigate', renderSide);
   if (activeNav) for (const a of document.querySelectorAll('.dk-nav-item')) a.classList.toggle('active', a.dataset.nav === activeNav);
   // One persisted transition owns every collapse entry point (button, restore tab, shortcut). CSS turns
   // this class into --rail-width:0, so every geometry consumer releases the space together.
@@ -364,13 +481,27 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
     window.addEventListener('keydown', (e) => { if (e.key === 'Escape') setDrawer(false); });
   }
   load();
-  // Open the live-update stream AFTER the initial load settles. An eagerly-opened EventSource is a
-  // permanent in-flight request that prevents network-idle (verify_shell_v3 navigates with waitUntil
-  // networkidle). 2.5s clears fast pages; but slower pages (e.g. settings' npm-registry version check)
-  // still fetch past 2.5s, so in an AUTOMATED/headless context defer much longer so the verifier reaches
-  // idle first. Real users are unaffected (2.5s); this only changes WHEN the SSE connects, not what
-  // renders — the same rationale as the original defer, made robust for slow pages under automation.
-  const openStream = () => { try { const ev = new EventSource('api/events'); ev.addEventListener('changed', coalesce(load, 3000)); } catch {} };
-  const sseDefer = navigator.webdriver ? 20000 : 2500;
+  // Open the live-update stream immediately for interactive users. It is a permanent in-flight request,
+  // so automated/headless verification (which waits for network-idle) gets a longer defer before opening
+  // exactly the same stream.
+  const openStream = () => {
+    try {
+      const ev = new EventSource('api/events');
+      ev.addEventListener('session-status', (e) => {
+        let payload;
+        try { payload = JSON.parse(e.data || '{}'); } catch { return; }
+        if (!payload?.session) return;
+        const row = upsertSession({ ...payload, id: payload.session });
+        for (const cb of sessionEventSubs) { try { cb(payload, row); } catch {} }
+      });
+    } catch {}
+  };
+  // In the interactive app connect on the next task so a sub-second queued launch cannot finish before
+  // the browser starts listening. Automation keeps the delay because its network-idle assertion cannot
+  // complete while an EventSource is open.
+  const sseDefer = navigator.webdriver ? 20000 : 0;
   setTimeout(() => (window.requestIdleCallback || ((f) => f()))(openStream), sseDefer);
+  // Lost SSE events recover eventually, but ordinary status/activity changes never hit this path.
+  const recovery = setInterval(() => { if (!document.hidden) load(); }, 120000);
+  addEventListener('pagehide', () => clearInterval(recovery), { once: true });
 }

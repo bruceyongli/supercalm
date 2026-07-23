@@ -264,9 +264,11 @@ assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewpo
 // same conversation. And the story header must not say "session starting" once a report is in (#4).
 {
   const svSrc = read('web/story-view.js');
-  assert.ok(/const src = r\.meta\?\.source \|\| 'transcript'/.test(svSrc) && /if \(storySource && src !== storySource\) events = \[\]/.test(svSrc),
-    'story view replaces the feed on a source switch instead of merging duplicates');
-  assert.ok(/storySource = null/.test(svSrc), 'source tracking resets on session switch');
+  assert.ok(/const src = r\.meta\?\.source \|\| 'transcript'/.test(svSrc)
+      && /const identity = `\$\{src\}\|\$\{r\.meta\?\.file \|\| ''\}`/.test(svSrc)
+      && /storyIdentity && identity !== storyIdentity/.test(svSrc),
+    'story view replaces the feed when source or transcript-file identity changes');
+  assert.ok(/storySource = null/.test(svSrc) && /storyIdentity = null/.test(svSrc), 'source identity tracking resets on session switch');
   assert.ok(svSrc.includes("report in — waiting for you"), 'rollup fallback reflects waiting-with-report, not "session starting"');
   const apiSrc = read('src/story_api.js');
   assert.ok(/source: 'transcript'/.test(apiSrc) && /source: 'fallback'/.test(apiSrc), 'the story API tags both sources in meta');

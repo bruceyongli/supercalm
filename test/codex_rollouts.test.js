@@ -68,12 +68,14 @@ assert.ok(iCwd > 0 && iPick < iCwd, 'UUID match runs before the cwd match (UUID 
 
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
 assert.ok(/const codexBefore = tool === 'codex' \? new Set\(await codexRolloutFiles\(\)/.test(sessions), 'launch snapshots the rollout set for codex');
-assert.ok(/if \(codexBefore\) captureCodexUuid\(sid, codexBefore\)/.test(sessions), 'launch fires captureCodexUuid (fire-and-forget)');
+assert.ok(/if \(codexBefore\) captureCodexUuid\(sid, codexBefore, task\)/.test(sessions), 'launch fires captureCodexUuid with task disambiguation (fire-and-forget)');
 assert.ok(sessions.includes('store.updateSession(sid, { codex_uuid: uuid })'), 'captureCodexUuid persists the UUID');
+assert.ok(sessions.includes("source: 'transcript'"), 'UUID capture publishes a scoped transcript-ready event');
 assert.ok(/s\.codex_uuid \|\| \(await findCodexSession/.test(sessions), 'resume prefers the captured UUID, then cwd-match');
 
 const store = readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
 assert.ok(store.includes("'codex_uuid TEXT'"), 'store migrates a codex_uuid column');
 assert.ok(/SESSION_FIELDS = \[[^\]]*'codex_uuid'/.test(store), 'codex_uuid is a writable session field');
+assert.ok(storyApi.includes('_freshQueuedLaunch.get(s.id)'), 'fresh unresolved launches refuse unsafe cwd fallback');
 
 console.log('codex_rollouts: all assertions passed');

@@ -26,7 +26,7 @@ export function pickRolloutByUuid(files, uuid) {
 
 // Every codex rollout file on disk (absolute paths). `baseDir` is overridable for tests; production uses
 // the real ~/.codex/sessions. Fail-open per directory — an unreadable subtree is skipped, not fatal.
-export async function codexRolloutFiles(baseDir = join(homedir(), '.codex', 'sessions')) {
+export async function codexRolloutFiles(baseDir = process.env.AIOS_CODEX_SESSIONS_DIR || join(homedir(), '.codex', 'sessions')) {
   const files = [];
   async function walk(dir, depth) {
     let ents;

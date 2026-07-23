@@ -29,7 +29,10 @@ function tick() {
       console.log(`STAGE -> ${s.stage || 'none'} [${tag}] status=${s.status}: ${s.summary}`);
       lastStage = s.stage;
     }
-    const rows = all('SELECT ts, rule_id, action_type, COALESCE(suppression_reason,\'\') sr, sent, snapshot_json FROM supervisor_decisions WHERE session_id=? AND ts>? ORDER BY ts', sid, lastTs);
+    const rows = all(`SELECT d.ts, d.rule_id, d.action_type, COALESCE(d.suppression_reason,'') sr, d.sent,
+      COALESCE(d.snapshot_json, s.snapshot_json) snapshot_json
+      FROM supervisor_decisions d LEFT JOIN supervisor_snapshots s ON s.snapshot_hash=d.snapshot_hash
+      WHERE d.session_id=? AND d.ts>? ORDER BY d.ts`, sid, lastTs);
     for (const r of rows) {
       if (r.rule_id === 'stage.stand_down') {
         console.log(`STOOD DOWN @ ${t(r.ts)} — ${r.sr} (action=${r.action_type}, sent=${r.sent}) [gate working]`);

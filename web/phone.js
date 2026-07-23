@@ -26,7 +26,6 @@ const S = {
   overlay: null, // 'report' | 'raw' | null
   reportMsg: null, rawText: '',
   sheet: null, // 'panels' | 'actions' | 'rec' | 'review' | null
-  ptab: 'Usage', usage: null,
   typing: false, text: '', keysOpen: localStorage.ph_keys !== '0',
   speakingId: null, playScope: null, // 'home' | 'sess' | 'report' | 'one'
   queue: [],
@@ -48,8 +47,8 @@ const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e']
 function badgeFor(s) { return BADGE[s.category] || null; }
 const AGENT_LABEL = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity' };
 function chipColor(tool) { return tool === 'claude' ? 'var(--chip-claude)' : 'var(--chip-codex)'; }
-function statusColor(st) { return st === 'working' ? 'var(--green-dot)' : st === 'exited' ? 'var(--tx-faint)' : st === 'starting' ? 'var(--blue)' : 'var(--yellow)'; }
-function statusWord(st) { return st === 'working' ? 'Working' : st === 'exited' ? 'Stopped' : st === 'starting' ? 'Starting' : 'Waiting'; }
+function statusColor(st) { return st === 'working' ? 'var(--green-dot)' : st === 'exited' ? 'var(--tx-faint)' : st === 'starting' ? 'var(--blue)' : st === 'error' ? 'var(--red)' : 'var(--yellow)'; }
+function statusWord(st) { return st === 'working' ? 'Working' : st === 'exited' ? 'Stopped' : st === 'starting' ? 'Starting' : st === 'error' ? 'Failed' : 'Waiting'; }
 function toast(t) {
   S.toast = t;
   clearTimeout(S.toastTimer);
@@ -108,13 +107,36 @@ async function loadDetail(sid) {
     if (S.screen === 'session' && S.sid === sid && changed) renderSoft();
   } catch { /* keep stale */ }
 }
-const refresh = coalesce(() => { loadHome(); if (S.screen === 'session' && S.sid) loadDetail(S.sid); }, 3000);
+const refresh = coalesce(async () => { await loadHome(); if (S.screen === 'session' && S.sid) await loadDetail(S.sid); }, 3000);
+function patchSession(payload) {
+  if (!payload?.session || !S.home?.sessions) return;
+  const i = S.home.sessions.findIndex((s) => s.id === payload.session);
+  const patch = {};
+  for (const [k, v] of Object.entries(payload)) if (v !== undefined && k !== 'session') patch[k] = v;
+  if (Object.hasOwn(patch, 'project')) patch.project = typeof patch.project === 'object' ? patch.project?.name || '' : patch.project;
+  if (i >= 0) S.home.sessions[i] = { ...S.home.sessions[i], ...patch };
+  else if (patch.status) S.home.sessions.unshift({ id: payload.session, ...patch });
+  else return; // unread-only patches cannot construct an unknown session row
+  S.home.sessions.sort((a, b) => Number(b.last_activity || b.started_at || 0) - Number(a.last_activity || a.started_at || 0));
+  const sessions = S.home.sessions;
+  S.home.counts = {
+    waiting: sessions.filter((s) => s.status === 'waiting').length,
+    working: sessions.filter((s) => s.status === 'working').length,
+    live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
+  };
+  if (S.detail?.id === payload.session) S.detail = { ...S.detail, ...patch };
+  if (S.screen === 'home' || S.sid === payload.session) renderSoft();
+}
 try {
   const es = new EventSource('api/events');
-  es.onmessage = refresh;
-  es.addEventListener('changed', refresh);
+  es.addEventListener('session-status', (e) => {
+    let payload;
+    try { payload = JSON.parse(e.data || '{}'); } catch { return; }
+    patchSession(payload);
+    if (S.sid === payload.session && (payload.previousStatus !== payload.status || payload.source === 'summary')) loadDetail(S.sid);
+  });
 } catch {}
-setInterval(refresh, 20000); // belt-and-suspenders on flaky mobile SSE
+setInterval(refresh, 120000); // recovery only; ordinary status changes are compact row patches
 
 async function markRead(ids, sid = null) {
   if (!ids.length && !sid) return;
@@ -398,7 +420,7 @@ function nav(screen, sid = null, push = true) {
   stopSpeech();
   S.screen = screen; S.sid = sid; S.overlay = null; S.sheet = null; S.typing = false; S.killArmed = false;
   S.text = draftGet(sid); // restore THIS session's unsent composer text (empty for home / a fresh session)
-  if (screen === 'session' && sid) { S.detail = null; S.usage = null; loadDetail(sid); loadUsage(); }
+  if (screen === 'session' && sid) { S.detail = null; loadDetail(sid); }
   if (push) history.pushState({ screen, sid }, '', location.pathname + (screen === 'home' ? '#home' : `#s/${sid}`)); // path-anchored: <base href="./"> makes bare-hash URLs resolve to the site root
   render();
 }
@@ -608,7 +630,6 @@ function renderSession() {
     </div>
     <button class="sv-strip" id="open-panels">
       <span class="st"><span class="dot ${s.status === 'working' ? 'pulse' : ''}" style="background:${statusColor(s.status)}"></span><span style="color:${statusColor(s.status)}">${status}</span></span>
-      ${S.usage?.weekly_pct != null ? `<span class="kv">wk <b>${S.usage.weekly_pct}%</b></span>` : ''}
       <span class="hint">panels ›</span>
     </button>
     ${un.length ? `<div class="sv-playwrap"><button class="playsess" id="play-sess">${playing ? '■ Stop reading' : `▶ Play ${un.length} unread`}</button></div>` : ''}
@@ -743,48 +764,6 @@ function mountPanels() {
     if (!tabsEl || !panelsEl || !S.sid) return;
     try { initAgentPanel({ sessionId: S.sid, tabsEl, panelsEl }); } catch (e) { panelsEl.innerHTML = `<div class="pn-placeholder"><span class="a">panels failed</span><span class="b">${esc(e.message || e)}</span></div>`; }
   });
-}
-
-// ---- usage payload → phone shape ------------------------------------------------------------------
-function fmtNum(n) {
-  n = Number(n || 0);
-  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return String(n);
-}
-async function loadUsage() {
-  try {
-    const j = await api(`api/session/${S.sid}/usage`);
-    const t = j.usage?.totals || {};
-    const cur = j.usage?.model || S.detail?.model;
-    const models = (j.usage?.byModel || []).map((m) => ({
-      name: m.name,
-      current: m.name === cur,
-      stats: `${fmtNum(m.token_traffic_tokens)} traffic · ${fmtNum(m.total_tokens)} reported · ${m.events} events · $${Number(m.estimated_cost_usd || 0).toFixed(2)}`,
-    }));
-    const windows = j.quota?.windows || [];
-    const weekly = windows.find((w) => w.name === 'weekly');
-    S.usage = {
-      modelLabel: (j.quota?.modelLabel || j.usage?.model || '').toUpperCase(),
-      traffic: fmtNum(t.token_traffic_tokens),
-      reported: fmtNum(t.total_tokens),
-      cached: fmtNum(t.cached_input_tokens),
-      cost: '$' + Number(t.estimated_cost_usd || 0).toFixed(2),
-      footer: `${t.priced_events || 0} priced events · ${(t.events || 0) - (t.priced_events || 0)} inferred · ${t.unpriced_events || 0} unpriced`,
-      models,
-      weekly_pct: weekly?.usedPercent != null ? Math.round(weekly.usedPercent) : null,
-      quota: windows.length ? {
-        label: j.quota?.label || '',
-        bars: windows.map((w) => ({
-          name: w.name,
-          pct: w.usedPercent != null ? Math.round(w.usedPercent) : null,
-          resets: w.resetAt ? Math.max(1, Math.round((w.resetAt - Date.now()) / 3600e3)) + 'h' : '',
-        })),
-      } : null,
-    };
-  } catch { S.usage = { models: [] }; }
-  render();
 }
 
 // ---- wiring (event delegation after each render) ---------------------------------------------------

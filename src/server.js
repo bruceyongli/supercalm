@@ -88,6 +88,14 @@ export function route(method, path, handler) {
 // SSE: dashboard live updates
 // ---------------------------------------------------------------------------
 const sseClients = new Set();
+const perfState = { activeRequests: 0, totalRequests: 0, slowRequests: 0, maxRequestMs: 0, eventLoopLagMs: 0 };
+let expectedLoopTick = performance.now() + 1000;
+const loopTimer = setInterval(() => {
+  const t = performance.now();
+  perfState.eventLoopLagMs = Math.max(0, Math.round((t - expectedLoopTick) * 10) / 10);
+  expectedLoopTick = t + 1000;
+}, 1000);
+loopTimer.unref?.();
 function sse(req, res) {
   res.writeHead(200, {
     'content-type': 'text/event-stream',
@@ -123,6 +131,21 @@ bus.on('session-status', (e) => broadcast('session-status', e));
 // state snapshot
 // ---------------------------------------------------------------------------
 let _touchCache = { at: 0, map: new Map() };
+function launchTools() {
+  return TOOL_IDS.map((id) => ({
+    id,
+    label: TOOLS[id].label,
+    color: TOOLS[id].color,
+    model: TOOLS[id].model,
+    modelLabel: TOOLS[id].modelLabel,
+    models: TOOLS[id].models || [],
+    efforts: TOOLS[id].efforts,
+    defaultEffort: TOOLS[id].defaultEffort,
+    fastMode: !!TOOLS[id].fastMode,
+    orchestrations: TOOLS[id].orchestrations || [],
+    defaultOrchestration: TOOLS[id].defaultOrchestration ?? null,
+  }));
+}
 export function buildState() {
   const projects = store.listProjects();
   const sessions = store.listSessions();
@@ -157,19 +180,7 @@ export function buildState() {
     time: now(),
     version: VERSION,
     commit: COMMIT_SHA,
-    tools: TOOL_IDS.map((id) => ({
-      id,
-      label: TOOLS[id].label,
-      color: TOOLS[id].color,
-      model: TOOLS[id].model,
-      modelLabel: TOOLS[id].modelLabel,
-      models: TOOLS[id].models || [],
-      efforts: TOOLS[id].efforts,
-      defaultEffort: TOOLS[id].defaultEffort,
-      fastMode: !!TOOLS[id].fastMode,
-      orchestrations: TOOLS[id].orchestrations || [],
-      defaultOrchestration: TOOLS[id].defaultOrchestration ?? null,
-    })),
+    tools: launchTools(),
     defaults: { autonomy: DEFAULT_AUTONOMY },
     autonomyLevels: AUTONOMY_LEVELS,
     flags: flags(),
@@ -180,7 +191,7 @@ export function buildState() {
       waiting: queue.filter((s) => s.queueTier !== 'stale').length,
       stale: queue.filter((s) => s.queueTier === 'stale').length,
       working: all.filter((s) => s.status === 'working').length,
-      live: all.filter((s) => s.status !== 'exited').length,
+      live: all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
     },
   };
 }
@@ -189,7 +200,24 @@ export function buildState() {
 // core routes (more are registered by feature modules)
 // ---------------------------------------------------------------------------
 route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, commit: COMMIT_SHA, boot: BOOT_ID, time: now() }));
+route('GET', '/api/performance', (req, res) => json(res, 200, {
+  ok: true,
+  ...perfState,
+  // Do not report this inspection request as work that was already active before the snapshot.
+  activeRequests: Math.max(0, perfState.activeRequests - 1),
+  sseClients: sseClients.size,
+  time: now(),
+}));
 route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
+// The launcher needs projects + model choices, not the complete session/queue snapshot. Keeping this
+// projection small lets the shell prefetch it without putting /api/state on the click path.
+route('GET', '/api/launch-options', (req, res) => json(res, 200, {
+  ok: true,
+  projects: store.listProjects(),
+  tools: launchTools(),
+  defaults: { autonomy: DEFAULT_AUTONOMY },
+  autonomyLevels: AUTONOMY_LEVELS,
+}));
 // Release version (single source: package.json, read at boot). no-store so the new-version toast
 // (web/version-badge.js) always sees the live value rather than a heuristically-cached response.
 route('GET', '/api/version', (req, res) => { res.setHeader('cache-control', 'no-store'); json(res, 200, { version: VERSION, channel: releaseChannel(), commit: COMMIT_SHA }); });
@@ -311,12 +339,35 @@ async function serveStatic(req, res, url) {
 // dispatch
 // ---------------------------------------------------------------------------
 const server = http.createServer(async (req, res) => {
+  const requestStarted = performance.now();
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   // Supercalm is reachable directly on :8793 AND under a /aios path on 443 (Tailscale Serve
   // --set-path=/aios). Strip the optional /aios prefix so routing + static serving are
   // identical either way. (The frontend uses <base href="/aios/"> + relative URLs, so even
   // direct :8793 requests arrive prefixed — and a 443 path-proxy already strips it once.)
   url.pathname = url.pathname.replace(/^\/aios(?=\/|$)/, '') || '/';
+  // Permanent EventSource connections are transport, not request work. Excluding both shared events
+  // and per-session terminal bytes keeps active/slow/max latency useful instead of measuring how long
+  // a browser tab happened to stay open. Bounded SSE responses are also omitted from latency at settle.
+  const persistentStream = url.pathname === '/api/events' || /^\/api\/session\/[^/]+\/stream$/.test(url.pathname);
+  if (!persistentStream) {
+    perfState.activeRequests++;
+    perfState.totalRequests++;
+    let requestSettled = false;
+    const settleRequest = (finished) => {
+      if (requestSettled) return;
+      requestSettled = true;
+      const elapsed = performance.now() - requestStarted;
+      perfState.activeRequests = Math.max(0, perfState.activeRequests - 1);
+      const streamingResponse = String(res.getHeader('content-type') || '').toLowerCase().includes('text/event-stream');
+      if (streamingResponse) return;
+      perfState.maxRequestMs = Math.max(perfState.maxRequestMs, Math.round(elapsed));
+      if (elapsed >= 1000) perfState.slowRequests++;
+      if (elapsed >= 1000) console.warn(`[aios] slow request ${req.method} ${url.pathname} ${finished ? res.statusCode : 'aborted'} ${Math.round(elapsed)}ms`);
+    };
+    res.once('finish', () => settleRequest(true));
+    res.once('close', () => settleRequest(false));
+  }
   try {
     for (const r of routes) {
       if (r.method !== req.method) continue;

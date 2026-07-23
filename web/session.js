@@ -1,6 +1,7 @@
-import { $, api, coalesce, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
+import { $, api, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
-import { mountShell } from './shell.js';
+import { getLaunchOptions, mountShell, subscribeSessionEvents, upsertSession } from './shell.js';
+import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
@@ -620,16 +621,27 @@ document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
   b.onclick = () => setMainView(b.dataset.mode === 'story' ? 'story' : 'terminal');
 });
 let storyInited = false;
-async function loadStoryView() {
-  const mod = await import('./story-view.js');
-  if (!storyInited) { storyInited = true; mod.initStoryView({ sessionId: id, panel: document.querySelector('[data-story-panel]') }); }
-  else mod.refreshStory();
+let storyLoadPromise = null;
+function loadStoryView() {
+  // setMainView, the shell's replay, and a live semantic event can converge during mount. Share the
+  // import + initial network refresh so those triggers never issue parallel Story requests.
+  if (storyLoadPromise) return storyLoadPromise;
+  storyLoadPromise = import('./story-view.js').then((mod) => {
+    if (!storyInited) {
+      storyInited = true;
+      return mod.initStoryView({ sessionId: id, panel: document.querySelector('[data-story-panel]') });
+    }
+    return mod.refreshStory();
+  }).finally(() => { storyLoadPromise = null; });
+  return storyLoadPromise;
 }
 // Terminal DATA is lazy (declared before the first setMainView call; the function body below hoists):
 // story is the default log view — the ~192KB scrollback bootstrap + the live byte-stream + xterm
 // rendering stay off the critical path until the terminal is actually shown once. Applies to every
 // device; on phones it was the dominant load cost of opening a session.
 let terminalDataStarted = false;
+let terminalBootstrap = null;
+let terminalStreamPending = false;
 setMainView(activeMainView);
 
 function terminalBottomDistance() {
@@ -991,7 +1003,8 @@ async function bootstrapTerminalScrollback() {
 const afterIdle = (fn) => setTimeout(() => (window.requestIdleCallback || ((f) => f()))(fn), navigator.webdriver ? 20000 : 2500);
 let terminalStream = null;
 function startTerminalStream() {
-  if (_sig.aborted) return; // torn down before the deferred open fired — don't open a leaked stream
+  terminalStreamPending = false;
+  if (_sig.aborted || terminalStream || !latestSessionInfo || latestSessionInfo.status === 'starting') return;
   terminalStream = new EventSource(`api/session/${id}/stream`);
   terminalStream.addEventListener('data', (e) => {
     writeTerminalBytes(b64bytes(e.data));
@@ -1004,15 +1017,26 @@ function startTerminalStream() {
   terminalStream.onerror = () => {}; // EventSource auto-reconnects
 }
 function ensureTerminalData(immediate = false) {
-  if (terminalDataStarted || _sig.aborted) return;
-  terminalDataStarted = true;
-  // Phones skip the raw-history replay: ~192KB captured across the pane's historic widths renders as
-  // soup in a ~46-col xterm (mid-word wraps, duplicated TUI frames). The stream's connect payload
-  // re-baselines to the CURRENT screen server-side; full history lives in the Transcript view.
-  const narrow = matchMedia('(max-width: 600px)').matches;
-  const boot = narrow ? Promise.resolve() : bootstrapTerminalScrollback();
+  if (_sig.aborted) return;
+  if (!terminalDataStarted) {
+    terminalDataStarted = true;
+    // Phones skip the raw-history replay: ~192KB captured across the pane's historic widths renders as
+    // soup in a ~46-col xterm (mid-word wraps, duplicated TUI frames). The stream's connect payload
+    // re-baselines to the CURRENT screen server-side; full history lives in the Transcript view.
+    const narrow = matchMedia('(max-width: 600px)').matches;
+    terminalBootstrap = narrow ? Promise.resolve() : bootstrapTerminalScrollback();
+  }
+  // A Starting session intentionally has no stream endpoint yet. Keep the bootstrap, but do not mark the
+  // connection complete: the Working status patch calls this again and opens SSE exactly once.
+  if (!latestSessionInfo || latestSessionInfo.status === 'starting' || terminalStream || terminalStreamPending) return;
+  terminalStreamPending = true;
+  const streamId = id;
+  const open = () => {
+    if (streamId !== id) return;
+    startTerminalStream();
+  };
   // immediate = the user explicitly switched to the terminal — connect now, not after the idle defer.
-  boot.finally(() => (immediate ? startTerminalStream() : afterIdle(startTerminalStream)));
+  (terminalBootstrap || Promise.resolve()).finally(() => (immediate ? open() : afterIdle(open)));
 }
 if (activeMainView === 'terminal') ensureTerminalData();
 
@@ -1558,6 +1582,16 @@ const TITLE_ICON_CANCEL = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="
 let titleEditing = false;
 let titleBusy = false;
 let latestSessionInfo = null;
+let sessionInfoRequest = null;
+
+function fetchSessionInfo(reqId = id) {
+  if (sessionInfoRequest?.id === reqId) return sessionInfoRequest.promise;
+  const promise = api(`api/session/${reqId}`).finally(() => {
+    if (sessionInfoRequest?.promise === promise) sessionInfoRequest = null;
+  });
+  sessionInfoRequest = { id: reqId, promise };
+  return promise;
+}
 
 function titleTags(s) {
   return [s.modelLabel, s.fastMode ? 'fast' : null, s.effort, s.autonomy].filter(Boolean).join(' · ');
@@ -1593,8 +1627,16 @@ function renderHeaderTitle(s) {
 
 function applySessionInfo(s) {
   if (!s) return;
+  let patch = s;
+  // The initial detail GET can resolve after a Working SSE. Like the shell store, reject only the
+  // unversioned Starting lifecycle fields while retaining useful static metadata from that response.
+  if (s.status === 'starting' && latestSessionInfo?.status && latestSessionInfo.status !== 'starting'
+      && latestSessionInfo.ts && !s.ts) {
+    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
+    patch = Object.fromEntries(Object.entries(s).filter(([key]) => !lifecycle.has(key)));
+  }
   const merged = latestSessionInfo
-    ? { ...latestSessionInfo, ...s, project: s.project || latestSessionInfo.project }
+    ? { ...latestSessionInfo, ...patch, project: patch.project || latestSessionInfo.project }
     : s;
   latestSessionInfo = merged;
   if (merged.toolColor && merged.toolLabel) {
@@ -1684,9 +1726,12 @@ async function suggestAndApplyTitle() {
 }
 
 async function loadInfo() {
+  const reqId = id;
   try {
-    const s = await api(`api/session/${id}`);
+    const s = await fetchSessionInfo(reqId);
+    if (reqId !== id) return;
     applySessionInfo(s);
+    if (activeMainView === 'terminal' && s.status !== 'starting' && !terminalStream) ensureTerminalData(true);
   } catch {}
 }
 loadInfo();
@@ -1710,34 +1755,36 @@ function mountAgentPanel() {
 }
 mountAgentPanel();
 
-// Deferred like the terminal stream (see afterIdle) so the page reaches network-idle after load.
+// Embedded SPA views subscribe immediately: the shell already owns the EventSource, and delaying this
+// callback created a real Starting -> Working race. Only the standalone page defers opening its own
+// permanent connection so network-idle verification remains possible.
 let events = null;
-afterIdle(() => {
-  if (_sig.aborted) return; // torn down before the deferred open fired — don't open a leaked stream
-  events = new EventSource('api/events');
-  events.addEventListener('session-status', (e) => {
-    let payload = null;
-    try {
-      payload = JSON.parse(e.data || '{}');
-    } catch {
-      return;
-    }
-    if (payload?.session !== id || !payload.status) return;
-    applySessionInfo(payload);
-  });
-  // 4 fetches per 'changed' × every poll tick of every agent = the dominant bandwidth
-  // drain on relayed clients — coalesce to one round per 3s.
-  events.addEventListener('changed', coalesce(() => {
-  loadInfo();
-  loadUsage();
-  loadSessionRail();
-  agentPanel?.refresh(); // agent tabs/dots + the active agent panel (supervisor verdict, etc.)
+let unsubscribeSessionEvents = null;
+const onSessionStatus = (payload) => {
+  if (payload?.session !== id || !payload.status) return;
+  applySessionInfo(payload);
+  if (activeMainView === 'terminal' && payload.status !== 'starting' && !terminalStream) ensureTerminalData(true);
+  // Pane activity only patches the header/row. Rich views refresh on semantic transitions; terminal
+  // bytes already have their own stream and usage is loaded only when its drawer is opened.
+  const semantic = payload.previousStatus !== payload.status || ['summary', 'reply', 'settings', 'title', 'title-suggest', 'launch', 'launch-error', 'exit', 'kill', 'stop', 'transcript'].includes(payload.source);
+  if (!semantic) return;
+  agentPanel?.refresh();
   if (activeMainView === 'conversation') loadTimeline();
   if (activeMainView === 'agent') loadAgentView({ refresh: true });
   if (activeMainView === 'scrollback') loadScrollback({ quiet: true });
-    if (activeMainView === 'story') loadStoryView(); // story keeps up with the live session
-  }, 3000));
-});
+  if (activeMainView === 'story') loadStoryView();
+};
+if (embedded) {
+  unsubscribeSessionEvents = subscribeSessionEvents(onSessionStatus, { replayId: id });
+} else {
+  afterIdle(() => {
+    if (_sig.aborted) return;
+    events = new EventSource('api/events');
+    events.addEventListener('session-status', (e) => {
+      try { onSessionStatus(JSON.parse(e.data || '{}')); } catch {}
+    });
+  });
+}
 
 // ---- usage / quota / limits -------------------------------------------------
 function fmtTokens(v) {
@@ -1933,8 +1980,8 @@ async function loadUsage() {
     if (!latestUsage) $('#s-usage').innerHTML = '<section class="su-card"><span class="muted">Usage data unavailable.</span></section>';
   }
 }
-loadUsage();
-_timers.push(setInterval(loadUsage, 30000));
+// Deliberately no eager/interval usage fetch. initAgentPanel's legacy bridge invokes loadUsage when the
+// operator opens the Usage drawer, preventing hidden synchronous aggregation from blocking the server.
 
 // ---- session map ------------------------------------------------------------
 
@@ -2288,13 +2335,16 @@ function wireMapControls() {
 }
 
 async function loadMap() {
+  const myId = id;
   try {
-    renderMap(await api(`api/session/${id}/map`));
+    const payload = await api(`api/session/${myId}/map`);
+    if (_sig.aborted || id !== myId || !$('#s-map')) return;
+    renderMap(payload);
   } catch {
-    if (!latestMap) $('#s-map').innerHTML = '<section class="map-card"><span class="muted">Session map unavailable.</span></section>';
+    const box = $('#s-map');
+    if (!_sig.aborted && id === myId && !latestMap && box) box.innerHTML = '<section class="map-card"><span class="muted">Session map unavailable.</span></section>';
   }
 }
-loadMap();
 
 
 // ---- on-the-fly settings (autonomy / effort / model) ------------------------
@@ -2374,16 +2424,26 @@ function renderSettings(s, tmeta) {
 // Must re-run on every in-place session switch — otherwise the footer keeps showing the previously
 // viewed session's model/effort, and (worse) the stale model <select>'s onchange would POST to the NEW
 // session, writing the wrong tool's model onto it. `_toolsMeta` is the (near-static) tool catalog,
-// cached after the first fetch so switches don't re-pull the whole /api/state; the SELECTED values come
-// fresh from api/session each time. Guarded against a race: if `id` changed while fetching, skip the paint.
+// cached after the first lean launch-options fetch; the SELECTED values share loadInfo's in-flight
+// api/session request. Guarded against a race: if `id` changed while fetching, skip the paint.
 let _toolsMeta = null;
+let _toolsMetaRequest = null;
+function fetchToolsMeta() {
+  if (_toolsMeta) return Promise.resolve(_toolsMeta);
+  if (!_toolsMetaRequest) _toolsMetaRequest = getLaunchOptions()
+    .then((st) => {
+      if (!st) throw new Error('launch options unavailable');
+      return (_toolsMeta = st.tools || []);
+    })
+    .finally(() => { _toolsMetaRequest = null; });
+  return _toolsMetaRequest;
+}
 async function loadSettings() {
   try {
     const reqId = id;
-    const s = await api(`api/session/${id}`);
-    if (!_toolsMeta) { const st = await api('api/state'); _toolsMeta = st.tools || []; }
+    const [s, tools] = await Promise.all([fetchSessionInfo(reqId), fetchToolsMeta()]);
     if (reqId !== id) return; // a newer switch superseded this fetch — don't paint stale settings
-    renderSettings(s, (_toolsMeta || []).find((t) => t.id === s.tool) || {});
+    renderSettings(s, (tools || []).find((t) => t.id === s.tool) || {});
   } catch {}
 }
 loadSettings();
@@ -3059,6 +3119,8 @@ function switchSession(newId) {
     // terminal: drop the old per-session stream, reset the buffer, reconnect after re-bootstrapping scrollback
     try { terminalStream?.close(); } catch {}
     terminalStream = null;
+    terminalStreamPending = false;
+    terminalBootstrap = null;
     try { term.reset(); } catch {}
     // right panel: fully tear down the previous panel via its PUBLIC API (host.destroy() unmounts each
     // module — the map's unmount clears web/agents/graph.js's 80ms animation interval, the residual that
@@ -3071,8 +3133,6 @@ function switchSession(newId) {
     loadInfo();
     loadSettings(); // re-render the composer settings row for the new session (else model/effort bleed across switches)
     loadStoryView();
-    loadUsage();
-    loadMap();
     // terminal data stays lazy across the in-place switch too — reload it only if it's on screen
     terminalDataStarted = false;
     if (activeMainView === 'terminal') ensureTerminalData();
@@ -3411,6 +3471,10 @@ $('#b-stop').onclick = async () => {
   btn.disabled = true;
   try {
     await postAction(`api/session/${id}/stop`);
+    const ended = Date.now();
+    const exited = { id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'stop' };
+    upsertSession(exited);
+    applySessionInfo(exited);
     flashBtn(btn, 'Stopped ✓', true);
     $('#b-resume').hidden = false; // session is exited now -> offer Resume right away
   } catch {
@@ -3425,7 +3489,9 @@ $('#b-kill').onclick = async () => {
   btn.disabled = true;
   try {
     await postAction(`api/session/${id}/kill`);
-    location.href = document.baseURI; // navigating away is the success signal
+    const ended = Date.now();
+    upsertSession({ id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'kill' });
+    navigate('./');
   } catch {
     flashBtn(btn, 'Failed', false); // don't redirect on failure — that would hide a still-alive session
     btn.disabled = false;
@@ -3435,8 +3501,8 @@ $('#b-kill').onclick = async () => {
   // ---- teardown -------------------------------------------------------------
   // Full reset so a later mountSession() starts clean (the SPA re-mounts on every entry to /session). Aborts
   // every window/document/media-query listener at once (the AbortController signal), disconnects the
-  // ResizeObservers, clears the heal/resize/usage/typing intervals + the pending timeouts, closes BOTH SSE
-  // streams (terminal + api/events), disposes xterm, tears down the agent host (which clears graph.js's
+  // ResizeObservers, clears the heal/resize/typing intervals + pending timeouts, closes terminal/SSE
+  // streams, disposes xterm, tears down the agent host (which clears graph.js's
   // animation interval via the map panel's unmount), and removes the body-level command palette.
   function destroySession() {
     try { _ac.abort(); } catch {}
@@ -3448,6 +3514,8 @@ $('#b-kill').onclick = async () => {
     try { clearTimeout(terminalControlFlushTimer); } catch {}
     try { terminalStream?.close(); } catch {}
     try { events?.close(); } catch {}
+    try { unsubscribeSessionEvents?.(); } catch {}
+    unsubscribeSessionEvents = null;
     try { agentPanel?.destroy?.(); } catch {}
     try { stopStoryVoice(); } catch {} // leaving the session view stops any playing report narration (module-singleton audio)
     try { term?.dispose(); } catch {}

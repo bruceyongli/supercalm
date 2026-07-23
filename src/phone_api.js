@@ -4,9 +4,8 @@
 // counts + last key message) so the home screen is ONE fetch, not N+1.
 
 import { route, json } from './server.js';
-import { db, getSession } from './store.js';
+import { db } from './store.js';
 import { bus } from './bus.js';
-import { storyFor } from './story_api.js';
 
 // r4 class C: the triage question a card shows must be the DERIVED question (last unanswered ask from
 // the story parser, else the last report), never raw TUI scrollback ("bypass permissions on…",
@@ -21,17 +20,6 @@ function deMarkdown(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-async function deriveQuestion(sid, fallback = '') {
-  try {
-    const { events } = await storyFor(sid, { rounds: 3 });
-    const asks = events.filter((e) => e.kind === 'ask' && !e.answered);
-    let q = asks.length ? (asks[asks.length - 1].body || asks[asks.length - 1].title || '') : '';
-    if (!q) { const reps = events.filter((e) => e.kind === 'report'); q = reps.length ? (reps[reps.length - 1].body || '') : ''; }
-    q = deMarkdown(q).slice(0, 300);
-    return q || deMarkdown(fallback).slice(0, 300);
-  } catch { return deMarkdown(fallback).slice(0, 300); }
-}
-
 // additive migration: read_at on messages (nullable; desktop ignores it)
 try { db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER'); } catch {}
 
@@ -66,7 +54,10 @@ route('POST', '/api/messages/read', async (req, res) => {
   const sid = typeof b.session_id === 'string' ? b.session_id : null;
   const ts = Date.now();
   let n = 0;
+  const touched = new Set(sid ? [sid] : []);
   if (ids.length) {
+    const rows = db.prepare(`SELECT DISTINCT session_id FROM messages WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+    for (const row of rows) if (row.session_id) touched.add(row.session_id);
     const q = db.prepare(`UPDATE messages SET read_at = ? WHERE id IN (${ids.map(() => '?').join(',')}) AND read_at IS NULL`);
     n = q.run(ts, ...ids).changes;
   } else if (sid) {
@@ -74,7 +65,18 @@ route('POST', '/api/messages/read', async (req, res) => {
   } else {
     return json(res, 400, { error: 'ids[] or session_id required' });
   }
-  if (n) bus.emit('changed');
+  if (n) {
+    // The normalized clients intentionally ignore broad `changed` invalidations. Publish only the
+    // affected unread counters so another desktop/phone reconciles immediately without reloading home.
+    const unread = unreadBySession();
+    for (const session of touched) bus.emit('session-status', {
+      session,
+      unread: unread.get(session)?.n || 0,
+      source: 'read',
+      ts,
+    });
+    bus.emit('changed'); // legacy clients remain compatible during the transition
+  }
   return json(res, 200, { ok: true, marked: n });
 });
 
@@ -84,17 +86,18 @@ route('GET', '/api/phone/home', async (req, res) => {
   const rows = db.prepare(`
     SELECT s.id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, p.name AS project
     FROM sessions s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.last_activity DESC LIMIT 120`).all();
-  const sessions = await Promise.all(rows.map(async (s) => {
+  const sessions = rows.map((s) => {
     const u = unread.get(s.id);
     const lastKey = u ? _lastKey.get(s.id) : null;
-    // r4 class C: waiting cards get the derived question (story parser), not the raw detector tail.
-    const question = s.status === 'waiting' ? await deriveQuestion(s.id, s.question || s.summary) : deMarkdown(s.question || '').slice(0, 300);
+    // The waiting transition already persists a model-cleaned summary/category. Home is a database-only
+    // projection: transcript/story parsing here made one list refresh scale with every waiting log.
+    const question = deMarkdown(s.question || s.summary || '').slice(0, 300);
     return { ...s, question, unread: u?.n || 0, last_key: lastKey ? { id: lastKey.id, text: String(lastKey.text || '').slice(0, 500), ts: lastKey.ts } : null };
-  }));
+  });
   const counts = {
     waiting: sessions.filter((s) => s.status === 'waiting').length,
     working: sessions.filter((s) => s.status === 'working').length,
-    live: sessions.filter((s) => ['working', 'waiting'].includes(s.status)).length,
+    live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
   };
   return json(res, 200, { ok: true, sessions, counts });
 });

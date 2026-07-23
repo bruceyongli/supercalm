@@ -5,10 +5,12 @@ import { join } from 'node:path';
 import { readFileSync } from 'node:fs';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-phone-'));
-process.env.AIOS_PORT = String(30000 + Math.floor(Math.random() * 9000)); // phone_api pulls in server.js — keep it off the live port
+const port = 30000 + Math.floor(Math.random() * 9000);
+process.env.AIOS_PORT = String(port); // phone_api pulls in server.js — keep it off the live port
 
 const { db, addMessage } = await import('../src/store.js');
 const { unreadBySession } = await import('../src/phone_api.js');
+const { bus } = await import('../src/bus.js');
 
 // seed a session + conversation shape: out (old) -> in (reply) -> out, out (new episode)
 db.prepare("INSERT INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_ph','p_ph','codex','tmx_ph','waiting', 1, 1)").run();
@@ -34,12 +36,26 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.equal(unreadBySession().get('s_ph'), undefined, 'session-mode clears the backlog');
 }
 
+// ---- the real read route emits one scoped unread patch (no broad reload required) -----------------
+{
+  addMessage('s_ph', 'out', 'detect', 'a new unread report for cross-client sync');
+  const event = new Promise((resolve) => bus.once('session-status', resolve));
+  await new Promise((r) => setTimeout(r, 30));
+  const response = await fetch(`http://127.0.0.1:${port}/api/messages/read`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: 's_ph' }),
+  });
+  assert.equal(response.status, 200);
+  const patch = await Promise.race([event, new Promise((_, reject) => setTimeout(() => reject(new Error('missing scoped read event')), 1000))]);
+  assert.deepEqual({ session: patch.session, unread: patch.unread, source: patch.source }, { session: 's_ph', unread: 0, source: 'read' });
+}
+
 // ---- route + payload locks --------------------------------------------------------------------------
 {
   const src = readFileSync(new URL('../src/phone_api.js', import.meta.url), 'utf8');
   assert.match(src, /ALTER TABLE messages ADD COLUMN read_at/, 'additive migration');
   assert.match(src, /\/api\/messages\/read/, 'read route exists');
   assert.match(src, /\/api\/phone\/home/, 'lean home route exists');
+  assert.match(src, /bus\.emit\('session-status'/, 'read state publishes a scoped keyed patch');
   assert.match(src, /read_at IS NULL/, 'unread respects server-side read state');
   const ph = readFileSync(new URL('../web/phone.js', import.meta.url), 'utf8');
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');

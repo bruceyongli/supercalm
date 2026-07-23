@@ -130,7 +130,7 @@ export const listProjects = () => _allProjects.all();
 export const getProject = (id) => _getProject.get(id);
 export const getProjectByPath = (p) => _projectByPath.get(p);
 const _delProject = db.prepare('DELETE FROM projects WHERE id = ?');
-const _liveForProject = db.prepare("SELECT COUNT(*) n FROM sessions WHERE project_id = ? AND status != 'exited'");
+const _liveForProject = db.prepare("SELECT COUNT(*) n FROM sessions WHERE project_id = ? AND status IN ('starting','working','waiting')");
 export const deleteProject = (id) => _delProject.run(id);
 export const liveSessionsForProject = (id) => _liveForProject.get(id).n;
 
@@ -143,7 +143,7 @@ const _getSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
 const _getSessionByTmux = db.prepare('SELECT * FROM sessions WHERE tmux = ?');
 const _allSessions = db.prepare('SELECT * FROM sessions ORDER BY last_activity DESC');
 const _liveSessions = db.prepare(
-  "SELECT * FROM sessions WHERE status != 'exited' ORDER BY last_activity DESC"
+  "SELECT * FROM sessions WHERE status IN ('starting','working','waiting') ORDER BY last_activity DESC"
 );
 
 export function createSession(s) {

@@ -13,15 +13,29 @@ export async function api(path, opts) {
 // immediately, trailing edge catches the last burst). The 'changed' SSE fires on every
 // poll tick of every working agent — refetching state per event floods slow/relayed links.
 export function coalesce(fn, ms = 2500) {
-  let timer = null, queued = false;
-  const run = () => {
-    fn();
-    timer = setTimeout(() => {
-      timer = null;
-      if (queued) { queued = false; run(); }
-    }, ms);
+  let timer = null, queued = false, running = false, lastStart = 0;
+  const schedule = () => {
+    if (timer || running || !queued) return;
+    const wait = Math.max(0, ms - (Date.now() - lastStart));
+    timer = setTimeout(() => { timer = null; run(); }, wait);
   };
-  return () => { if (timer) queued = true; else run(); };
+  const run = async () => {
+    if (running) { queued = true; return; }
+    running = true;
+    queued = false;
+    lastStart = Date.now();
+    try { await fn(); } catch (e) { console.error('[aios] coalesced refresh failed:', e); }
+    finally { running = false; schedule(); }
+  };
+  return () => {
+    queued = true;
+    if (running || timer) return;
+    // Preserve the leading edge, but also enforce the interval after a fast completed call. The old
+    // wrapper started every post-completion event immediately, so a fast endpoint was effectively never
+    // throttled even though slow calls were single-flight.
+    if (!lastStart || Date.now() - lastStart >= ms) run();
+    else schedule();
+  };
 }
 
 // The recurring "it resets itself" bug: components re-render via innerHTML on the SSE-'changed' timer

@@ -39,7 +39,7 @@ import { deployContract } from './release_monitor.js';
 import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
-import { isGitRepo, ensureWorktree } from './worktrees.js';
+import { isGitRepo, ensureWorktree, removeWorktree } from './worktrees.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -80,6 +80,7 @@ const BOOL_TRUE = new Set(['1', 'true', 'yes', 'on']);
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
 const reg = new Map();
+const pendingLaunches = new Map(); // sid -> cancellation ticket while preflight/worktree/tmux runs
 const resizeClients = new Map();
 // sid -> "COLSxROWS" last applied to the tmux window, so /resize skips redundant resize-window execs.
 // Cleared in startPane() when a pane is (re)created, so a resumed/fresh pane always gets re-sized.
@@ -353,7 +354,19 @@ export async function sendRaw(name, data) {
 // launch / discover / lifecycle
 // ---------------------------------------------------------------------------
 function register(s) {
-  if (reg.has(s.id)) return reg.get(s.id);
+  if (reg.has(s.id)) {
+    const entry = reg.get(s.id);
+    // A queued launch is born with a non-routable pending-* tmux placeholder. If anything registered
+    // the row before completeLaunch published the real pane, promote the existing registry entry in
+    // place so its subscribers follow the actual session instead of polling the placeholder forever.
+    if (s.tmux && entry.tmux !== s.tmux) {
+      entry.tmux = s.tmux;
+      entry.startedAt = now();
+      entry.lastHash = null;
+      entry.lastChange = now();
+    }
+    return entry;
+  }
   const entry = {
     id: s.id,
     tmux: s.tmux,
@@ -389,18 +402,38 @@ async function readHead(path, max = 16384) {
 // appears after codex starts is this session's rollout, so we record its UUID (store.codex_uuid). This lets
 // the story + resume find the real transcript by UUID even when the rollout's cwd differs from the AIOS
 // project path (a sandboxed workspace) — the failure the operator hit. Fully fail-open + async: it never
-// blocks or breaks the launch, and if it can't tell unambiguously (0 or >1 new files, e.g. concurrent codex
-// launches) it leaves codex_uuid null and cwd-matching stays the fallback.
-async function captureCodexUuid(sid, beforeSet) {
+// blocks or breaks the launch. Concurrent launches are disambiguated by their original task when possible;
+// an ambiguous result stays unbound (and story_api deliberately shows the private AIOS fallback, never a
+// cwd-matched sibling transcript).
+const _claimedCodexUuids = store.db.prepare('SELECT codex_uuid FROM sessions WHERE codex_uuid IS NOT NULL');
+async function captureCodexUuid(sid, beforeSet, task = '') {
   try {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      await new Promise((r) => setTimeout(r, 2500));
-      const fresh = (await codexRolloutFiles()).filter((f) => !beforeSet.has(f));
-      if (fresh.length === 1) {
-        const uuid = rolloutUuidFromName(fresh[0]);
-        if (uuid) { store.updateSession(sid, { codex_uuid: uuid }); store.addEvent(sid, 'codex-uuid', { uuid }); return; }
+    const taskNeedle = JSON.stringify(String(task || '').trim().slice(0, 240)).slice(1, -1);
+    for (let attempt = 0; attempt < 24; attempt++) {
+      await new Promise((r) => setTimeout(r, 250));
+      const claimed = new Set(_claimedCodexUuids.all().map((r) => r.codex_uuid));
+      const fresh = (await codexRolloutFiles())
+        .filter((f) => !beforeSet.has(f))
+        .filter((f) => !claimed.has(rolloutUuidFromName(f)));
+      let chosen = fresh.length === 1 ? fresh[0] : null;
+      if (!chosen && fresh.length > 1 && taskNeedle) {
+        const matches = [];
+        for (const file of fresh) {
+          const head = await readHead(file, 512 * 1024).catch(() => '');
+          if (head.includes(taskNeedle)) matches.push(file);
+        }
+        if (matches.length === 1) chosen = matches[0];
       }
-      if (fresh.length > 1) return; // ambiguous — don't guess; cwd-fallback stays
+      if (chosen) {
+        const uuid = rolloutUuidFromName(chosen);
+        if (uuid) {
+          const before = store.getSession(sid);
+          const updated = store.updateSession(sid, { codex_uuid: uuid });
+          store.addEvent(sid, 'codex-uuid', { uuid });
+          emitSessionStatus(updated, { previousStatus: before?.status || null, source: 'transcript' });
+          return;
+        }
+      }
     }
   } catch {}
 }
@@ -423,20 +456,25 @@ async function findCodexSession(cwd) {
 }
 
 // Create a fresh tmux pane and start (or resume) the tool in it. Returns the tmux name.
-async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, cwd }) {
+async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, cwd, paneName = null }) {
   // `cwd`, when set, is the session's isolated git worktree — it wins over project.path so concurrent
   // sessions on one repo never share a working tree. project.path is NEVER mutated.
   const dir = cwd || project?.path || process.env.HOME;
   if (!existsSync(dir)) throw new Error('path does not exist on host: ' + dir);
   const isolated = !!cwd && cwd !== project?.path;
-  const name = `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
+  const name = paneName || `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
   const logFile = join(LOG_DIR, sid + '.log');
   if (!resume) await writeFile(logFile, ''); // resume keeps appending to the same record
   resizeApplied.delete(sid); // fresh/resumed pane: forget the old window size so the next /resize re-applies
 
-  await tmux('new-session', '-d', '-s', name, '-x', '200', '-y', '50', '-c', dir);
-  await tmux('set-option', '-t', name, 'history-limit', '200000').catch(() => {});
-  await tmux('pipe-pane', '-t', name, `cat >> "${logFile}"`);
+  // The caller persists `name` before this point. Treat every operation from pane creation through the
+  // final Enter as one failure-atomic unit; even a timed-out new-session may have created the pane.
+  let paneMayExist = false;
+  try {
+    paneMayExist = true;
+    await tmux('new-session', '-d', '-s', name, '-x', '200', '-y', '50', '-c', dir);
+    await tmux('set-option', '-t', name, 'history-limit', '200000').catch(() => {});
+    await tmux('pipe-pane', '-t', name, `cat >> "${logFile}"`);
 
   const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy };
   // Launch-path features — ALL flag-gated (default OFF) + precondition-checked. When a flag is off or a
@@ -499,18 +537,65 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const launchFile = join(launchDir, sid + '.sh');
   await writeFile(launchFile, line + '\n', { mode: 0o700 });
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', `. ${shquote(launchFile)}`], X);
-  await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
-  return name;
+    await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+    return name;
+  } catch (e) {
+    if (paneMayExist) await tmuxOk('kill-session', '-t', name);
+    throw e;
+  }
 }
 
-export async function launch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null }) {
+function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null }) {
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
   const activeFastMode = tool === 'codex' && modelSupportsFast(model || TOOLS[tool].model) && !!fastMode;
-  if (tool === 'agy') {
-    await assertAgyCliLoggedIn();
-    await ensureAgyStatuslineHook().catch((e) => console.error('[aios] agy statusline hook install failed:', e.message));
-  }
   const sid = id('s');
+  const ticket = { sid, cancelled: false, startedAt: now() };
+  // Allocate the real tmux identity before any async work. Stop/kill and restart recovery can now target
+  // the pane even if setup fails or the process dies between new-session and Working publication.
+  const paneName = `aios-${slug(project?.name || 'adhoc')}-${tool}-${sid.replace(/^s_/, '').slice(0, 8)}`;
+  const session = store.createSession({
+    id: sid,
+    project_id: project?.id || null,
+    tool,
+    tmux: paneName,
+    title: task ? task.slice(0, 100) : '(interactive)',
+    status: 'starting',
+    autonomy,
+    effort,
+    model,
+    fast_mode: activeFastMode ? 1 : 0,
+    orchestration,
+  });
+  // Do not leak an in-memory cancellation ticket if the durable reservation itself failed.
+  pendingLaunches.set(sid, ticket);
+  store.addEvent(sid, 'launch-queued', { tool, dir: project?.path, autonomy, effort, model, fastMode: activeFastMode, orchestration });
+  if (task) store.addMessage(sid, 'in', 'task', task);
+  emitSessionStatus(session, { previousStatus: null, source: 'launch-queued' });
+  bus.emit('event', { type: 'session-created', session: sid, tool, project: project?.name });
+  return { sid, ticket, session, project, tool, task, effort, autonomy, model, activeFastMode, orchestration, paneName };
+}
+
+function assertLaunchActive(spec) {
+  const current = store.getSession(spec.sid);
+  if (spec.ticket.cancelled || !current || current.status !== 'starting') {
+    const e = new Error('launch cancelled');
+    e.code = 'launch-cancelled';
+    throw e;
+  }
+}
+
+async function completeLaunch(spec) {
+  const { sid, ticket, project, tool, task, effort, autonomy, model, activeFastMode, orchestration } = spec;
+  const timings = {};
+  const phase = async (name, fn) => {
+    const t = performance.now();
+    try { return await fn(); } finally { timings[name] = Math.round(performance.now() - t); }
+  };
+  assertLaunchActive(spec);
+  if (tool === 'agy') {
+    await phase('auth', () => assertAgyCliLoggedIn());
+    await phase('statusline', () => ensureAgyStatuslineHook().catch((e) => console.error('[aios] agy statusline hook install failed:', e.message)));
+  }
   // Pre-flight spec-sharpen (#3, flag preflightGrill, default OFF): interrogate the task against the repo
   // and prepend an ADVISORY sharpened brief to the agent's first prompt (original task preserved + kept
   // authoritative). Fully fail-open + hard-bounded; resume() never reaches here. Title/message keep the
@@ -518,7 +603,7 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
   let launchTask = task;
   if (helperEnabled(project?.id, 'preflight') && task && task.trim()) {
     try {
-      const pf = await preflightSpec({ sid, project, task });
+      const pf = await phase('preflight', () => preflightSpec({ sid, project, task }));
       if (pf.status === 'success' && pf.spec) {
         const composed = composeTask(pf.spec, pf.questions, task);
         if (composed.length <= 16000) launchTask = composed; // argv-size guard; else fall back to original
@@ -527,6 +612,7 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
       console.error('[aios] preflight skipped (fail-open):', e?.message || e);
     }
   }
+  assertLaunchActive(spec);
   // Inject distilled lessons from PAST sessions in this repo (advisory; gated on the lessons helper).
   // Reuses EmbodiSkill-classified, success-gated skill-fix lessons only; prepended so the agent sees them
   // ahead of the (possibly preflight-composed) task. Fail-open + argv-size guarded.
@@ -545,31 +631,33 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
   // codex only: snapshot the rollout set right before launch so captureCodexUuid can diff for the NEW
   // rollout codex creates — recording its UUID (store.codex_uuid) makes the transcript/resume findable
   // even when the rollout's cwd differs from the project path (the operator's cwd-mismatch failure).
+  const rolloutStarted = performance.now();
   const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles().catch(() => [])) : null;
+  if (tool === 'codex') timings['rollout-scan'] = Math.round(performance.now() - rolloutStarted);
   // Per-session worktree isolation (opt-in per project, #isolation helper). Concurrent sessions on one
   // repo get their own worktree+branch so they never clobber each other. FAIL-OPEN: any error → the
   // shared tree, and the launch line is byte-identical to before (the default-inert boundary).
   let wt = null;
   if (helperEnabled(project?.id, 'isolation') && project?.path) {
     try {
-      if (await isGitRepo(project.path)) wt = await ensureWorktree({ repoPath: project.path, sid, project });
+      if (await phase('git-check', () => isGitRepo(project.path))) wt = await phase('worktree', () => ensureWorktree({ repoPath: project.path, sid, project }));
     } catch (e) { console.error('[aios] worktree isolation skipped (fail-open):', e?.message || e); wt = null; }
   }
-  const name = await startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false, cwd: wt?.path });
-  const s = store.createSession({
-    id: sid,
-    project_id: project?.id || null,
-    tool,
-    tmux: name,
-    title: task ? task.slice(0, 100) : '(interactive)',
-    status: 'working',
-    autonomy,
-    effort,
-    model,
-    fast_mode: activeFastMode ? 1 : 0,
-    orchestration,
+  spec.worktree = wt;
+  assertLaunchActive(spec);
+  const name = await phase('tmux-and-agent', () => startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false, cwd: wt?.path, paneName: spec.paneName }));
+  if (ticket.cancelled || store.getSession(sid)?.status !== 'starting') {
+    await tmuxOk('kill-session', '-t', name);
+    assertLaunchActive(spec);
+  }
+  const s = store.updateSession(sid, {
+    status: 'working', tmux: name, last_activity: now(),
+    ...(wt ? { worktree_path: wt.path, branch: wt.branch } : {}),
   });
-  if (wt) store.updateSession(sid, { worktree_path: wt.path, branch: wt.branch }); // source of truth for confinement + resume
+  // Publish registry ownership and retire the cancellation ticket immediately after the durable Working
+  // transition. Manifest/event telemetry below is ancillary and must never leave a live pane orphaned.
+  register(s);
+  pendingLaunches.delete(sid);
   // LAUNCH CONTRACT (launch_contract.js): the immutable birth record resume() verifies against.
   writeManifest(sid, {
     tool, project_path: project?.path || null, cwd: wt?.path || project?.path || null,
@@ -577,14 +665,55 @@ export async function launch({ project, tool, task, effort = null, autonomy = nu
     autonomy, effort, model, orchestration, fastMode: activeFastMode,
     task_head: String(task || '').slice(0, 400),
   }).catch((e) => console.error('[aios] manifest write failed (fail-open):', e?.message || e));
-  store.addEvent(sid, 'launch', { tool, dir: wt?.path || project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration, worktree: wt?.path || null, branch: wt?.branch || null });
-  if (task) store.addMessage(sid, 'in', 'task', task);
-  register(s);
-  if (codexBefore) captureCodexUuid(sid, codexBefore); // fire-and-forget; async + fail-open, never blocks launch
-  emitSessionStatus(s, { previousStatus: null, source: 'launch' });
-  bus.emit('changed');
-  bus.emit('event', { type: 'launch', session: sid, tool, project: project?.name });
+  timings.total = now() - ticket.startedAt;
+  try { store.addEvent(sid, 'launch', { tool, dir: wt?.path || project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration, worktree: wt?.path || null, branch: wt?.branch || null, timings }); }
+  catch (e) { console.error('[aios] launch event write failed (fail-open):', e?.message || e); }
+  if (codexBefore) captureCodexUuid(sid, codexBefore, task); // fire-and-forget; async + fail-open, never blocks launch
+  try {
+    emitSessionStatus(s, { previousStatus: 'starting', source: 'launch' });
+    bus.emit('changed');
+    bus.emit('event', { type: 'launch', session: sid, tool, project: project?.name, timings });
+  } catch (e) { console.error('[aios] launch notification failed (fail-open):', e?.message || e); }
+  if (timings.total >= 1000) console.log(`[aios] launch ${sid} ready in ${timings.total}ms ${JSON.stringify(timings)}`);
   return s;
+}
+
+async function failLaunch(spec, error) {
+  pendingLaunches.delete(spec.sid);
+  const current = store.getSession(spec.sid);
+  const cleanupArtifacts = spec.ticket.cancelled || error?.code === 'launch-cancelled' || current?.status === 'starting';
+  // Both startPane and this outer boundary clean the known name; idempotence covers failures before,
+  // during, and after tmux creation. A fresh isolation worktree is also a launch artifact on every failure,
+  // not only explicit cancellation.
+  if (cleanupArtifacts && spec.paneName) await tmuxOk('kill-session', '-t', spec.paneName);
+  if (cleanupArtifacts && spec.worktree && !spec.worktree.reused && spec.project?.path) {
+    await removeWorktree({ repoPath: spec.project.path, path: spec.worktree.path, branch: spec.worktree.branch })
+      .catch((e) => console.error('[aios] failed launch worktree cleanup failed:', e?.message || e));
+  }
+  if (error?.code === 'launch-cancelled' || !current || current.status !== 'starting') return current;
+  const message = String(error?.message || error || 'launch failed').slice(0, 500);
+  const failed = store.updateSession(spec.sid, { status: 'error', summary: `Launch failed: ${message}`, question: null, ended_at: now(), exit_code: -1, last_activity: now() });
+  store.addEvent(spec.sid, 'launch-error', { error: message, elapsed_ms: now() - spec.ticket.startedAt });
+  emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
+  bus.emit('event', { type: 'launch-error', session: spec.sid, error: message });
+  return failed;
+}
+
+// Compatibility path for internal callers that need a fully-started session.
+export async function launch(args) {
+  const spec = reserveLaunch(args);
+  try { return await completeLaunch(spec); }
+  catch (e) { await failLaunch(spec, e); throw e; }
+}
+
+// UI path: persist + return the starting row synchronously, then finish expensive setup off-request.
+export function queueLaunch(args) {
+  const spec = reserveLaunch(args);
+  setImmediate(() => completeLaunch(spec).catch(async (e) => {
+    await failLaunch(spec, e);
+    if (e?.code !== 'launch-cancelled') console.error('[aios] queued launch failed:', e?.stack || e);
+  }));
+  return spec.session;
 }
 
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
@@ -692,7 +821,24 @@ export async function discover() {
   }
   const alive = new Set(names);
   for (const s of store.listLiveSessions()) {
-    if (alive.has(s.tmux)) {
+    if (s.status === 'starting') {
+      // server.listen can accept a launch while this asynchronous boot reconciliation is still in
+      // flight. A current-process ticket owns that row; completeLaunch will publish or clean it.
+      if (pendingLaunches.has(s.id)) continue;
+      // A queued launch exists only in this process. After a restart there is no background task left
+      // to complete it. The real pane name was persisted before creation, so retire an already-created
+      // pane as well as surfacing an actionable terminal state.
+      if (alive.has(s.tmux)) await tmuxOk('kill-session', '-t', s.tmux);
+      const failed = store.updateSession(s.id, {
+        status: 'error',
+        summary: 'Launch interrupted by service restart. Start a new session to retry.',
+        question: null,
+        ended_at: now(),
+        exit_code: -1,
+      });
+      store.addEvent(s.id, 'launch-error', { error: 'service restarted during launch' });
+      emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
+    } else if (alive.has(s.tmux)) {
       register(s);
     } else {
       store.updateSession(s.id, { status: 'exited', ended_at: now() });
@@ -944,13 +1090,15 @@ async function pollOnce() {
     {
       const v = parkVerdict({ status: s.status, parked: !!s.parked, idleMs });
       if (v.park) {
-        store.updateSession(s.id, { parked: 1 });
+        const updated = store.updateSession(s.id, { parked: 1 });
         store.addEvent(s.id, 'parked', { idleMs });
+        emitSessionStatus(updated, { previousStatus: s.status, source: 'parked' });
         bus.emit('notify', { title: 'Session parked', body: `${(s.title || s.id).slice(0, 80)} — no pane movement for ${Math.round(idleMs / 3600000)}h; parked out of the queue. Reply to wake it.`, url: `session?id=${s.id}`, tag: `park-${s.id}` });
         bus.emit('changed');
       } else if (v.unpark) {
-        store.updateSession(s.id, { parked: 0 });
+        const updated = store.updateSession(s.id, { parked: 0 });
         store.addEvent(s.id, 'unparked', {});
+        emitSessionStatus(updated, { previousStatus: s.status, source: 'unparked' });
         bus.emit('changed');
       }
     }
@@ -964,8 +1112,9 @@ async function pollOnce() {
       const cls = errLine ? classifyErrorType(errLine) : null;
       const wantDegraded = errLine && ['rate_limit', 'overloaded', 'transient', 'generic'].includes(cls) ? 1 : 0;
       if (wantDegraded !== (s.degraded ? 1 : 0)) {
-        store.updateSession(s.id, { degraded: wantDegraded });
+        const updated = store.updateSession(s.id, { degraded: wantDegraded });
         store.addEvent(s.id, wantDegraded ? 'degraded' : 'recovered', wantDegraded ? { cls, line: String(errLine).slice(0, 160) } : {});
+        emitSessionStatus(updated, { previousStatus: s.status, source: wantDegraded ? 'degraded' : 'recovered' });
         bus.emit('changed');
       }
     }
@@ -1028,8 +1177,10 @@ function applyStatus(s, status, question, activityBump) {
   const updated = store.updateSession(s.id, patch);
   if (patch.status) {
     store.addEvent(s.id, 'status', { from: s.status, to: patch.status });
-    emitSessionStatus(updated, { previousStatus: s.status, source: 'poll' });
   }
+  // Every persisted summary-field change is a compact row patch. Activity can be noisy, but it no
+  // longer invalidates or refetches a list; clients update only this session's keyed row.
+  emitSessionStatus(updated, { previousStatus: s.status, source: 'poll' });
   if (nowWaiting && !wasWaiting) {
     if (question) store.addMessage(s.id, 'out', 'detect', question);
     runSummary(s.id); // async: LLM summary+category, then fires 'waiting' (push)
@@ -1058,9 +1209,7 @@ export function noteReply(sid) {
     entry.lastChange = now();
     entry.waitStreak = 0;
   }
-  if (before && before.status !== updated.status) {
-    emitSessionStatus(updated, { previousStatus: before.status, source: 'reply' });
-  }
+  if (before) emitSessionStatus(updated, { previousStatus: before.status, source: 'reply', extra: { unread: 0 } });
   bus.emit('changed');
 }
 
@@ -1081,20 +1230,24 @@ async function runSummary(sid) {
   const summary = (result?.summary || cur.question || cur.title || 'Waiting for your input').replace(/\s+/g, ' ').slice(0, 220);
   const category = result?.category || 'review';
   const stage = result?.stage || null; // semantic lifecycle stage for the Supervisor's stand-down gate
-  store.updateSession(sid, { summary, category, stage });
+  // Persist the curated ask at the transition. List endpoints can now remain DB-only instead of
+  // reparsing a growing transcript every time a browser wants a status row.
+  const curatedQuestion = String(result?.ask || cur.question || summary).replace(/\s+/g, ' ').trim().slice(0, 2000);
+  const updated = store.updateSession(sid, { summary, category, stage, question: curatedQuestion || null });
   // Record the decision event: the model-distilled CORE ask (the agent's reasoning + background +
   // the actual question — NO terminal trash) plus the summary/category. Your reply is linked later
   // (answerPendingDecision). For quick history + future decision-model training.
   try {
     if (category !== 'working') { // a real ask (decision/action/review), not a working false-positive
-      const ask = String(result?.ask || summary || cur.question || '').trim().slice(0, 2000);
+      const ask = String(curatedQuestion || summary || '').trim().slice(0, 2000);
       const project = cur.project_id ? store.getProject(cur.project_id) : null;
-      store.createDecision({ session_id: sid, project_id: cur.project_id, project: project?.name || null, tool: cur.tool, model: cur.model, asked_at: now(), category, summary, question: cur.question || null, ask });
+      store.createDecision({ session_id: sid, project_id: cur.project_id, project: project?.name || null, tool: cur.tool, model: cur.model, asked_at: now(), category, summary, question: curatedQuestion || null, ask });
     }
   } catch (e) {
     console.error('[aios] record decision failed:', e.message);
   }
   bus.emit('waiting', { session: sid, summary, category });
+  emitSessionStatus(updated, { previousStatus: 'waiting', source: 'summary', extra: { unread: 1 } });
   bus.emit('changed');
 }
 
@@ -1127,7 +1280,7 @@ function applyAuthNeeded(s) {
   if (!Object.keys(patch).length) return;
   const firstWait = patch.status === 'waiting';
   const updated = store.updateSession(s.id, patch);
-  if (patch.status) emitSessionStatus(updated, { previousStatus: s.status, source: 'auth-needed' });
+  emitSessionStatus(updated, { previousStatus: s.status, source: 'auth-needed', extra: { unread: firstWait ? 1 : undefined } });
   if (firstWait) {
     store.addEvent(s.id, 'auth-needed', {});
     bus.emit('waiting', { session: s.id, summary, category: 'action' });
@@ -1246,7 +1399,7 @@ function decorate(s) {
   };
 }
 
-function emitSessionStatus(s, { previousStatus = null, source = 'status' } = {}) {
+function emitSessionStatus(s, { previousStatus = null, source = 'status', extra = {} } = {}) {
   if (!s?.id) return;
   const d = decorate(s);
   bus.emit('session-status', {
@@ -1254,14 +1407,25 @@ function emitSessionStatus(s, { previousStatus = null, source = 'status' } = {})
     status: d.status,
     previousStatus,
     question: d.question || null,
+    summary: d.summary || null,
+    category: d.category || null,
+    stage: d.stage || null,
     title: d.title || null,
     tool: d.tool,
     toolLabel: d.toolLabel,
     toolColor: d.toolColor,
+    model: d.model || null,
     modelLabel: d.modelLabel,
+    last_activity: d.last_activity,
+    started_at: d.started_at,
+    ended_at: d.ended_at || null,
+    exit_code: d.exit_code ?? null,
+    parked: !!d.parked,
+    degraded: !!d.degraded,
     project: d.project ? { id: d.project.id, name: d.project.name } : null,
     source,
     ts: now(),
+    ...extra,
   });
 }
 
@@ -1850,8 +2014,8 @@ route('POST', '/api/session', async (req, res) => {
   const fastMode = tool === 'codex' && modelSupportsFast(model) && boolParam(b.fastMode ?? b.fast_mode);
   const orchestration = T.orchestrations?.length ? (T.orchestrations.includes(b.orchestration) ? b.orchestration : T.defaultOrchestration) : null;
   try {
-    const s = await launch({ project, tool, task: b.task ? String(b.task) : null, effort, autonomy, model, fastMode, orchestration });
-    json(res, 201, decorate(s));
+    const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, effort, autonomy, model, fastMode, orchestration });
+    json(res, 202, decorate(s));
   } catch (e) {
     json(res, 400, { error: String(e.message || e) });
   }
@@ -1874,7 +2038,7 @@ route('GET', '/api/session/:id', async (req, res, { id: sid }) => {
     ...decorate(s),
     messages: store.messagesFor(sid),
     events: store.eventsFor(sid, 60),
-    snapshot: await snapshot(sid),
+    snapshot: s.status === 'starting' || s.status === 'error' ? '' : await snapshot(sid),
   });
 });
 
@@ -2466,6 +2630,8 @@ route('POST', '/api/session/:id/resize', async (req, res, { id: sid }) => {
 route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
+  const pending = pendingLaunches.get(sid);
+  if (pending) pending.cancelled = true;
   // A manual Stop is the operator taking over: disable the Supervisor auto-pilot first so it can't
   // relaunch/re-nudge the agent after we halt it. Stays off until re-enabled from the Supervisor tab.
   let supervisorDisabled = false;
@@ -2480,8 +2646,10 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   // Resume relaunches claude `--continue` / codex `resume` with the conversation intact — so this is the
   // operator's "stop it now, I'll bring it back later" without the finality of Kill.
   if (s.status !== 'exited') {
-    await sendKey(s.tmux, 'ctrl-c').catch(() => {});
-    await tmuxOk('kill-session', '-t', s.tmux);
+    if (!s.tmux.startsWith('pending-')) {
+      await sendKey(s.tmux, 'ctrl-c').catch(() => {});
+      await tmuxOk('kill-session', '-t', s.tmux);
+    }
     const entry = reg.get(sid);
     if (entry) markExited(entry, null);
     else {
@@ -2494,17 +2662,25 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   json(res, 200, { ok: true, supervisorDisabled, parked: true, resumable: true });
 });
 
-route('POST', '/api/session/:id/kill', async (req, res, { id: sid }) => {
+export async function killSession(sid) {
   const s = store.getSession(sid);
-  if (!s) return json(res, 404, { error: 'no such session' });
+  if (!s) return null;
+  const pending = pendingLaunches.get(sid);
+  if (pending) pending.cancelled = true;
   store.addEvent(sid, 'kill', { manual: true });
-  await tmuxOk('kill-session', '-t', s.tmux);
+  if (!s.tmux.startsWith('pending-')) await tmuxOk('kill-session', '-t', s.tmux);
   const entry = reg.get(sid);
   if (entry) markExited(entry, null);
   else {
-    const updated = store.updateSession(sid, { status: 'exited', ended_at: now() });
+    const updated = store.updateSession(sid, { status: 'exited', question: null, ended_at: now(), last_activity: now() });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'kill' });
   }
+  return store.getSession(sid);
+}
+
+route('POST', '/api/session/:id/kill', async (req, res, { id: sid }) => {
+  const killed = await killSession(sid);
+  if (!killed) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });
 });
 
@@ -2554,13 +2730,12 @@ route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
   }
   if (!changed.length) return json(res, 200, { ...decorate(s), applied: 'none' });
 
-  store.updateSession(sid, patch);
+  let result = store.updateSession(sid, patch);
   store.addEvent(sid, 'settings', patch);
 
   const alive = await tmuxOk('has-session', '-t', s.tmux);
   const needsRelaunch = changed.some((k) => !(T.live && T.live[k]));
   let applied = 'stored';
-  let result = store.getSession(sid);
   try {
     if (alive && needsRelaunch) {
       result = await resume(sid, { force: true }); // applies all current settings via launch flags
@@ -2578,6 +2753,7 @@ route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
   } catch (e) {
     return json(res, 500, { error: 'applied to settings but failed to take effect: ' + e.message });
   }
+  emitSessionStatus(result, { previousStatus: s.status, source: 'settings' });
   bus.emit('changed');
   json(res, 200, { ...decorate(result), applied });
 });
@@ -2585,6 +2761,9 @@ route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
 route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
+  // EventSource retries this endpoint automatically. Do not register the pending-* placeholder while
+  // the asynchronous launcher is still creating the real tmux pane.
+  if (s.status === 'starting') return json(res, 409, { error: 'session is still starting', retry: true });
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' });
   res.write('retry: 2000\n\n');
   const entry = register(s);

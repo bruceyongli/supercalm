@@ -4,6 +4,7 @@
 // swaps #view, mounts the next, and pushState's the URL. Built alongside the legacy pages (served at
 // /aios/app) until verified, then the server points every app route here (see src/server.js).
 import { mountShell } from './shell.js';
+import { setNavigationHandler } from './navigation.js';
 
 const BASE = '/aios';                        // path prefix the app is served under
 const view = () => document.getElementById('view');
@@ -68,8 +69,10 @@ export function go(href, { push = true } = {}) {
   try { url = new URL(href, location.href); } catch { return; }
   if (url.origin !== location.origin) { location.href = href; return; } // external — real navigation
   if (push) history.pushState({}, '', url); else history.replaceState({}, '', url);
+  window.dispatchEvent(new CustomEvent('aios:navigate'));
   render();
 }
+setNavigationHandler(go);
 
 // Intercept in-app link clicks (sidebar nav, session rows, inbox cards). Anything with target=_blank, a
 // modifier key, or an off-origin/hash/scheme href is left to the browser.
@@ -98,7 +101,7 @@ document.addEventListener('click', (e) => {
   go(url.href);
 }, true); // capture phase, before per-view handlers that might stopPropagation
 
-window.addEventListener('popstate', () => render());
+window.addEventListener('popstate', () => { window.dispatchEvent(new CustomEvent('aios:navigate')); render(); });
 
 // ?phone=1 = the shell's "📱 phone view" pill. Only the retired classic index ever handled it, so after
 // the SPA cutover the pill reloaded the same desktop shell forever. Route it to the phone companion

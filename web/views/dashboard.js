@@ -4,7 +4,7 @@
 import { getHome, subscribeHome, agentChip, shortTitle, needsYou, openLaunch, toast } from '../shell.js';
 // cards/rows show the full first line (the rail keeps shortTitle); CSS ellipsizes/clamps per width
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
-import { api, escapeHtml as esc, fmtAgo, setupVerdict } from '../common.js';
+import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
 import { startVoiceMode } from '../voicemode.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
@@ -52,16 +52,40 @@ function primaryOpt(opts) {
   return i < 0 ? 0 : i;
 }
 
+function keyedNode(html, key) {
+  const t = document.createElement('template');
+  t.innerHTML = html.trim();
+  const node = t.content.firstElementChild;
+  node.dataset.key = key;
+  node.dataset.render = html;
+  return node;
+}
+function reconcile(container, specs) {
+  const existing = new Map([...container.children].map((el) => [el.dataset.key, el]));
+  const wanted = new Set(specs.map((s) => s.key));
+  for (const [key, el] of existing) if (!wanted.has(key)) el.remove();
+  specs.forEach((spec, i) => {
+    let el = existing.get(spec.key);
+    if (!el || (el.dataset.render !== spec.html && !isInteracting(el))) {
+      const fresh = keyedNode(spec.html, spec.key);
+      if (el) el.replaceWith(fresh);
+      el = fresh;
+    }
+    if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
+  });
+}
+
 function renderInbox(home) {
   if (!host) return;
+  setDashboardBrowserIdentity(home);
   const cards = needsYou();
   const nc = $('#dk-needs-count');
   if (nc) { nc.hidden = !cards.length; nc.textContent = cards.length; }
   const cardsEl = $('#dk-cards');
-  if (cardsEl) cardsEl.innerHTML = cards.map((s) => {
+  const cardSpecs = cards.map((s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const opts = optionsOf(s);
-    return `
+    return { key: `card:${s.id}`, html: `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
         <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
@@ -73,16 +97,18 @@ function renderInbox(home) {
       ${opts.length ? `<div class="dk-card-opts">${(() => { const pi = primaryOpt(opts); return opts.map((o, i) => `<button class="dk-opt${i === pi ? ' primary' : ''}" data-dk-opt data-key="${esc(o.key)}">${esc(o.key)} — ${esc(o.label)}</button>`).join(''); })()}</div>` : ''}
       <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><span class="dk-hint">${opts.length ? `${esc(opts.map((o) => o.key).join(' / '))} answers this` : ''}</span></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
-    </div>`;
-  }).join('') || ((home.sessions || []).length === 0
-    ? `<div class="dk-hero" data-dk-allclear><span data-dk-setupline><span class="ok">✓ this box is yours</span></span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>`
-    : '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>');
+    </div>` };
+  });
+  if (!cardSpecs.length) cardSpecs.push((home.sessions || []).length === 0
+    ? { key: 'empty:first', html: `<div class="dk-hero" data-dk-allclear><span data-dk-setupline><span class="ok">✓ this box is yours</span></span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>` }
+    : { key: 'empty:clear', html: '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>' });
+  if (cardsEl) reconcile(cardsEl, cardSpecs);
   const all = home.sessions || [];
-  const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
-  const stopped = all.filter((s) => s.status !== 'working' && s.status !== 'waiting');
-  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : 'Stopped');
+  const live = all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
+  const stopped = all.filter((s) => !['starting', 'working', 'waiting'].includes(s.status));
+  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : st === 'starting' ? 'Starting' : st === 'error' ? 'Failed' : 'Stopped');
   const row = (s) => `
-    <a class="dk-row" href="session?id=${esc(s.id)}">
+    <a class="dk-row" href="session?id=${esc(s.id)}" data-dk-row data-sid="${esc(s.id)}">
       <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i>${agentChip(s.tool)}
       <b class="dk-row-name">${esc(fullTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
@@ -93,8 +119,13 @@ function renderInbox(home) {
   const stoppedToggle = stopped.length > STOPPED_SHOWN
     ? `<button class="dk-show-more" data-dk-stopped-toggle>${stoppedExpanded ? 'show fewer' : `show all ${stopped.length} stopped`}</button>` : '';
   const rowsEl = $('#dk-rows');
-  if (rowsEl) rowsEl.innerHTML = live.map(row).join('')
-    + (stopped.length ? `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>${shownStopped.map(row).join('')}${stoppedToggle}` : '');
+  const rowSpecs = live.map((s) => ({ key: `row:${s.id}`, html: row(s) }));
+  if (stopped.length) {
+    rowSpecs.push({ key: 'stopped:header', html: `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>` });
+    rowSpecs.push(...shownStopped.map((s) => ({ key: `row:${s.id}`, html: row(s) })));
+    if (stoppedToggle) rowSpecs.push({ key: 'stopped:toggle', html: stoppedToggle });
+  }
+  if (rowsEl) reconcile(rowsEl, rowSpecs);
   const tog = $('[data-dk-stopped-toggle]');
   if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
   wireCards();

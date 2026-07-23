@@ -54,6 +54,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_usage_events_project  ON usage_events(project_id, ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_model    ON usage_events(model, ts);
   CREATE INDEX IF NOT EXISTS idx_usage_events_type     ON usage_events(event_type, ts);
+  CREATE INDEX IF NOT EXISTS idx_usage_events_session_ts ON usage_events(event_type, session_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_usage_events_external_ts ON usage_events(event_type, external_session_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_usage_events_tool_project_ts ON usage_events(event_type, tool, project_id, ts);
+  CREATE INDEX IF NOT EXISTS idx_usage_events_tool_cwd_ts ON usage_events(event_type, tool, cwd, ts);
 `);
 
 const _insertUsage = db.prepare(`
@@ -165,6 +169,7 @@ export function recordUsage(e) {
     e.message || null,
     raw
   );
+  if (e.session_id) sessionUsageCache.delete(String(e.session_id));
   return r.changes > 0;
 }
 
@@ -440,62 +445,131 @@ function withGroupCostsWhere(rows, W, args, field) {
   return rows.map((r) => withCost(r, costs.get(r.name)));
 }
 
+const SESSION_USAGE_COLUMNS = `id, source_id, source, event_type, ts, session_id, external_session_id, request_id,
+  tool, provider, model, project_id, project, cwd,
+  input_tokens, cached_input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+  output_tokens, reasoning_tokens, total_tokens, message`;
+
+function sessionExternalId(s) {
+  if (s?.tool === 'codex' && s.codex_uuid) return String(s.codex_uuid);
+  if (s?.tool === 'claude' && s.claude_transcript) {
+    const file = String(s.claude_transcript).split(/[\\/]/).pop() || '';
+    if (file.endsWith('.jsonl')) return file.slice(0, -6);
+  }
+  return null;
+}
+
 function sessionUsageWhere(sessionOrId) {
   const s = typeof sessionOrId === 'string' ? getSession(sessionOrId) : sessionOrId;
   if (!s) return null;
   const project = s.project_id ? getProject(s.project_id) : null;
   const since = Math.max(0, Number(s.started_at || 0) - 60_000);
   const until = Number(s.ended_at || 0) || now();
-  const where = ["event_type = 'usage'", 'ts >= ?', 'ts <= ?'];
-  const args = [since, until + 60_000];
-  const match = ['session_id = ?'];
-  const matchArgs = [s.id];
-  if (s.tool && project?.id) {
-    match.push('(tool = ? AND project_id = ?)');
-    matchArgs.push(s.tool, project.id);
+  const end = until + 60_000;
+  const externalId = sessionExternalId(s);
+  let exactEvents = Number(db.prepare(`
+    SELECT COUNT(*) events FROM usage_events
+    WHERE event_type='usage' AND session_id=? AND ts>=? AND ts<=?
+  `).get(s.id, since, end)?.events || 0);
+  if (externalId) exactEvents += Number(db.prepare(`
+    SELECT COUNT(*) events FROM usage_events
+    WHERE event_type='usage' AND external_session_id=? AND session_id IS NULL AND ts>=? AND ts<=?
+  `).get(externalId, since, end)?.events || 0);
+  // Internal session tags and captured CLI UUIDs are authoritative. Project/cwd inference is a legacy
+  // fallback only for rows carrying NO identity at all: a concurrent same-project Codex/Claude UUID must
+  // never be charged to this session. Separate UNION ALL branches retain the matching composite indexes.
+  const branches = [{
+    where: "event_type='usage' AND session_id=? AND ts>=? AND ts<=?",
+    args: [s.id, since, end],
+  }];
+  if (externalId) {
+    branches.push({
+      where: "event_type='usage' AND external_session_id=? AND session_id IS NULL AND ts>=? AND ts<=?",
+      args: [externalId, since, end],
+    });
+  } else if (s.tool && project?.id) {
+    branches.push({
+      where: "event_type='usage' AND tool=? AND project_id=? AND session_id IS NULL AND external_session_id IS NULL AND ts>=? AND ts<=?",
+      args: [s.tool, project.id, since, end],
+    });
+  } else if (s.tool && project?.path) {
+    const escaped = project.path.replace(/[\\%_]/g, (c) => '\\' + c);
+    branches.push({
+      where: "event_type='usage' AND tool=? AND cwd=? AND session_id IS NULL AND external_session_id IS NULL AND ts>=? AND ts<=?",
+      args: [s.tool, project.path, since, end],
+    }, {
+      where: "event_type='usage' AND tool=? AND cwd LIKE ? ESCAPE '\\' AND session_id IS NULL AND external_session_id IS NULL AND ts>=? AND ts<=?",
+      args: [s.tool, escaped + '/%', since, end],
+    });
   }
-  if (s.tool && project?.path) {
-    match.push("(tool = ? AND (cwd = ? OR cwd LIKE ? ESCAPE '\\'))");
-    matchArgs.push(s.tool, project.path, project.path.replace(/[\\%_]/g, (c) => '\\' + c) + '/%');
-  }
-  where.push('(' + match.join(' OR ') + ')');
+  const sourceSql = `(${branches.map((b) => `SELECT ${SESSION_USAGE_COLUMNS} FROM usage_events WHERE ${b.where}`).join(' UNION ALL ')}) AS session_usage`;
+  const args = branches.flatMap((b) => b.args);
   return {
     session: s,
     project,
     since,
     until,
-    W: 'WHERE ' + where.join(' AND '),
-    args: [...args, ...matchArgs],
+    exactEvents,
+    externalId,
+    sourceSql,
+    args,
   };
+}
+
+const SESSION_USAGE_CACHE_MS = Math.max(1000, Number(process.env.AIOS_SESSION_USAGE_CACHE_MS || 15000));
+const sessionUsageCache = new Map();
+const USAGE_SUM_KEYS = ['events', 'input_tokens', 'cached_input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'output_tokens', 'reasoning_tokens', 'total_tokens'];
+function addUsage(into, row) {
+  for (const key of USAGE_SUM_KEYS) into[key] = Number(into[key] || 0) + Number(row[key] || 0);
+  return into;
+}
+function sessionUsageGroup(parts, field, limit = 12) {
+  const groups = new Map();
+  for (const part of parts) {
+    const name = part[field] || '(unknown)';
+    let g = groups.get(name);
+    if (!g) { g = { name, cost: {} }; groups.set(name, g); }
+    addUsage(g, part);
+    g.cost = mergeCost(g.cost, priceUsage(part));
+  }
+  return [...groups.values()]
+    .map(({ cost, ...row }) => withCost(row, cost))
+    .sort((a, b) => Number(b.token_traffic_tokens || 0) - Number(a.token_traffic_tokens || 0))
+    .slice(0, limit);
 }
 
 export function usageForSession(sessionOrId) {
   const ctx = sessionUsageWhere(sessionOrId);
   if (!ctx) return null;
-  const { session: s, project, since, until, W, args } = ctx;
-  const totals = withCost(db.prepare(`SELECT ${TOTAL_SQL} FROM usage_events ${W}`).get(...args), costTotalsWhere(W, args));
-  const grouped = (field, limit = 12) =>
-    withGroupCostsWhere(db.prepare(`
-      SELECT COALESCE(${field}, '(unknown)') name, ${TOTAL_SQL}
-      FROM usage_events ${W}
-      GROUP BY COALESCE(${field}, '(unknown)')
-      ORDER BY (COALESCE(SUM(total_tokens),0) + COALESCE(SUM(cached_input_tokens),0)) DESC
-      LIMIT ?
-    `).all(...args, limit), W, args, field);
+  const { session: s, project, since, until, exactEvents, externalId, sourceSql, args } = ctx;
+  const cached = sessionUsageCache.get(s.id);
+  const identityKey = `${externalId || ''}|${s.ended_at || ''}`;
+  if (cached && cached.identityKey === identityKey && now() - cached.at < SESSION_USAGE_CACHE_MS) return cached.value;
+  const queryStarted = performance.now();
+  // One grouped aggregate supplies totals + model + source costs. The old implementation repeated the
+  // same broad OR-filter six times and selected raw payloads, blocking node:sqlite's single thread.
+  const parts = db.prepare(`
+    SELECT COALESCE(source, '(unknown)') source_name,
+      COALESCE(model, '(unknown)') model_name,
+      provider, tool, model, ${TOTAL_SQL}
+    FROM ${sourceSql}
+    GROUP BY COALESCE(source, '(unknown)'), COALESCE(model, '(unknown)'), provider, tool, model
+  `).all(...args);
+  const totalRow = {};
+  let totalCost = {};
+  for (const part of parts) { addUsage(totalRow, part); totalCost = mergeCost(totalCost, priceUsage(part)); }
+  const totals = withCost(totalRow, totalCost);
   const recent = db.prepare(`
-    SELECT *
-    FROM usage_events ${W}
+    SELECT id, source_id, source, event_type, ts, session_id, external_session_id, request_id,
+      tool, provider, model, project_id, project, cwd,
+      input_tokens, cached_input_tokens, cache_creation_input_tokens, cache_read_input_tokens,
+      output_tokens, reasoning_tokens, total_tokens, message
+    FROM ${sourceSql}
     ORDER BY ts DESC
     LIMIT 40
   `).all(...args).map(enrichEventCost);
   const statusline = s.tool === 'agy' ? latestAgyStatusline(s.id) : null;
-  const exactEvents = Number(db.prepare(`
-    SELECT COUNT(*) events
-    FROM usage_events
-    WHERE event_type = 'usage' AND session_id = ?
-  `).get(s.id)?.events || 0);
-
-  return {
+  const value = {
     session_id: s.id,
     tool: s.tool,
     model: s.model,
@@ -504,16 +578,25 @@ export function usageForSession(sessionOrId) {
     association: {
       exact_events: exactEvents,
       inferred_events: Math.max(0, Number(totals.events || 0) - exactEvents),
-      note: exactEvents
-        ? 'Includes events explicitly tagged with this Supercalm session plus matching project/tool CLI logs.'
+      note: externalId
+        ? 'Matched from authoritative Supercalm and CLI session identities.'
+        : exactEvents
+          ? 'Combines events explicitly tagged with this session and eligible identity-free collector rows.'
         : 'Matched from CLI logs by same project, same tool, and this session time window.',
     },
     totals,
-    byModel: grouped('model'),
-    bySource: grouped('source'),
+    byModel: sessionUsageGroup(parts, 'model_name'),
+    bySource: sessionUsageGroup(parts, 'source_name'),
     statusline,
     recent,
+    query_ms: Math.round((performance.now() - queryStarted) * 10) / 10,
   };
+  sessionUsageCache.set(s.id, { at: now(), identityKey, value });
+  if (sessionUsageCache.size > 200) {
+    const oldest = [...sessionUsageCache.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, sessionUsageCache.size - 160);
+    for (const [key] of oldest) sessionUsageCache.delete(key);
+  }
+  return value;
 }
 
 function usageSessions(filters = {}) {

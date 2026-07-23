@@ -45,7 +45,7 @@ try {
 
   const audit = `(async () => {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-    const rep = { steps: [], stopped: {} };
+    const rep = { steps: [], stopped: {}, actions: [] };
     window.__spaSentinel = 'SENT_' + Math.floor(performance.now());
     const side = document.querySelector('.dk-side');
     if (side) side.dataset.persistId = 'PID_' + Math.floor(performance.now());
@@ -70,12 +70,43 @@ try {
     const home = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home) { home.click(); await sleep(450); }
     const sess = document.querySelector('[data-dk-sess]');
     if (sess) { const before = view.firstElementChild; sess.click(); await sleep(1000); const sideNow = document.querySelector('.dk-side'); rep.steps.push({ nav: 'session', path: location.pathname, viewSwapped: view.firstElementChild !== before, sideSameNode: sideNow === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length, bodyClass: document.body.className }); }
+    // Action-flow regression: mock only the two mutating API responses, then drive the REAL launcher
+    // and kill buttons. This catches programmatic location.href regressions that link-only audits miss,
+    // without creating/killing an operator session on the target service.
+    const realFetch = window.fetch.bind(window);
+    const fakeId = 's_spa_audit_fake';
+    window.fetch = async (input, opts = {}) => {
+      const u = new URL(typeof input === 'string' ? input : input.url, location.href);
+      const method = String(opts.method || input?.method || 'GET').toUpperCase();
+      if (method === 'POST' && (u.pathname.endsWith('/api/session') || u.pathname.endsWith('/api/session/'))) {
+        return new Response(JSON.stringify({ id: fakeId, title: 'SPA action audit', tool: 'claude', status: 'starting', last_activity: Date.now(), started_at: Date.now(), project: { id: 'p_audit', name: 'Audit' } }), { status: 202, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'POST' && u.pathname.endsWith('/api/session/' + fakeId + '/kill')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(input, opts);
+    };
+    const home2 = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home2) { home2.click(); await sleep(500); }
+    document.querySelector('#dk-sess-plus')?.click();
+    for (let n = 0; n < 50 && !document.querySelector('#nl-go'); n++) await sleep(100);
+    const task = document.querySelector('#nl-task'); if (task) task.value = 'Visual SPA action audit';
+    const project = document.querySelector('#nl-project');
+    if (project?.value === '__new') { const path = document.querySelector('#nl-path'); if (path) path.value = '/tmp'; }
+    const beforeLaunchView = view.firstElementChild;
+    document.querySelector('#nl-go')?.click();
+    for (let n = 0; n < 50 && !document.querySelector('#b-kill'); n++) await sleep(100);
+    rep.actions.push({ action: 'launch', path: location.pathname, id: new URLSearchParams(location.search).get('id'), viewSwapped: view.firstElementChild !== beforeLaunchView, sideSameNode: document.querySelector('.dk-side') === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length });
+    window.confirm = () => true;
+    document.querySelector('#b-kill')?.click();
+    for (let n = 0; n < 40 && new URLSearchParams(location.search).get('id'); n++) await sleep(100);
+    rep.actions.push({ action: 'kill', path: location.pathname, id: new URLSearchParams(location.search).get('id'), sideSameNode: document.querySelector('.dk-side') === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length, title: document.title });
     // let any in-flight fetch from the LAST view resolve so its teardown-race (if any) throws now
     await sleep(1200);
     return rep;
   })()`;
   const r = await call('Runtime.evaluate', { expression: audit, awaitPromise: true, returnByValue: true });
-  const rep = r.result?.value || { steps: [], stopped: {} };
+  if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text || 'browser audit evaluation failed');
+  const rep = r.result?.value || { steps: [], stopped: {}, actions: [] };
   try { ws.close(); } catch {}
 
   // ---- assertions ----
@@ -90,11 +121,21 @@ try {
     if (st.navEntries !== 1) fails.push(`nav "${st.nav}": ${st.navEntries} navigation entries — full nav, not pushState`);
     if (st.sentinel !== s0) fails.push(`nav "${st.nav}": window sentinel changed — document was replaced`);
   }
+  const launch = rep.actions.find((a) => a.action === 'launch');
+  const killed = rep.actions.find((a) => a.action === 'kill');
+  if (!launch || launch.id !== 's_spa_audit_fake' || !launch.viewSwapped) fails.push('launch action did not route to the accepted starting session in place');
+  if (!killed || killed.id) fails.push('kill action did not route home in place');
+  if (killed && !/^Supercalm/.test(killed.title || '')) fails.push(`kill action left stale session browser identity on home: "${killed.title || ''}"`);
+  for (const a of rep.actions) {
+    if (!a.sideSameNode) fails.push(`${a.action}: .dk-side was re-created`);
+    if (a.sentinel !== s0) fails.push(`${a.action}: document sentinel changed`);
+    if (a.navEntries !== 1) fails.push(`${a.action}: ${a.navEntries} navigation entries — full navigation occurred`);
+  }
   const cap = 10;
   if (rep.stopped.total > cap && rep.stopped.shownCollapsed > cap) fails.push(`stopped list not capped: showing ${rep.stopped.shownCollapsed} of ${rep.stopped.total} (cap ${cap})`);
   if (rep.stopped.total > cap && !rep.stopped.hasExpander) fails.push(`stopped list has ${rep.stopped.total} but no "show all" expander`);
 
-  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps.length, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
+  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps.length, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
   if (fails.length) { console.error('\nSPA AUDIT FAIL:\n - ' + fails.join('\n - ')); process.exitCode = 1; }
   else console.log('\nSPA AUDIT PASS — one document, one persistent sidebar, no reloads, stopped list bounded, zero page exceptions.');
 } catch (e) {

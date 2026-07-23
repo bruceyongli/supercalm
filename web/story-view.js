@@ -14,6 +14,7 @@ let lastSig = '';
 let showFull = false; // instant load shows recent rounds; user can expand to the full story
 let rounds = 1; // how many operator rounds are loaded (‹ previous round increments; full ignores it)
 let storySource = null; // 'fallback' | 'transcript' — a switch REPLACES the feed (merging both duplicated the task card)
+let storyIdentity = null; // source + transcript file — a different same-source rollout also REPLACES
 let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — keeps the viewport stable while content prepends
 let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
@@ -112,9 +113,9 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // another session's atoms; the merge-never-removes design would keep repainting them on reopen).
 // v3: rich-report change — old caches hold de-markdowned bodies whose evKeys differ from the new
 // markdown-preserving ones; merging both would duplicate every report bubble.
-// v4: task-notification turns no longer parse as operator bubbles — cached stories still hold them
-// and the merge would resurrect what the parser now drops.
-export const STORY_CACHE_KEY = (id) => `aios_story4_${id}`;
+// v4: task-notification turns no longer parse as operator bubbles — cached stories still hold them.
+// v5: flush caches that may contain a same-project sibling rollout from the pre-identity picker.
+export const STORY_CACHE_KEY = (id) => `aios_story5_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -449,8 +450,10 @@ export async function refreshStory({ quiet = true } = {}) {
     // conversation re-arrives with different timestamps/keys — merging would duplicate every card
     // (E2E finding #3: the launch task showed twice). Replace wholesale instead.
     const src = r.meta?.source || 'transcript';
-    if (storySource && src !== storySource) events = [];
+    const identity = `${src}|${r.meta?.file || ''}`;
+    if (storyIdentity && identity !== storyIdentity) { events = []; lastSig = ''; }
     storySource = src;
+    storyIdentity = identity;
     if (!events.length) {
       events = incoming; // first open of this session: adopt the windowed story loaded from source
     } else if (incoming.length) {
@@ -473,7 +476,7 @@ export async function refreshStory({ quiet = true } = {}) {
       + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig
       + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size;
     if (sig !== lastSig) { lastSig = sig; render(); }
-    if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus }); // warm THIS session's cache
+    if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus, storySource, storyIdentity }); // warm THIS session's cache
   } catch (e) {
     if (sid === mySid && !quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
   }
@@ -502,7 +505,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
@@ -511,8 +514,9 @@ export function initStoryView({ sessionId, panel }) {
     const cached = readStoryCache(sid);
     if (cached && Array.isArray(cached.events) && cached.events.length) {
       events = cached.events; trimmed = !!cached.trimmed; working = !!cached.working; liveStatus = cached.liveStatus || null;
+      storySource = cached.storySource || null; storyIdentity = cached.storyIdentity || null;
       lastSig = ''; render();
     }
   }
-  refreshStory({ quiet: false });
+  return refreshStory({ quiet: false });
 }

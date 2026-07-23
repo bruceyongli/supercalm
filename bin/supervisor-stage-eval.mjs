@@ -17,12 +17,14 @@ const EXAMPLES = Number(arg('examples', 8));
 
 const db = new DatabaseSync(DB, { readOnly: true });
 const INTERVENTIONS = ['answer', 'nudge', 'challenge']; // the agent-directed actions a wrong stage misfires
-const where = ["action_type IN ('answer','nudge','challenge')", 'snapshot_json IS NOT NULL'];
+const where = ["d.action_type IN ('answer','nudge','challenge')", 'COALESCE(d.snapshot_json,s.snapshot_json) IS NOT NULL'];
 const params = [];
-if (SESSION) { where.push('session_id = ?'); params.push(SESSION); }
+if (SESSION) { where.push('d.session_id = ?'); params.push(SESSION); }
 const rows = db.prepare(
-  `SELECT id, session_id, ts, action_type, rule_id, sent, snapshot_json
-   FROM supervisor_decisions WHERE ${where.join(' AND ')} ORDER BY ts DESC LIMIT ?`
+  `SELECT d.id, d.session_id, d.ts, d.action_type, d.rule_id, d.sent,
+     COALESCE(d.snapshot_json,s.snapshot_json) snapshot_json
+   FROM supervisor_decisions d LEFT JOIN supervisor_snapshots s ON s.snapshot_hash=d.snapshot_hash
+   WHERE ${where.join(' AND ')} ORDER BY d.ts DESC LIMIT ?`
 ).all(...params, LIMIT);
 
 const byRule = new Map();      // rule_id -> { total, standDown }

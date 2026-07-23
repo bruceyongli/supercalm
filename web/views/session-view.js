@@ -4,6 +4,8 @@
 // loop, so the session skips its own); update() → switchSession() for a no-reload session→session swap;
 // teardown() → destroySession() for a full reset so the next mount starts clean.
 // View contract: export init(host, params) + update(params) + teardown().
+import { navigate } from '../navigation.js';
+
 let mod = null;
 let curId = null;
 
@@ -49,7 +51,7 @@ export function update(params) {
   const nid = params && params.id ? params.id : '';
   if (!nid || nid === curId) return;
   curId = nid;
-  try { mod?.switchSession(nid); } catch { location.href = `session?id=${encodeURIComponent(nid)}`; }
+  try { mod?.switchSession(nid); } catch { navigate(`session?id=${encodeURIComponent(nid)}`); }
 }
 
 export function teardown() {

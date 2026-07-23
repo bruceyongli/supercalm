@@ -55,6 +55,7 @@ export function extractLiveStatus(snap) {
 const _lifecycleEvents = db.prepare(
   `SELECT ts, type FROM events WHERE session_id = ? AND type IN ('launch','resume','exit') ORDER BY ts ASC LIMIT 50`,
 );
+const _freshQueuedLaunch = db.prepare("SELECT 1 FROM events WHERE session_id = ? AND type = 'launch-queued' LIMIT 1");
 function fallbackStory(sid) {
   const life = _lifecycleEvents.all(sid).map((r) => ({
     ts: r.ts,
@@ -115,6 +116,11 @@ async function findCodexLog(cwd, s) {
     const hit = pickRolloutByUuid(files, s.codex_uuid);
     if (hit) return hit;
   }
+  // A fresh queued launch has no safe cwd fallback: another Codex session in the same project can be
+  // newer and would disclose/merge that conversation before this launch captures its UUID. Show the
+  // session's own AIOS message spine until the authoritative rollout identity arrives. Pre-queue legacy
+  // rows retain cwd lookup for backward compatibility.
+  if (s?.id && _freshQueuedLaunch.get(s.id)) return null;
   // 2) cwd match (legacy path — sessions without a captured UUID, or whose workspace path lines up).
   for (const f of files.slice(0, 120)) {
     try {
