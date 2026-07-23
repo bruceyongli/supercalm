@@ -125,7 +125,8 @@ try {
   const killed = rep.actions.find((a) => a.action === 'kill');
   if (!launch || launch.id !== 's_spa_audit_fake' || !launch.viewSwapped) fails.push('launch action did not route to the accepted starting session in place');
   if (!killed || killed.id) fails.push('kill action did not route home in place');
-  if (killed && !/^Supercalm/.test(killed.title || '')) fails.push(`kill action left stale session browser identity on home: "${killed.title || ''}"`);
+  const homeTitleRx = /^(?:Supercalm · idle|! \d+ waiting · Supercalm|\d+ working · \d+ live · Supercalm)$/;
+  if (killed && !homeTitleRx.test(killed.title || '')) fails.push(`kill action left stale session browser identity on home: "${killed.title || ''}"`);
   for (const a of rep.actions) {
     if (!a.sideSameNode) fails.push(`${a.action}: .dk-side was re-created`);
     if (a.sentinel !== s0) fails.push(`${a.action}: document sentinel changed`);
