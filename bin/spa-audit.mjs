@@ -68,8 +68,33 @@ try {
       rep.steps.push({ nav, path: location.pathname, viewSwapped: view.firstElementChild !== before, sideSameNode: sideNow === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length });
     }
     const home = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home) { home.click(); await sleep(450); }
+    // Exercise the non-default persisted view too. A prior regression declared session state after
+    // setMainView(), so Story mounted successfully while Terminal aborted with a temporal-dead-zone
+    // error. The gate must prove that a real session shell—not merely any swapped #view—was mounted.
+    localStorage.setItem('aios.session.mainView', 'terminal');
     const sess = document.querySelector('[data-dk-sess]');
-    if (sess) { const before = view.firstElementChild; sess.click(); await sleep(1000); const sideNow = document.querySelector('.dk-side'); rep.steps.push({ nav: 'session', path: location.pathname, viewSwapped: view.firstElementChild !== before, sideSameNode: sideNow === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length, bodyClass: document.body.className }); }
+    if (sess) {
+      const before = view.firstElementChild;
+      sess.click();
+      for (let n = 0; n < 80; n++) {
+        const viewFailed = [...view.children].some((el) => el.textContent?.trim().startsWith('View error:'));
+        if (document.querySelector('#session-shell') || viewFailed) break;
+        await sleep(100);
+      }
+      const sideNow = document.querySelector('.dk-side');
+      rep.steps.push({
+        nav: 'session',
+        path: location.pathname,
+        viewSwapped: view.firstElementChild !== before,
+        sideSameNode: sideNow === side,
+        sentinel: window.__spaSentinel,
+        navEntries: performance.getEntriesByType('navigation').length,
+        bodyClass: document.body.className,
+        sessionShell: !!document.querySelector('#session-shell'),
+        viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+        terminalActive: document.querySelector('[data-mode="terminal"]')?.classList.contains('active') || false,
+      });
+    }
     // Action-flow regression: mock only the two mutating API responses, then drive the REAL launcher
     // and kill buttons. This catches programmatic location.href regressions that link-only audits miss,
     // without creating/killing an operator session on the target service.
@@ -121,6 +146,10 @@ try {
     if (st.navEntries !== 1) fails.push(`nav "${st.nav}": ${st.navEntries} navigation entries — full nav, not pushState`);
     if (st.sentinel !== s0) fails.push(`nav "${st.nav}": window sentinel changed — document was replaced`);
   }
+  const sessionStep = rep.steps.find((st) => st.nav === 'session');
+  if (!sessionStep?.sessionShell) fails.push('persisted Terminal session route did not mount #session-shell');
+  if (sessionStep?.viewError) fails.push('persisted Terminal session route rendered a View error');
+  if (!sessionStep?.terminalActive) fails.push('persisted Terminal preference was not active after session mount');
   const launch = rep.actions.find((a) => a.action === 'launch');
   const killed = rep.actions.find((a) => a.action === 'kill');
   if (!launch || launch.id !== 's_spa_audit_fake' || !launch.viewSwapped) fails.push('launch action did not route to the accepted starting session in place');
@@ -136,7 +165,7 @@ try {
   if (rep.stopped.total > cap && rep.stopped.shownCollapsed > cap) fails.push(`stopped list not capped: showing ${rep.stopped.shownCollapsed} of ${rep.stopped.total} (cap ${cap})`);
   if (rep.stopped.total > cap && !rep.stopped.hasExpander) fails.push(`stopped list has ${rep.stopped.total} but no "show all" expander`);
 
-  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps.length, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
+  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
   if (fails.length) { console.error('\nSPA AUDIT FAIL:\n - ' + fails.join('\n - ')); process.exitCode = 1; }
   else console.log('\nSPA AUDIT PASS — one document, one persistent sidebar, no reloads, stopped list bounded, zero page exceptions.');
 } catch (e) {
