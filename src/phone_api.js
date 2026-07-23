@@ -20,15 +20,6 @@ function deMarkdown(s) {
     .replace(/\s+/g, ' ')
     .trim();
 }
-// additive migration: read_at on messages (nullable; desktop ignores it)
-try { db.exec('ALTER TABLE messages ADD COLUMN read_at INTEGER'); } catch {}
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_messages_in_session_ts
-    ON messages(session_id, ts) WHERE direction = 'in';
-  CREATE INDEX IF NOT EXISTS idx_messages_unread_out_session_ts
-    ON messages(session_id, ts) WHERE direction = 'out' AND read_at IS NULL;
-`);
-
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
 }
@@ -103,7 +94,7 @@ route('POST', '/api/messages/read', async (req, res) => {
 route('GET', '/api/phone/home', async (req, res) => {
   const unread = unreadBySession();
   const rows = db.prepare(`
-    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, p.name AS project
+    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, s.revision, p.name AS project
     FROM sessions s LEFT JOIN projects p ON p.id = s.project_id ORDER BY s.last_activity DESC LIMIT 120`).all();
   const sessions = rows.map((s) => {
     const u = unread.get(s.id);

@@ -53,8 +53,8 @@ browser (laptop/phone/iPad, tailnet)
 ```
 
 - **No framework, small dependency set.** Node 22+ built-ins (`http`, `node:sqlite`, `child_process`)
-  + system `tmux`/`ffmpeg`/`tailscale`; npm runtime deps are `web-push` plus the AG-UI packages used by
-  Agent View. xterm.js and graph libraries are vendored.
+  + system `tmux`/`ffmpeg`/`tailscale`; the only npm runtime dependency is `web-push`. Agent View's
+  wire adapter is repository-native; xterm.js and graph libraries are vendored.
 - **`~/proxy` is off-limits** — that's the shared multi-model proxy fleet; Supercalm only *uses* it.
 
 ## Setup

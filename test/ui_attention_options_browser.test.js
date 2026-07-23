@@ -165,7 +165,7 @@ try {
   assert.equal(await page.locator('[data-dk-row][data-sid="s_done"]').count(), 1, 'dismissal leaves the session itself in the list');
   await page.close();
 
-  for (const relative of ['usage', 'usage.html']) {
+  for (const relative of ['usage']) {
     const usage = await browser.newPage({ viewport: { width: 1320, height: 900 } });
     await usage.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
     await usage.goto(base + relative, { waitUntil: 'domcontentloaded' });

@@ -86,7 +86,9 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
 // ---- route + payload locks --------------------------------------------------------------------------
 {
   const src = readFileSync(new URL('../src/phone_api.js', import.meta.url), 'utf8');
-  assert.match(src, /ALTER TABLE messages ADD COLUMN read_at/, 'additive migration');
+  const migrations = readFileSync(new URL('../src/schema_migrations.js', import.meta.url), 'utf8');
+  assert.match(migrations, /ensureColumn\(db, 'messages', 'read_at'/, 'read state belongs to the central migration ledger');
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM schema_migrations WHERE id='0002_message_read_state'").get().n, 1, 'read-state migration is recorded');
   assert.match(src, /\/api\/messages\/read/, 'read route exists');
   assert.match(src, /through_id/, 'read route supports report-bounded inbox dismissal');
   assert.match(src, /\/api\/phone\/home/, 'lean home route exists');
@@ -94,8 +96,8 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.match(src, /read_at IS NULL/, 'unread respects server-side read state');
   assert.match(src, /WITH last_in AS/, 'unread derives the last operator reply once per session');
   assert.doesNotMatch(src, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'unread never repeats a correlated MAX query for every message');
-  assert.match(src, /idx_messages_in_session_ts/, 'last replies use a compact partial index');
-  assert.match(src, /idx_messages_unread_out_session_ts/, 'unread reports use a compact partial index');
+  assert.match(migrations, /idx_messages_in_session_ts/, 'last replies use a compact partial index');
+  assert.match(migrations, /idx_messages_unread_out_session_ts/, 'unread reports use a compact partial index');
   assert.match(src, /s\.project_id/, 'home rows retain their project identity for keyed project counts');
   const ph = readFileSync(new URL('../web/phone.js', import.meta.url), 'utf8');
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
@@ -105,12 +107,14 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // Mobile-view contract (Option A): the dashboard pages default to the phone triage on a phone (opt into
-  // the desktop dashboard via ?desktop=1 → aios_dash); the session page defaults to the desktop STORY view
-  // at every width, with ?phone=1 opening the phone session. See web/{desktop,index,session}.html.
+  // the desktop dashboard via ?desktop=1 → aios_dash); the SPA session route defaults to the desktop STORY
+  // view at every width, with ?phone=1 opening the phone session.
   for (const page of ['../web/index.html', '../web/desktop.html']) {
     assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\('phone'\)/, page + ' redirects a phone to the phone triage dashboard');
   }
-  assert.match(readFileSync(new URL('../web/session.html', import.meta.url), 'utf8'), /get\('phone'\)[\s\S]*?phone#s\//, 'session.html: ?phone=1 opens the phone session, desktop story otherwise');
+  const router = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
+  assert.match(router, /get\('phone'\)[\s\S]*?phone.*#s\//, 'the canonical session route sends ?phone=1 to the phone session');
+  assert.match(sv, /session\|records\|decisions\|usage\|health\|settings\|projects\).*\\?\\.html/, 'historical desktop .html routes serve the canonical SPA');
 }
 
 // The lean Usage projection is computed in a worker and remains callable in an isolated install.

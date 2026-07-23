@@ -512,8 +512,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    shell height and the 8px-padded rounded shell so it reads like the home sidebar. Keep it in the
    alternate view modes too so the sidebar never disappears mid-session. */
 .session-shell .dk-side { height: 100%; border-radius: 12px; }
-/* The .session-shell always mounts inside a surrounding app-shell now (the SPA #view, or the standalone
-   session.html's own .dk-shell) that owns the ONE flush sidebar — so mountSession() adds the `embedded`
+/* The .session-shell mounts inside the SPA #view whose app shell owns the ONE flush sidebar, so mountSession() adds the `embedded`
    class to collapse the shell's own rail column to 0 and hide any stray in-shell sidebar. The session
    content then fills #view to the right of the shared persistent rail. (Was `body.embedded` when the
    session ran in an iframe; now element-scoped so it never touches the surrounding shell.) */

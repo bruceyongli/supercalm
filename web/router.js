@@ -1,6 +1,6 @@
 // Single-shell SPA controller. ONE persistent sidebar (mountShell, called exactly once) + a #view
 // container whose contents are swapped by a client router — no page reload on any page/session switch.
-// Views are modules exporting init(host, params) + teardown(); the router tears the current one down,
+// Views are modules exporting init(host, params, navigation) + teardown(); the router tears the current one down,
 // swaps #view, mounts the next, and pushState's the URL. Built alongside the legacy pages (served at
 // /aios/app) until verified, then the server points every app route here (see src/server.js).
 import { mountShell } from './shell.js';
@@ -13,18 +13,19 @@ const view = () => document.getElementById('view');
 // visit); `nav` is the sidebar item to mark active. The session route carries no active nav item.
 const ROUTES = [
   { re: /^\/(?:index\.html)?$/, load: () => import('./views/dashboard.js'), nav: 'inbox' },
-  { re: /^\/session$/, load: () => import('./views/session-view.js'), nav: '' },
-  { re: /^\/projects$/, load: () => import('./views/projects.js'), nav: 'projects' },
-  { re: /^\/decisions$/, load: () => import('./views/decisions.js'), nav: 'decisions' },
-  { re: /^\/records$/, load: () => import('./views/records.js'), nav: 'records' },
-  { re: /^\/usage$/, load: () => import('./views/usage.js'), nav: 'usage' },
-  { re: /^\/health$/, load: () => import('./views/health.js'), nav: 'health' },
-  { re: /^\/settings$/, load: () => import('./views/settings.js'), nav: 'settings' },
+  { re: /^\/session(?:\.html)?$/, load: () => import('./views/session-view.js'), nav: '' },
+  { re: /^\/projects(?:\.html)?$/, load: () => import('./views/projects.js'), nav: 'projects' },
+  { re: /^\/decisions(?:\.html)?$/, load: () => import('./views/decisions.js'), nav: 'decisions' },
+  { re: /^\/records(?:\.html)?$/, load: () => import('./views/records.js'), nav: 'records' },
+  { re: /^\/usage(?:\.html)?$/, load: () => import('./views/usage.js'), nav: 'usage' },
+  { re: /^\/health(?:\.html)?$/, load: () => import('./views/health.js'), nav: 'health' },
+  { re: /^\/settings(?:\.html)?$/, load: () => import('./views/settings.js'), nav: 'settings' },
 ];
 
 let current = null;      // { teardown, update? } of the mounted view
 let currentRoute = null; // the ROUTES entry currently mounted (to detect same-route param changes)
 let navToken = 0;        // guards against a slow import landing after a newer navigation
+let pendingInit = null;  // AbortController for imports/view initialization superseded by navigation
 
 function appPath() {
   // location.pathname is e.g. "/aios/session"; strip the base to get the app route "/session".
@@ -34,14 +35,28 @@ function appPath() {
 }
 function routeFor(p) { return ROUTES.find((r) => r.re.test(p)) || ROUTES[0]; }
 
+function canonicalAppPath(pathname) {
+  return pathname.replace(/\/(session|projects|decisions|records|usage|health|settings)\.html$/, '/$1');
+}
+
 function setActiveNav(nav) {
   for (const a of document.querySelectorAll('.dk-nav-item')) a.classList.toggle('active', !!nav && a.dataset.nav === nav);
 }
 
 async function render() {
   const token = ++navToken;
-  const p = appPath();
+  pendingInit?.abort();
+  const initController = new AbortController();
+  pendingInit = initController;
+  const navigation = {
+    signal: initController.signal,
+    isCurrent: () => token === navToken && !initController.signal.aborted,
+  };
+  const rawPath = appPath();
+  const p = canonicalAppPath(rawPath);
   const r = routeFor(p);
+  const canonical = canonicalAppPath(location.pathname);
+  if (canonical !== location.pathname) history.replaceState(history.state, '', canonical + location.search + location.hash);
   const params = Object.fromEntries(new URLSearchParams(location.search));
   setActiveNav(r.nav);
   document.body.classList.toggle('session-page', p === '/session'); // the session view drives its own full-bleed layout
@@ -49,6 +64,7 @@ async function render() {
   // update WITHOUT tearing down/remounting, so the session switch stays a no-reload swap.
   if (r === currentRoute && current && typeof current.update === 'function') {
     try { current.update(params); } catch (e) { console.error('view update error:', e); }
+    if (pendingInit === initController) pendingInit = null;
     return;
   }
   // tear down the outgoing view (clears its intervals/streams/observers) then clear the container
@@ -57,9 +73,24 @@ async function render() {
   const host = view();
   if (host) host.innerHTML = '<div class="view-loading"></div>';
   let mod;
-  try { mod = await r.load(); } catch (e) { if (token === navToken && host) host.innerHTML = `<div class="dk-allclear">Failed to load view: ${e.message || e}</div>`; return; }
+  try { mod = await r.load(); } catch (e) {
+    if (token === navToken && host) host.innerHTML = `<div class="dk-allclear">Failed to load view: ${e.message || e}</div>`;
+    if (pendingInit === initController) pendingInit = null;
+    return;
+  }
   if (token !== navToken) return; // a newer navigation superseded this one mid-import
-  try { await mod.init(host, params); current = mod; currentRoute = r; } catch (e) { console.error('view init error:', e); if (host) host.innerHTML = `<div class="dk-allclear">View error: ${e.message || e}</div>`; }
+  try {
+    await mod.init(host, params, navigation);
+    if (!navigation.isCurrent()) return; // a newer navigation superseded this one during async init
+    current = mod;
+    currentRoute = r;
+  } catch (e) {
+    if (!navigation.isCurrent()) return;
+    console.error('view init error:', e);
+    if (host) host.innerHTML = `<div class="dk-allclear">View error: ${e.message || e}</div>`;
+  } finally {
+    if (pendingInit === initController) pendingInit = null;
+  }
 }
 
 // Navigate without a reload. Same-route with different params (session?id=A -> session?id=B) still

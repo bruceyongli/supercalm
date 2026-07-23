@@ -5,6 +5,7 @@
 // shell entirely), which is exactly the drift this module exists to prevent. Mount with mountShell().
 import { api, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
 import { navigate } from './navigation.js';
+import { isStaleSessionPatch, mergeSessionPatch, mergeSessionSnapshot } from './session-state.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -18,6 +19,8 @@ const sessionsById = new Map();
 // survivors.
 let sessionOrder = [];
 let hasSessionSnapshot = false;
+let sessionMutationEpoch = 0;
+const sessionTouchedAt = new Map();
 let onData = null; // per-page hook run after each data refresh (e.g. the inbox render)
 
 export function getHome() { return home; }
@@ -87,13 +90,17 @@ function publishHome(change = { type: 'replace', ids: [] }) {
   onData?.(home, change);
   for (const cb of homeSubs) { try { cb(home, change); } catch {} }
 }
-function replaceHome(next) {
+function replaceHome(next, { requestedAtEpoch = sessionMutationEpoch } = {}) {
   const incoming = [];
   for (const raw of next?.sessions || []) {
     const s = normalizeSession(raw);
     if (s) incoming.push(s);
   }
-  const incomingIds = incoming.map((s) => s.id);
+  const changedAfterRequest = new Set(
+    [...sessionTouchedAt].filter(([, epoch]) => epoch > requestedAtEpoch).map(([id]) => id),
+  );
+  const reconciled = mergeSessionSnapshot([...sessionsById.values()], incoming, changedAfterRequest);
+  const incomingIds = reconciled.map((s) => s.id);
   if (!hasSessionSnapshot) {
     sessionOrder = incomingIds;
     hasSessionSnapshot = true;
@@ -106,7 +113,10 @@ function replaceHome(next) {
     sessionOrder = [...newcomers, ...retained, ...incomingIds.filter((id) => !placed.has(id))];
   }
   sessionsById.clear();
-  for (const s of incoming) sessionsById.set(s.id, s);
+  for (const s of reconciled) sessionsById.set(s.id, s);
+  for (const id of [...sessionTouchedAt.keys()]) {
+    if (!sessionsById.has(id)) sessionTouchedAt.delete(id);
+  }
   home = { ...(next || {}), sessions: [] };
   recalcHome();
   publishHome({ type: 'replace', ids: [...sessionsById.keys()] });
@@ -116,6 +126,7 @@ export function upsertSession(raw, { publish = true } = {}) {
   if (!patch) return null;
   const current = sessionsById.get(patch.id) || {};
   if (!current.id && !patch.status) return null; // a scoped metadata patch cannot construct a session row
+  if (isStaleSessionPatch(current, patch)) return current;
   // POST /api/session returns a Starting projection while the status SSE can win the network race and
   // publish Working first. Never let that older, unversioned response roll lifecycle state backward.
   if (patch.status === 'starting' && current.status && current.status !== 'starting'
@@ -123,66 +134,13 @@ export function upsertSession(raw, { publish = true } = {}) {
     const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
     patch = Object.fromEntries(Object.entries(patch).filter(([key]) => !lifecycle.has(key)));
   }
-  const next = { ...current, ...patch };
+  const next = mergeSessionPatch(current, patch);
   sessionsById.set(next.id, next);
+  sessionTouchedAt.set(next.id, ++sessionMutationEpoch);
   if (!current.id) sessionOrder = [next.id, ...sessionOrder.filter((id) => id !== next.id)];
   recalcHome();
   if (publish) publishHome({ type: current.id ? 'patch' : 'create', ids: [next.id] });
   return next;
-}
-
-// The sidebar markup — the single source for pages that INJECT the shell (the system pages). Home and
-// session carry a static copy in their HTML for first-paint; this keeps injected pages identical to them.
-const SIDEBAR_HTML = `
-  <aside class="dk-side" id="dk-side" data-dk-sidebar>
-    <div class="dk-brand"><span class="dk-wordmark">Supercalm</span><span class="dk-sub">agent OS</span><button class="dk-collapse" data-dk-collapse type="button" title="Collapse sidebar" aria-label="Collapse sidebar">‹ collapse</button></div>
-    <button class="dk-counters" id="dk-counters" data-dk-counters title="Open the Inbox"></button>
-    <button class="dk-cmdk" id="dk-cmdk-row"><span>⌘K</span> jump to…</button>
-    <nav class="dk-nav">
-      <a class="dk-nav-item" data-nav="inbox" href="./">Sessions <span class="dk-badge warn" id="dk-inbox-badge" hidden></span><span class="dk-nav-plus" id="dk-sess-plus" title="New session" role="button" tabindex="0">+</span></a>
-      <a class="dk-nav-item" data-nav="projects" href="projects">Projects <span class="dk-nav-plus" id="dk-proj-plus" title="Add project">+</span></a>
-    </nav>
-    <div class="dk-sec">SESSIONS</div>
-    <div class="dk-sessions" id="dk-sessions" data-dk-sessions></div>
-    <div class="dk-sec">SYSTEM</div>
-    <nav class="dk-nav">
-      <a class="dk-nav-item" href="decisions" data-nav="decisions">Decisions</a>
-      <a class="dk-nav-item" href="records" data-nav="records">Records</a>
-      <a class="dk-nav-item" href="usage" data-nav="usage">Usage</a>
-      <a class="dk-nav-item" href="health" data-nav="health">Health <span class="dk-dot warn" id="dk-health-dot" hidden></span></a>
-      <a class="dk-nav-item" href="settings" data-nav="settings">Settings</a>
-      <a class="dk-nav-item dk-nav-phone" href="?phone=1">📱 Phone view</a>
-    </nav>
-    <div class="dk-foot" id="dk-foot"></div>
-    <a class="dk-classic" href="./?classic=1" title="The pre-redesign dashboard">classic view</a>
-  </aside>`;
-const OVERLAYS_HTML = `
-  <div id="dk-palette" class="dk-palette" data-dk-palette hidden><div class="dk-palette-box"><input id="dk-palette-q" placeholder="Jump to a screen, session, or action…" autocomplete="off" /><div id="dk-palette-list"></div></div></div>
-  <div id="dk-toast" class="dk-toast" hidden></div>`;
-
-// Wrap a standalone page in the shell: move its body into .dk-main beside the sidebar, add the overlays,
-// mount. DOM MOVE (not innerHTML) preserves the page's existing elements + listeners; the page's own
-// script keeps finding its ids, just nested one level deeper. Call once, before the page renders content.
-export function injectShell({ activeNav = '' } = {}) {
-  if (document.querySelector('.dk-side')) { mountShell({ activeNav }); return; }
-  const body = document.body;
-  const main = document.createElement('main');
-  main.className = 'dk-main';
-  main.id = 'dk-main';
-  // Move every non-script body child into .dk-main (DOM move preserves ids + listeners). Leave <script>
-  // nodes where they are — they've already run; the page's own script still finds its (moved) elements.
-  for (const n of [...body.childNodes]) {
-    if (n.nodeType === 1 && n.tagName === 'SCRIPT') continue;
-    body.removeChild(n);
-    main.appendChild(n);
-  }
-  const shell = document.createElement('div');
-  shell.className = 'dk-shell';
-  shell.innerHTML = SIDEBAR_HTML;
-  shell.appendChild(main);
-  body.insertBefore(shell, body.firstChild); // before the scripts
-  body.insertAdjacentHTML('beforeend', OVERLAYS_HTML);
-  mountShell({ activeNav });
 }
 
 export function agentChip(tool) {
@@ -480,7 +438,11 @@ export function toast(msg) {
 let loadPromise = null;
 async function load() {
   if (loadPromise) return loadPromise;
-  loadPromise = api('api/phone/home').then((next) => { replaceHome(next); return true; }).catch(() => false).finally(() => { loadPromise = null; });
+  const requestedAtEpoch = sessionMutationEpoch;
+  loadPromise = api('api/phone/home')
+    .then((next) => { replaceHome(next, { requestedAtEpoch }); return true; })
+    .catch(() => false)
+    .finally(() => { loadPromise = null; });
   return loadPromise;
 }
 // Explicit operator recovery path for the Needs-you queue. SSE remains the ordinary update transport;

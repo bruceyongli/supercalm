@@ -20,6 +20,7 @@ import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
 import { ensureAgyStatuslineHook } from './agy_statusline.js';
 import { cleanModelId, isNativeModel, modelDisplayLabel, modelSupportsFast, routeForModel, listProxyModels } from './model_catalog.js';
+import { projectSession, sessionStatusPayload } from './session_projection.js';
 import { generateSessionMap, getSessionMap, sessionMapOptions } from './session_map.js';
 import { getSessionSpace, ensureSessionSpace, sourceSliceFor, startSpaceBuilder, kickLabels } from './session_space.js';
 import { labelStats, setLabeling, labelConfig, setLabelConfig } from './session_labels.js';
@@ -1485,48 +1486,13 @@ async function tailOnce() {
 // ---------------------------------------------------------------------------
 function decorate(s) {
   const project = s.project_id ? store.getProject(s.project_id) : null;
-  const T = TOOLS[s.tool];
-  const modelLabel = (T?.models || []).find((m) => m.id === s.model)?.label || modelDisplayLabel(s.model) || T?.modelLabel || null;
-  const fastCapable = s.tool === 'codex' && modelSupportsFast(s.model || T?.model);
-  return {
-    ...s,
-    fastMode: fastCapable && !!s.fast_mode,
-    fastCapable,
-    project,
-    toolLabel: T?.label || s.tool,
-    toolColor: T?.color || '#8b949e',
-    modelLabel,
-  };
+  return projectSession(s, { project });
 }
 
 function emitSessionStatus(s, { previousStatus = null, source = 'status', extra = {} } = {}) {
   if (!s?.id) return;
   const d = decorate(s);
-  bus.emit('session-status', {
-    session: d.id,
-    status: d.status,
-    previousStatus,
-    question: d.question || null,
-    summary: d.summary || null,
-    category: d.category || null,
-    stage: d.stage || null,
-    title: d.title || null,
-    tool: d.tool,
-    toolLabel: d.toolLabel,
-    toolColor: d.toolColor,
-    model: d.model || null,
-    modelLabel: d.modelLabel,
-    last_activity: d.last_activity,
-    started_at: d.started_at,
-    ended_at: d.ended_at || null,
-    exit_code: d.exit_code ?? null,
-    parked: !!d.parked,
-    degraded: !!d.degraded,
-    project: d.project ? { id: d.project.id, name: d.project.name } : null,
-    source,
-    ts: now(),
-    ...extra,
-  });
+  bus.emit('session-status', sessionStatusPayload(d, { previousStatus, source, extra, ts: now() }));
 }
 
 async function suggestSessionTitle(s) {
@@ -2791,7 +2757,13 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   }
   store.addEvent(sid, 'stop', { parked: true });
   bus.emit('changed');
-  json(res, 200, { ok: true, supervisorDisabled, parked: true, resumable: true });
+  json(res, 200, {
+    ok: true,
+    supervisorDisabled,
+    parked: true,
+    resumable: true,
+    session: decorate(store.getSession(sid)),
+  });
 });
 
 export async function killSession(sid) {
@@ -2813,7 +2785,7 @@ export async function killSession(sid) {
 route('POST', '/api/session/:id/kill', async (req, res, { id: sid }) => {
   const killed = await killSession(sid);
   if (!killed) return json(res, 404, { error: 'no such session' });
-  json(res, 200, { ok: true });
+  json(res, 200, { ok: true, session: decorate(killed) });
 });
 
 route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
@@ -2933,7 +2905,8 @@ route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
 });
 
 // ---------------------------------------------------------------------------
-// boot (fire-and-forget; no top-level await so the module import resolves fast)
+// boot — this promise is part of server readiness. Route registration alone is not enough: recovery must
+// reconcile durable rows with tmux and the pollers must be installed before /readyz admits traffic.
 // ---------------------------------------------------------------------------
 async function boot() {
   await ensureServer();
@@ -2951,4 +2924,5 @@ async function boot() {
   setInterval(() => tailOnce().catch((e) => console.error('[aios] tail error', e.message)), TAIL_MS);
   console.log('[aios] sessions ready');
 }
-boot().catch((e) => console.error('[aios] sessions boot failed:', e.message));
+export const sessionReady = boot();
+await sessionReady;

@@ -4,8 +4,8 @@
   <script>
     // Mobile DASHBOARD = the phone triage view by default (it's the mobile-optimized dashboard). Opt into
     // the desktop dashboard on a phone with ?desktop=1 (remembered); ?phone=1 clears it. Individual
-    // SESSIONS still open the desktop STORY view (see session.html + phone.js) — browse in phone, read in
-    // the desktop story. ?classic=1 still falls back to the pre-redesign dashboard (index.html).
+    // sessions open the SPA's full session view — browse in phone, read in the desktop story.
+    // ?classic=1 still falls back to the pre-redesign dashboard (index.html).
     (() => {
       const q = new URLSearchParams(location.search);
       try {

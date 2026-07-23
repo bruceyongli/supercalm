@@ -9,9 +9,8 @@
 // release page and names the update command (`bin/update`). The local reload toast wins when both apply
 // (reloading is step one); an upstream nudge is dismissible per-version (remembered in localStorage).
 //
-// Self-contained: loaded via <script type="module" src="version-badge.js"> on EVERY top-level page
-// (including session.html — on a page with a full-width footer composer the toast sits just above it).
-// Add the tag to any new page. The /api/version body is ~20 bytes (no DB, sent uncompressed), so the
+// Self-contained: loaded by the single desktop SPA shell and every intentional standalone page.
+// Add the tag to any new standalone surface. The /api/version body is ~20 bytes (no DB, sent uncompressed), so the
 // poll is far lighter than the dashboard's existing 15s /api/state poll — friendly to DERP links.
 
 (() => {

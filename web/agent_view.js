@@ -5,8 +5,11 @@ const TERMINAL_PREVIEW_LINES = 12;
 const AGENT_API_TIMEOUT_MS = 20000;
 const PATCH_PREVIEW_LINES = 120;
 
-async function agentApi(path) {
+async function agentApi(path, { signal } = {}) {
   const ctrl = new AbortController();
+  const abort = () => ctrl.abort();
+  if (signal?.aborted) ctrl.abort();
+  else signal?.addEventListener('abort', abort, { once: true });
   const timeout = setTimeout(() => ctrl.abort(), AGENT_API_TIMEOUT_MS);
   try {
     const r = await fetch(path, { signal: ctrl.signal });
@@ -19,6 +22,7 @@ async function agentApi(path) {
     throw e;
   } finally {
     clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
   }
 }
 
@@ -431,12 +435,13 @@ function timelineToAgentPayload(timeline = {}, fallbackError = '') {
   };
 }
 
-async function loadAgentPayload(sessionId) {
+async function loadAgentPayload(sessionId, signal) {
   const encoded = encodeURIComponent(sessionId);
   try {
-    return await agentApi(`api/session/${encoded}/agui`);
+    return await agentApi(`api/session/${encoded}/agui`, { signal });
   } catch (e) {
-    const timeline = await agentApi(`api/session/${encoded}/timeline`);
+    if (signal?.aborted) throw e;
+    const timeline = await agentApi(`api/session/${encoded}/timeline`, { signal });
     return timelineToAgentPayload(timeline, e.message || String(e));
   }
 }
@@ -839,14 +844,16 @@ export function createAgentView({ root, sessionId, onData, onSelectRequest } = {
   }, { passive: true });
 
   const api = {
-    async load({ refresh = false } = {}) {
+    async load({ refresh = false, signal } = {}) {
       const firstLoad = !state.loaded;
       if (firstLoad) root.innerHTML = '<div class="timeline-empty">Loading Agent View...</div>';
       try {
-        const data = await loadAgentPayload(sessionId);
+        const data = await loadAgentPayload(sessionId, signal);
+        if (signal?.aborted) return;
         state.loaded = true;
         renderData(data, { firstLoad: firstLoad && !refresh });
       } catch (e) {
+        if (signal?.aborted) return;
         root.innerHTML = `
           <div class="timeline-empty agent-error">
             <span>Failed to load Agent View: ${escapeHtml(e.message || String(e))}</span>

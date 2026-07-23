@@ -85,6 +85,7 @@ assert.ok(hooksSrc.includes('CLAUDE_PROJECTS_ROOT'), 'hooks.js confines bindable
 const hookSh = read('../scripts/aios-claude-hook.sh');
 assert.ok(hookSh.includes('transcript_path'), 'hook script forwards transcript_path');
 const storeSrc = read('../src/store.js');
-assert.ok(storeSrc.includes("'claude_transcript TEXT'") && storeSrc.includes("'claude_transcript'"), 'store migrates + whitelists the column');
+const migrationSrc = read('../src/schema_migrations.js');
+assert.ok(migrationSrc.includes("['claude_transcript', 'TEXT']") && storeSrc.includes("'claude_transcript'"), 'the central ledger migrates and store whitelists the column');
 
 console.log('claude_transcripts: all assertions passed');

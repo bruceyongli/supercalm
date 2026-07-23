@@ -7,7 +7,8 @@ A few things will make contributions land smoothly.
 
 - **Vanilla Node, no framework.** `node:http` + a tiny router in `src/server.js`; `node:sqlite`
   (built in) in `src/store.js`. ESM (`"type": "module"`). Keep runtime dependencies sparse — the only
-  ones are `web-push` and the `@ag-ui/*` packages. Don't add a framework or a build step.
+  allowed runtime package is `web-push`; Agent View's wire constants/validation are repository-native.
+  Don't add a framework or a build step.
 - **Frontend is plain HTML/CSS/JS** in `web/` (dark, monospace, mobile-first). xterm.js is vendored in
   `web/vendor/`. Shared helpers in `web/common.js`.
 - **Match the surrounding code** — comment density, naming, and idiom. Read the file before editing it.

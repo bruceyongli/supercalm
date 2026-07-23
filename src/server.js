@@ -7,14 +7,29 @@ import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, releaseChannel, COMMIT_SHA, BOO
 import { bus } from './bus.js';
 import * as store from './store.js';
 import { now, id } from './util.js';
-import { modelDisplayLabel, modelSupportsFast } from './model_catalog.js';
+import { projectSession } from './session_projection.js';
 import { flags, setFlags, flagLocks, FLAG_KEYS, FLAG_DEFS } from './flags.js';
 import { confinedPath } from './static_path.js';
 import { tierOf, queueTier, QUEUE_TIER_ORDER } from './agents/supervisor/engagement.js';
+import { bootPayload, createBootState, loadSequentially, trafficAllowed } from './startup.js';
 
-// Resilience: an "OS" daemon must not die from one stray error. Log and keep running.
-process.on('unhandledRejection', (e) => console.error('[aios] unhandledRejection:', e?.stack || e));
-process.on('uncaughtException', (e) => console.error('[aios] uncaughtException:', e?.stack || e));
+// A request failure is caught at the request boundary below. An error that escapes that boundary means
+// process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
+// supervisor restart from the durable SQLite/tmux reconciliation path.
+let server = null;
+let fatalInProgress = false;
+function fatal(kind, error) {
+  if (fatalInProgress) return;
+  fatalInProgress = true;
+  console.error(`[aios] fatal ${kind}:`, error?.stack || error);
+  process.exitCode = 1;
+  const stop = () => process.exit(1);
+  if (server?.listening) server.close(stop);
+  else queueMicrotask(stop);
+  setTimeout(stop, 2000).unref?.();
+}
+process.on('unhandledRejection', (e) => fatal('unhandledRejection', e));
+process.on('uncaughtException', (e) => fatal('uncaughtException', e));
 for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, () => { console.error('[aios] received', sig); process.exit(0); });
 process.on('SIGHUP', () => console.error('[aios] received SIGHUP (ignored)'));
 
@@ -81,14 +96,71 @@ export function route(method, path, handler) {
       }) +
       '/?$'
   );
-  routes.push({ method, rx, keys, handler });
+  routes.push({ method, path, rx, keys, handler });
 }
+
+const FEATURE_MODULES = [
+  './sessions.js',
+  './detect.js',
+  './spark.js',
+  './push.js',
+  './hooks.js',
+  './mcp.js',
+  './project_graph.js',
+  './lessons.js',
+  './playbook_api.js',
+  './doctrine_api.js',
+  './update_check.js',
+  './agents/supervisor/project_memory.js',
+  './pm_api.js',
+  './models_api.js',
+  './phone_api.js',
+  './snippets.js',
+  './tts.js',
+  './voice.js',
+  './voice_report_api.js',
+  './records.js',
+  './story_api.js',
+  './authapi.js',
+  './usage.js',
+  './model_proxy.js',
+  './model_scan.js',
+  './tool_updates.js',
+  './product_health.js',
+  './integrations.js',
+  './publisher.js',
+  './deploy_breaker.js',
+  './deploy_orchestrator.js',
+  './deploy_api.js',
+  './release_monitor.js',
+  './capability_api.js',
+  './slo_api.js',
+  './agents/host.js',
+];
+export const bootState = createBootState();
 
 // ---------------------------------------------------------------------------
 // SSE: dashboard live updates
 // ---------------------------------------------------------------------------
 const sseClients = new Set();
-const perfState = { activeRequests: 0, totalRequests: 0, slowRequests: 0, maxRequestMs: 0, eventLoopLagMs: 0 };
+const perfState = {
+  activeRequests: 0,
+  totalRequests: 0,
+  slowRequests: 0,
+  maxRequestMs: 0,
+  eventLoopLagMs: 0,
+  routes: new Map(),
+};
+function recordRoutePerformance(routeName, elapsed, status) {
+  const key = routeName || 'unmatched';
+  const current = perfState.routes.get(key) || { route: key, requests: 0, errors: 0, slow: 0, totalMs: 0, maxMs: 0 };
+  current.requests++;
+  current.totalMs += elapsed;
+  current.maxMs = Math.max(current.maxMs, elapsed);
+  if (elapsed >= 1000) current.slow++;
+  if (status >= 500) current.errors++;
+  perfState.routes.set(key, current);
+}
 let expectedLoopTick = performance.now() + 1000;
 const loopTimer = setInterval(() => {
   const t = performance.now();
@@ -155,17 +227,10 @@ export function buildState() {
   if (Date.now() - _touchCache.at > 10_000) _touchCache = { at: Date.now(), map: store.lastOperatorTouchBySession() };
   const touch = _touchCache.map;
   const decorate = (s) => {
-    const fastCapable = s.tool === 'codex' && modelSupportsFast(s.model || TOOLS[s.tool]?.model);
     const tier = tierOf({ lastTouch: Math.max(touch.get(s.id) || 0, Number(s.started_at) || 0) });
     return {
-      ...s,
+      ...projectSession(s, { project: s.project_id ? byId.get(s.project_id) || null : null }),
       tier,
-      fastMode: fastCapable && !!s.fast_mode,
-      fastCapable,
-      project: s.project_id ? byId.get(s.project_id) || null : null,
-      toolLabel: TOOLS[s.tool]?.label || s.tool,
-      toolColor: TOOLS[s.tool]?.color || '#8b949e',
-      modelLabel: (TOOLS[s.tool]?.models || []).find((m) => m.id === s.model)?.label || modelDisplayLabel(s.model) || TOOLS[s.tool]?.modelLabel || null,
     };
   };
   const all = sessions.map(decorate);
@@ -199,12 +264,38 @@ export function buildState() {
 // ---------------------------------------------------------------------------
 // core routes (more are registered by feature modules)
 // ---------------------------------------------------------------------------
-route('GET', '/healthz', (req, res) => json(res, 200, { ok: true, service: 'aios', version: VERSION, commit: COMMIT_SHA, boot: BOOT_ID, time: now() }));
+route('GET', '/healthz', (req, res) => json(res, 200, bootPayload(bootState, {
+  ok: true,
+  service: 'aios',
+  version: VERSION,
+  commit: COMMIT_SHA,
+  boot: BOOT_ID,
+  time: now(),
+})));
+route('GET', '/readyz', (req, res) => json(res, bootState.ready ? 200 : 503, bootPayload(bootState, {
+  ok: !!bootState.ready,
+  service: 'aios',
+  version: VERSION,
+  commit: COMMIT_SHA,
+  boot: BOOT_ID,
+  time: now(),
+})));
 route('GET', '/api/performance', (req, res) => json(res, 200, {
   ok: true,
-  ...perfState,
-  // Do not report this inspection request as work that was already active before the snapshot.
   activeRequests: Math.max(0, perfState.activeRequests - 1),
+  totalRequests: perfState.totalRequests,
+  slowRequests: perfState.slowRequests,
+  maxRequestMs: perfState.maxRequestMs,
+  eventLoopLagMs: perfState.eventLoopLagMs,
+  // Do not report this inspection request as work that was already active before the snapshot.
+  routes: [...perfState.routes.values()]
+    .map((row) => ({
+      ...row,
+      averageMs: row.requests ? Math.round((row.totalMs / row.requests) * 10) / 10 : 0,
+      totalMs: Math.round(row.totalMs),
+      maxMs: Math.round(row.maxMs),
+    }))
+    .sort((a, b) => b.totalMs - a.totalMs || a.route.localeCompare(b.route)),
   sseClients: sseClients.size,
   time: now(),
 }));
@@ -272,20 +363,13 @@ const TYPES = {
 };
 async function serveStatic(req, res, url) {
   let p = decodeURIComponent(url.pathname);
-  // CUTOVER: the single-shell SPA (app.html + router.js) is now the default for every app route — one
-  // persistent flush sidebar, no page reload on any page/session switch. The old per-page documents are
-  // retired from the default routes (kept on disk + reachable via their explicit .html paths as a fallback,
-  // e.g. /session.html, /desktop.html). ?classic=1 still serves the pre-redesign dashboard.
+  // The single-shell SPA is the sole implementation for every desktop app route. Historical *.html
+  // bookmarks map to the same shell; router.js accepts those aliases and canonicalizes the URL in place.
+  // desktop.html remains the deliberately separate classic dashboard selected by ?classic=1.
   if (p === '/') {
     p = url.searchParams.get('classic') === '1' ? '/index.html' : '/app.html';
   }
-  if (p === '/session') p = '/app.html';
-  if (p === '/records') p = '/app.html';
-  if (p === '/decisions') p = '/app.html';
-  if (p === '/usage') p = '/app.html';
-  if (p === '/health') p = '/app.html';
-  if (p === '/settings') p = '/app.html';
-  if (p === '/projects') p = '/app.html';
+  if (/^\/(?:session|records|decisions|usage|health|settings|projects)(?:\.html)?$/.test(p)) p = '/app.html';
   if (p === '/app') p = '/app.html';
   // Standalone pages NOT part of the SPA shell:
   if (p === '/auth') p = '/auth.html';
@@ -338,14 +422,22 @@ async function serveStatic(req, res, url) {
 // ---------------------------------------------------------------------------
 // dispatch
 // ---------------------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+server = http.createServer(async (req, res) => {
   const requestStarted = performance.now();
+  let requestRoute = `${req.method} static`;
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   // Supercalm is reachable directly on :8793 AND under a /aios path on 443 (Tailscale Serve
   // --set-path=/aios). Strip the optional /aios prefix so routing + static serving are
   // identical either way. (The frontend uses <base href="/aios/"> + relative URLs, so even
   // direct :8793 requests arrive prefixed — and a 443 path-proxy already strips it once.)
   url.pathname = url.pathname.replace(/^\/aios(?=\/|$)/, '') || '/';
+  if (!trafficAllowed(url.pathname, bootState)) {
+    res.setHeader('retry-after', '1');
+    return json(res, 503, bootPayload(bootState, {
+      ok: false,
+      error: bootState.phase === 'failed' ? 'service startup failed' : 'service starting',
+    }));
+  }
   // Permanent EventSource connections are transport, not request work. Excluding both shared events
   // and per-session terminal bytes keeps active/slow/max latency useful instead of measuring how long
   // a browser tab happened to stay open. Bounded SSE responses are also omitted from latency at settle.
@@ -361,6 +453,7 @@ const server = http.createServer(async (req, res) => {
       perfState.activeRequests = Math.max(0, perfState.activeRequests - 1);
       const streamingResponse = String(res.getHeader('content-type') || '').toLowerCase().includes('text/event-stream');
       if (streamingResponse) return;
+      recordRoutePerformance(requestRoute, elapsed, Number(res.statusCode) || 0);
       perfState.maxRequestMs = Math.max(perfState.maxRequestMs, Math.round(elapsed));
       if (elapsed >= 1000) perfState.slowRequests++;
       if (elapsed >= 1000) console.warn(`[aios] slow request ${req.method} ${url.pathname} ${finished ? res.statusCode : 'aborted'} ${Math.round(elapsed)}ms`);
@@ -373,11 +466,13 @@ const server = http.createServer(async (req, res) => {
       if (r.method !== req.method) continue;
       const m = url.pathname.match(r.rx);
       if (!m) continue;
+      requestRoute = `${r.method} ${r.path}`;
       const params = {};
       r.keys.forEach((k, i) => (params[k] = decodeURIComponent(m[i + 1])));
       return await r.handler(req, res, params, url);
     }
     if (req.method === 'GET' || req.method === 'HEAD') return await serveStatic(req, res, url);
+    requestRoute = `${req.method} unmatched`;
     return json(res, 404, { error: 'not found' });
   } catch (err) {
     console.error('[aios] handler error', req.method, url.pathname, err);
@@ -386,13 +481,18 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// Feature modules register their routes by importing { route } from here.
-// Fire-and-forget (NOT top-level await) AFTER `routes` is initialized: this
-// avoids a hang in any one module's async boot from blocking server.listen,
-// and avoids "unsettled top-level await" tearing the process down.
-for (const mod of ['./sessions.js', './detect.js', './spark.js', './push.js', './hooks.js', './mcp.js', './project_graph.js', './lessons.js', './playbook_api.js', './doctrine_api.js', './update_check.js', './agents/supervisor/project_memory.js', './pm_api.js', './models_api.js', './phone_api.js', './snippets.js', './tts.js', './voice.js', './voice_report_api.js', './records.js', './story_api.js', './authapi.js', './usage.js', './model_proxy.js', './model_scan.js', './tool_updates.js', './product_health.js', './integrations.js', './publisher.js', './deploy_breaker.js', './deploy_orchestrator.js', './deploy_api.js', './release_monitor.js', './capability_api.js', './slo_api.js', './agents/host.js']) {
-  import(mod).catch((e) => console.error(`[aios] ${mod} not loaded:`, e.message));
-}
+// Feature modules still register routes through this module, but they now load in one declared order.
+// The listener is intentionally allowed to expose /healthz while this runs; every other route is gated
+// above until featureReady resolves. A failed import therefore cannot leave a partial app reporting ready.
+export const featureReady = loadSequentially(FEATURE_MODULES, { state: bootState });
+featureReady.catch((e) => {
+  console.error(`[aios] startup failed in ${bootState.failed?.module || 'unknown feature'}:`, e?.stack || e);
+  if (!process.env.AIOS_NO_LISTEN) {
+    process.exitCode = 1;
+    server.close(() => process.exit(1));
+    setTimeout(() => process.exit(1), 2000).unref?.();
+  }
+});
 
 // Tailscale Serve pools keep-alive connections to this backend. Node's default
 // keepAliveTimeout (5s) FINs those idle pooled connections constantly; Serve's side

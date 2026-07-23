@@ -1,43 +1,10 @@
 import { createHash } from 'node:crypto';
-import {
-  EventType,
-  RunStartedEventSchema,
-  RunFinishedEventSchema,
-  RunErrorEventSchema,
-  StateSnapshotEventSchema,
-  MessagesSnapshotEventSchema,
-  TextMessageStartEventSchema,
-  TextMessageContentEventSchema,
-  TextMessageEndEventSchema,
-  StepStartedEventSchema,
-  StepFinishedEventSchema,
-  ToolCallStartEventSchema,
-  ToolCallResultEventSchema,
-  ToolCallEndEventSchema,
-  CustomEventSchema,
-} from '@ag-ui/core';
+import { EventType, validateProtocolEvent } from './agui_protocol.js';
 
 const SCHEMA_VERSION = 1;
 const TEXT_PREVIEW = 360;
 const TERMINAL_PREVIEW_LINES = 16;
 const PATCH_PREVIEW_LINES = 160;
-
-const EVENT_SCHEMAS = {
-  [EventType.RUN_STARTED]: RunStartedEventSchema,
-  [EventType.RUN_FINISHED]: RunFinishedEventSchema,
-  [EventType.RUN_ERROR]: RunErrorEventSchema,
-  [EventType.STATE_SNAPSHOT]: StateSnapshotEventSchema,
-  [EventType.MESSAGES_SNAPSHOT]: MessagesSnapshotEventSchema,
-  [EventType.TEXT_MESSAGE_START]: TextMessageStartEventSchema,
-  [EventType.TEXT_MESSAGE_CONTENT]: TextMessageContentEventSchema,
-  [EventType.TEXT_MESSAGE_END]: TextMessageEndEventSchema,
-  [EventType.STEP_STARTED]: StepStartedEventSchema,
-  [EventType.STEP_FINISHED]: StepFinishedEventSchema,
-  [EventType.TOOL_CALL_START]: ToolCallStartEventSchema,
-  [EventType.TOOL_CALL_RESULT]: ToolCallResultEventSchema,
-  [EventType.TOOL_CALL_END]: ToolCallEndEventSchema,
-  [EventType.CUSTOM]: CustomEventSchema,
-};
 
 function stableHash(value) {
   return createHash('sha1').update(String(value || '')).digest('hex').slice(0, 12);
@@ -586,14 +553,11 @@ export function timelineToAguiEvents({ session = {}, timeline = {}, groups = bui
 }
 
 export function validateAguiEvent(event) {
-  const schema = EVENT_SCHEMAS[event?.type];
-  if (!schema) throw new Error(`Unsupported AG-UI event type: ${event?.type || '(missing)'}`);
-  const parsed = schema.safeParse(event);
-  if (!parsed.success) {
-    const issue = parsed.error.issues?.[0];
-    throw new Error(`Invalid AG-UI event ${event.type}: ${issue?.path?.join('.') || 'event'} ${issue?.message || parsed.error.message}`);
+  try {
+    return validateProtocolEvent(event);
+  } catch (error) {
+    throw new Error(`Invalid AG-UI event ${event?.type || '(missing)'}: ${error?.message || error}`, { cause: error });
   }
-  return parsed.data;
 }
 
 export function validateAguiEvents(events = []) {

@@ -38,7 +38,8 @@ const store = await import('../src/store.js');
 store.createProject({ id: 'p_files', name: 'files', path: projectRoot });
 store.createSession({ id: 's_files', project_id: 'p_files', tool: 'codex', tmux: 'tmx_files', status: 'exited' });
 store.addMessage('s_files', 'out', 'reply', `Generated image: ${artifact}`);
-await import('../src/server.js');
+const { featureReady } = await import('../src/server.js');
+await featureReady;
 
 const base = `http://127.0.0.1:${port}`;
 async function fileRequest(path, suffix = '') {

@@ -14,6 +14,22 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const URL_ = process.argv[2] || 'http://127.0.0.1:8793/aios/';
 const CHROME = process.env.AIOS_CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const READY_URL = new URL('readyz', URL_).href;
+async function waitForReady() {
+  const deadline = Date.now() + 45_000;
+  let detail = '';
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(READY_URL, { headers: { accept: 'application/json' } });
+      detail = `${response.status} ${await response.text()}`;
+      if (response.ok && /"ready"\s*:\s*true/.test(detail)) return;
+    } catch (error) {
+      detail = error?.message || String(error);
+    }
+    await delay(200);
+  }
+  throw new Error(`service did not become ready at ${READY_URL}: ${detail.slice(-500)}`);
+}
 const freePort = () => new Promise((res, rej) => { const s = net.createServer(); s.on('error', rej); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => res(p)); }); });
 async function pageWs(port) {
   const dl = Date.now() + 12000;
@@ -27,6 +43,7 @@ child.on('error', (e) => { console.error('chrome spawn error:', e.message); proc
 const kill = setTimeout(() => { child.kill('SIGKILL'); }, 70000);
 let loadCount = 0; const exceptions = [];
 try {
+  await waitForReady();
   const wsUrl = await pageWs(port);
   const ws = new WebSocket(wsUrl);
   let id = 1; const pending = new Map();
@@ -50,6 +67,71 @@ try {
     const side = document.querySelector('.dk-side');
     if (side) side.dataset.persistId = 'PID_' + Math.floor(performance.now());
     const view = document.querySelector('#view');
+    // Fixture-independent session/action route: mutating requests and this one synthetic detail row stay
+    // inside the browser. Empty installations exercise the same session shell without creating a project,
+    // tmux pane, or durable row on the target service.
+    const realFetch = window.fetch.bind(window);
+    const fakeId = 's_spa_audit_fake';
+    const fakeId2 = 's_spa_audit_fake_2';
+    window.fetch = async (input, opts = {}) => {
+      const u = new URL(typeof input === 'string' ? input : input.url, location.href);
+      const method = String(opts.method || input?.method || 'GET').toUpperCase();
+      if (method === 'POST' && (u.pathname.endsWith('/api/session') || u.pathname.endsWith('/api/session/'))) {
+        return new Response(JSON.stringify({ id: fakeId, revision: 1, title: 'SPA action audit', tool: 'claude', status: 'starting', last_activity: Date.now(), started_at: Date.now(), project: { id: 'p_audit', name: 'Audit' } }), { status: 202, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'GET' && (u.pathname.endsWith('/api/session/' + fakeId) || u.pathname.endsWith('/api/session/' + fakeId2))) {
+        const target = u.pathname.endsWith('/' + fakeId2) ? fakeId2 : fakeId;
+        return new Response(JSON.stringify({ id: target, revision: 1, title: target === fakeId2 ? 'SPA race target' : 'SPA action audit', tool: 'claude', status: 'starting', last_activity: Date.now(), started_at: Date.now(), project: { id: 'p_audit', name: 'Audit' }, messages: [], events: [], snapshot: '' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'POST' && u.pathname.endsWith('/api/session/' + fakeId + '/kill')) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return realFetch(input, opts);
+    };
+    // Cold-route ownership regression: start the async session view (its first mount loads xterm), then
+    // supersede it in the same task. The old initializer must never paint over the newer Records route.
+    const raceLink = document.createElement('a');
+    const raceLink2 = document.createElement('a');
+    raceLink.href = 'session?id=' + fakeId;
+    raceLink2.href = 'session?id=' + fakeId2;
+    document.body.append(raceLink, raceLink2);
+    // Race 1: leave the very first cold Session initialization before its vendor/module awaits settle.
+    raceLink.click();
+    document.querySelector('.dk-nav-item[data-nav="records"]')?.click();
+    await sleep(800);
+    const coldRoute = {
+      path: location.pathname,
+      sessionShell: !!document.querySelector('#session-shell'),
+      viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+    };
+    // Race 2: two session identities requested back-to-back must mount only the latest one.
+    raceLink.click();
+    raceLink2.click();
+    for (let n = 0; n < 50; n++) {
+      const failed = [...view.children].some((el) => el.textContent?.trim().startsWith('View error:'));
+      if (failed || document.querySelector('#session-title-value')?.textContent === 'SPA race target') break;
+      await sleep(100);
+    }
+    const switchTarget = {
+      id: new URLSearchParams(location.search).get('id'),
+      title: document.querySelector('#session-title-value')?.textContent || '',
+      sessionShell: !!document.querySelector('#session-shell'),
+      viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+    };
+    document.querySelector('.dk-nav-item[data-nav="records"]')?.click();
+    raceLink.remove();
+    raceLink2.remove();
+    await sleep(800);
+    rep.routeRace = {
+      coldRoute,
+      switchTarget,
+      path: location.pathname,
+      sessionShell: !!document.querySelector('#session-shell'),
+      viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+      sideSameNode: document.querySelector('.dk-side') === side,
+      sentinel: window.__spaSentinel,
+      navEntries: performance.getEntriesByType('navigation').length,
+    };
     const sub = document.querySelector('.dk-sec-row-sub');
     const countShown = () => { let n = 0, el = document.querySelector('.dk-sec-row-sub'); el = el && el.nextElementSibling; while (el && el.classList && el.classList.contains('dk-row')) { n++; el = el.nextElementSibling; } return n; };
     const toggle = document.querySelector('[data-dk-stopped-toggle]');
@@ -121,19 +203,6 @@ try {
     // Action-flow regression: mock only the two mutating API responses, then drive the REAL launcher
     // and kill buttons. This catches programmatic location.href regressions that link-only audits miss,
     // without creating/killing an operator session on the target service.
-    const realFetch = window.fetch.bind(window);
-    const fakeId = 's_spa_audit_fake';
-    window.fetch = async (input, opts = {}) => {
-      const u = new URL(typeof input === 'string' ? input : input.url, location.href);
-      const method = String(opts.method || input?.method || 'GET').toUpperCase();
-      if (method === 'POST' && (u.pathname.endsWith('/api/session') || u.pathname.endsWith('/api/session/'))) {
-        return new Response(JSON.stringify({ id: fakeId, title: 'SPA action audit', tool: 'claude', status: 'starting', last_activity: Date.now(), started_at: Date.now(), project: { id: 'p_audit', name: 'Audit' } }), { status: 202, headers: { 'content-type': 'application/json' } });
-      }
-      if (method === 'POST' && u.pathname.endsWith('/api/session/' + fakeId + '/kill')) {
-        return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      return realFetch(input, opts);
-    };
     const home2 = document.querySelector('.dk-nav-item[data-nav="inbox"]'); if (home2) { home2.click(); await sleep(500); }
     document.querySelector('#dk-sess-plus')?.click();
     for (let n = 0; n < 50 && !document.querySelector('#nl-go'); n++) await sleep(100);
@@ -143,7 +212,19 @@ try {
     const beforeLaunchView = view.firstElementChild;
     document.querySelector('#nl-go')?.click();
     for (let n = 0; n < 50 && !document.querySelector('#b-kill'); n++) await sleep(100);
-    rep.actions.push({ action: 'launch', path: location.pathname, id: new URLSearchParams(location.search).get('id'), viewSwapped: view.firstElementChild !== beforeLaunchView, sideSameNode: document.querySelector('.dk-side') === side, sentinel: window.__spaSentinel, navEntries: performance.getEntriesByType('navigation').length });
+    rep.actions.push({
+      action: 'launch',
+      path: location.pathname,
+      id: new URLSearchParams(location.search).get('id'),
+      viewSwapped: view.firstElementChild !== beforeLaunchView,
+      sideSameNode: document.querySelector('.dk-side') === side,
+      sentinel: window.__spaSentinel,
+      navEntries: performance.getEntriesByType('navigation').length,
+      bodyClass: document.body.className,
+      sessionShell: !!document.querySelector('#session-shell'),
+      viewError: [...view.children].some((el) => el.textContent?.trim().startsWith('View error:')),
+      terminalActive: document.querySelector('[data-mode="terminal"]')?.classList.contains('active') || false,
+    });
     window.confirm = () => true;
     document.querySelector('#b-kill')?.click();
     for (let n = 0; n < 40 && new URLSearchParams(location.search).get('id'); n++) await sleep(100);
@@ -169,16 +250,32 @@ try {
     if (st.navEntries !== 1) fails.push(`nav "${st.nav}": ${st.navEntries} navigation entries — full nav, not pushState`);
     if (st.sentinel !== s0) fails.push(`nav "${st.nav}": window sentinel changed — document was replaced`);
   }
-  const sessionStep = rep.steps.find((st) => st.nav === 'session');
-  if (!sessionStep?.sessionShell) fails.push('persisted Terminal session route did not mount #session-shell');
-  if (sessionStep?.viewError) fails.push('persisted Terminal session route rendered a View error');
-  if (!sessionStep?.terminalActive) fails.push('persisted Terminal preference was not active after session mount');
+  const realSessionStep = rep.steps.find((st) => st.nav === 'session');
   if (rep.churn?.iterations !== 6) fails.push(`Records teardown churn ran ${rep.churn?.iterations || 0}/6 iterations`);
   if (!rep.churn?.sideSameNode) fails.push('Records teardown churn re-created the sidebar');
   if (rep.churn?.sentinel !== s0 || rep.churn?.navEntries !== 1) fails.push('Records teardown churn replaced the document');
+  if (!rep.routeRace?.coldRoute?.path.endsWith('/records') || rep.routeRace?.coldRoute?.sessionShell
+      || rep.routeRace?.coldRoute?.viewError) {
+    fails.push('Records did not remain authoritative after superseding a pending cold Session initializer');
+  }
+  if (rep.routeRace?.switchTarget?.id !== 's_spa_audit_fake_2' || !rep.routeRace?.switchTarget?.sessionShell
+      || rep.routeRace?.switchTarget?.viewError || rep.routeRace?.switchTarget?.title !== 'SPA race target') {
+    fails.push('rapid cold session A→B navigation did not mount only the latest session identity');
+  }
+  if (!rep.routeRace?.path.endsWith('/records') || rep.routeRace.sessionShell || rep.routeRace.viewError) {
+    fails.push('superseded cold session initializer overwrote the active Records route');
+  }
+  if (!rep.routeRace?.sideSameNode || rep.routeRace?.sentinel !== s0 || rep.routeRace?.navEntries !== 1) {
+    fails.push('cold session route race replaced the document/sidebar');
+  }
   const launch = rep.actions.find((a) => a.action === 'launch');
   const killed = rep.actions.find((a) => a.action === 'kill');
   if (!launch || launch.id !== 's_spa_audit_fake' || !launch.viewSwapped) fails.push('launch action did not route to the accepted starting session in place');
+  const sessionStep = realSessionStep || launch;
+  if (!sessionStep?.sessionShell) fails.push('Terminal session route did not mount #session-shell');
+  if (sessionStep?.viewError) fails.push('Terminal session route rendered a View error');
+  if (!sessionStep?.terminalActive) fails.push('persisted Terminal preference was not active after session mount');
+  if (!String(sessionStep?.bodyClass || '').split(/\s+/).includes('session-page')) fails.push('session route did not apply the full-bleed session-page layout class');
   if (!killed || killed.id) fails.push('kill action did not route home in place');
   const homeTitleRx = /^(?:Supercalm · idle|! \d+ waiting · Supercalm|\d+ working · \d+ live · Supercalm)$/;
   if (killed && !homeTitleRx.test(killed.title || '')) fails.push(`kill action left stale session browser identity on home: "${killed.title || ''}"`);
@@ -191,7 +288,7 @@ try {
   if (rep.stopped.total > cap && rep.stopped.shownCollapsed > cap) fails.push(`stopped list not capped: showing ${rep.stopped.shownCollapsed} of ${rep.stopped.total} (cap ${cap})`);
   if (rep.stopped.total > cap && !rep.stopped.hasExpander) fails.push(`stopped list has ${rep.stopped.total} but no "show all" expander`);
 
-  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, steps: rep.steps, churn: rep.churn, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
+  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, routeRace: rep.routeRace, steps: rep.steps, churn: rep.churn, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
   if (fails.length) { console.error('\nSPA AUDIT FAIL:\n - ' + fails.join('\n - ')); process.exitCode = 1; }
   else console.log('\nSPA AUDIT PASS — one document, one persistent sidebar, no reloads, stopped list bounded, zero page exceptions.');
 } catch (e) {

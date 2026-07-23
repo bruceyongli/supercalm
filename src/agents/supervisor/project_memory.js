@@ -16,6 +16,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { db } from '../../store.js';
+import { applyMigrations, ensureColumn } from '../../migrations.js';
 import { now, id as genId } from '../../util.js';
 
 // ---- schema -------------------------------------------------------------------------------------
@@ -104,9 +105,15 @@ CREATE TABLE IF NOT EXISTS pm_session_runtime (
 );
 `);
 // phase 4: verify facts pinned at task-open (additive migration — phase-1 schema omitted it)
-try { db.exec('ALTER TABLE pm_tasks ADD COLUMN verify_facts_json TEXT'); } catch {}
-// phase 6: a migrated card carries its origin doc VERBATIM (full restore always possible)
-try { db.exec('ALTER TABLE pm_tasks ADD COLUMN legacy_doc TEXT'); } catch {}
+// phase 6: a migrated card carries its origin doc VERBATIM (full restore always possible).
+applyMigrations(db, [{
+  id: '0104_project_memory_task_provenance',
+  description: 'Add pinned verification facts and legacy document provenance to project-memory tasks',
+  up(conn) {
+    ensureColumn(conn, 'pm_tasks', 'verify_facts_json', 'TEXT');
+    ensureColumn(conn, 'pm_tasks', 'legacy_doc', 'TEXT');
+  },
+}]);
 
 // ---- card + versioning ---------------------------------------------------------------------------
 export function getTask(taskId) {

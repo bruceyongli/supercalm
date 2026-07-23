@@ -116,6 +116,15 @@ if git rev-parse --verify --quiet "origin/$BR" >/dev/null; then
   }
 fi
 
+run_candidate_audit() {
+  if [ "${AIOS_SKIP_POST_DEPLOY_AUDIT:-0}" = "1" ]; then
+    echo "==> browser release gates explicitly skipped (AIOS_SKIP_POST_DEPLOY_AUDIT=1)"
+    return
+  fi
+  echo "==> pre-promotion candidate SPA audit (isolated data + port)"
+  node bin/candidate-spa-audit.mjs
+}
+
 # Exact-SHA deploy (autonomous pipeline — docs/specs/autonomous-deploy-plan.md step 1). When AIOS_DEPLOY_SHA
 # is set, the caller (the integration state machine) already prepared + bumped + TESTED that exact candidate
 # commit; here we ONLY fast-forward main to it — NO re-bump, NO other mutation — then push + restart. The
@@ -127,6 +136,7 @@ if [ -n "${AIOS_DEPLOY_SHA:-}" ]; then
   git merge-base --is-ancestor "$BR" "$SHA" 2>/dev/null || { echo "error: '$BR' is not an ancestor of $SHA — refusing a non-fast-forward exact deploy." >&2; exit 1; }
   echo "==> exact-SHA deploy: fast-forwarding $BR to $(git rev-parse --short "$SHA")"
   git merge --ff-only "$SHA"
+  run_candidate_audit
   # Bump the version ON TOP of the deployed candidate so the served version MOVES and the new-version toast
   # fires for autonomous deploys too. bin/version is the only version editor; this release commit only touches
   # package.json/lock (the candidate stays the exact tested code). Verify (src/publisher.js) checks the
@@ -134,6 +144,7 @@ if [ -n "${AIOS_DEPLOY_SHA:-}" ]; then
   NEW="$(bin/version "$LEVEL")"
   echo "    -> v$NEW ($(git rev-parse --short HEAD)) — candidate $(git rev-parse --short "$SHA")"
 else
+  run_candidate_audit
   OLD="$(node -p "require('./package.json').version")"
   echo "==> bump release version ($LEVEL)"
   NEW="$(bin/version "$LEVEL")"
@@ -173,6 +184,20 @@ else
   ssh "$HOST" 'launchctl kickstart -k "gui/$(id -u)/ai.aios.server" 2>/dev/null \
     && echo restarted \
     || echo "service not installed — run ~/aios/bin/install-service on host"'
+fi
+
+# The browser audit is part of the release boundary, not an optional memory-based follow-up. It drives the
+# freshly restarted production build through the real SPA/session routes and fails the deploy command on
+# document reloads, duplicate shells, view-init exceptions, or broken launch/kill transitions. It uses CDP
+# directly and therefore remains available after the production `npm install --omit=dev`.
+if [ "${AIOS_SKIP_POST_DEPLOY_AUDIT:-0}" != "1" ]; then
+  VERIFY_URL="${AIOS_VERIFY_URL:-http://127.0.0.1:8793/aios/}"
+  echo "==> post-deploy production SPA audit ($VERIFY_URL)"
+  if [ "$ON_HOST" = 1 ]; then
+    node bin/spa-audit.mjs "$VERIFY_URL"
+  else
+    ssh "$HOST" "bash -lc 'cd ~/aios && node bin/spa-audit.mjs \"$VERIFY_URL\"'"
+  fi
 fi
 
 echo "==> deployed v$NEW"

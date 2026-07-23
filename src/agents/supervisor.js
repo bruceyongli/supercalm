@@ -1,4 +1,5 @@
 import { db, getGrant, upsertGrant, listEnabledGrants, getSession } from '../store.js';
+import { applyMigrations, ensureColumn } from '../migrations.js';
 import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
@@ -159,16 +160,18 @@ db.exec(`
     updated_at  INTEGER NOT NULL
   );
 `);
-// Add the verify-dedupe `repeat` counter to pre-existing tables (preserves history; no drop).
-if (!new Set(db.prepare('PRAGMA table_info(supervisor_reviews)').all().map((r) => r.name)).has('repeat')) {
-  db.exec('ALTER TABLE supervisor_reviews ADD COLUMN repeat INTEGER NOT NULL DEFAULT 1');
-}
 // Project Memory phase 2: interventions name the task card (+version) they judged — null until
 // phase 3 sets an active task. Additive; old review history keyed to doc snapshots stays comparable
 // because the columns are nullable, and new rows become card-comparable.
-for (const col of ['task_id TEXT', 'card_version INTEGER']) {
-  try { db.exec(`ALTER TABLE supervisor_reviews ADD COLUMN ${col}`); } catch {}
-}
+applyMigrations(db, [{
+  id: '0107_supervisor_review_complete_shape',
+  description: 'Add deduplication and versioned project-memory task identity to supervisor reviews',
+  up(conn) {
+    ensureColumn(conn, 'supervisor_reviews', 'repeat', 'INTEGER NOT NULL DEFAULT 1');
+    ensureColumn(conn, 'supervisor_reviews', 'task_id', 'TEXT');
+    ensureColumn(conn, 'supervisor_reviews', 'card_version', 'INTEGER');
+  },
+}]);
 
 const _insReview = db.prepare(
   `INSERT INTO supervisor_reviews (session_id, ts, kind, trigger, model, verdict, score, assessment, message, sent, sent_text, screenshot, error, raw, task_id, card_version)

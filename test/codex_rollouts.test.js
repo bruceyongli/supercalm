@@ -74,7 +74,8 @@ assert.ok(sessions.includes("source: 'transcript'"), 'UUID capture publishes a s
 assert.ok(/s\.codex_uuid \|\| \(await findCodexSession/.test(sessions), 'resume prefers the captured UUID, then cwd-match');
 
 const store = readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');
-assert.ok(store.includes("'codex_uuid TEXT'"), 'store migrates a codex_uuid column');
+const migrations = readFileSync(new URL('../src/schema_migrations.js', import.meta.url), 'utf8');
+assert.ok(migrations.includes("['codex_uuid', 'TEXT']"), 'the central ledger migrates a codex_uuid column');
 assert.ok(/SESSION_FIELDS = \[[^\]]*'codex_uuid'/.test(store), 'codex_uuid is a writable session field');
 assert.ok(storyApi.includes('_freshQueuedLaunch.get(s.id)'), 'fresh unresolved launches refuse unsafe cwd fallback');
 

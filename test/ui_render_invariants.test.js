@@ -108,7 +108,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(/onchange = syncNewProj/.test(body), 'the sync is the onchange handler');
   assert.ok(/\n\s*syncNewProj\(\);/.test(body), 'the sync ALSO runs at open — zero-projects installs start on "+ new project…" with no change event');
 
-  for (const f of ['views/projects.js', 'projects.js']) {
+  for (const f of ['views/projects.js']) {
     const pj = read(f);
     assert.ok(!/desktop#launch/.test(pj), `${f}: no navigation to the legacy desktop #launch hash (nothing handles it)`);
     assert.ok(/openLaunch\(\{ ?projectId/.test(pj), `${f}: row "+ session" opens the launch modal with the project preselected`);
@@ -177,7 +177,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 // /graph?rebuild=1 — a param the GET route ignores — so it 200'd, claimed "indexed ✓", and
 // nothing was ever indexed (E2E finding #2).
 {
-  for (const f of ['views/projects.js', 'projects.js']) {
+  for (const f of ['views/projects.js']) {
     const pj = read(f);
     assert.ok(!/graph\?rebuild=1/.test(pj), `${f}: no GET ?rebuild=1 (the route ignores it)`);
     assert.ok(/graph\/rebuild`, \{ method: 'POST' \}/.test(pj), `${f}: index button POSTs the rebuild route`);

@@ -4,6 +4,7 @@ import { route, json, readJson } from './server.js';
 import { setHookState } from './detect.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
+import { projectSession, sessionStatusPayload } from './session_projection.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
@@ -37,30 +38,38 @@ function handle(tool, b, res) {
       if (WAITING_EVENT.test(event)) {
         const question = b.message || b.question || null;
         setHookState(sid, 'waiting', question);
-        store.addEvent(sid, 'hook', { tool, event });
-        bus.emit('session-status', {
-          session: sid,
+        const previousStatus = store.getSession(sid)?.status || s.status;
+        const updated = store.updateSession(sid, {
           status: 'waiting',
-          previousStatus: s.status,
           question,
-          source: 'hook',
-          tool,
-          event,
-          ts: Date.now(),
+          last_activity: Date.now(),
         });
+        store.addEvent(sid, 'hook', { tool, event });
+        bus.emit('session-status', sessionStatusPayload(projectSession(updated, {
+          project: updated.project_id ? store.getProject(updated.project_id) : null,
+        }), {
+          previousStatus,
+          source: 'hook',
+          extra: { tool, event },
+          ts: Date.now(),
+        }));
       } else if (WORKING_EVENT.test(event)) {
         setHookState(sid, 'working', null);
-        store.addEvent(sid, 'hook', { tool, event });
-        bus.emit('session-status', {
-          session: sid,
+        const previousStatus = store.getSession(sid)?.status || s.status;
+        const updated = store.updateSession(sid, {
           status: 'working',
-          previousStatus: s.status,
           question: null,
-          source: 'hook',
-          tool,
-          event,
-          ts: Date.now(),
+          last_activity: Date.now(),
         });
+        store.addEvent(sid, 'hook', { tool, event });
+        bus.emit('session-status', sessionStatusPayload(projectSession(updated, {
+          project: updated.project_id ? store.getProject(updated.project_id) : null,
+        }), {
+          previousStatus,
+          source: 'hook',
+          extra: { tool, event },
+          ts: Date.now(),
+        }));
       }
     }
   }

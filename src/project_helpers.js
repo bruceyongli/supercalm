@@ -4,6 +4,7 @@
 // kill-switches (env=0 forces OFF, env=1 forces ON, unset → per-project toggle). Everything defaults
 // OFF, so until an operator enables a helper for a project, launches are byte-identical to before.
 import { db } from './store.js';
+import { applyMigrations, ensureColumn } from './migrations.js';
 import { now } from './util.js';
 
 db.exec(`
@@ -23,9 +24,16 @@ db.exec(`
   )
 `);
 // migrate existing installs (table predates the lessons / isolation / auto_publish columns)
-for (const col of ['lessons INTEGER NOT NULL DEFAULT 0', 'lessons_model TEXT', 'isolation INTEGER NOT NULL DEFAULT 0', 'auto_publish INTEGER NOT NULL DEFAULT 0']) {
-  try { db.exec(`ALTER TABLE project_helpers ADD COLUMN ${col}`); } catch {}
-}
+applyMigrations(db, [{
+  id: '0100_project_helpers_complete_shape',
+  description: 'Add project lesson, isolation, and automatic publishing preferences',
+  up(conn) {
+    ensureColumn(conn, 'project_helpers', 'lessons', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(conn, 'project_helpers', 'lessons_model', 'TEXT');
+    ensureColumn(conn, 'project_helpers', 'isolation', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(conn, 'project_helpers', 'auto_publish', 'INTEGER NOT NULL DEFAULT 0');
+  },
+}]);
 
 const DEFAULTS = { context_inject: 0, context_model: null, preflight: 0, preflight_model: null, wiki_mcp: 0, wiki_model: null, lessons: 0, lessons_model: null, isolation: 0, auto_publish: 0 };
 const BOOL_COLS = ['context_inject', 'preflight', 'wiki_mcp', 'lessons', 'isolation', 'auto_publish'];

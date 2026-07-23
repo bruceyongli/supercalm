@@ -23,6 +23,7 @@
 // (injection needs no switch — it is empty until the operator has approved something).
 
 import { db, getSession, getGrant } from '../store.js';
+import { applyMigrations, ensureColumn } from '../migrations.js';
 import { now, id as genId } from '../util.js';
 import { bus } from '../bus.js';
 import { fleetKey, routeForModel } from '../model_catalog.js';
@@ -50,9 +51,22 @@ db.exec(`
 `);
 db.exec('CREATE INDEX IF NOT EXISTS idx_doctrine_status ON supervisor_doctrine(status, updated_at)');
 // Run-2 columns (doctrine -> enforcement): additive, guarded for existing installs.
-for (const col of ["enforcement TEXT NOT NULL DEFAULT 'advisory'", "scope TEXT NOT NULL DEFAULT 'project'", 'violation_count INTEGER NOT NULL DEFAULT 0', 'last_violation_at INTEGER', 'last_used_at INTEGER', 'triage_verdict TEXT', 'triage_rank INTEGER', 'triage_reason TEXT', 'triage_dup_of TEXT', 'triaged_at INTEGER']) {
-  try { db.exec(`ALTER TABLE supervisor_doctrine ADD COLUMN ${col}`); } catch { /* already migrated */ }
-}
+applyMigrations(db, [{
+  id: '0105_supervisor_doctrine_enforcement',
+  description: 'Add enforcement, reuse, violation, and triage state to supervisor doctrine',
+  up(conn) {
+    ensureColumn(conn, 'supervisor_doctrine', 'enforcement', "TEXT NOT NULL DEFAULT 'advisory'");
+    ensureColumn(conn, 'supervisor_doctrine', 'scope', "TEXT NOT NULL DEFAULT 'project'");
+    ensureColumn(conn, 'supervisor_doctrine', 'violation_count', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(conn, 'supervisor_doctrine', 'last_violation_at', 'INTEGER');
+    ensureColumn(conn, 'supervisor_doctrine', 'last_used_at', 'INTEGER');
+    ensureColumn(conn, 'supervisor_doctrine', 'triage_verdict', 'TEXT');
+    ensureColumn(conn, 'supervisor_doctrine', 'triage_rank', 'INTEGER');
+    ensureColumn(conn, 'supervisor_doctrine', 'triage_reason', 'TEXT');
+    ensureColumn(conn, 'supervisor_doctrine', 'triage_dup_of', 'TEXT');
+    ensureColumn(conn, 'supervisor_doctrine', 'triaged_at', 'INTEGER');
+  },
+}]);
 
 const _insert = db.prepare(`INSERT INTO supervisor_doctrine
   (id,project_id,session_id,decision_id,situation,rule,apply_how,divergence,ask,response,status,source,created_at,updated_at,enforcement,scope)

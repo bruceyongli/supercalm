@@ -9,6 +9,7 @@
 import http from 'node:http';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { db } from './store.js';
+import { applyMigrations, ensureColumn } from './migrations.js';
 import { now } from './util.js';
 import { fleetKey, routeForModel } from './model_catalog.js';
 import { priceUsage } from './usage_pricing.js';
@@ -36,10 +37,15 @@ db.exec(`
   );
 `);
 // semantic grouping added later: feature (sub-component bucket) + task (the recurring task, shared across
-// the rounds it took) — additive ALTERs so existing installs migrate in place.
-for (const col of ['feature TEXT', 'task TEXT']) {
-  try { db.exec(`ALTER TABLE session_labels ADD COLUMN ${col}`); } catch {}
-}
+// the rounds it took) — additive columns so existing installs migrate in place.
+applyMigrations(db, [{
+  id: '0101_session_labels_semantic_grouping',
+  description: 'Add semantic feature and task grouping to session labels',
+  up(conn) {
+    ensureColumn(conn, 'session_labels', 'feature', 'TEXT');
+    ensureColumn(conn, 'session_labels', 'task', 'TEXT');
+  },
+}]);
 // global on/off + running usage meter (labeling spans ALL sessions, so the switch + cost are global).
 // Default ON — it's cheap (haiku, cached, ~0 steady-state) — but the user can turn it off to stop spend.
 db.exec(`
@@ -54,10 +60,16 @@ db.exec(`
   );
 `);
 // user-configurable knobs added later (model override, extra prompt, default view) — additive ALTERs so
-// existing installs migrate in place; failures (column already exists) are ignored.
-for (const col of ['model TEXT', 'prompt_extra TEXT', 'default_view TEXT']) {
-  try { db.exec(`ALTER TABLE label_meta ADD COLUMN ${col}`); } catch {}
-}
+// existing installs migrate in place.
+applyMigrations(db, [{
+  id: '0102_session_label_preferences',
+  description: 'Add configurable model, prompt, and default view to session labeling',
+  up(conn) {
+    ensureColumn(conn, 'label_meta', 'model', 'TEXT');
+    ensureColumn(conn, 'label_meta', 'prompt_extra', 'TEXT');
+    ensureColumn(conn, 'label_meta', 'default_view', 'TEXT');
+  },
+}]);
 db.prepare('INSERT OR IGNORE INTO label_meta (id, enabled) VALUES (1, 1)').run();
 const _meta = db.prepare('SELECT * FROM label_meta WHERE id = 1');
 const _setEnabled = db.prepare('UPDATE label_meta SET enabled = ?, updated_at = ? WHERE id = 1');

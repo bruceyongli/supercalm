@@ -16,7 +16,22 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const kill = session.slice(session.indexOf("$('#b-kill').onclick"), session.indexOf('// ---- teardown'));
   assert.match(kill, /navigate\('\.\/'\)/, 'kill routes home in place');
   assert.doesNotMatch(kill, /location\.href|location\.reload/, 'kill never replaces the document');
-  assert.match(kill, /upsertSession\(\{ id, status: 'exited'/, 'kill patches the keyed row optimistically');
+  assert.match(kill, /upsertSession\(result\.session \|\| \{ id: requestToken\.id, status: 'exited'/,
+    'kill uses the canonical revisioned response with a bounded optimistic fallback');
+  assert.match(kill, /requestToken = requestScope\.capture\(\)/, 'kill captures immutable session identity before awaiting');
+  const sessionView = read('web/views/session-view.js');
+  assert.match(sessionView, /mod\?\.destroySession\(\);[\s\S]*?mod\?\.mountSession\(hostEl, \{ id: nid/,
+    'session-to-session navigation remounts only the content view with a fresh async lifetime');
+  assert.doesNotMatch(sessionView, /mod\?\.switchSession/, 'session identity is never mutated inside a mounted view');
+  const router = read('web/router.js');
+  assert.match(router, /pendingInit\?\.abort\(\)/, 'new navigation aborts an initializer still loading');
+  assert.match(router, /await mod\.init\(host, params, navigation\);[\s\S]*?if \(!navigation\.isCurrent\(\)\) return/,
+    'the router revalidates ownership after asynchronous view initialization');
+  assert.match(sessionView, /if \(navigation\.signal\?\.aborted[\s\S]*?\) return;[\s\S]*?hostEl = host/,
+    'cold session initialization cannot claim or paint the shared host after navigation supersedes it');
+  assert.match(sessionView, /const vendorLoads = new Map\(\)/, 'concurrent cold session initializers share vendor loads');
+  assert.match(sessionView, /if \(vendorLoads\.has\(src\)\) return vendorLoads\.get\(src\)/,
+    'a second cold session does not mistake an existing-but-still-loading script tag for readiness');
 }
 
 // One structured stream patches a normalized store; generic changed no longer fans out broad loads.
@@ -31,6 +46,10 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.doesNotMatch(recalc, /\.sort\(/, 'activity patches do not continually reorder the visible session lists');
   assert.match(shell, /let sessionOrder = \[\]/, 'shell keeps an explicit stable row order');
   assert.match(shell, /sessionOrder = \[next\.id, \.\.\.sessionOrder/, 'a genuinely new session is inserted at the top');
+  assert.match(shell, /mergeSessionSnapshot\(\[\.\.\.sessionsById\.values\(\)\], incoming, changedAfterRequest\)/,
+    'full snapshots reconcile per-row revisions instead of replacing newer stream state');
+  assert.match(shell, /requestedAtEpoch = sessionMutationEpoch/,
+    'home requests retain rows created by the stream while the snapshot is in flight');
   const session = read('web/session.js');
   assert.match(session, /subscribeSessionEvents/, 'embedded session reuses the shell stream');
   assert.match(session, /subscribeSessionEvents\(onSessionStatus, \{ replayId: id \}\)/, 'session subscription replays a status event missed during mount');
@@ -38,7 +57,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.doesNotMatch(session, /setInterval\(loadUsage|loadUsage\(\);\s*\n\s*_timers/, 'hidden usage has no eager polling interval');
   const settings = session.slice(session.indexOf('async function loadSettings'), session.indexOf('// ---- reply composer'));
   assert.doesNotMatch(settings, /api\('api\/state'\)/, 'session settings never fetch broad state');
-  assert.match(settings, /fetchSessionInfo\(reqId\)/, 'session header and settings share one detail request');
+  assert.match(settings, /fetchSessionInfo\(requestToken\.id\)/, 'session header and settings share one revision-scoped detail request');
+  assert.match(settings, /requestScope\.guard\(requestToken\)/, 'late settings responses cannot paint after a session switch');
   assert.match(settings, /fetchToolsMeta\(\)/, 'session settings use the lean tool catalog');
   assert.match(session, /getLaunchOptions\(\)/, 'session settings share the shell launch-options request');
   assert.doesNotMatch(session, /api\('api\/launch-options'\)/, 'session mount has no independent launch-options fetch');
@@ -100,17 +120,53 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(server, /streamingResponse.*text\/event-stream/s, 'bounded SSE responses do not inflate latency metrics');
 }
 
+// Production deployment itself owns the computer-use gate.
+{
+  const deploy = read('bin/deploy');
+  assert.match(deploy, /pre-promotion candidate SPA audit/, 'deploy audits the exact code before it is pushed');
+  assert.match(deploy, /node bin\/candidate-spa-audit\.mjs/, 'pre-promotion gate boots an isolated candidate');
+  assert.match(deploy, /post-deploy production SPA audit/, 'deploy announces the browser verification boundary');
+  assert.match(deploy, /node bin\/spa-audit\.mjs/, 'deploy drives the freshly restarted production SPA');
+  assert.match(deploy, /AIOS_SKIP_POST_DEPLOY_AUDIT/, 'emergency operators have one explicit, visible bypass');
+  const audit = read('bin/spa-audit.mjs');
+  assert.match(audit, /await waitForReady\(\)/, 'browser audit waits for deterministic application readiness');
+  assert.match(audit, /s_spa_audit_fake/, 'browser audit does not require an existing operator session');
+}
+
+// Schema upgrades are named, atomic, and observable instead of swallowed during feature imports.
+{
+  const migrations = read('src/migrations.js');
+  assert.match(migrations, /BEGIN IMMEDIATE/, 'each schema migration starts an explicit write transaction');
+  assert.match(migrations, /INSERT INTO schema_migrations/, 'successful upgrades are recorded durably');
+  assert.match(migrations, /schema migration \$\{migration\.id\} failed/, 'a failed upgrade names its ledger entry');
+  for (const path of [
+    'src/project_helpers.js',
+    'src/session_labels.js',
+    'src/agents/supervisor/decision_records.js',
+    'src/agents/supervisor/project_memory.js',
+    'src/agents/doctrine.js',
+    'src/agents/council.js',
+    'src/agents/supervisor.js',
+  ]) {
+    const source = read(path);
+    assert.match(source, /applyMigrations\(db,/, `${path} registers its additive schema upgrade`);
+    assert.doesNotMatch(source, /ALTER TABLE/, `${path} has no untracked import-time ALTER`);
+  }
+}
+
 // Home is database-only; launch persists a starting row and returns before setup.
 {
   const phone = read('src/phone_api.js');
   assert.doesNotMatch(phone, /storyFor|story_api|deriveQuestion/, 'home never parses transcripts');
   assert.match(phone, /WITH last_in AS/, 'home unread state is computed with a set-based aggregate');
   assert.doesNotMatch(phone, /m\.ts > COALESCE\(\(SELECT MAX\(ts\)/, 'home has no per-message correlated reply lookup');
-  assert.match(phone, /idx_messages_unread_out_session_ts/, 'home unread scanning stays on a compact partial index');
+  assert.match(read('src/schema_migrations.js'), /idx_messages_unread_out_session_ts/, 'home unread scanning stays on a centrally migrated compact partial index');
   const projects = read('web/views/projects.js');
   assert.match(projects, /getHome\(\)/, 'Projects reuses the normalized shell snapshot');
   assert.doesNotMatch(projects, /api\('api\/phone\/home'\)/, 'Projects does not refetch the session collection');
   const sessions = read('src/sessions.js');
+  assert.match(sessions, /export const sessionReady = boot\(\);\s*\nawait sessionReady;/,
+    'server readiness waits for durable session/tmux reconciliation and poller installation');
   assert.match(sessions, /function reserveLaunch[\s\S]*?status: 'starting'/, 'launch reserves the row in starting state');
   assert.match(sessions, /queueLaunch\([\s\S]*?setImmediate/, 'expensive launch completion runs after the response path');
   assert.match(sessions, /json\(res, 202, decorate\(s\)\)/, 'POST /api/session returns an accepted starting row');
@@ -120,6 +176,15 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(sessions, /cleanupArtifacts && spec\.worktree && !spec\.worktree\.reused/, 'all failed fresh launches clean their worktree');
   assert.match(sessions, /if \(s\.status === 'starting'\)[\s\S]*?alive\.has\(s\.tmux\)[\s\S]*?kill-session/, 'restart recovery retires a partially-created pane');
   assert.match(sessions, /if \(pendingLaunches\.has\(s\.id\)\) continue/, 'boot discovery never retires a launch owned by the current process');
+}
+
+// Every lifecycle event uses the revisioned session contract; scoped read metadata is the only
+// intentionally unversioned patch.
+{
+  const hooks = read('src/hooks.js');
+  assert.match(hooks, /sessionStatusPayload\(projectSession\(updated,/, 'hook transitions emit the canonical projection');
+  assert.match(hooks, /store\.updateSession\(sid,/, 'hook transitions advance durable revision state before publishing');
+  assert.doesNotMatch(hooks, /bus\.emit\('session-status',\s*\{/, 'hooks cannot bypass revisioned event construction');
 }
 
 // Usage and supervisor hot paths are bounded and avoid loading giant blobs repeatedly.
@@ -148,7 +213,6 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const usageView = read('web/views/usage.js');
   assert.match(usageView, /api\/usage\/summary/, 'the screen avoids the legacy exhaustive report');
   assert.match(usageView, /\.recent\[hidden\]\s*\{\s*display:\s*none/, 'the SPA recent-events disclosure is actually hidden when closed');
-  assert.match(read('web/usage.html'), /\.recent\[hidden\]\s*\{\s*display:\s*none/, 'the legacy recent-events disclosure is actually hidden when closed');
   assert.ok(usageView.indexOf("api('api/usage/subscriptions')") < usageView.indexOf('await api(`api/usage/summary'),
     'quota and usage requests start concurrently');
   const usageCollector = read('src/usage_collect.js');

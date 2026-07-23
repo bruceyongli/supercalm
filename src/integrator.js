@@ -75,7 +75,7 @@ async function runChecks(worktreePath, { testCmd } = {}) {
   // Secret scan — best-effort; only if the candidate carries the scanner (AIOS's own projects do).
   if (existsSync(join(worktreePath, 'scripts', 'scan-secrets.mjs'))) await run('secret-scan', 'node', ['scripts/scan-secrets.mjs'], 60000);
   // Dependencies — a fresh gate worktree has NO node_modules, so any dep-importing test dies with
-  // ERR_MODULE_NOT_FOUND (observed: test:phone → '@ag-ui/core' missing → every candidate rejected).
+  // ERR_MODULE_NOT_FOUND (observed historically when a runtime-only package was absent).
   // Install the CANDIDATE's declared deps (hermetic — not a symlink to the live checkout's tree).
   if (existsSync(join(worktreePath, 'package.json')) && !existsSync(join(worktreePath, 'node_modules'))) {
     const lock = existsSync(join(worktreePath, 'package-lock.json'));

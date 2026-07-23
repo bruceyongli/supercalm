@@ -42,7 +42,8 @@ If it's already cloned, `cd` into it and `git pull`.
 npm install
 ```
 
-Runtime deps are tiny (`web-push` + the AG-UI packages); xterm.js and graph libs are vendored, so this is
+The only npm runtime dependency is `web-push`; Agent View's wire adapter, xterm.js, and graph libs are
+repository-native or vendored, so this is
 quick and needs no build step.
 
 **Verify:** `npm test` runs and ends with the suite passing (all test files print `ok` / `passed`). This

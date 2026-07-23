@@ -1,20 +1,14 @@
-// The app-shell sidebar markup is hand-duplicated in THREE places for first-paint: shell.js's canonical
-// SIDEBAR_HTML (injected into system pages), and the static copies in web/desktop.html + web/session.html.
-// They drifted once — desktop.html kept the pre-redesign "Inbox" nav + "+ New session" button while the
-// others moved to "Sessions" — so the dashboard showed a different sidebar than every other page (operator:
-// "two UIs … two sidebars … bad codebase management"). This test fails the moment any copy drifts again.
+// The SPA owns one app-shell document. The only remaining copy is the deliberately separate classic
+// dashboard; retired standalone system/session documents are routed back through app.html.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8');
 const sidebarOf = (html) => (html.match(/<aside class="dk-side"[\s\S]*?<\/aside>/) || [''])[0];
 
-const shellSidebar = (read('shell.js').match(/const SIDEBAR_HTML = `([\s\S]*?)`;/) || [, ''])[1];
 const copies = {
-  'shell.js SIDEBAR_HTML': shellSidebar,
   'app.html': sidebarOf(read('app.html')), // the LIVE sidebar after the SPA cutover — the one users actually see
   'desktop.html': sidebarOf(read('desktop.html')),
-  'session.html': sidebarOf(read('session.html')),
 };
 
 const NAV = ['inbox', 'projects', 'decisions', 'records', 'usage', 'health', 'settings'];
@@ -31,9 +25,9 @@ for (const [name, sb] of Object.entries(copies)) {
 
 // the SYSTEM nav order/labels must match across copies (catches partial edits)
 const systemLabels = (sb) => (sb.match(/data-nav="(decisions|records|usage|health|settings)"[^>]*>([^<]+)/g) || []).map((x) => x.replace(/\s+/g, ' ').trim());
-const ref = systemLabels(copies['shell.js SIDEBAR_HTML']);
+const ref = systemLabels(copies['app.html']);
 for (const [name, sb] of Object.entries(copies)) {
   assert.deepEqual(systemLabels(sb), ref, `${name}: SYSTEM nav matches the canonical`);
 }
 
-console.log(`sidebar_consistency: all ${Object.keys(copies).length} sidebar copies match the canonical (incl. the live app.html; no Inbox/+New drift)`);
+console.log(`sidebar_consistency: ${Object.keys(copies).length} intentional shell documents match (SPA + classic; retired standalone copies removed)`);

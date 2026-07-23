@@ -3,13 +3,14 @@ import { initAgentPanel } from './agents/host.js';
 import { getLaunchOptions, mountShell, subscribeSessionEvents, upsertSession } from './shell.js';
 import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
+import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
+import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
 import { FILE_REFERENCE_RX, cleanFileReference, localFilePath } from './file-reference.js';
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
 // app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
-// straight into the SPA #view (no iframe), and reused by the standalone web/session.html. The
-// `.session-shell.embedded` class (added in mountSession) collapses the rail column to 0 — the shell has no
-// own sidebar in either mount.
+// straight into the SPA #view (no iframe). Historical standalone URLs now route through the SPA.
+// `.session-shell.embedded` (added in mountSession) collapses the rail column to 0.
 export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
       <header>
         <div class="brand"><a href=".">←</a> <span id="s-badge"></span></div>
@@ -118,34 +119,40 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
       <div class="agent-dock-scrim" id="agent-dock-scrim" hidden></div>
     </div>`;
 
-// The SPA/standalone contract this module exposes. mountSession() assigns these to the live instance; the
-// exported switchSession()/destroySession() wrappers at the bottom delegate to them.
-let _switchSession = null;
+// The SPA contract this module exposes. Same-route session changes remount this view inside the
+// persistent shell, so every mount has one immutable identity and one async lifetime.
 let _destroy = null;
 
 // Mount the full session view into `hostEl`. `embedded` (default true, the SPA #view) skips the app-shell —
-// the parent SPA already owns the ONE sidebar + its data loop/SSE. embedded=false (standalone
-// web/session.html) mounts the shell here. Safe to call again after destroySession() (idempotent).
+// the parent SPA already owns the ONE sidebar + its data loop/SSE. embedded=false remains a compatibility
+// seam for controlled test mounts. Safe to call again after destroySession() (idempotent).
 export function mountSession(hostEl, { id: startId = '', embedded = true } = {}) {
   registerSW();
   const params = new URLSearchParams(location.search);
-  let id = startId || params.get('id'); // mutable: the in-place session switch (switchSession) re-points it without a reload
+  const id = startId || params.get('id');
   if (!id) { location.href = document.baseURI; return; }
+  const requestScope = createSessionRequestScope(id);
   const resizeOff = params.get('resize') === 'off' || params.has('noresize');
   // One-tap capability mint (v4 S1): a kernel-escalation push deep-links session?id=<sid>&mint=<class>.
   // Native confirm keeps it zero-chrome (house rule: no visible controls for rare edge cases); the minted
   // capability is single-use + 15min TTL, and the supervisor's next attempt consumes it and proceeds.
   const mintClass = params.get('mint');
   if (mintClass && /^[a-z_]{3,24}$/.test(mintClass)) {
+    const requestToken = requestScope.capture();
     setTimeout(() => {
+      if (!requestScope.isCurrent(requestToken)) return;
       if (confirm(`The supervisor was blocked on a reserved "${mintClass}" action for this session.\n\nAuthorize it ONCE (15 min, single use)?`)) {
         fetch('api/capability/mint', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session: id, action: mintClass }),
+          body: JSON.stringify({ session: requestToken.id, action: mintClass }),
+          signal: requestToken.signal,
         }).then((r) => r.json()).then((d) => {
+          requestScope.guard(requestToken);
           if (!d.ok) alert('Mint failed: ' + (d.error || 'unknown'));
-        }).catch((e) => alert('Mint failed: ' + e.message));
+        }).catch((e) => {
+          if (!isSessionAbort(e)) alert('Mint failed: ' + e.message);
+        });
       }
       // strip the param either way so a reload never re-prompts
       params.delete('mint');
@@ -318,8 +325,8 @@ addEventListener('resize', () => {
 // only so its existing call sites (status transitions below) don't need editing.
 if (!embedded) mountShell(); // embedded (SPA): the parent shell already owns the sidebar + data loop/SSE
 function loadSessionRail() {}
-// In the SPA the parent view module (web/views/session-view.js) drives session→session in-place by calling
-// the exported switchSession() directly (no postMessage, no iframe) — so no message listener is needed here.
+// In the SPA the parent view module remounts this content region for session→session navigation (no
+// document reload, postMessage, or iframe), so no cross-session message listener is needed here.
 
 // ---- right panel: the agent host owns the tab bar + panels (web/agents/host.js) ------------
 // Built lazily near the SSE wiring (after loadMap/loadUsage + their state exist), since the host
@@ -519,13 +526,16 @@ const timelineClosedGroups = new Set();
 
 async function loadAgentView({ refresh = false } = {}) {
   if (!agentEl) return;
+  const requestToken = requestScope.capture();
   if (!agentViewApi) {
     if (!agentViewLoading) {
       agentViewLoading = import('./agent_view.js').then((mod) => {
+        requestScope.guard(requestToken);
         agentViewApi = mod.createAgentView({
           root: agentEl,
-          sessionId: id,
+          sessionId: requestToken.id,
           onData(data) {
+            if (!requestScope.isCurrent(requestToken)) return;
             latestAgentData = data;
             if (!selectedAgentRequestId) {
               selectedAgentRequestId = data?.groups?.findLast?.((g) => g.kind === 'request')?.id || '';
@@ -533,6 +543,7 @@ async function loadAgentView({ refresh = false } = {}) {
             if (latestMap && !latestMap?.map?.map) renderMap(latestMap);
           },
           onSelectRequest(group, data) {
+            if (!requestScope.isCurrent(requestToken)) return;
             selectedAgentRequestId = group?.id || '';
             latestAgentData = data || latestAgentData;
             if (latestMap && !latestMap?.map?.map) renderMap(latestMap);
@@ -540,13 +551,16 @@ async function loadAgentView({ refresh = false } = {}) {
         });
         return agentViewApi;
       }).catch((e) => {
+        if (isSessionAbort(e)) return null;
         agentEl.innerHTML = `<div class="timeline-empty">Failed to load Agent View: ${escapeHtml(e.message || String(e))}</div>`;
         throw e;
       });
     }
     await agentViewLoading;
   }
-  await agentViewApi.load({ refresh });
+  if (!requestScope.isCurrent(requestToken)) return;
+  await agentViewApi?.load({ refresh, signal: requestToken.signal });
+  if (!requestScope.isCurrent(requestToken)) return;
 }
 
 function isScrollbackAtBottom() {
@@ -562,11 +576,13 @@ function scrollbackToLatest() {
 
 async function loadScrollback({ quiet = false } = {}) {
   if (!scrollbackEl || !scrollbackText || scrollbackBusy) return;
+  const requestToken = requestScope.capture();
   scrollbackBusy = true;
   const shouldFollow = scrollbackFollow || isScrollbackAtBottom();
   if (!scrollbackLoaded && !quiet) scrollbackText.textContent = 'Loading transcript...';
   try {
-    const r = await api(`api/session/${id}/log?max=524288`);
+    const r = await api(`api/session/${requestToken.id}/log?max=524288`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
     scrollbackText.textContent = r.text || '(no terminal log yet)';
     const meta = [r.truncated ? 'tail' : 'full', fmtBytes(r.bytes), r.totalBytes && r.totalBytes !== r.bytes ? `of ${fmtBytes(r.totalBytes)}` : '']
       .filter(Boolean)
@@ -575,6 +591,7 @@ async function loadScrollback({ quiet = false } = {}) {
     scrollbackLoaded = true;
     if (shouldFollow) requestAnimationFrame(scrollbackToLatest);
   } catch (e) {
+    if (isSessionAbort(e)) return;
     scrollbackText.textContent = `Failed to load transcript: ${e.message || String(e)}`;
   } finally {
     scrollbackBusy = false;
@@ -634,12 +651,16 @@ function loadStoryView() {
   // setMainView, the shell's replay, and a live semantic event can converge during mount. Share the
   // import + initial network refresh so those triggers never issue parallel Story requests.
   if (storyLoadPromise) return storyLoadPromise;
+  const requestToken = requestScope.capture();
   storyLoadPromise = import('./story-view.js').then((mod) => {
+    requestScope.guard(requestToken);
     if (!storyInited) {
       storyInited = true;
-      return mod.initStoryView({ sessionId: id, panel: document.querySelector('[data-story-panel]') });
+      return mod.initStoryView({ sessionId: requestToken.id, panel: document.querySelector('[data-story-panel]') });
     }
     return mod.refreshStory();
+  }).catch((error) => {
+    if (!isSessionAbort(error)) throw error;
   }).finally(() => { storyLoadPromise = null; });
   return storyLoadPromise;
 }
@@ -994,8 +1015,10 @@ if (params.has('debugTerminal')) {
 }
 async function bootstrapTerminalScrollback() {
   if (params.has('noTerminalHistory')) return;
+  const requestToken = requestScope.capture();
   try {
-    const r = await api(`api/session/${id}/log?max=196608`);
+    const r = await api(`api/session/${requestToken.id}/log?max=196608`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
     if (sessionDestroyed || _sig.aborted) return;
     if (!r?.text) return;
     const normalized = String(r.text).replace(/\n/g, '\r\n');
@@ -1572,16 +1595,19 @@ conversationEl?.addEventListener('toggle', (e) => {
 
 async function loadTimeline() {
   if (!conversationEl) return;
+  const requestToken = requestScope.capture();
   const firstLoad = !timelineLoaded;
   const uiState = firstLoad ? null : captureTimelineUiState();
   if (firstLoad) conversationEl.innerHTML = '<div class="timeline-empty">Loading conversation timeline…</div>';
   try {
-    const data = await api(`api/session/${id}/timeline`);
+    const data = await api(`api/session/${requestToken.id}/timeline`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
     latestTimelineData = data;
     timelineLoaded = true;
     renderTimeline(data, { scrollLatest: firstLoad, uiState });
     if (latestMap && !latestMap?.map?.map) renderMap(latestMap);
   } catch (e) {
+    if (isSessionAbort(e)) return;
     conversationEl.innerHTML = `<div class="timeline-empty">Failed to load conversation timeline: ${escapeHtml(e.message || String(e))}</div>`;
   }
 }
@@ -1596,7 +1622,10 @@ let titleBusy = false;
 
 function fetchSessionInfo(reqId = id) {
   if (sessionInfoRequest?.id === reqId) return sessionInfoRequest.promise;
-  const promise = api(`api/session/${reqId}`).finally(() => {
+  const requestToken = requestScope.capture();
+  const promise = api(`api/session/${reqId}`, { signal: requestToken.signal })
+    .then((session) => requestScope.guard(requestToken, session))
+    .finally(() => {
     if (sessionInfoRequest?.promise === promise) sessionInfoRequest = null;
   });
   sessionInfoRequest = { id: reqId, promise };
@@ -1637,6 +1666,7 @@ function renderHeaderTitle(s) {
 
 function applySessionInfo(s) {
   if (!s) return;
+  if (isStaleSessionPatch(latestSessionInfo, s)) return;
   let patch = s;
   // The initial detail GET can resolve after a Working SSE. Like the shell store, reject only the
   // unversioned Starting lifecycle fields while retaining useful static metadata from that response.
@@ -1645,9 +1675,7 @@ function applySessionInfo(s) {
     const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
     patch = Object.fromEntries(Object.entries(s).filter(([key]) => !lifecycle.has(key)));
   }
-  const merged = latestSessionInfo
-    ? { ...latestSessionInfo, ...patch, project: patch.project || latestSessionInfo.project }
-    : s;
+  const merged = mergeSessionPatch(latestSessionInfo, patch);
   latestSessionInfo = merged;
   if (merged.toolColor && merged.toolLabel) {
     $('#s-badge').innerHTML = `<span class="badge" style="border-color:${merged.toolColor}99;color:${merged.toolColor}">${merged.toolLabel}</span>`;
@@ -1706,53 +1734,68 @@ async function saveTitle() {
     input?.focus();
     return;
   }
+  const requestToken = requestScope.capture();
   titleBusy = true;
   try {
-    const r = await api(`api/session/${id}/title`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title, source: 'manual' }) });
+    const r = await api(`api/session/${requestToken.id}/title`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title, source: 'manual' }),
+      signal: requestToken.signal,
+    });
+    requestScope.guard(requestToken);
     titleEditing = false;
     applySessionInfo(r.session);
     loadSessionRail();
   } catch (e) {
+    if (isSessionAbort(e)) return;
     input?.classList.add('error');
     input?.setAttribute('title', e.message || String(e));
   } finally {
     titleBusy = false;
-    if (!titleEditing && latestSessionInfo) renderHeaderTitle(latestSessionInfo);
+    if (requestScope.isCurrent(requestToken) && !titleEditing && latestSessionInfo) renderHeaderTitle(latestSessionInfo);
   }
 }
 
 async function suggestAndApplyTitle() {
   if (titleBusy || titleEditing || !latestSessionInfo) return;
+  const requestToken = requestScope.capture();
   titleBusy = true;
   renderHeaderTitle(latestSessionInfo);
   try {
-    const r = await api(`api/session/${id}/title/suggest`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apply: true }) });
+    const r = await api(`api/session/${requestToken.id}/title/suggest`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ apply: true }),
+      signal: requestToken.signal,
+    });
+    requestScope.guard(requestToken);
     applySessionInfo(r.session);
     loadSessionRail();
+  } catch (error) {
+    if (!isSessionAbort(error)) throw error;
   } finally {
     titleBusy = false;
-    if (latestSessionInfo) renderHeaderTitle(latestSessionInfo);
+    if (requestScope.isCurrent(requestToken) && latestSessionInfo) renderHeaderTitle(latestSessionInfo);
   }
 }
 
 async function loadInfo() {
-  const reqId = id;
   try {
-    const s = await fetchSessionInfo(reqId);
-    if (reqId !== id) return;
+    const s = await fetchSessionInfo(id);
     applySessionInfo(s);
     if (activeMainView === 'terminal' && s.status !== 'starting' && !terminalStream) ensureTerminalData(true);
-  } catch {}
+  } catch (error) {
+    if (!isSessionAbort(error)) console.error('[aios] session info load failed:', error);
+  }
 }
 loadInfo();
 
 // The agent host builds the side-panel tab bar + mounts agent panels. Map/Usage are driven as
 // "legacy" panels via their existing loaders; Supervisor/Builder/drop-ins are panel modules.
-// Mount (or re-mount, on an in-place session switch) the right-side agent panel for the current `id`.
+// Mount the right-side agent panel for this immutable session identity.
 // Uses only the panel's PUBLIC API (initAgentPanel) — web/agents/* is a standing operator fence, so we
-// never edit it. On switch, switchSession() removes the previous panel's dynamic sections before calling
-// this; the one thing the public API can't reach is the old graph module's animation interval — see the
-// documented residual there.
+// never edit it. The parent view destroys the whole agent host before remounting another session.
 function mountAgentPanel() {
   agentPanel = initAgentPanel({
     sessionId: id,
@@ -1942,10 +1985,11 @@ function renderUsage(d) {
   };
   form.onsubmit = async (e) => {
     e.preventDefault();
+    const requestToken = requestScope.capture();
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
     try {
-      renderUsage(await api(`api/session/${id}/limit`, {
+      const result = await api(`api/session/${requestToken.id}/limit`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -1954,39 +1998,51 @@ function renderUsage(d) {
           cost_limit_usd: readNum('#limit-cost'),
           token_limit_total: readMillionTokens('#limit-tokens'),
         }),
-      }));
+        signal: requestToken.signal,
+      });
+      requestScope.guard(requestToken);
+      renderUsage(result);
     } catch (e) {
+      if (isSessionAbort(e)) return;
       alert('Limit update failed: ' + e.message);
     } finally {
       btn.disabled = false;
-      syncSize();
+      if (requestScope.isCurrent(requestToken)) syncSize();
     }
   };
   $('#limit-clear').onclick = async () => {
+    const requestToken = requestScope.capture();
     try {
-      renderUsage(await api(`api/session/${id}/limit`, {
+      const result = await api(`api/session/${requestToken.id}/limit`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ clear: true }),
-      }));
+        signal: requestToken.signal,
+      });
+      requestScope.guard(requestToken);
+      renderUsage(result);
     } catch (e) {
+      if (isSessionAbort(e)) return;
       alert('Limit clear failed: ' + e.message);
     } finally {
-      syncSize();
+      if (requestScope.isCurrent(requestToken)) syncSize();
     }
   };
   setTimeout(syncSize, 80);
 }
 async function loadUsage() {
   if (isInteracting($('#s-usage'))) return; // shared guard: don't re-render while editing limits / interacting
+  const requestToken = requestScope.capture();
   try {
-    const d = await api(`api/session/${id}/usage`);
+    const d = await api(`api/session/${requestToken.id}/usage`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
     if ($('#limit-form')?.contains(document.activeElement)) {
       latestUsage = d;
       return;
     }
     renderUsage(d);
-  } catch {
+  } catch (error) {
+    if (isSessionAbort(error)) return;
     if (!latestUsage) $('#s-usage').innerHTML = '<section class="su-card"><span class="muted">Usage data unavailable.</span></section>';
   }
 }
@@ -2320,22 +2376,26 @@ function wireMapControls() {
   if (genSel) genSel.onchange = () => localStorage.setItem(PREF_MAP_GENERATE_TARGET, genSel.value);
   if (updSel) updSel.onchange = () => localStorage.setItem(PREF_MAP_UPDATE_TARGET, updSel.value);
   const run = async (mode) => {
+    const requestToken = requestScope.capture();
     mapBusy = true;
     renderMap(latestMap || { options: {} });
     try {
       const target = mode === 'update' ? $('#map-update-target')?.value : $('#map-generate-target')?.value;
       if (target) localStorage.setItem(mode === 'update' ? PREF_MAP_UPDATE_TARGET : PREF_MAP_GENERATE_TARGET, target);
-      const r = await api(`api/session/${id}/map`, {
+      const r = await api(`api/session/${requestToken.id}/map`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ mode, target }),
+        signal: requestToken.signal,
       });
+      requestScope.guard(requestToken);
       renderMap(r);
     } catch (e) {
+      if (isSessionAbort(e)) return;
       alert('Map generation failed: ' + e.message);
     } finally {
       mapBusy = false;
-      loadMap();
+      if (requestScope.isCurrent(requestToken)) loadMap();
     }
   };
   const gen = $('#map-generate');
@@ -2345,14 +2405,16 @@ function wireMapControls() {
 }
 
 async function loadMap() {
-  const myId = id;
+  const requestToken = requestScope.capture();
   try {
-    const payload = await api(`api/session/${myId}/map`);
-    if (_sig.aborted || id !== myId || !$('#s-map')) return;
+    const payload = await api(`api/session/${requestToken.id}/map`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
+    if (_sig.aborted || !$('#s-map')) return;
     renderMap(payload);
-  } catch {
+  } catch (error) {
+    if (isSessionAbort(error)) return;
     const box = $('#s-map');
-    if (!_sig.aborted && id === myId && !latestMap && box) box.innerHTML = '<section class="map-card"><span class="muted">Session map unavailable.</span></section>';
+    if (!_sig.aborted && !latestMap && box) box.innerHTML = '<section class="map-card"><span class="muted">Session map unavailable.</span></section>';
   }
 }
 
@@ -2393,16 +2455,22 @@ function renderSettings(s, tmeta) {
       };
     }
     el.onchange = async () => {
+      const requestToken = requestScope.capture();
       fitSettingSelect(el);
       el.disabled = true;
       try {
-        const r = await api(`api/session/${id}/settings`, {
+        const r = await api(`api/session/${requestToken.id}/settings`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ [el.dataset.set]: el.value }),
+          signal: requestToken.signal,
         });
-        if (r.applied === 'relaunched') setTimeout(() => location.reload(), 1000);
+        requestScope.guard(requestToken);
+        if (r.applied === 'relaunched') setTimeout(() => {
+          if (requestScope.isCurrent(requestToken)) location.reload();
+        }, 1000);
       } catch (e) {
+        if (isSessionAbort(e)) return;
         alert('Update failed: ' + e.message);
       } finally {
         el.disabled = false;
@@ -2411,18 +2479,24 @@ function renderSettings(s, tmeta) {
   });
   box.querySelectorAll('button[data-toggle]').forEach((el) => {
     el.onclick = async () => {
+      const requestToken = requestScope.capture();
       const next = el.getAttribute('aria-pressed') !== 'true';
       el.disabled = true;
       try {
-        const r = await api(`api/session/${id}/settings`, {
+        const r = await api(`api/session/${requestToken.id}/settings`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ [el.dataset.toggle]: next }),
+          signal: requestToken.signal,
         });
+        requestScope.guard(requestToken);
         el.setAttribute('aria-pressed', next ? 'true' : 'false');
         el.classList.toggle('on', next);
-        if (r.applied === 'relaunched') setTimeout(() => location.reload(), 1000);
+        if (r.applied === 'relaunched') setTimeout(() => {
+          if (requestScope.isCurrent(requestToken)) location.reload();
+        }, 1000);
       } catch (e) {
+        if (isSessionAbort(e)) return;
         alert('Update failed: ' + e.message);
       } finally {
         el.disabled = false;
@@ -2450,11 +2524,13 @@ function fetchToolsMeta() {
 }
 async function loadSettings() {
   try {
-    const reqId = id;
-    const [s, tools] = await Promise.all([fetchSessionInfo(reqId), fetchToolsMeta()]);
-    if (reqId !== id) return; // a newer switch superseded this fetch — don't paint stale settings
+    const requestToken = requestScope.capture();
+    const [s, tools] = await Promise.all([fetchSessionInfo(requestToken.id), fetchToolsMeta()]);
+    requestScope.guard(requestToken);
     renderSettings(s, (tools || []).find((t) => t.id === s.tool) || {});
-  } catch {}
+  } catch (error) {
+    if (!isSessionAbort(error)) console.error('[aios] session settings load failed:', error);
+  }
 }
 loadSettings();
 
@@ -2472,12 +2548,17 @@ function showResumeBar() {
   anchorEl.parentElement.insertBefore(bar, anchorEl);
   bar.querySelector('#resume-bar-x').onclick = () => bar.remove();
   bar.querySelector('#resume-bar-go').onclick = async () => {
+    const requestToken = requestScope.capture();
     bar.querySelector('#resume-bar-go').disabled = true;
     try {
-      await api(`api/session/${id}/resume`, { method: 'POST' });
+      await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
+      requestScope.guard(requestToken);
       bar.querySelector('span').textContent = 'Resuming — reloading…';
-      setTimeout(() => location.reload(), 900);
+      setTimeout(() => {
+        if (requestScope.isCurrent(requestToken)) location.reload();
+      }, 900);
     } catch (e) {
+      if (isSessionAbort(e)) return;
       bar.querySelector('span').textContent = 'Resume failed: ' + (e.message || e);
       bar.querySelector('#resume-bar-go').disabled = false;
     }
@@ -2684,14 +2765,19 @@ let fileViewerBusy = false;
 async function openFileViewer(rawPath) {
   const rel = localFilePath(rawPath);
   if (!rel || fileViewerBusy) return;
+  const requestToken = requestScope.capture();
   fileViewerBusy = true;
   let meta = null;
   let errText = '';
   try {
-    const r = await fetch(`api/session/${id}/file?path=${encodeURIComponent(rel)}`);
+    const r = await fetch(`api/session/${requestToken.id}/file?path=${encodeURIComponent(rel)}`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
     if (r.ok) meta = await r.json();
     else errText = r.status === 403 ? 'That file path was not produced by this session.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
-  } catch { errText = 'Could not reach the server.'; }
+  } catch (error) {
+    if (isSessionAbort(error)) return;
+    errText = 'Could not reach the server.';
+  }
   fileViewerBusy = false;
   // Text files get a toolbar: markdown renders as a PREVIEW by default (raw on toggle), any text can
   // be copied, everything can go fullscreen or be downloaded. Content stays untrusted: preview goes
@@ -2706,7 +2792,12 @@ async function openFileViewer(rawPath) {
   else if (meta.contentKind === 'pdf') body = `<div class="asset-detail-file"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open PDF</a> · <a href="${escapeHtml(meta.downloadUrl)}" download>Download</a></div>`;
   else if (meta.binary) body = `<div class="asset-detail-file">Binary file — <a href="${escapeHtml(meta.downloadUrl)}" download>Download ${escapeHtml(meta.name)}</a></div>`;
   else {
-    try { text = await fetch(meta.viewUrl).then((x) => (x.ok ? x.text() : '')); } catch {}
+    try {
+      text = await fetch(meta.viewUrl, { signal: requestToken.signal }).then((x) => (x.ok ? x.text() : ''));
+      requestScope.guard(requestToken);
+    } catch (error) {
+      if (isSessionAbort(error)) return;
+    }
     body = isMd
       ? `<div class="md-view">${renderMarkdown(text)}${meta.truncated ? '<p class="count">… (truncated at 2 MB — download for the full file)</p>' : ''}</div>`
       : `<pre class="asset-detail-text">${escapeHtml(text)}${escapeHtml(truncNote)}</pre>`;
@@ -2809,12 +2900,13 @@ function fileToDataBase64(file) {
 }
 
 async function uploadAttachment(item, file) {
+  const requestToken = requestScope.capture();
   try {
     if (file.size > MAX_ATTACHMENT_BYTES) {
       throw new Error(`max ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB`);
     }
     const dataBase64 = await fileToDataBase64(file);
-    const r = await api(`api/session/${id}/upload`, {
+    const r = await api(`api/session/${requestToken.id}/upload`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2823,25 +2915,32 @@ async function uploadAttachment(item, file) {
         size: file.size,
         data_base64: dataBase64,
       }),
+      signal: requestToken.signal,
     });
+    requestScope.guard(requestToken);
     Object.assign(item, r.attachment || {}, { status: 'ready', error: '' });
   } catch (e) {
+    if (isSessionAbort(e)) return;
     item.status = 'error';
     item.error = e.message || 'upload failed';
   } finally {
-    renderAttachments();
+    if (requestScope.isCurrent(requestToken)) renderAttachments();
   }
 }
 
 async function fillTextPreview(item, file) {
   if (!isTextFile(file)) return;
+  const requestToken = requestScope.capture();
   try {
     const text = await file.text();
+    requestScope.guard(requestToken);
     item.previewText = compactPreviewText(text);
     item.detailText = text.length > 600000 ? text.slice(0, 600000) + '\n\n[truncated for preview]' : text;
     item.lineCount = text ? text.split(/\r\n|\r|\n/).length : 0;
     renderAttachments();
-  } catch {}
+  } catch (error) {
+    // Preview generation is optional; upload state remains authoritative if a local File reader fails.
+  }
 }
 
 function addFiles(fileList, opts = {}) {
@@ -2964,19 +3063,32 @@ async function sendInput() {
   const uploaded = readyAttachments();
   if (!text && !uploaded.length) return;
   if (uploadsPending()) return alert('Wait for attachments to finish uploading first.');
+  const requestToken = requestScope.capture();
   sendBtn.disabled = true;
   // Instant story echo AT the click (not after the POST round-trip): the message appears in the
   // story NOW with an unread chip, flips to ✓ read when the agent's transcript contains it
   // (story-view.js reconciles), and is cancelled if the send actually fails.
   let echo = null;
-  if (text && storyInited) { try { echo = (await import('./story-view.js')).noteComposerSend?.(text); } catch {} }
-  const cancelEcho = () => { if (echo) import('./story-view.js').then((m) => m.cancelComposerSend?.(echo)).catch(() => {}); };
+  if (text && storyInited) {
+    try {
+      const story = await import('./story-view.js');
+      requestScope.guard(requestToken);
+      echo = story.noteComposerSend?.(text);
+    } catch {}
+  }
+  const cancelEcho = () => {
+    if (echo && requestScope.isCurrent(requestToken)) {
+      import('./story-view.js').then((m) => m.cancelComposerSend?.(echo)).catch(() => {});
+    }
+  };
   try {
-    const r = await fetch(`api/session/${id}/input`, {
+    const r = await fetch(`api/session/${requestToken.id}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text, attachments: uploaded, source: uploaded.length ? 'text+attachments' : 'text' }),
+      signal: requestToken.signal,
     });
+    requestScope.guard(requestToken);
     if (r.status === 409) {
       cancelEcho();
       showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
@@ -2990,22 +3102,31 @@ async function sendInput() {
       clearAttachments();
     }
   } catch (e) {
+    if (isSessionAbort(e)) return;
     cancelEcho();
     alert('Send failed: ' + e.message);
   } finally {
-    updateSendState();
-    autoExpandReply();
-    reply.focus();
+    if (requestScope.isCurrent(requestToken)) {
+      updateSendState();
+      autoExpandReply();
+      reply.focus();
+    }
   }
 }
 $('#b-resume').onclick = async () => {
-  $('#b-resume').disabled = true;
+  const requestToken = requestScope.capture();
+  const button = $('#b-resume');
+  button.disabled = true;
   try {
-    await api(`api/session/${id}/resume`, { method: 'POST' });
-    setTimeout(() => location.reload(), 900);
+    await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
+    requestScope.guard(requestToken);
+    setTimeout(() => {
+      if (requestScope.isCurrent(requestToken)) location.reload();
+    }, 900);
   } catch (e) {
+    if (isSessionAbort(e)) return;
     alert('Resume failed: ' + e.message);
-    $('#b-resume').disabled = false;
+    button.disabled = false;
   }
 };
 sendBtn.onclick = sendInput;
@@ -3089,8 +3210,8 @@ function syncPalette() {
 // localStorage on every keystroke, so a refresh/crash/tab-close never loses a single word. Recall only
 // fires when the "/" palette is closed and the caret sits on the first/last line, so multi-line editing and
 // the palette both keep working untouched. (cmdHistory — not `history` — to avoid shadowing window.history.)
-let DRAFT_KEY = `aios_draft_${id}`; // re-keyed per session by switchSession
-let HIST_KEY = `aios_hist_${id}`;
+const DRAFT_KEY = `aios_draft_${id}`;
+const HIST_KEY = `aios_hist_${id}`;
 const HIST_MAX = 200;
 let cmdHistory = [];
 let histIdx = null; // null = editing the live draft; otherwise an index into cmdHistory
@@ -3114,79 +3235,6 @@ function pushHistory(text) {
   try { localStorage.removeItem(DRAFT_KEY); } catch {}
 }
 
-// ---- in-place session switch (no full page reload) --------------------------------------------------
-// Switching sessions used to be a full navigation. switchSession re-points the page to another session
-// IN PLACE, re-running the same per-session loaders the SSE 'changed' handler already uses. ADDITIVE +
-// SAFE: the initial page load is byte-identical, modified clicks (new tab) pass through, and any failure
-// falls back to a real navigation — a hard failure is never worse than today. Keeps 2a's story cache.
-function switchSession(newId) {
-  if (!newId || newId === id) return true;
-  try {
-    stopStoryVoice(); // session A's report must not keep narrating over session B (esp. a long, still-playing report)
-    id = newId;
-    latestSessionInfo = null; latestUsage = null; latestMap = null; // per-session caches
-    storyInited = false; // force the story view to re-init against the new id (2a cache paints it instantly)
-    // re-key composer draft + command history to the new session
-    DRAFT_KEY = `aios_draft_${id}`; HIST_KEY = `aios_hist_${id}`;
-    histIdx = null; histStash = '';
-    try { cmdHistory = (JSON.parse(localStorage.getItem(HIST_KEY) || '[]') || []).filter((x) => typeof x === 'string'); } catch { cmdHistory = []; }
-    try { if (reply) reply.value = localStorage.getItem(DRAFT_KEY) || ''; } catch {}
-    // sidebar active marker (the shared shell keys off location.search; update it now)
-    for (const a of document.querySelectorAll('[data-dk-sess]')) {
-      try { a.classList.toggle('active', new URL(a.href, location.href).searchParams.get('id') === newId); } catch {}
-    }
-    // terminal: drop the old per-session stream, reset the buffer, reconnect after re-bootstrapping scrollback
-    try { terminalStream?.close(); } catch {}
-    terminalStream = null;
-    terminalStreamPending = false;
-    terminalBootstrap = null;
-    try { term.reset(); } catch {}
-    // right panel: fully tear down the previous panel via its PUBLIC API (host.destroy() unmounts each
-    // module — the map's unmount clears web/agents/graph.js's 80ms animation interval, the residual that
-    // used to leak here — and removes the panel DOM), then re-mount for the new session. Belt-and-suspenders
-    // removal of any stray dynamic section the destroy missed.
-    try { agentPanel?.destroy?.(); } catch {}
-    try { document.querySelectorAll('#side-panels [id^="s-agent-"]').forEach((el) => el.remove()); } catch {}
-    mountAgentPanel();
-    // re-run the content loaders (all read the live module-level id)
-    loadInfo();
-    loadSettings(); // re-render the composer settings row for the new session (else model/effort bleed across switches)
-    loadStoryView();
-    // terminal data stays lazy across the in-place switch too — reload it only if it's on screen
-    terminalDataStarted = false;
-    if (activeMainView === 'terminal') ensureTerminalData();
-    setTimeout(syncSize, 80);
-    return true;
-  } catch (e) {
-    console.error('[aios] in-place switch failed; falling back to navigation:', e);
-    return false;
-  }
-}
-
-// Intercept sidebar session-link clicks so switching stays in-place. Modified clicks (new tab / middle
-// click) pass through; a failed in-place switch falls back to a real navigation (never worse than today).
-// Only in standalone: in the SPA the router (web/router.js) owns navigation and drives session→session via
-// the exported switchSession(), so this page-level interceptor would double-handle.
-if (!embedded) document.addEventListener('click', (e) => {
-  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-  const a = e.target.closest?.('[data-dk-sess]');
-  if (!a) return;
-  let newId = null;
-  try { newId = new URL(a.href, location.href).searchParams.get('id'); } catch {}
-  if (!newId) return;
-  e.preventDefault();
-  if (newId === id) return;
-  try { persistDraft(); } catch {}
-  if (switchSession(newId)) history.pushState({ sid: newId }, '', `session?id=${encodeURIComponent(newId)}`);
-  else location.href = a.href;
-}, { capture: true, signal: _sig });
-
-// Back/forward: re-point in place to the URL's session (full reload only as a last resort). SPA: the router
-// owns popstate, so skip it here.
-if (!embedded) window.addEventListener('popstate', () => {
-  const target = new URLSearchParams(location.search).get('id');
-  if (target && target !== id && !switchSession(target)) location.reload();
-}, { signal: _sig });
 function setComposer(val) {
   reply.value = val ?? '';
   autoExpandReply();
@@ -3473,45 +3521,54 @@ function flashBtn(btn, text, ok = true) {
     btn.style.borderColor = '';
   }, ok ? 1600 : 3200);
 }
-async function postAction(path, { signalMs = 8000 } = {}) {
+async function postAction(path, { requestToken, signalMs = 8000 } = {}) {
   const c = new AbortController();
+  const abort = () => c.abort();
+  if (requestToken.signal.aborted) c.abort();
+  else requestToken.signal.addEventListener('abort', abort, { once: true });
   const t = setTimeout(() => c.abort(), signalMs);
   try {
-    return await api(path, { method: 'POST', signal: c.signal });
+    const result = await api(path, { method: 'POST', signal: c.signal });
+    return requestScope.guard(requestToken, result);
   } finally {
     clearTimeout(t);
+    requestToken.signal.removeEventListener('abort', abort);
   }
 }
 $('#b-stop').onclick = async () => {
   // Stop PARKS the session (frees the pane) but keeps it resumable — not a bare Ctrl-C, which did nothing
   // on an already-idle agent. Resume relaunches with the conversation intact.
   if (!confirm('Stop this session? It frees the pane but stays resumable — Resume brings the conversation back.')) return;
+  const requestToken = requestScope.capture();
   const btn = $('#b-stop');
   btn.disabled = true;
   try {
-    await postAction(`api/session/${id}/stop`);
+    const result = await postAction(`api/session/${requestToken.id}/stop`, { requestToken });
     const ended = Date.now();
-    const exited = { id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'stop' };
+    const exited = result.session || { id: requestToken.id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'stop' };
     upsertSession(exited);
     applySessionInfo(exited);
     flashBtn(btn, 'Stopped ✓', true);
     $('#b-resume').hidden = false; // session is exited now -> offer Resume right away
-  } catch {
+  } catch (error) {
+    if (isSessionAbort(error)) return;
     flashBtn(btn, 'Failed', false);
   } finally {
-    btn.disabled = false;
+    if (requestScope.isCurrent(requestToken)) btn.disabled = false;
   }
 };
 $('#b-kill').onclick = async () => {
   if (!confirm('Kill this tmux session? The agent process ends.')) return;
+  const requestToken = requestScope.capture();
   const btn = $('#b-kill');
   btn.disabled = true;
   try {
-    await postAction(`api/session/${id}/kill`);
+    const result = await postAction(`api/session/${requestToken.id}/kill`, { requestToken });
     const ended = Date.now();
-    upsertSession({ id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'kill' });
+    upsertSession(result.session || { id: requestToken.id, status: 'exited', question: null, ended_at: ended, last_activity: ended, source: 'kill' });
     navigate('./');
-  } catch {
+  } catch (error) {
+    if (isSessionAbort(error)) return;
     flashBtn(btn, 'Failed', false); // don't redirect on failure — that would hide a still-alive session
     btn.disabled = false;
   }
@@ -3526,6 +3583,7 @@ $('#b-kill').onclick = async () => {
   function destroySession() {
     if (sessionDestroyed) return;
     sessionDestroyed = true;
+    requestScope.destroy();
     try { _ac.abort(); } catch {}
     for (const t of _timers) { try { clearInterval(t); } catch {} }
     for (const o of _obs) { try { o.disconnect(); } catch {} }
@@ -3545,15 +3603,11 @@ $('#b-kill').onclick = async () => {
     const terminalToDispose = term;
     setTimeout(() => { try { terminalToDispose?.dispose(); } catch {} }, 100);
     try { palette?.remove(); } catch {} // the "/" command palette is appended to document.body, not the host
-    _switchSession = null;
     _destroy = null;
   }
 
-  _switchSession = switchSession;
   _destroy = destroySession;
 }
 
-// SPA contract wrappers (web/views/session-view.js): switchSession → in-place session→session (no reload);
-// destroySession → full teardown on leaving the view. Both delegate to the currently-mounted instance.
-export function switchSession(id) { return _switchSession ? _switchSession(id) : false; }
+// SPA contract wrapper (web/views/session-view.js): full teardown on leaving or re-keying the view.
 export function destroySession() { const d = _destroy; return d ? d() : undefined; }

@@ -197,4 +197,10 @@ const requiredEventTypes = [
   assert.equal(events.at(-1).type, 'RUN_FINISHED', 'exited sessions emit RUN_FINISHED');
 }
 
+assert.throws(
+  () => validateAguiEvents([{ type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 42 }]),
+  /delta expected string/,
+  'the local protocol adapter retains runtime structural validation',
+);
+
 console.log('agui_session tests passed');

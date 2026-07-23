@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import { DATA_DIR, LOG_DIR, DB_PATH } from './config.js';
 import { worktreeDbVerdict } from './db_guard.js';
 import { now } from './util.js';
+import { applyMigrations } from './migrations.js';
+import { CORE_MIGRATIONS } from './schema_migrations.js';
 
 // Multi-session safety guard: a server booted from a LINKED git worktree (a scratch/dev instance) must
 // NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption.
@@ -109,12 +111,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_decisions_asked   ON decisions(asked_at);
 `);
 
-// Migrations for DBs created before a column existed (ALTER errors if it already does).
-for (const col of ['autonomy TEXT', 'effort TEXT', 'model TEXT', 'fast_mode INTEGER NOT NULL DEFAULT 0', 'orchestration TEXT', 'summary TEXT', 'category TEXT', 'stage TEXT', 'codex_via_proxy INTEGER NOT NULL DEFAULT 0', 'codex_uuid TEXT', 'claude_transcript TEXT', 'worktree_path TEXT', 'branch TEXT', 'parked INTEGER NOT NULL DEFAULT 0', 'degraded INTEGER NOT NULL DEFAULT 0']) {
-  try {
-    db.exec(`ALTER TABLE sessions ADD COLUMN ${col}`);
-  } catch {}
-}
+export const appliedMigrations = applyMigrations(db, CORE_MIGRATIONS);
 
 // ---- projects ---------------------------------------------------------------
 const _insProject = db.prepare('INSERT INTO projects (id,name,path,created_at) VALUES (?,?,?,?)');
@@ -161,7 +158,7 @@ export function updateSession(id, patch) {
   const keys = Object.keys(patch).filter((k) => SESSION_FIELDS.includes(k));
   if (!keys.length) return getSession(id);
   const set = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE sessions SET ${set} WHERE id = ?`).run(...keys.map((k) => patch[k]), id);
+  db.prepare(`UPDATE sessions SET ${set}, revision = revision + 1 WHERE id = ?`).run(...keys.map((k) => patch[k]), id);
   return getSession(id);
 }
 

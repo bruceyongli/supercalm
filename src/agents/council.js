@@ -14,6 +14,7 @@ import { writeFile, mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
 import { db, getGrant, upsertGrant, getProject } from '../store.js';
+import { applyMigrations, ensureColumn } from '../migrations.js';
 import { id, now } from '../util.js';
 import { retrievePrecedents, formatPrecedents } from './decision_memory.js';
 import { getSessionMap } from '../session_map.js';
@@ -44,10 +45,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_council_msg_thread ON council_messages(thread_id);
 `);
 // A Thread is a DISCUSSION (explore / review / debate / design / decision), not a forced decision. These
-// columns were added after the v1 ship; ALTER is idempotent (throws if the column exists -> swallow).
-for (const col of ['kind TEXT', 'auto_titled INTEGER DEFAULT 1', 'summary TEXT', 'archived INTEGER DEFAULT 0']) {
-  try { db.exec(`ALTER TABLE council_threads ADD COLUMN ${col}`); } catch { /* column already present */ }
-}
+// columns were added after the v1 ship.
+applyMigrations(db, [{
+  id: '0106_council_thread_complete_shape',
+  description: 'Add discussion type, automatic naming, summary, and archive state to council threads',
+  up(conn) {
+    ensureColumn(conn, 'council_threads', 'kind', 'TEXT');
+    ensureColumn(conn, 'council_threads', 'auto_titled', 'INTEGER DEFAULT 1');
+    ensureColumn(conn, 'council_threads', 'summary', 'TEXT');
+    ensureColumn(conn, 'council_threads', 'archived', 'INTEGER DEFAULT 0');
+  },
+}]);
 
 const KINDS = ['explore', 'review', 'debate', 'design', 'decision'];
 const _insThread = db.prepare('INSERT INTO council_threads (id,project_id,session_id,title,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?)');

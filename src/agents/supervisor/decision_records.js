@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db } from '../../store.js';
+import { applyMigrations, ensureColumn } from '../../migrations.js';
 import { id, now } from '../../util.js';
 
 const POLICY_VERSION = 'supervisor.policy.2026-06-25';
@@ -46,9 +47,14 @@ db.exec(`
 `);
 // Project Memory phase 2: every policy record names WHICH contract it acted against — the active
 // task card id + version (null until phase 3 sets an active task). Additive, preserves history.
-for (const col of ['task_id TEXT', 'card_version INTEGER']) {
-  try { db.exec(`ALTER TABLE supervisor_decisions ADD COLUMN ${col}`); } catch {}
-}
+applyMigrations(db, [{
+  id: '0103_supervisor_decision_task_identity',
+  description: 'Associate supervisor decisions with versioned project-memory task cards',
+  up(conn) {
+    ensureColumn(conn, 'supervisor_decisions', 'task_id', 'TEXT');
+    ensureColumn(conn, 'supervisor_decisions', 'card_version', 'INTEGER');
+  },
+}]);
 
 const _insert = db.prepare(`
   INSERT INTO supervisor_decisions (
