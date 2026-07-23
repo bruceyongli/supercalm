@@ -160,6 +160,7 @@ export function mountSession(hostEl, { id: startId = '', embedded = true } = {})
   const _sig = _ac.signal;
   const _timers = [];
   const _obs = [];
+  let sessionDestroyed = false;
   // Initialize session identity state before setMainView() can synchronously enter the persisted
   // Terminal view. ensureTerminalData() reads this state, so declaring it with the header helpers
   // below left Terminal-preferring mounts in the temporal dead zone and aborted the entire view.
@@ -770,6 +771,7 @@ function healTerminalLayout() {
 }
 
 function syncSize() {
+  if (sessionDestroyed) return;
   if (document.hidden || activeMainView !== 'terminal') return;
   if (!termEl.isConnected || termEl.clientWidth <= 0 || termEl.clientHeight <= 0) return;
   const shouldFollow = terminalShouldFollow();
@@ -941,8 +943,10 @@ function b64bytes(b64) {
   return out;
 }
 function writeTerminal(data) {
+  if (sessionDestroyed || _sig.aborted) return;
   const shouldFollow = terminalShouldFollow();
   term.write(data, () => {
+    if (sessionDestroyed || _sig.aborted) return;
     if (shouldFollow) scrollTerminalToLatest();
     else updateJumpLatest();
   });
@@ -991,6 +995,7 @@ async function bootstrapTerminalScrollback() {
   if (params.has('noTerminalHistory')) return;
   try {
     const r = await api(`api/session/${id}/log?max=196608`);
+    if (sessionDestroyed || _sig.aborted) return;
     if (!r?.text) return;
     const normalized = String(r.text).replace(/\n/g, '\r\n');
     if (normalized.trim()) {
@@ -3509,6 +3514,8 @@ $('#b-kill').onclick = async () => {
   // streams, disposes xterm, tears down the agent host (which clears graph.js's
   // animation interval via the map panel's unmount), and removes the body-level command palette.
   function destroySession() {
+    if (sessionDestroyed) return;
+    sessionDestroyed = true;
     try { _ac.abort(); } catch {}
     for (const t of _timers) { try { clearInterval(t); } catch {} }
     for (const o of _obs) { try { o.disconnect(); } catch {} }
@@ -3522,7 +3529,11 @@ $('#b-kill').onclick = async () => {
     unsubscribeSessionEvents = null;
     try { agentPanel?.destroy?.(); } catch {}
     try { stopStoryVoice(); } catch {} // leaving the session view stops any playing report narration (module-singleton audio)
-    try { term?.dispose(); } catch {}
+    // xterm 4's debounced Viewport refresh can already be queued when teardown begins. Disposing its
+    // render service synchronously leaves that callback reading a cleared dimensions object. Stop every
+    // producer above, let the queued render drain against the detached terminal, then release xterm.
+    const terminalToDispose = term;
+    setTimeout(() => { try { terminalToDispose?.dispose(); } catch {} }, 100);
     try { palette?.remove(); } catch {} // the "/" command palette is appended to document.body, not the host
     _switchSession = null;
     _destroy = null;
