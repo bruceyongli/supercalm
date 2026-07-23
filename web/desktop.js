@@ -1,14 +1,16 @@
 // Desktop home = the app-shell (web/shell.js) + the Inbox triage in the main column. The shell (left
 // sidebar, ⌘K palette, launch modal, toast, live loop) is shared with every other page; this file only
 // owns the Inbox. Data: the phone contract's triage endpoint via the shell's load, handed to renderInbox.
-import { mountShell, getHome, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
+import { mountShell, getHome, upsertSession, agentChip, shortTitle, needsYou, openLaunch, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
+import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const $ = (s) => document.querySelector(s);
 const STOPPED_SHOWN = 10; // how many stopped sessions to show before the "show all N" toggle
 let stoppedExpanded = false; // persists across SSE re-renders so the list doesn't collapse under the user
+const choiceSelections = new Map();
 
 // ---- inbox -----------------------------------------------------------------------------------------
 function optionsOf(s) {
@@ -19,11 +21,38 @@ function optionsOf(s) {
   return opts.slice(0, 4);
 }
 
-// R2 S8: recommended/affirmative option is primary; else the first (matches the story view).
-function primaryOpt(opts) {
-  let i = opts.findIndex((o) => /recommend/i.test(o.label || ''));
-  if (i < 0) i = opts.findIndex((o) => /^y(es)?$/i.test(String(o.key || '')) || /^yes\b/i.test(String(o.label || '')));
-  return i < 0 ? 0 : i;
+function optionQuestions(s) {
+  const structured = getOptionQuestions(s);
+  if (structured.length) return structured;
+  const fallback = optionsOf(s);
+  return fallback.length ? [{ id: `fallback:${s.id}`, header: '', question: String(s.question || s.summary || ''), multiSelect: false, options: fallback }] : [];
+}
+function selectionsFor(s) {
+  const reportKey = attentionReportKey(s);
+  let state = choiceSelections.get(s.id);
+  if (!state || state.reportKey !== reportKey) {
+    state = { reportKey, questions: new Map() };
+    choiceSelections.set(s.id, state);
+  }
+  return state.questions;
+}
+const choicesComplete = (questions, selections) => questions.length > 0 && questions.every((_, index) => (selections.get(index)?.size || 0) > 0);
+function choicesHtml(s, questions) {
+  if (!questions.length) return '';
+  const selections = selectionsFor(s);
+  const hasMulti = questions.some((question) => question.multiSelect);
+  return `<div class="dk-card-questions" data-dk-questions>
+    ${questions.map((question, questionIndex) => `
+      <div class="dk-card-question" data-dk-question="${questionIndex}">
+        ${questions.length > 1 || question.header ? `<div class="dk-card-question-head">${question.header ? esc(question.header) : `Question ${questionIndex + 1}`}</div>` : ''}
+        ${questions.length > 1 && question.question ? `<div class="dk-card-question-text">${esc(question.question)}</div>` : ''}
+        <div class="dk-card-opts">${question.options.map((option, optionIndex) => {
+          const selected = selections.get(questionIndex)?.has(optionIndex);
+          return `<button class="dk-opt${selected ? ' selected' : ''}" data-dk-choice data-question="${questionIndex}" data-option="${optionIndex}" aria-pressed="${selected ? 'true' : 'false'}"><span>${option.key ? `${esc(option.key)} — ` : ''}${esc(option.label)}</span>${option.description ? `<small>${esc(option.description)}</small>` : ''}</button>`;
+        }).join('')}</div>
+      </div>`).join('')}
+    ${hasMulti ? `<button class="dk-choice-submit" data-dk-choice-submit ${choicesComplete(questions, selections) ? '' : 'disabled'}>Send selected options</button>` : `<span class="dk-choice-hint">${questions.length > 1 ? 'Choose one for each question — sends after the last choice' : 'Choose an option to answer'}</span>`}
+  </div>`;
 }
 
 function renderInbox(home) {
@@ -33,7 +62,7 @@ function renderInbox(home) {
   nc.textContent = cards.length;
   $('#dk-cards').innerHTML = cards.map((s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
-    const opts = optionsOf(s);
+    const questions = optionQuestions(s);
     return `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
@@ -43,8 +72,8 @@ function renderInbox(home) {
         <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
       </div>
       <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
-      ${opts.length ? `<div class="dk-card-opts">${(() => { const pi = primaryOpt(opts); return opts.map((o, i) => `<button class="dk-opt${i === pi ? ' primary' : ''}" data-dk-opt data-key="${esc(o.key)}">${esc(o.key)} — ${esc(o.label)}</button>`).join(''); })()}</div>` : ''}
-      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><span class="dk-hint">${opts.length ? `${esc(opts.map((o) => o.key).join(' / '))} answers this` : ''}</span></div>
+      ${choicesHtml(s, questions)}
+      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>`;
   }).join('') || ((home.sessions || []).length === 0
@@ -78,10 +107,12 @@ function renderInbox(home) {
   const tog = $('[data-dk-stopped-toggle]');
   if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
   wireCards();
+  for (const session of cards) ensureOptionQuestions(session, () => renderInbox(getHome()));
 }
 
 async function answer(card, text) {
   const sid = card.dataset.sid;
+  const reportId = Number(getHome().sessions?.find((s) => s.id === sid)?.last_key?.id) || null;
   try {
     await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, source: 'text' }) });
     card.style.opacity = '0.55';
@@ -89,15 +120,91 @@ async function answer(card, text) {
     card.querySelector('.dk-card-opts')?.remove();
     card.querySelector('.dk-reply')?.remove();
     toast('Sent — session resumed');
-    api('api/messages/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sid }) }).catch(() => {});
+    api('api/messages/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }) }).catch(() => {});
   } catch (e) { toast('⚠ ' + (e.message || e)); }
+}
+
+async function dismiss(card) {
+  const sid = card.dataset.sid;
+  const reportId = Number(getHome().sessions?.find((s) => s.id === sid)?.last_key?.id) || null;
+  const btn = card.querySelector('[data-dk-dismiss]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Dismissing…'; }
+  try {
+    const result = await api('api/messages/read', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_id: sid, ...(reportId ? { through_id: reportId } : {}) }),
+    });
+    upsertSession({ id: sid, unread: Number(result?.unread) || 0 });
+    toast('Dismissed — it will return when there is a new report');
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Dismiss'; }
+    toast('⚠ ' + (e.message || e));
+  }
+}
+
+function paintChoices(card, questions, selections) {
+  for (const button of card.querySelectorAll('[data-dk-choice]')) {
+    const selected = selections.get(Number(button.dataset.question))?.has(Number(button.dataset.option)) || false;
+    button.classList.toggle('selected', selected);
+    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+  }
+  const submit = card.querySelector('[data-dk-choice-submit]');
+  if (submit) submit.disabled = !choicesComplete(questions, selections);
+}
+
+async function submitChoices(card, session, questions) {
+  const selections = selectionsFor(session);
+  if (!choicesComplete(questions, selections) || card.classList.contains('submitting')) return;
+  card.classList.add('submitting');
+  for (const button of card.querySelectorAll('button')) button.disabled = true;
+  const submit = card.querySelector('[data-dk-choice-submit]');
+  if (submit) submit.textContent = 'Sending choices…';
+  try {
+    await api(`api/session/${session.id}/answers`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ answers: answersPayload(questions, selections) }),
+    });
+    choiceSelections.delete(session.id);
+    upsertSession({ id: session.id, status: 'working', question: null, summary: null, category: null, unread: 0 });
+    toast('Choices sent — session resumed');
+  } catch (e) {
+    card.classList.remove('submitting');
+    for (const button of card.querySelectorAll('button')) button.disabled = false;
+    paintChoices(card, questions, selections);
+    if (submit) submit.textContent = 'Send selected options';
+    toast('⚠ ' + (e.message || e));
+  }
 }
 
 function wireCards() {
   const hero = document.getElementById('dk-hero-start');
   if (hero) hero.onclick = () => openLaunch(); // not a direct handler — the click event must not become openLaunch's opts
   for (const card of document.querySelectorAll('[data-dk-card]')) {
-    for (const b of card.querySelectorAll('[data-dk-opt]')) b.onclick = () => answer(card, b.dataset.key);
+    const session = getHome().sessions?.find((s) => s.id === card.dataset.sid);
+    const questions = session ? optionQuestions(session) : [];
+    const selections = session ? selectionsFor(session) : new Map();
+    for (const button of card.querySelectorAll('[data-dk-choice]')) button.onclick = () => {
+      const questionIndex = Number(button.dataset.question);
+      const optionIndex = Number(button.dataset.option);
+      const question = questions[questionIndex];
+      if (!question) return;
+      let selected = selections.get(questionIndex);
+      if (!selected) { selected = new Set(); selections.set(questionIndex, selected); }
+      if (question.multiSelect) {
+        selected.has(optionIndex) ? selected.delete(optionIndex) : selected.add(optionIndex);
+        if (!selected.size) selections.delete(questionIndex);
+      } else {
+        selections.set(questionIndex, new Set([optionIndex]));
+      }
+      paintChoices(card, questions, selections);
+      if (!questions.some((item) => item.multiSelect) && choicesComplete(questions, selections)) submitChoices(card, session, questions);
+    };
+    const choiceSubmit = card.querySelector('[data-dk-choice-submit]');
+    if (choiceSubmit) choiceSubmit.onclick = () => submitChoices(card, session, questions);
+    const dismissBtn = card.querySelector('[data-dk-dismiss]');
+    if (dismissBtn) dismissBtn.onclick = () => dismiss(card);
     const replyBtn = card.querySelector('[data-dk-reply]');
     const reply = card.querySelector('.dk-reply');
     if (replyBtn && reply) replyBtn.onclick = () => { reply.hidden = !reply.hidden; reply.querySelector('textarea')?.focus(); };

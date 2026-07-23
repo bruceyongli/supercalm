@@ -13,7 +13,9 @@ const { unreadBySession } = await import('../src/phone_api.js');
 const { bus } = await import('../src/bus.js');
 
 // seed a session + conversation shape: out (old) -> in (reply) -> out, out (new episode)
-db.prepare("INSERT INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_ph','p_ph','codex','tmx_ph','waiting', 1, 1)").run();
+// Keep the fixture lifecycle-terminal so importing the real session monitor during the full suite cannot
+// concurrently retire its intentionally nonexistent tmux pane. Read/dismiss semantics are status-agnostic.
+db.prepare("INSERT INTO sessions (id, project_id, tool, tmux, status, started_at, last_activity) VALUES ('s_ph','p_ph','codex','tmx_ph','exited', 1, 1)").run();
 addMessage('s_ph', 'out', 'detect', 'old report before the reply');
 await new Promise((r) => setTimeout(r, 5));
 addMessage('s_ph', 'in', 'text', 'operator replied here');
@@ -49,11 +51,33 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.deepEqual({ session: patch.session, unread: patch.unread, source: patch.source }, { session: 's_ph', unread: 0, source: 'read' });
 }
 
+// ---- inbox dismissal clears only the report boundary visible at click time ------------------------
+{
+  addMessage('s_ph', 'out', 'detect', 'current report part A');
+  addMessage('s_ph', 'out', 'detect', 'current report part B');
+  const boundary = db.prepare("SELECT MAX(id) id FROM messages WHERE session_id='s_ph' AND direction='out'").get().id;
+  // Simulate a fresh work-status report racing the dismissal request. It must remain unread because its
+  // id is newer than the card's last_key.id boundary.
+  addMessage('s_ph', 'out', 'detect', 'future report after the visible boundary');
+  const response = await fetch(`http://127.0.0.1:${port}/api/messages/read`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session_id: 's_ph', through_id: boundary }),
+  });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.marked, 2, 'dismissal marks every unread report through the visible boundary');
+  assert.equal(result.unread, 1, 'a newer report survives and can reopen Needs you');
+  assert.equal(unreadBySession().get('s_ph').n, 1);
+  assert.equal(db.prepare("SELECT status FROM sessions WHERE id='s_ph'").get().status, 'exited', 'dismissal never mutates lifecycle status');
+}
+
 // ---- route + payload locks --------------------------------------------------------------------------
 {
   const src = readFileSync(new URL('../src/phone_api.js', import.meta.url), 'utf8');
   assert.match(src, /ALTER TABLE messages ADD COLUMN read_at/, 'additive migration');
   assert.match(src, /\/api\/messages\/read/, 'read route exists');
+  assert.match(src, /through_id/, 'read route supports report-bounded inbox dismissal');
   assert.match(src, /\/api\/phone\/home/, 'lean home route exists');
   assert.match(src, /bus\.emit\('session-status'/, 'read state publishes a scoped keyed patch');
   assert.match(src, /read_at IS NULL/, 'unread respects server-side read state');

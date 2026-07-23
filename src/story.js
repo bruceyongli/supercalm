@@ -212,9 +212,18 @@ function atomsFromCodex(lines) {
           atoms.push({ ts, kind: 'plan', title: 'Made a plan', chips });
         } else if (p.name === 'request_user_input') {
           // F6: codex asks arrive as a tool call; their function_call_output IS the durable answer
-          const q = args.question || args.prompt || (args.questions?.[0]?.question) || 'Needs your decision';
-          const options = (args.options || args.questions?.[0]?.options || []).map((o) => (typeof o === 'string' ? { label: o } : o));
-          atoms.push({ ts, kind: 'ask', title: 'Needs your decision', text: q, options, askId: p.call_id });
+          const questions = args.questions?.length ? args.questions : [{
+            question: args.question || args.prompt || 'Needs your decision',
+            options: args.options || [],
+            multiSelect: !!args.multiSelect,
+          }];
+          for (const q of questions) {
+            const options = (q.options || []).map((o) => (typeof o === 'string' ? { label: o } : o));
+            atoms.push({
+              ts, kind: 'ask', title: q.header ? `Needs your decision — ${q.header}` : 'Needs your decision',
+              text: q.question || 'Needs your decision', options, askId: p.call_id, multiSelect: !!q.multiSelect,
+            });
+          }
         } else {
           if (p.call_id) callCmd.set(p.call_id, cmd);
           atoms.push({ ts, kind: classifyCommand(cmd), cmd, human: humanizeCmd(cmd), callId: p.call_id });
@@ -222,11 +231,13 @@ function atomsFromCodex(lines) {
       } else if (t === 'function_call_output') {
         // a request_user_input's output is the operator's ANSWER — mark the ask durably answered
         // (menu selections leave no user text turn, so the you-after rule alone never fires)
-        const askAtom = p.call_id && atoms.find((a) => a.kind === 'ask' && a.askId === p.call_id);
-        if (askAtom) {
-          askAtom.answered = true;
+        const askAtoms = p.call_id ? atoms.filter((a) => a.kind === 'ask' && a.askId === p.call_id) : [];
+        if (askAtoms.length) {
           const rawAns = typeof p.output === 'string' ? p.output : JSON.stringify(p.output || '');
-          askAtom.answeredWith = String(rawAns).split('\n')[0].slice(0, 60);
+          for (const askAtom of askAtoms) {
+            askAtom.answered = true;
+            askAtom.answeredWith = String(rawAns).split('\n')[0].slice(0, 60);
+          }
           continue;
         }
         // F5: exit code from JSON metadata first, regex fallback
@@ -314,7 +325,7 @@ function atomsFromClaude(lines) {
               atoms.push({
                 ts, kind: 'ask', indent, askId: part.id,
                 title: q.header ? `Needs your decision — ${q.header}` : 'Needs your decision',
-                text: q.question, options: q.options || [],
+                text: q.question, options: q.options || [], multiSelect: !!q.multiSelect,
               });
             }
             askIds.add(part.id);
@@ -360,7 +371,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
   }
   flush();
 

@@ -11,6 +11,13 @@ const $ = (s) => document.querySelector(s);
 
 let home = { sessions: [], counts: {} };
 const sessionsById = new Map();
+// Keep rows where the operator last saw them. `last_activity` can move every 1.5s while several agents
+// are producing output; sorting on every patch made the rail and dashboard continually trade places.
+// The first snapshot establishes recency order, new sessions are inserted at the top, and later patches
+// only update their existing keyed row. A recovery snapshot removes missing rows without reshuffling the
+// survivors.
+let sessionOrder = [];
+let hasSessionSnapshot = false;
 let onData = null; // per-page hook run after each data refresh (e.g. the inbox render)
 
 export function getHome() { return home; }
@@ -50,7 +57,21 @@ function normalizeSession(s) {
   return out;
 }
 function recalcHome() {
-  const sessions = [...sessionsById.values()].sort((a, b) => Number(b.last_activity || 0) - Number(a.last_activity || 0));
+  const ordered = [];
+  const seen = new Set();
+  for (const id of sessionOrder) {
+    const row = sessionsById.get(id);
+    if (!row) continue;
+    ordered.push(row);
+    seen.add(id);
+  }
+  // Defensive fallback for a row introduced by a future mutation path that forgot to update the order.
+  for (const [id, row] of sessionsById) {
+    if (seen.has(id)) continue;
+    ordered.push(row);
+    sessionOrder.push(id);
+  }
+  const sessions = ordered;
   home = {
     ...home,
     sessions,
@@ -67,8 +88,25 @@ function publishHome(change = { type: 'replace', ids: [] }) {
   for (const cb of homeSubs) { try { cb(home, change); } catch {} }
 }
 function replaceHome(next) {
+  const incoming = [];
+  for (const raw of next?.sessions || []) {
+    const s = normalizeSession(raw);
+    if (s) incoming.push(s);
+  }
+  const incomingIds = incoming.map((s) => s.id);
+  if (!hasSessionSnapshot) {
+    sessionOrder = incomingIds;
+    hasSessionSnapshot = true;
+  } else {
+    const known = new Set(sessionsById.keys());
+    const present = new Set(incomingIds);
+    const newcomers = incomingIds.filter((id) => !known.has(id));
+    const retained = sessionOrder.filter((id) => present.has(id));
+    const placed = new Set([...newcomers, ...retained]);
+    sessionOrder = [...newcomers, ...retained, ...incomingIds.filter((id) => !placed.has(id))];
+  }
   sessionsById.clear();
-  for (const raw of next?.sessions || []) { const s = normalizeSession(raw); if (s) sessionsById.set(s.id, s); }
+  for (const s of incoming) sessionsById.set(s.id, s);
   home = { ...(next || {}), sessions: [] };
   recalcHome();
   publishHome({ type: 'replace', ids: [...sessionsById.keys()] });
@@ -87,6 +125,7 @@ export function upsertSession(raw, { publish = true } = {}) {
   }
   const next = { ...current, ...patch };
   sessionsById.set(next.id, next);
+  if (!current.id) sessionOrder = [next.id, ...sessionOrder.filter((id) => id !== next.id)];
   recalcHome();
   if (publish) publishHome({ type: current.id ? 'patch' : 'create', ids: [next.id] });
   return next;
@@ -210,7 +249,7 @@ function renderSide() {
   // lacked: waiting 30s and waiting 2h are different urgencies).
   const specs = live.length ? live.map((s) => ({ key: s.id, html: `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess data-sid="${esc(s.id)}">
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok' : s.status === 'waiting' ? 'warn' : ''}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
+      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
       <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || (s.status === 'starting' ? 'Starting…' : '') || s.title || '').slice(0, 64))}</span>
     </a>` })) : [{ key: '__empty', html: '<div class="dk-empty-side">no live sessions</div>' }];
   reconcileKeyed($('#dk-sessions'), specs);

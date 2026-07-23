@@ -52,6 +52,10 @@ route('POST', '/api/messages/read', async (req, res) => {
   try { b = JSON.parse(await readBody(req) || '{}'); } catch {}
   const ids = (Array.isArray(b.ids) ? b.ids : []).map((x) => Number(x)).filter(Number.isFinite).slice(0, 200);
   const sid = typeof b.session_id === 'string' ? b.session_id : null;
+  // Inbox dismissal is bounded to the newest report visible when the operator clicked. This avoids a
+  // report arriving during the request being swept away by the session-wide read operation: messages
+  // through this id disappear, while any later work-status report remains unread and reopens the card.
+  const throughId = Number.isSafeInteger(Number(b.through_id)) && Number(b.through_id) > 0 ? Number(b.through_id) : null;
   const ts = Date.now();
   let n = 0;
   const touched = new Set(sid ? [sid] : []);
@@ -60,15 +64,17 @@ route('POST', '/api/messages/read', async (req, res) => {
     for (const row of rows) if (row.session_id) touched.add(row.session_id);
     const q = db.prepare(`UPDATE messages SET read_at = ? WHERE id IN (${ids.map(() => '?').join(',')}) AND read_at IS NULL`);
     n = q.run(ts, ...ids).changes;
+  } else if (sid && throughId) {
+    n = db.prepare("UPDATE messages SET read_at = ? WHERE session_id = ? AND direction = 'out' AND id <= ? AND read_at IS NULL").run(ts, sid, throughId).changes;
   } else if (sid) {
     n = db.prepare("UPDATE messages SET read_at = ? WHERE session_id = ? AND direction = 'out' AND read_at IS NULL").run(ts, sid).changes;
   } else {
     return json(res, 400, { error: 'ids[] or session_id required' });
   }
+  const unread = unreadBySession();
   if (n) {
     // The normalized clients intentionally ignore broad `changed` invalidations. Publish only the
     // affected unread counters so another desktop/phone reconciles immediately without reloading home.
-    const unread = unreadBySession();
     for (const session of touched) bus.emit('session-status', {
       session,
       unread: unread.get(session)?.n || 0,
@@ -77,7 +83,7 @@ route('POST', '/api/messages/read', async (req, res) => {
     });
     bus.emit('changed'); // legacy clients remain compatible during the transition
   }
-  return json(res, 200, { ok: true, marked: n });
+  return json(res, 200, { ok: true, marked: n, ...(sid ? { unread: unread.get(sid)?.n || 0 } : {}) });
 });
 
 // Lean home payload: /api/state's session surface + unread counts + the last key message text.

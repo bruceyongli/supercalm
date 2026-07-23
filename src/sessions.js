@@ -1182,8 +1182,8 @@ function applyStatus(s, status, question, activityBump) {
   // longer invalidates or refetches a list; clients update only this session's keyed row.
   emitSessionStatus(updated, { previousStatus: s.status, source: 'poll' });
   if (nowWaiting && !wasWaiting) {
-    if (question) store.addMessage(s.id, 'out', 'detect', question);
-    runSummary(s.id); // async: LLM summary+category, then fires 'waiting' (push)
+    const reportMessage = question ? store.addMessage(s.id, 'out', 'detect', question) : null;
+    runSummary(s.id, reportMessage); // async: LLM summary+category, then fires 'waiting' (push)
   }
   bus.emit('changed');
 }
@@ -1214,7 +1214,7 @@ export function noteReply(sid) {
 }
 
 // Summarize a freshly-waiting session via the proxy LLM, then notify (once per episode).
-async function runSummary(sid) {
+async function runSummary(sid, reportMessage = null) {
   let snap = '';
   try {
     snap = await snapshot(sid);
@@ -1247,7 +1247,14 @@ async function runSummary(sid) {
     console.error('[aios] record decision failed:', e.message);
   }
   bus.emit('waiting', { session: sid, summary, category });
-  emitSessionStatus(updated, { previousStatus: 'waiting', source: 'summary', extra: { unread: 1 } });
+  emitSessionStatus(updated, {
+    previousStatus: 'waiting',
+    source: 'summary',
+    extra: {
+      unread: 1,
+      ...(reportMessage ? { last_key: { id: reportMessage.id, text: curatedQuestion || summary, ts: reportMessage.ts } } : {}),
+    },
+  });
   bus.emit('changed');
 }
 
@@ -2383,7 +2390,7 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
 // Returns { ok:true } | { stopped:true } | { missing:true }; throws only when tmux delivery itself
 // fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
 // not re-announce the reply as failed — the caller would re-deliver it.
-export async function deliverReply(sid, text, { source = 'text', attachments = 0 } = {}) {
+export async function deliverReply(sid, text, { source = 'text', attachments = 0, segments = null } = {}) {
   const s = store.getSession(sid);
   if (!s) return { missing: true };
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
@@ -2396,7 +2403,15 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     return { stopped: true };
   }
   const checkpoint = await projectCheckpoint(s).catch(() => null);
-  await sendText(s.tmux, text);
+  const sends = Array.isArray(segments) ? segments.map((part) => String(part || '').trim()).filter(Boolean) : [];
+  if (sends.length) {
+    // A multi-question AskUserQuestion advances its TUI after each answer and exposes Submit only after
+    // the last one. Feed every selected answer in order, but perform bookkeeping/noteReply once after
+    // the whole prompt is complete so Needs you does not vanish after question one.
+    for (const part of sends) await sendText(s.tmux, part);
+  } else {
+    await sendText(s.tmux, text);
+  }
   try { store.addMessage(sid, 'in', source, text); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
   try { store.answerPendingDecision(sid, { response: text, response_source: source }); } catch {} // link to the open ask, if any
@@ -2413,6 +2428,30 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   const text = textWithAttachmentBlock(b.text, attachments);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
   const r = await deliverReply(sid, text, { source: b.source || 'text', attachments: attachments.length });
+  if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+  if (r.missing) return json(res, 404, { error: 'no such session' });
+  json(res, 200, { ok: true });
+});
+
+route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {
+  if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });
+  const b = await readJson(req);
+  const rawAnswers = Array.isArray(b.answers) ? b.answers.slice(0, 8) : [];
+  const answers = rawAnswers.map((answer) => {
+    const question = String(answer?.question || '').replace(/\s+/g, ' ').trim().slice(0, 500);
+    const values = (Array.isArray(answer?.values) ? answer.values : []).slice(0, 8).map((value) => ({
+      key: String(value?.key || '').trim().slice(0, 120),
+      label: String(value?.label || '').trim().slice(0, 300),
+    })).filter((value) => value.key || value.label);
+    return { question, values };
+  }).filter((answer) => answer.values.length);
+  if (!answers.length || answers.length !== rawAnswers.length) return json(res, 400, { error: 'every question needs at least one selected option' });
+  const segments = answers.map((answer) => answer.values.map((value) => value.key || value.label).join(', '));
+  const text = answers.map((answer, index) => {
+    const labels = answer.values.map((value) => value.label || value.key).join(', ');
+    return answer.question ? `${answer.question}: ${labels}` : `Choice ${index + 1}: ${labels}`;
+  }).join('\n');
+  const r = await deliverReply(sid, text, { source: 'text', segments });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
   if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });

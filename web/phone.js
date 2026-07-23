@@ -13,10 +13,13 @@
 import { api, coalesce, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
+import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 
 registerSW();
 
 const app = document.getElementById('app');
+const choiceSelections = new Map();
+const submittingChoices = new Set();
 
 // ---- state -------------------------------------------------------------------------------------
 const S = {
@@ -73,6 +76,28 @@ function cleanTail(text) {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+function fallbackOptionQuestions(session) {
+  const text = String(session.question || session.summary || '');
+  const options = [...text.matchAll(/(?:^|\n)\s*(\d)[.)]\s*([^\n]{3,80})/g)].map((match) => ({ key: match[1], label: match[2].trim(), description: '' }));
+  if (!options.length && /\by\/n\b|\byes\/no\b/i.test(text)) options.push({ key: 'y', label: 'yes', description: '' }, { key: 'n', label: 'no', description: '' });
+  return options.length ? [{ id: `fallback:${session.id}`, header: '', question: text, multiSelect: false, options: options.slice(0, 6) }] : [];
+}
+function phoneOptionQuestions(session) {
+  const structured = getOptionQuestions(session);
+  return structured.length ? structured : fallbackOptionQuestions(session);
+}
+function phoneSelections(session) {
+  const reportKey = attentionReportKey(session);
+  let state = choiceSelections.get(session.id);
+  if (!state || state.reportKey !== reportKey) {
+    state = { reportKey, questions: new Map() };
+    choiceSelections.set(session.id, state);
+  }
+  return state.questions;
+}
+function phoneChoicesComplete(questions, selections) {
+  return questions.length > 0 && questions.every((_, index) => (selections.get(index)?.size || 0) > 0);
+}
 // report treatment: structure (headings/code/table/lists) always, or long plain text
 function isReport(text) {
   const t = String(text || '');
@@ -94,7 +119,19 @@ function digestOf(text) {
 
 // ---- data --------------------------------------------------------------------------------------
 async function loadHome() {
-  try { S.home = await api('api/phone/home'); } catch { /* keep stale */ }
+  try {
+    const next = await api('api/phone/home');
+    if (S.home?.sessions?.length && next?.sessions?.length) {
+      const previous = S.home.sessions;
+      const known = new Set(previous.map((session) => session.id));
+      const incoming = new Map(next.sessions.map((session) => [session.id, session]));
+      const newcomers = next.sessions.filter((session) => !known.has(session.id));
+      const retained = previous.map((session) => incoming.get(session.id)).filter(Boolean);
+      const placed = new Set([...newcomers, ...retained].map((session) => session.id));
+      next.sessions = [...newcomers, ...retained, ...next.sessions.filter((session) => !placed.has(session.id))];
+    }
+    S.home = next;
+  } catch { /* keep stale */ }
   if (S.screen === 'home') renderSoft();
 }
 async function loadDetail(sid) {
@@ -117,7 +154,6 @@ function patchSession(payload) {
   if (i >= 0) S.home.sessions[i] = { ...S.home.sessions[i], ...patch };
   else if (patch.status) S.home.sessions.unshift({ id: payload.session, ...patch });
   else return; // unread-only patches cannot construct an unknown session row
-  S.home.sessions.sort((a, b) => Number(b.last_activity || b.started_at || 0) - Number(a.last_activity || a.started_at || 0));
   const sessions = S.home.sessions;
   S.home.counts = {
     waiting: sessions.filter((s) => s.status === 'waiting').length,
@@ -508,10 +544,29 @@ function renderHome() {
   const playing = S.playScope === 'home' || V.on;
   const playLabel = V.on ? '■ End voice session' : totalUnread ? `▶ Play ${totalUnread} unread` : 'Voice — ask anything';
 
+  const optionList = (s, questions) => {
+    if (!questions.length) return '';
+    const selections = phoneSelections(s);
+    const hasMulti = questions.some((question) => question.multiSelect);
+    return `<div class="needqs">
+      ${questions.map((question, questionIndex) => `
+        <div class="needq">
+          ${questions.length > 1 || question.header ? `<div class="needq-head">${esc(question.header || `Question ${questionIndex + 1}`)}</div>` : ''}
+          ${questions.length > 1 ? `<div class="needq-text">${esc(question.question)}</div>` : ''}
+          <div class="needopts">${question.options.map((option, optionIndex) => {
+            const selected = selections.get(questionIndex)?.has(optionIndex);
+            return `<button class="needopt${selected ? ' selected' : ''}" data-need-choice="${esc(s.id)}" data-question="${questionIndex}" data-option="${optionIndex}" aria-pressed="${selected ? 'true' : 'false'}"><span>${option.key ? `${esc(option.key)} — ` : ''}${esc(option.label)}</span>${option.description ? `<small>${esc(option.description)}</small>` : ''}</button>`;
+          }).join('')}</div>
+        </div>`).join('')}
+      ${hasMulti ? `<button class="need-send" data-need-send="${esc(s.id)}" ${phoneChoicesComplete(questions, selections) && !submittingChoices.has(s.id) ? '' : 'disabled'}>${submittingChoices.has(s.id) ? 'Sending choices…' : 'Send selected options'}</button>` : `<span class="needq-hint">${questions.length > 1 ? 'Choose one for each — sends after the last choice' : 'Choose an option to answer'}</span>`}
+    </div>`;
+  };
   const needCards = needs.map((s) => {
     const [bLabel, bColor] = badgeFor(s) || ['REVIEW', '#3fbf5f'];
     const isPlaying = S.playScope === 'home' && S.speakingId === s.last_key?.id;
     const summary = s.question || s.summary || s.last_key?.text || '';
+    const questions = phoneOptionQuestions(s);
+    ensureOptionQuestions(s, () => renderSoft());
     return `
     <div class="needcard" data-open="${esc(s.id)}">
       <div class="strip" style="background:${bColor}"></div>
@@ -524,9 +579,11 @@ function renderHome() {
         <span class="needtime">${ago(s.last_activity)}</span>
       </div>
       <div class="needsum">${esc(String(summary).slice(0, 300))}</div>
+      ${optionList(s, questions)}
       <div class="needacts">
         <button class="act listen" data-listen="${esc(s.id)}">${isPlaying ? '■ Stop' : '▶ Listen'}</button>
         <button class="act reply" data-replyto="${esc(s.id)}">● Reply</button>
+        <button class="act dismiss" data-dismiss-need="${esc(s.id)}">Dismiss</button>
         <button class="act open" data-open2="${esc(s.id)}">›</button>
       </div>
     </div>`;
@@ -789,6 +846,71 @@ function wire() {
     e.stopPropagation();
     nav('session', el.dataset.replyto);
     setTimeout(() => startRec(), 300);
+  });
+  const submit = async (session, questions) => {
+    const selections = phoneSelections(session);
+    if (!phoneChoicesComplete(questions, selections) || submittingChoices.has(session.id)) return;
+    submittingChoices.add(session.id);
+    renderSoft();
+    try {
+      await api(`api/session/${session.id}/answers`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ answers: answersPayload(questions, selections) }),
+      });
+      choiceSelections.delete(session.id);
+      submittingChoices.delete(session.id);
+      patchSession({ session: session.id, status: 'working', question: null, summary: null, category: null, unread: 0, source: 'option-answer' });
+      toast('Choices sent — session resumed');
+    } catch (error) {
+      submittingChoices.delete(session.id);
+      toast('Send failed: ' + (error.message || error));
+      renderSoft();
+    }
+  };
+  for (const el of app.querySelectorAll('[data-need-choice]')) el.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const session = (S.home?.sessions || []).find((item) => item.id === el.dataset.needChoice);
+    if (!session) return;
+    const questions = phoneOptionQuestions(session);
+    const selections = phoneSelections(session);
+    const questionIndex = Number(el.dataset.question);
+    const optionIndex = Number(el.dataset.option);
+    const question = questions[questionIndex];
+    if (!question) return;
+    let selected = selections.get(questionIndex);
+    if (!selected) { selected = new Set(); selections.set(questionIndex, selected); }
+    if (question.multiSelect) {
+      selected.has(optionIndex) ? selected.delete(optionIndex) : selected.add(optionIndex);
+      if (!selected.size) selections.delete(questionIndex);
+    } else {
+      selections.set(questionIndex, new Set([optionIndex]));
+    }
+    renderSoft();
+    if (!questions.some((item) => item.multiSelect) && phoneChoicesComplete(questions, selections)) submit(session, questions);
+  });
+  for (const el of app.querySelectorAll('[data-need-send]')) el.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const session = (S.home?.sessions || []).find((item) => item.id === el.dataset.needSend);
+    if (session) submit(session, phoneOptionQuestions(session));
+  });
+  for (const el of app.querySelectorAll('[data-dismiss-need]')) el.addEventListener('click', async (event) => {
+    event.stopPropagation();
+    const session = (S.home?.sessions || []).find((item) => item.id === el.dataset.dismissNeed);
+    if (!session) return;
+    el.disabled = true;
+    try {
+      const result = await api('api/messages/read', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ session_id: session.id, ...(session.last_key?.id ? { through_id: session.last_key.id } : {}) }),
+      });
+      patchSession({ session: session.id, unread: Number(result?.unread) || 0, source: 'dismiss' });
+      toast('Dismissed until the next report');
+    } catch (error) {
+      el.disabled = false;
+      toast('Dismiss failed: ' + (error.message || error));
+    }
   });
 
   // session

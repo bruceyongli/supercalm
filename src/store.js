@@ -202,7 +202,9 @@ const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,so
 const _messagesFor = db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC LIMIT ?');
 const _recentMessagesFor = db.prepare('SELECT * FROM (SELECT * FROM messages WHERE session_id = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC');
 export function addMessage(session_id, direction, source, text) {
-  _insMessage.run(session_id, now(), direction, source ?? null, text);
+  const ts = now();
+  const result = _insMessage.run(session_id, ts, direction, source ?? null, text);
+  return { id: Number(result.lastInsertRowid), ts };
 }
 export const messagesFor = (id, limit = 200) => _messagesFor.all(id, limit);
 export const recentMessagesFor = (id, limit = 40) => _recentMessagesFor.all(id, limit);

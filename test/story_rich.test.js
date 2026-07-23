@@ -208,7 +208,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 {
   const ask = { type: 'tool_use', id: 'tu_1', name: 'AskUserQuestion', input: { questions: [
     { question: 'Default STT for CLI-authed users?', header: 'Default STT', options: [{ label: 'Match the session agent' }, { label: 'Keep Spark' }] },
-    { question: 'How much to build in this first pass?', header: 'Build scope', options: [{ label: 'Codex first' }, { label: 'Both now' }] },
+    { question: 'How much to build in this first pass?', header: 'Build scope', multiSelect: true, options: [{ label: 'Codex first' }, { label: 'Both now' }] },
   ] } };
   const result = 'Your questions have been answered: "Default STT for CLI-authed users?"="Match the session agent", "How much to build in this first pass?"="Codex first". You can now continue with these answers in mind.';
   const mk = (parts) => JSON.stringify(parts);
@@ -219,6 +219,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const pending = before.filter((e) => e.kind === 'ask');
   assert.equal(pending.length, 2, 'a two-question prompt renders TWO ask cards');
   assert.ok(pending[1].body.includes('How much to build'), 'question 2 is visible (not just questions[0])');
+  assert.ok(pending.every((e) => e.askId === 'tu_1'), 'the shared prompt id survives into story events so Needs you can group its questions');
+  assert.equal(pending[1].multiSelect, true, 'multi-select metadata survives into the option UI');
   assert.ok(pending.every((e) => !e.answered), 'both pending until the tool completes');
 
   const after = parseSessionLog([

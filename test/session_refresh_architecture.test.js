@@ -27,6 +27,10 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(shell, /previousStatus: row\.status/, 'store replay is metadata, not a false semantic transition');
   assert.doesNotMatch(shell, /addEventListener\('changed'/, 'shell ignores global invalidation events');
   assert.match(shell, /reconcileKeyed\(\$\('#dk-sessions'\)/, 'rail reconciles keyed rows');
+  const recalc = shell.slice(shell.indexOf('function recalcHome'), shell.indexOf('function publishHome'));
+  assert.doesNotMatch(recalc, /\.sort\(/, 'activity patches do not continually reorder the visible session lists');
+  assert.match(shell, /let sessionOrder = \[\]/, 'shell keeps an explicit stable row order');
+  assert.match(shell, /sessionOrder = \[next\.id, \.\.\.sessionOrder/, 'a genuinely new session is inserted at the top');
   const session = read('web/session.js');
   assert.match(session, /subscribeSessionEvents/, 'embedded session reuses the shell stream');
   assert.match(session, /subscribeSessionEvents\(onSessionStatus, \{ replayId: id \}\)/, 'session subscription replays a status event missed during mount');
@@ -63,6 +67,22 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
     'Records teardown aborts requests instead of leaving discarded route work in flight');
   assert.match(records, /viewGeneration\+\+;\s*\n\s*host = null;/,
     'Records teardown invalidates every in-flight continuation before dropping its host');
+}
+
+// Attention UI: status marks stay circular and working sessions blink slowly; dismissing a Needs-you
+// report is a read-state transition bounded to that report, not a session stop/kill action.
+{
+  const shell = read('web/shell.js');
+  const css = read('web/desktop.css');
+  const dash = read('web/views/dashboard.js');
+  assert.match(shell, /s\.status === 'working' \? 'ok pulse'/, 'working rail dots use the slow pulse');
+  assert.match(css, /\.dk-dot\s*\{[^}]*flex:\s*0 0 7px[^}]*border-radius:\s*50%/, 'status dots cannot flex-shrink into pipes');
+  assert.match(css, /\.dk-dot\.pulse\s*\{[^}]*2\.8s/, 'working status uses a slow blink instead of rapid flashing');
+  assert.match(dash, /data-dk-dismiss/, 'Needs-you cards have a visible dismiss action');
+  assert.match(dash, /through_id:\s*reportId/, 'dismissal is bounded to the currently visible report');
+  assert.match(dash, /upsertSession\(\{ id: sid, unread:/, 'dismissal removes the report without mutating lifecycle status');
+  assert.doesNotMatch(dash.slice(dash.indexOf('async function dismiss'), dash.indexOf('function wireCards')), /stop|kill/i,
+    'dismissal does not stop or kill the session');
 }
 
 // Observability excludes persistent SSE lifetimes from ordinary request latency.
