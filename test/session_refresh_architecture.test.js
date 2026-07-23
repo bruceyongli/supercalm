@@ -76,6 +76,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const css = read('web/desktop.css');
   const dash = read('web/views/dashboard.js');
   assert.match(shell, /s\.status === 'working' \? 'ok pulse'/, 'working rail dots use the slow pulse');
+  assert.match(shell, /patchRailSession\(el, fresh\)/, 'sidebar activity patches retain the existing session row');
+  assert.match(shell, /syncAttributes\(currentDot, nextDot\)/, 'sidebar status changes patch the connected dot instead of recreating it');
   assert.match(css, /\.dk-dot\s*\{[^}]*flex:\s*0 0 7px[^}]*border-radius:\s*50%/, 'status dots cannot flex-shrink into pipes');
   assert.match(css, /\.dk-dot\.pulse\s*\{[^}]*2\.8s/, 'working status uses a slow blink instead of rapid flashing');
   assert.match(dash, /data-dk-dismiss/, 'Needs-you cards have a visible dismiss action');

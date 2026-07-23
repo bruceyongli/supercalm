@@ -107,6 +107,13 @@ try {
     return { width: style.width, height: style.height, radius: style.borderRadius, duration: style.animationDuration };
   });
   assert.deepEqual(dotStyle, { width: '7px', height: '7px', radius: '50%', duration: '2.8s' }, 'working indicator stays round and blinks slowly');
+  await workingDot.evaluate((dot) => { window.__workingStatusDot = dot; });
+  await page.evaluate(async () => {
+    const shell = await import('./shell.js');
+    shell.upsertSession({ id: 's_work', summary: 'A new progress update', last_activity: Date.now() + 120000 });
+  });
+  assert.equal(await page.evaluate(() => window.__workingStatusDot === document.querySelector('[data-dk-sess][data-sid="s_work"] .dk-dot')), true,
+    'activity and summary updates preserve the live dot node so its animation timeline does not restart');
 
   await page.screenshot({ path: join(outDir, 'needs-you-options.png'), fullPage: true });
   await optionCard.getByRole('button', { name: /Node\.js/ }).click();

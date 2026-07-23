@@ -216,6 +216,40 @@ function keyedNode(html, key) {
   node.dataset.render = html;
   return node;
 }
+function syncAttributes(current, next) {
+  for (const { name } of [...current.attributes]) {
+    if (!next.hasAttribute(name)) current.removeAttribute(name);
+  }
+  for (const { name, value } of [...next.attributes]) {
+    if (current.getAttribute(name) !== value) current.setAttribute(name, value);
+  }
+}
+function patchRailSession(current, next) {
+  if (!current.matches('[data-dk-sess]') || !next.matches('[data-dk-sess]')) return false;
+  const currentDot = current.querySelector('.dk-sess-l1 > .dk-dot');
+  const nextDot = next.querySelector('.dk-sess-l1 > .dk-dot');
+  const currentTitle = current.querySelector('.dk-sess-l1 > b');
+  const nextTitle = next.querySelector('.dk-sess-l1 > b');
+  const currentAgent = current.querySelector('.dk-sess-l1 > .dk-agent');
+  const nextAgent = next.querySelector('.dk-sess-l1 > .dk-agent');
+  const currentAge = current.querySelector('.dk-sess-l1 > .dk-sess-age');
+  const nextAge = next.querySelector('.dk-sess-l1 > .dk-sess-age');
+  const currentSummary = current.querySelector('.dk-sess-l2');
+  const nextSummary = next.querySelector('.dk-sess-l2');
+  if (!currentDot || !nextDot || !currentTitle || !nextTitle || !currentAgent || !nextAgent
+      || !currentAge || !nextAge || !currentSummary || !nextSummary) return false;
+
+  syncAttributes(current, next);
+  // Keep the connected status-dot node alive. Replacing it on every activity/summary event resets its
+  // CSS animation, so frequently-updating sessions look as though they blink faster (or never pulse).
+  syncAttributes(currentDot, nextDot);
+  currentTitle.textContent = nextTitle.textContent;
+  syncAttributes(currentAgent, nextAgent);
+  currentAgent.textContent = nextAgent.textContent;
+  currentAge.textContent = nextAge.textContent;
+  if (currentSummary.innerHTML !== nextSummary.innerHTML) currentSummary.innerHTML = nextSummary.innerHTML;
+  return true;
+}
 function reconcileKeyed(container, specs) {
   const existing = new Map([...container.children].map((el) => [el.dataset.key, el]));
   const wanted = new Set(specs.map((s) => s.key));
@@ -224,8 +258,12 @@ function reconcileKeyed(container, specs) {
     let el = existing.get(spec.key);
     if (!el || el.dataset.render !== spec.html) {
       const fresh = keyedNode(spec.html, spec.key);
-      if (el) el.replaceWith(fresh);
-      el = fresh;
+      if (el && patchRailSession(el, fresh)) {
+        el.dataset.render = spec.html;
+      } else {
+        if (el) el.replaceWith(fresh);
+        el = fresh;
+      }
     }
     if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
   });
