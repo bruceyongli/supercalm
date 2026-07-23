@@ -56,6 +56,26 @@ export async function isGitRepo(repoPath) {
   return r.text.trim() === 'true';
 }
 
+// Isolation is an operator-selected safety contract, not an optimization. If it is enabled,
+// silently falling back to the shared checkout defeats the setting and lets concurrent agents
+// overwrite or deploy one another's work. Keep shared-directory behavior available by turning
+// isolation off explicitly; while it is on, fail closed with an actionable launch error.
+export async function isolatedWorktreeForLaunch({ repoPath, sid, project, baseBranch = '' }) {
+  if (!(await isGitRepo(repoPath))) {
+    const e = new Error(`multi-session isolation requires the project path itself to be a Git checkout: ${repoPath}. Register the repository root as its own project, or explicitly disable isolation for this aggregate directory`);
+    e.code = 'isolation-project-not-git';
+    throw e;
+  }
+  try {
+    return await ensureWorktree({ repoPath, sid, project, baseBranch });
+  } catch (cause) {
+    const e = new Error(`multi-session isolation could not create a worktree for ${repoPath}: ${cause?.message || cause}`);
+    e.code = 'isolation-worktree-failed';
+    e.cause = cause;
+    throw e;
+  }
+}
+
 // The repo's integration branch: origin/HEAD → main/master → current HEAD. Offline/no-origin safe.
 export async function defaultBranch(repoPath) {
   const sym = await gitOut(repoPath, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
@@ -91,8 +111,9 @@ function serialize(key, fn) {
 
 // Create-or-reuse the session's worktree. Returns { path, branch, reused }. Concurrency-safe +
 // failure-atomic: a half-made worktree is force-removed + pruned before we surface the error.
-// Callers fail OPEN (on throw, launch falls back to the shared tree) — never let this wedge a launch.
-export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '' }) {
+// Callers decide policy. The launch path fails closed when the isolation helper is enabled; direct
+// lifecycle callers can still handle failures differently.
+export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '', baseBranch = '' }) {
   return serialize(resolve(repoPath), async () => {
     if (!(await isGitRepo(repoPath))) throw new Error('not a git worktree: ' + repoPath);
     const path = assertUnderRoot(desiredPath || worktreePathFor(project, sid));
@@ -103,14 +124,33 @@ export async function ensureWorktree({ repoPath, sid, project, desiredPath = '',
     await mkdir(dirname(path), { recursive: true });
     // Resume-after-prune: the branch may already exist — attach it. Fresh: create it off the default branch.
     const branchExists = !!(await gitOut(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).text.trim();
+    let base = '';
+    let baseCommit = '';
+    if (!branchExists) {
+      base = baseBranch || await defaultBranch(repoPath);
+      const verified = await gitOut(repoPath, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
+      baseCommit = verified.text.trim();
+      if (verified.error || !baseCommit) throw new Error(`worktree base branch does not exist: ${base}`);
+    }
     const addArgs = branchExists
       ? ['worktree', 'add', path, branch]
-      : ['worktree', 'add', '-b', branch, path, await defaultBranch(repoPath)];
+      : ['worktree', 'add', '-b', branch, path, baseCommit];
     const r = await gitOut(repoPath, addArgs, { timeout: 30000 });
     if (r.error || !existsSync(path)) {
       await gitOut(repoPath, ['worktree', 'remove', '--force', path], { timeout: 15000 }).catch(() => {});
       await gitOut(repoPath, ['worktree', 'prune']).catch(() => {});
       throw new Error('worktree add failed: ' + (r.error || 'path missing after add'));
+    }
+    // Remember the branch the session forked from. Cleanup must compare against this release base,
+    // not origin/HEAD, or a clean branch based on a production release branch appears "ahead" forever.
+    if (!branchExists) {
+      const configured = await gitOut(repoPath, ['config', `branch.${branch}.aios-base`, base]);
+      if (configured.error) {
+        await gitOut(repoPath, ['worktree', 'remove', '--force', path], { timeout: 15000 }).catch(() => {});
+        await gitOut(repoPath, ['branch', '-D', branch]).catch(() => {});
+        await gitOut(repoPath, ['worktree', 'prune']).catch(() => {});
+        throw new Error('could not record worktree base branch: ' + configured.error);
+      }
     }
     return { path, branch, reused: false };
   });
@@ -124,7 +164,8 @@ export async function isSafeToRemove(repoPath, path, branch) {
   if (st.error) return false;
   if (st.text.trim()) return false; // dirty
   if (!branch) return true;
-  const base = await defaultBranch(repoPath);
+  const configuredBase = await gitOut(repoPath, ['config', '--get', `branch.${branch}.aios-base`]);
+  const base = configuredBase.text.trim() || await defaultBranch(repoPath);
   const mb = await gitOut(repoPath, ['merge-base', base, branch]);
   if (mb.error || !mb.text.trim()) return false;
   const ahead = await gitOut(repoPath, ['rev-list', '--count', `${mb.text.trim()}..${branch}`]);

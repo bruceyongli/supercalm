@@ -40,7 +40,7 @@ import { deployContract } from './release_monitor.js';
 import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
-import { isGitRepo, ensureWorktree, removeWorktree } from './worktrees.js';
+import { ensureWorktree, isolatedWorktreeForLaunch, removeWorktree } from './worktrees.js';
 import {
   attentionUnreadCount,
   clearAttentionDismissal,
@@ -622,14 +622,16 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // canonical main checkout). A speed-bump, not a sandbox: the agent could `cd ~/aios && unset` it — real
   // enforcement needs separate unix users/containers (out of scope). Integration is an operator-gated action.
   const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
-  // Deploy-source contract (release_targets, set in the Projects UI): injected so the git-guardrail hook can
-  // block a DIRECT deploy from the wrong tree/branch (the wrong-tree-deploy class). Inert unless the project
-  // declared a contract AND the hook is installed (claudeHooks + gitGuardrails). Rebuilt on resume too.
+  // Deploy-source contract (release_targets, set in the Projects UI): injected so both Claude's hook
+  // and the cross-tool command wrappers can block a DIRECT deploy from the wrong tree/branch.
   const contract = deployContract(project?.id);
   const deployEnv = contract
     ? (contract.source_dir ? `AIOS_DEPLOY_SOURCE_DIR=${shquote(contract.source_dir)} ` : '') + (contract.source_branch ? `AIOS_DEPLOY_BRANCH=${shquote(contract.source_branch)} ` : '')
     : '';
-  const line = `export PATH="${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}${deployEnv}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
+  // Codex has no Claude-style PreToolUse hook, so put the best-effort deploy wrappers first for every
+  // tool. They are inert when neither AIOS_NO_DEPLOY nor a release contract is present.
+  const guardBin = join(ROOT, 'scripts', 'guard-bin');
+  const line = `export PATH=${shquote(guardBin)}:"${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}${deployEnv}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
   // NEVER type the full launch line into the pane: a long task pushes it past the kernel's
   // canonical-mode line limit (MAX_CANON = 1024 on macOS) — the freshly-spawned shell hasn't
   // entered raw mode yet, so everything beyond 1KB is silently dropped and the truncated,
@@ -736,14 +738,21 @@ async function completeLaunch(spec) {
   const rolloutStarted = performance.now();
   const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles().catch(() => [])) : null;
   if (tool === 'codex') timings['rollout-scan'] = Math.round(performance.now() - rolloutStarted);
-  // Per-session worktree isolation (opt-in per project, #isolation helper). Concurrent sessions on one
-  // repo get their own worktree+branch so they never clobber each other. FAIL-OPEN: any error → the
-  // shared tree, and the launch line is byte-identical to before (the default-inert boundary).
+  // Per-session worktree isolation (opt-in per project, #isolation helper). Once enabled this is a
+  // safety contract: fail CLOSED if the path is not itself a repo or worktree setup fails. An operator
+  // can still choose shared-directory behavior explicitly by disabling the helper.
   let wt = null;
   if (helperEnabled(project?.id, 'isolation') && project?.path) {
-    try {
-      if (await phase('git-check', () => isGitRepo(project.path))) wt = await phase('worktree', () => ensureWorktree({ repoPath: project.path, sid, project }));
-    } catch (e) { console.error('[aios] worktree isolation skipped (fail-open):', e?.message || e); wt = null; }
+    const contract = deployContract(project.id);
+    // A project may ship from a durable release branch rather than origin/HEAD. Fork every new
+    // isolated session from that declared branch so the agent starts with what production actually
+    // runs, instead of silently editing and later deploying an older default-branch snapshot.
+    wt = await phase('worktree', () => isolatedWorktreeForLaunch({
+      repoPath: project.path,
+      sid,
+      project,
+      baseBranch: contract?.source_branch || '',
+    }));
   }
   spec.worktree = wt;
   assertLaunchActive(spec);

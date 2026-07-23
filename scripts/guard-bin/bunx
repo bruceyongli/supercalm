@@ -1,0 +1,2 @@
+#!/bin/sh
+exec env AIOS_GUARDED_COMMAND=bunx "$(dirname "$0")/../aios-command-guard.sh" "$@"

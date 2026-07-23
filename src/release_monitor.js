@@ -13,6 +13,7 @@ import * as store from './store.js';
 import { bus } from './bus.js';
 import { now } from './util.js';
 import { route, json, readJson } from './server.js';
+import { assertCompleteReleaseSource } from './release_contract.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS release_targets (
@@ -56,7 +57,16 @@ export function listTargets() { return _all.all(); }
 // Consumed by the deploy-source guardrail (Slice 2) — the declared canonical deploy tree/branch.
 export function deployContract(projectId) {
   const t = _get.get(projectId);
-  return t && (t.source_dir || t.source_branch) ? { source_dir: t.source_dir || '', source_branch: t.source_branch || '' } : null;
+  if (!t || (!t.source_dir && !t.source_branch)) return null;
+  try {
+    assertCompleteReleaseSource(t.source_dir, t.source_branch);
+  } catch (cause) {
+    const e = new Error('release source contract requires both source_dir and source_branch');
+    e.code = 'invalid-release-source-contract';
+    e.cause = cause;
+    throw e;
+  }
+  return { source_dir: t.source_dir, source_branch: t.source_branch };
 }
 
 export function setTarget(projectId, patch = {}) {
@@ -73,6 +83,7 @@ export function setTarget(projectId, patch = {}) {
   };
   // http(s) only; reject anything else so the checker can't be pointed at a file:// or odd scheme.
   if (next.live_url && !/^https?:\/\//i.test(next.live_url)) throw new Error('live_url must be http(s)://');
+  assertCompleteReleaseSource(next.source_dir, next.source_branch);
   _upsert.run(projectId, next.enabled, next.live_url, next.expect, next.forbid, next.source_dir, next.source_branch, next.interval_sec, now());
   return getTarget(projectId);
 }

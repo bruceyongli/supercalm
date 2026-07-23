@@ -12,7 +12,7 @@ process.env.AIOS_DATA = mkdtempSync(join(tmpdir(), 'wt-data-'));
 process.env.AIOS_WORKTREE_ROOT = mkdtempSync(join(tmpdir(), 'wt-root-'));
 
 const wtmod = await import('../src/worktrees.js');
-const { sanitize, worktreeRoot, branchFor, worktreePathFor, defaultBranch, ensureWorktree, isSafeToRemove, removeWorktree, worktreeExists } = wtmod;
+const { sanitize, worktreeRoot, branchFor, worktreePathFor, defaultBranch, ensureWorktree, isolatedWorktreeForLaunch, isSafeToRemove, removeWorktree, worktreeExists } = wtmod;
 
 // ---- pure: sanitize ----
 assert.ok(!sanitize('../etc/passwd').includes('..'), 'sanitize strips ..');
@@ -39,8 +39,20 @@ execFileSync('git', ['-C', repo, 'config', 'user.name', 't']);
 writeFileSync(join(repo, 'a.txt'), 'hi');
 execFileSync('git', ['-C', repo, 'add', '.']);
 execFileSync('git', ['-C', repo, 'commit', '-qm', 'init']);
+execFileSync('git', ['-C', repo, 'switch', '-qc', 'release/production']);
+writeFileSync(join(repo, 'release.txt'), 'production\n');
+execFileSync('git', ['-C', repo, 'add', 'release.txt']);
+execFileSync('git', ['-C', repo, 'commit', '-qm', 'production release']);
+const releaseHead = execFileSync('git', ['-C', repo, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+execFileSync('git', ['-C', repo, 'switch', '-q', 'main']);
 
 assert.equal(await defaultBranch(repo), 'main', 'defaultBranch resolves main');
+const aggregate = mkdtempSync(join(tmpdir(), 'wt-non-git-'));
+await assert.rejects(
+  isolatedWorktreeForLaunch({ repoPath: aggregate, sid: 's_aggregate', project: { name: 'aggregate', path: aggregate } }),
+  (e) => e?.code === 'isolation-project-not-git' && /project path itself.*Git checkout/.test(e.message),
+  'enabled isolation fails closed for a non-Git aggregate directory',
+);
 const wt = await ensureWorktree({ repoPath: repo, sid: 's_one', project: { name: 'proj', path: repo } });
 assert.ok(existsSync(wt.path) && !wt.reused, 'worktree created');
 assert.equal(await worktreeExists(repo, wt.path), true, 'worktreeExists (realpath-aware)');
@@ -59,6 +71,24 @@ assert.equal(await isSafeToRemove(repo, wt.path, wt.branch), false, 'commits bey
 const wt3 = await ensureWorktree({ repoPath: repo, sid: 's_two', project: { name: 'proj', path: repo } });
 assert.equal((await removeWorktree({ repoPath: repo, path: wt3.path, branch: wt3.branch })).removed, true, 'clean/no-commit → removed');
 assert.equal(existsSync(wt3.path), false, 'removed worktree gone');
+const releaseWt = await ensureWorktree({
+  repoPath: repo,
+  sid: 's_release',
+  project: { name: 'proj', path: repo },
+  baseBranch: 'release/production',
+});
+assert.equal(
+  execFileSync('git', ['-C', releaseWt.path, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  releaseHead,
+  'declared production branch, not default branch, is the new session base',
+);
+assert.equal(
+  execFileSync('git', ['-C', repo, 'config', '--get', `branch.${releaseWt.branch}.aios-base`], { encoding: 'utf8' }).trim(),
+  'release/production',
+  'session branch records its production base',
+);
+assert.equal(await isSafeToRemove(repo, releaseWt.path, releaseWt.branch), true, 'clean production-based session can be removed');
+assert.equal((await removeWorktree({ repoPath: repo, path: releaseWt.path, branch: releaseWt.branch })).removed, true, 'production-based session removed safely');
 
 // ---- per-project isolation toggle (positional _upsert integrity) ----
 const ph = await import('../src/project_helpers.js');
