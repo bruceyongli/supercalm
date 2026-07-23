@@ -59,6 +59,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(records, /let viewGeneration = 0/, 'Records view versions its asynchronous mounts');
   assert.match(records, /if \(!host \|\| token !== viewGeneration\) return/,
     'Records fetch continuations stop after teardown or remount');
+  assert.match(records, /viewAbortController\?\.abort\(\)/,
+    'Records teardown aborts requests instead of leaving discarded route work in flight');
   assert.match(records, /viewGeneration\+\+;\s*\n\s*host = null;/,
     'Records teardown invalidates every in-flight continuation before dropping its host');
 }

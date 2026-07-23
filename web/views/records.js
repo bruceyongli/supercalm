@@ -27,6 +27,7 @@ let host = null;
 let offset = 0, lastQuery = '';
 let searchTimer = null;
 let viewGeneration = 0;
+let viewAbortController = null;
 const $ = (s) => host?.querySelector(s);
 const localToMs = (v) => (v ? new Date(v).getTime() : 0);
 const SELECTS = ['rc-project', 'rc-session', 'rc-tool', 'rc-model', 'rc-source', 'rc-dir'];
@@ -49,12 +50,12 @@ function queryString() {
   return p.toString();
 }
 
-async function load(append = false, token = viewGeneration) {
+async function load(append = false, token = viewGeneration, signal = viewAbortController?.signal) {
   const qs = queryString();
   if (qs == null) return;
   lastQuery = qs;
   let r = { records: [] };
-  try { r = await api('api/records?' + qs); } catch {}
+  try { r = await api('api/records?' + qs, { signal }); } catch {}
   if (!host || token !== viewGeneration) return;
   const cards = (r.records || []).map((x) => `
     <div class="rc-card" data-rc-card>
@@ -76,9 +77,9 @@ async function load(append = false, token = viewGeneration) {
   if (more) more.style.display = (r.records || []).length === 40 ? '' : 'none';
 }
 
-async function populate(token) {
+async function populate(token, signal) {
   try {
-    const st = await api('api/state');
+    const st = await api('api/state', { signal });
     if (!host || token !== viewGeneration) return;
     const fill = (sel, items) => {
       const el = $(sel);
@@ -101,6 +102,9 @@ async function populate(token) {
 export function init(el) {
   host = el;
   const token = ++viewGeneration;
+  try { viewAbortController?.abort(); } catch {}
+  viewAbortController = new AbortController();
+  const signal = viewAbortController.signal;
   offset = 0; lastQuery = '';
   if (!document.getElementById('view-records-css')) {
     const st = document.createElement('style');
@@ -132,20 +136,22 @@ export function init(el) {
       <div class="rc-more"><button class="dk-reply-btn" id="rc-more">Load more</button></div>
     </div>`;
 
-  for (const id of [...SELECTS, 'rc-since', 'rc-until']) $('#' + id).onchange = () => { offset = 0; load(false, token); };
-  $('#rc-q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset = 0; load(false, token); }, 350); };
-  $('#rc-clear').onclick = () => { for (const id of [...SELECTS, 'rc-since', 'rc-until', 'rc-q']) $('#' + id).value = ''; offset = 0; load(false, token); };
-  $('#rc-more').onclick = () => { offset += 40; load(true, token); };
+  for (const id of [...SELECTS, 'rc-since', 'rc-until']) $('#' + id).onchange = () => { offset = 0; load(false, token, signal); };
+  $('#rc-q').oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => { offset = 0; load(false, token, signal); }, 350); };
+  $('#rc-clear').onclick = () => { for (const id of [...SELECTS, 'rc-since', 'rc-until', 'rc-q']) $('#' + id).value = ''; offset = 0; load(false, token, signal); };
+  $('#rc-more').onclick = () => { offset += 40; load(true, token, signal); };
   $('#rc-export').onclick = () => { location.href = 'api/records?' + lastQuery.replace(/limit=40/, 'limit=2000'); };
   (async () => {
-    await populate(token);
-    if (host && token === viewGeneration) await load(false, token);
+    await populate(token, signal);
+    if (host && token === viewGeneration) await load(false, token, signal);
   })().catch(() => {});
 }
 
 export function teardown() {
   clearTimeout(searchTimer);
   searchTimer = null;
+  try { viewAbortController?.abort(); } catch {}
+  viewAbortController = null;
   viewGeneration++;
   host = null;
 }
