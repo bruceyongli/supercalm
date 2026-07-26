@@ -297,7 +297,7 @@ export function prefetchStory(id) {
     const storySource = r.meta?.source || 'transcript';
     const payload = JSON.stringify({ events: r.events, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
       storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story5_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v5)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story6_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v6)
   }).catch(() => _prefetched.delete(id));
 }
 
@@ -362,7 +362,7 @@ export async function openLaunch(opts = {}) {
         <select id="nl-project">${projects.map((p) => `<option value="${esc(p.id)}" data-path="${esc(p.path)}">${esc(p.name)}</option>`).join('')}<option value="__new">+ new project…</option></select>
       </label>
       <div id="nl-newproj" hidden>
-        <label class="dk-field">Path<input id="nl-path" placeholder="/Users/you/repo (created as a project on launch)" /></label>
+        <label class="dk-field">Path<input id="nl-path" placeholder="/Users/you/project (folder + Git repo created if missing)" /></label>
         <label class="dk-field">Name<input id="nl-name" placeholder="auto from path" /></label>
         <label class="dk-check"><input type="checkbox" id="nl-kb" /> Build knowledge base after launch</label>
       </div>

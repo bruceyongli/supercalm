@@ -86,6 +86,21 @@ const CLAUDE_TOOL_KIND = {
   AskUserQuestion: 'ask', ExitPlanMode: 'plan',
 };
 
+// Codex update_plan and Claude TodoWrite describe the same operator-facing object with slightly
+// different field names. Keep the state instead of flattening each item into a pill: the Story view
+// can then present an actual ordered checklist and show where work is now.
+function normalizePlanItems(items) {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    if (typeof item === 'string') return { text: item, status: 'pending' };
+    const text = item?.step || item?.title || item?.content || item?.activeForm || '';
+    const rawStatus = String(item?.status || '').toLowerCase().replace(/[\s-]+/g, '_');
+    const status = ['completed', 'complete', 'done'].includes(rawStatus) ? 'completed'
+      : ['in_progress', 'active', 'working'].includes(rawStatus) ? 'in_progress'
+        : 'pending';
+    return { text, status };
+  }).filter((item) => item.text);
+}
+
 // Attachment IMAGE references in a turn: manifest lines ("N. name (PNG, image/png): /abs/path" under
 // "Attached files available locally…") and "[Image: source: /abs/path]" stubs both carry the upload's
 // on-disk path under <project>/.aios/attachments/<sid>/. Extract the image BASENAMES so the story can
@@ -208,8 +223,8 @@ function atomsFromCodex(lines) {
         // F3: cmd string (exec_command) OR command array (shell variants)
         let cmd = args.cmd || (Array.isArray(args.command) ? args.command.join(' ').replace(/^(bash|sh|zsh) -lc /, '') : args.command) || p.name;
         if (p.name === 'update_plan') {
-          const chips = (args.plan || args.steps || []).map((s) => (typeof s === 'string' ? s : s.step || s.title || '')).filter(Boolean).slice(0, 6);
-          atoms.push({ ts, kind: 'plan', title: 'Made a plan', chips });
+          const planItems = normalizePlanItems(args.plan || args.steps);
+          atoms.push({ ts, kind: 'plan', title: 'Made a plan', planItems });
         } else if (p.name === 'request_user_input') {
           // F6: codex asks arrive as a tool call; their function_call_output IS the durable answer
           const questions = args.questions?.length ? args.questions : [{
@@ -316,6 +331,13 @@ function atomsFromClaude(lines) {
         if (part.type === 'text' && part.text) atoms.push({ ts, kind: 'note', text: part.text, indent }); // final text => report (promoted below)
         else if (part.type === 'thinking') atoms.push({ ts, kind: '_thinking', indent });
         else if (part.type === 'tool_use') {
+          if (part.name === 'TodoWrite') {
+            atoms.push({
+              ts, kind: 'plan', indent, title: 'Made a plan',
+              planItems: normalizePlanItems(part.input?.todos || part.input?.plan),
+            });
+            continue;
+          }
           if (part.name === 'AskUserQuestion') {
             // ONE ask card PER question — a multi-question prompt used to surface only questions[0],
             // so after answering it the story re-showed the stale first options while the terminal
@@ -371,7 +393,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
   }
   flush();
 

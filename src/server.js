@@ -12,6 +12,7 @@ import { flags, setFlags, flagLocks, FLAG_KEYS, FLAG_DEFS } from './flags.js';
 import { confinedPath } from './static_path.js';
 import { tierOf, queueTier, QUEUE_TIER_ORDER } from './agents/supervisor/engagement.js';
 import { bootPayload, createBootState, loadSequentially, trafficAllowed } from './startup.js';
+import { prepareProjectDirectory } from './project_init.js';
 
 // A request failure is caught at the request boundary below. An error that escapes that boundary means
 // process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
@@ -328,14 +329,19 @@ route('GET', '/api/projects', (req, res) => json(res, 200, store.listProjects())
 route('POST', '/api/projects', async (req, res) => {
   const b = await readJson(req);
   const name = String(b.name || '').trim();
-  const path = String(b.path || '').trim();
-  if (!name || !path) return json(res, 400, { error: 'name and path are required' });
-  if (!path.startsWith('/')) return json(res, 400, { error: 'path must be absolute (e.g. /home/you/code/project)' });
+  if (!name || !String(b.path || '').trim()) return json(res, 400, { error: 'name and path are required' });
+  let prepared;
+  try {
+    prepared = await prepareProjectDirectory(b.path);
+  } catch (error) {
+    return json(res, 400, { error: String(error.message || error), code: error.code || 'project-create-failed' });
+  }
+  const path = prepared.path;
   const existing = store.getProjectByPath(path);
-  if (existing) return json(res, 200, existing);
+  if (existing) return json(res, 200, { ...existing, ...prepared });
   const p = store.createProject({ id: id('p'), name, path });
   bus.emit('changed');
-  json(res, 201, p);
+  json(res, 201, { ...p, ...prepared });
 });
 route('DELETE', '/api/projects/:id', (req, res, { id: pid }) => {
   const p = store.getProject(pid);

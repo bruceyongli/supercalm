@@ -49,6 +49,7 @@ import {
   markAttentionReportRead,
 } from './attention_store.js';
 import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
+import { prepareProjectDirectory } from './project_init.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -2122,7 +2123,13 @@ route('POST', '/api/session', async (req, res) => {
   let project = null;
   if (b.project_id) project = store.getProject(b.project_id);
   if (!project && b.path) {
-    const p = String(b.path).trim();
+    let prepared;
+    try {
+      prepared = await prepareProjectDirectory(b.path);
+    } catch (error) {
+      return json(res, 400, { error: String(error.message || error), code: error.code || 'project-create-failed' });
+    }
+    const p = prepared.path;
     // honor the launch modal's optional Name field (it was sent and silently ignored before)
     const name = String(b.name || '').trim() || basename(p) || p;
     project = store.getProjectByPath(p) || store.createProject({ id: id('p'), name, path: p });

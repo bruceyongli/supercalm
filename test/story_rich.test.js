@@ -11,6 +11,55 @@ import { spineFromMessages } from '../src/story_spine.js';
 
 const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 
+// ---- plan tools keep their step order + status for the Story view's real checklist ----
+{
+  const codex = parseSessionLog([
+    JSON.stringify({ type: 'session_meta', timestamp: '2026-07-26T10:00:00Z', payload: { originator: 'codex' } }),
+    JSON.stringify({
+      type: 'response_item',
+      timestamp: '2026-07-26T10:00:01Z',
+      payload: {
+        type: 'function_call',
+        name: 'update_plan',
+        call_id: 'plan_1',
+        arguments: JSON.stringify({ plan: [
+          { step: 'Inspect the current flow', status: 'completed' },
+          { step: 'Build the improvement', status: 'in_progress' },
+          { step: 'Deploy and verify', status: 'pending' },
+        ] }),
+      },
+    }),
+  ].join('\n'));
+  const codexPlan = codex.find((event) => event.kind === 'plan');
+  assert.deepEqual(codexPlan?.planItems, [
+    { text: 'Inspect the current flow', status: 'completed' },
+    { text: 'Build the improvement', status: 'in_progress' },
+    { text: 'Deploy and verify', status: 'pending' },
+  ], 'Codex update_plan remains an ordered, status-aware plan');
+  assert.ok(!codexPlan?.chips, 'plan steps are no longer flattened into display pills');
+
+  const claude = parseSessionLog([
+    JSON.stringify({ type: 'user', timestamp: '2026-07-26T11:00:00Z', message: { content: 'make a plan' } }),
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-07-26T11:00:01Z',
+      message: { content: [{
+        type: 'tool_use',
+        id: 'todo_1',
+        name: 'TodoWrite',
+        input: { todos: [
+          { content: 'Read the UI', status: 'completed', activeForm: 'Reading the UI' },
+          { content: 'Polish the list', status: 'in_progress', activeForm: 'Polishing the list' },
+        ] },
+      }] },
+    }),
+  ].join('\n'));
+  assert.deepEqual(claude.find((event) => event.kind === 'plan')?.planItems, [
+    { text: 'Read the UI', status: 'completed' },
+    { text: 'Polish the list', status: 'in_progress' },
+  ], 'Claude TodoWrite uses the same status-aware plan shape');
+}
+
 // ---- transcript parser: a claude report keeps its markdown, loses only tool-tag noise ----
 {
   const report = [
@@ -247,9 +296,13 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),
   'story view renders report/note bodies through common.js renderMarkdown');
+assert.ok(storyView.includes('<ol class="story-plan-list"') && storyView.includes("ev.kind === 'plan' ? planHtml(ev)"),
+  'story plan events render as a semantic ordered list');
 const css = read('web/styles.css');
 assert.ok(css.includes('.story-body.md table') && css.includes('.story-body.md pre'),
   'rich-body table/code styles exist on the story palette');
+assert.ok(css.includes('.story-plan-item.in-progress') && css.includes('.story-plan-item.completed'),
+  'plan rows visually distinguish current and completed work');
 const svKey = storyView.match(/aios_story(\d+)_/)?.[1];
 const shKey = read('web/shell.js').match(/aios_story(\d+)_/)?.[1];
 assert.ok(svKey && svKey === shKey, `story cache-key version agrees between story-view.js (v${svKey}) and shell.js prefetch (v${shKey})`);

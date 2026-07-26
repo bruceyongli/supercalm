@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, stat } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,6 +63,22 @@ try {
   const performance = await fetch(base + '/api/performance').then((response) => response.json());
   assert(performance.routes.some((row) => row.route === 'GET /api/version' && row.requests >= 1));
   assert(performance.routes.some((row) => row.route === 'GET static' && row.requests >= 3));
+
+  const newProjectPath = join(data, 'projects', 'created-by-api');
+  const createdResponse = await fetch(base + '/api/projects', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Created by API', path: newProjectPath }),
+  });
+  assert.equal(createdResponse.status, 201);
+  const createdProject = await createdResponse.json();
+  assert.equal(createdProject.path, newProjectPath);
+  assert.equal(createdProject.createdDirectory, true);
+  assert.equal(createdProject.initializedGit, true);
+  assert.equal((await stat(join(newProjectPath, '.git'))).isDirectory(), true,
+    'POST /api/projects creates a missing folder and initializes Git before persisting it');
+  const projects = await fetch(base + '/api/projects').then((response) => response.json());
+  assert(projects.some((project) => project.id === createdProject.id && project.path === newProjectPath));
 
   const db = new DatabaseSync(join(data, 'aios.db'), { readOnly: true });
   const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((row) => row.id));

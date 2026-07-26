@@ -115,7 +115,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // markdown-preserving ones; merging both would duplicate every report bubble.
 // v4: task-notification turns no longer parse as operator bubbles — cached stories still hold them.
 // v5: flush caches that may contain a same-project sibling rollout from the pre-identity picker.
-export const STORY_CACHE_KEY = (id) => `aios_story5_${id}`;
+// v6: plan events now carry status-aware list items instead of the old pill-only shape.
+export const STORY_CACHE_KEY = (id) => `aios_story6_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -172,6 +173,21 @@ function stepsHtml(ev, i) {
   return `
     <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length > 1 ? steps.length + ' steps' : 'show the command'}</div>
     ${open ? stepsBodyHtml(steps) : ''}`;
+}
+
+function planHtml(ev) {
+  const items = ev.planItems || [];
+  if (!items.length) return '';
+  return `<ol class="story-plan-list" aria-label="Plan steps">${items.map((item, i) => {
+    const status = item.status === 'completed' ? 'completed' : item.status === 'in_progress' ? 'in-progress' : 'pending';
+    const marker = status === 'completed' ? '✓' : status === 'in-progress' ? '●' : String(i + 1);
+    const label = status === 'completed' ? 'Done' : status === 'in-progress' ? 'In progress' : 'Pending';
+    return `<li class="story-plan-item ${status}">
+      <span class="story-plan-marker" aria-hidden="true">${marker}</span>
+      <span class="story-plan-text">${esc(item.text || item.step || item.title || '')}</span>
+      <span class="story-plan-status">${label}</span>
+    </li>`;
+  }).join('')}</ol>`;
 }
 
 // S8: the agent-recommended / affirmative option is primary; else the first.
@@ -320,6 +336,7 @@ function eventHtml(ev, i) {
     ${body}
     ${stateChip}
     ${listenRowHtml(ev)}
+    ${ev.kind === 'plan' ? planHtml(ev) : ''}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
     ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
     ${stepsHtml(ev, i)}

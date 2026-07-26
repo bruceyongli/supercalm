@@ -119,6 +119,10 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const sess = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
   assert.ok(/String\(b\.name \|\| ''\)\.trim\(\) \|\| basename\(p\)/.test(sess), 'POST /api/session uses the optional Name for the auto-created project');
   assert.ok(/boolParam\(b\.kb\)/.test(sess) && /rebuildWiki\(project\)/.test(sess), 'POST /api/session honors the Build-knowledge-base checkbox (fire-and-forget wiki rebuild)');
+  assert.ok(/await prepareProjectDirectory\(b\.path\)/.test(sess),
+    'POST /api/session creates and Git-initializes a missing new-project folder before launch');
+  assert.match(shell, /folder \+ Git repo created if missing/,
+    'the new-project path field explains its missing-folder behavior');
 }
 
 // Upgrade/setup orientation (first-time-user report, 2026-07-16): the empty-inbox hero must not claim

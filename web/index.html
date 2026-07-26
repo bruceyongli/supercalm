@@ -77,7 +77,7 @@
         <h3>New session</h3>
         <label>Project</label>
         <select id="ns-project"></select>
-        <label>…or new project path<span class="muted"> (absolute path on the server)</span></label>
+        <label>…or new project path<span class="muted"> (folder + Git repo created if missing)</span></label>
         <input id="ns-path" placeholder="/home/you/code/myproject" />
         <label>Tool</label>
         <div class="seg" id="ns-tool"></div>
@@ -115,7 +115,7 @@
         <h3>Add project</h3>
         <label>Name</label>
         <input id="pr-name" placeholder="my-project" />
-        <label>Absolute path on the server</label>
+        <label>Absolute path on the server <span class="muted">(folder + Git repo created if missing)</span></label>
         <input id="pr-path" placeholder="/home/you/code/my-project" />
         <div class="row">
           <button class="btn" id="pr-go">Add</button>
