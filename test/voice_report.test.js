@@ -57,12 +57,18 @@ assert.equal(PROMPT_VERSION, 'vr2', 'the prompt-aware script invalidates old vr1
   // default part cap must stay well under the client players' scaled caps (~45-60s of audio each) —
   // 1800-char parts overran the old fixed 90s caps and caused the replay-from-the-top bug
   for (const p of parts) assert.ok(p.length <= 900, 'every part under the default cap');
-  for (const p of parts.slice(0, -1)) assert.match(p, /\.$/, 'parts end on sentence boundaries');
+  for (const p of parts.slice(0, -1)) assert.match(p.trimEnd(), /\.$/, 'parts end on sentence boundaries');
+  assert.equal(parts.join(''), sentences, 'sentence splitting preserves every character');
   assert.equal(splitParts('One short line.').length, 1);
   const source = 'y'.repeat(5000);
   const giant = splitParts(source);
   assert.ok(giant.every((p) => p.length <= 900), 'unbroken text is hard-sliced under the cap');
   assert.equal(giant.join(''), source, 'hard-slicing preserves the complete script instead of truncating after part one');
+  const dotted = ('Protocol v4.1 keeps file.js and 3.14 intact. ' +
+    'This sentence adds enough material to create several small transport parts. ').repeat(6);
+  const dottedParts = splitParts(dotted, 90);
+  assert.equal(dottedParts.join(''), dotted, 'transport splitting does not alter versions, files, or decimals');
+  assert.ok(dottedParts.every((p) => p.length <= 90));
 }
 
 // ---- validateScript: fences stripped, markdown-heavy + runaway rejected ----

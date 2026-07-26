@@ -70,30 +70,39 @@ export function extractAgentScript(text) {
   return section.length >= 40 ? section : null;
 }
 
-// Sentence-ish split (voicemode.js splitSentences port) merged up to PART_MAX chars per part —
-// parts are TRANSPORT (the 4000-char /api/tts cap), not narrative; playback auto-advances.
+// Split at natural boundaries up to PART_MAX chars per part. Parts are TRANSPORT (the 4000-char
+// /api/tts cap), not narrative; playback auto-advances. Preserve the source byte-for-byte across
+// part boundaries: a sentence-tokenizing regex used to insert spaces inside versions such as
+// "v4.1", even though it no longer dropped the report tail.
 export function splitParts(script, max = PART_MAX) {
-  const raw = String(script).match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(script)];
+  const source = String(script);
+  if (!source) return [''];
   const parts = [];
-  const append = (piece) => {
-    const last = parts[parts.length - 1];
-    if (last != null && last.length + piece.length + 1 <= max) parts[parts.length - 1] = last + ' ' + piece;
-    else parts.push(piece);
-  };
-  for (const original of raw.map((s) => s.trim()).filter(Boolean)) {
-    let piece = original;
-    // A giant sentence, table row, or unbroken token used to be truncated after max characters.
-    // Slice it into consecutive transport pieces instead: read-all must be byte-for-byte complete
-    // apart from normalized whitespace.
-    while (piece.length > max) {
-      let cut = piece.lastIndexOf(' ', max);
-      if (cut < Math.floor(max * 0.6)) cut = max;
-      append(piece.slice(0, cut).trim());
-      piece = piece.slice(cut).trim();
+  let offset = 0;
+  while (source.length - offset > max) {
+    const window = source.slice(offset, offset + max);
+    const minimum = Math.floor(max * 0.6);
+    let cut = -1;
+    // Prefer the last real sentence ending in the latter part of the window. Requiring whitespace
+    // after punctuation avoids treating the dot in v4.1, file.js, or a decimal as a boundary.
+    const endings = window.matchAll(/[.!?]+(?=\s|$)/g);
+    for (const match of endings) {
+      const candidate = match.index + match[0].length;
+      if (candidate >= minimum) cut = candidate;
     }
-    if (piece) append(piece);
+    // If this is one very long sentence, retain the exact separating whitespace with the prior
+    // part. Unbroken content still hard-slices, continuously, until every character is included.
+    if (cut < minimum) {
+      const whitespace = Math.max(window.lastIndexOf(' '), window.lastIndexOf('\n'), window.lastIndexOf('\t'));
+      cut = whitespace >= minimum ? whitespace + 1 : max;
+    } else {
+      while (cut < window.length && /\s/.test(window[cut])) cut++;
+    }
+    parts.push(source.slice(offset, offset + cut));
+    offset += cut;
   }
-  return parts.length ? parts : [''];
+  parts.push(source.slice(offset));
+  return parts;
 }
 
 // The model must return a plain spoken script. Reject junk so fail-open text beats a bad polish.
