@@ -90,6 +90,7 @@ const BOOL_TRUE = new Set(['1', 'true', 'yes', 'on']);
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
 const reg = new Map();
 const pendingLaunches = new Map(); // sid -> cancellation ticket while preflight/worktree/tmux runs
+const pendingResumes = new Map(); // sid -> one shared relaunch promise; prevents overlapping model/settings restarts
 const resizeClients = new Map();
 // sid -> "COLSxROWS" last applied to the tmux window, so /resize skips redundant resize-window execs.
 // Cleared in startPane() when a pane is (re)created, so a resumed/fresh pane always gets re-sized.
@@ -828,7 +829,7 @@ export function queueLaunch(args) {
 }
 
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
-export async function resume(sid, { force = false } = {}) {
+async function resumeNow(sid, { force = false } = {}) {
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
@@ -892,8 +893,13 @@ export async function resume(sid, { force = false } = {}) {
   });
   store.addEvent(sid, 'resume', { tmux: name, resumeId });
   const updated = store.updateSession(sid, { status: 'working', tmux: name, ended_at: null, exit_code: null, question: null, last_activity: now() });
+  // Replace the registry generation so a poll that observed the intentional kill/recreate gap cannot
+  // retire the new pane when its stale `has-session = false` result arrives. Keep terminal subscribers
+  // attached across the relaunch; only the lifecycle generation changes.
+  const previousEntry = reg.get(sid);
   reg.delete(sid);
-  register(updated);
+  const resumedEntry = register(updated);
+  if (previousEntry) resumedEntry.subscribers = previousEntry.subscribers;
   // grace window: a freshly relaunched pane reprints the old conversation (which may include 401s
   // from before the relaunch) before the first new exchange — don't let detect.js re-flag it as
   // authNeeded during that reprint. Cleared naturally once a healthy ⏺/⎿ line appears (see detect.js).
@@ -905,7 +911,27 @@ export async function resume(sid, { force = false } = {}) {
   return updated;
 }
 
+export function resume(sid, options = {}) {
+  const inflight = pendingResumes.get(sid);
+  if (inflight) return inflight;
+
+  // Polling must ignore the expected interval between killing the old pane and publishing its replacement.
+  // A poll already waiting on tmux is handled by markExited's registry-generation ownership check below.
+  const entry = reg.get(sid);
+  if (entry) entry.relaunching = true;
+  const attempt = resumeNow(sid, options).finally(() => {
+    pendingResumes.delete(sid);
+    // On failure resumeNow leaves the old registry generation in place. Let polling reconcile it again.
+    if (entry && reg.get(sid) === entry) entry.relaunching = false;
+  });
+  pendingResumes.set(sid, attempt);
+  return attempt;
+}
+
 function markExited(entry, code) {
+  // pollOnce works from a snapshot of registry entries and awaits tmux. A model/settings relaunch can
+  // replace an entry while that await is in flight. Never let the old generation mark or delete the new one.
+  if (reg.get(entry.id) !== entry) return false;
   const s = store.getSession(entry.id);
   if (s && s.status !== 'exited') {
     const updated = store.updateSession(entry.id, { status: 'exited', question: null, ended_at: now(), exit_code: code, last_activity: now() });
@@ -920,6 +946,7 @@ function markExited(entry, code) {
     } catch {}
   }
   reg.delete(entry.id);
+  return true;
 }
 
 // Reconcile DB <-> tmux on startup: resume live sessions, retire dead ones.
@@ -1128,6 +1155,7 @@ async function pollOnce() {
       reg.delete(entry.id);
       continue;
     }
+    if (entry.relaunching) continue;
     if (!(await tmuxOk('has-session', '-t', entry.tmux))) {
       markExited(entry, null);
       continue;
