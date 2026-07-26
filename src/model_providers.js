@@ -126,6 +126,35 @@ export async function probeProvider({ kind, base_url, api_key }) {
   }
 }
 
+// Automated secondary discovery. Subscription CLIs are scanned first by model_scan.js; configured
+// API providers follow. A failed endpoint keeps its last good list so a transient outage never wipes
+// a user's selectors or breaks routing.
+export async function refreshProviderModels() {
+  const data = readAll();
+  const enabled = data.providers.filter((provider) => provider.enabled !== false);
+  const results = await Promise.all(enabled.map(async (provider) => {
+    const probe = await probeProvider(provider);
+    if (probe.ok && probe.models.length) {
+      provider.models = probe.models;
+      provider.updated_at = now();
+    }
+    return {
+      id: provider.id,
+      name: provider.name,
+      ok: probe.ok,
+      modelCount: probe.models.length,
+      ...(probe.error ? { error: probe.error } : {}),
+    };
+  }));
+  if (results.some((result) => result.ok && result.modelCount)) writeAll(data);
+  else syncRoutes();
+  return {
+    providerCount: enabled.length,
+    updated: results.filter((result) => result.ok && result.modelCount).length,
+    results,
+  };
+}
+
 // Routes for the catalog: exact model-id resolution + a "<providerName>/<model>" prefixed form for
 // collisions with fleet ids. Pushed into model_catalog (push, not pull — no import cycle).
 export function providerRoutes() {

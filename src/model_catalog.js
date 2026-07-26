@@ -66,6 +66,11 @@ export const MODEL_ALIASES = {
 
 const CODEX_FAST_MODELS = new Set(['gpt-5.5', 'gpt-5.4']);
 
+function providerSupportsVision(proxy, id) {
+  if (['antigravity', 'gemini', 'codex', 'claude'].includes(proxy)) return true;
+  return proxy === 'aliyun' && /max|plus|-vl|vision|glm/i.test(String(id));
+}
+
 export const PROXY_PROVIDERS = [
   {
     proxy: 'antigravity',
@@ -215,6 +220,10 @@ export function applyCatalog(providers, meta = {}) {
           id: String(m.id),
           label: m.label || String(m.id),
           recommended: !!m.recommended,
+          pinned: !!m.pinned,
+          supportsFast: !!m.supportsFast,
+          vision: !!m.vision,
+          source: m.source || null,
           // Utility models (STT/TTS on the spark box) arrive untyped from /v1/models and were leaking
           // into chat pickers (whisper offered as a coding-session model). Type them by id.
           kind: /whisper|kokoro|-tts-|\btts\b/i.test(String(m.id)) ? 'utility' : (m.kind || 'chat'), // override: earlier scans persisted these as 'chat'
@@ -277,7 +286,9 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
             port: p.port,
             recommended: !!m.recommended,
             kind: m.kind || 'chat',
-            supportsFast: p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id),
+            vision: !!m.vision || providerSupportsVision(p.proxy, m.id),
+            source: m.source || null,
+            supportsFast: !!m.supportsFast || (p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id)),
           };
         });
     })
@@ -296,7 +307,7 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
 }
 
 export function toolModels(tool) {
-  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'], top: 2 }); // agy-native — its CLI login serves these
+  if (tool === 'agy') return listProxyModels({ providers: ['antigravity'] }); // agy-native — its CLI login serves these
 
   // Alias entries replace their concrete targets (don't ALSO list claude-opus-4-8 when
   // "opus" maps to it — duplicate rows with near-identical labels confuse the picker).
@@ -307,7 +318,18 @@ export function toolModels(tool) {
       ? Object.entries(MODEL_ALIASES).map(([alias, concrete]) => {
           const m = ROUTES_BY_ID.get(concrete);
           const short = (m?.label || concrete).replace(/^Claude\s+/i, '');
-          return { id: alias, label: `Claude / ${short}` };
+          return {
+            id: alias,
+            label: `Claude / ${short}`,
+            modelLabel: m?.label || concrete,
+            provider: 'claude',
+            providerLabel: 'Claude',
+            port: m?.port || 8789,
+            recommended: true,
+            kind: 'chat',
+            vision: !!m?.vision || providerSupportsVision('claude', concrete),
+            supportsFast: false,
+          };
         })
       : [];
   // The tool's own provider leads as ONE contiguous section (aliases + the rest of its
@@ -318,12 +340,12 @@ export function toolModels(tool) {
   // offers exactly what its CLIs can actually run instead of the whole static seed.
   const native =
     tool === 'codex'
-      ? listProxyModels({ providers: ['codex'], top: 2 })
+      ? listProxyModels({ providers: ['codex'] })
       : tool === 'claude'
-        ? [...nativeAliases, ...listProxyModels({ providers: ['claude'], top: 2 })]
+        ? [...nativeAliases, ...listProxyModels({ providers: ['claude'] })]
         : [];
   const ownProvider = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : null;
-  const rest = listProxyModels({ liveOnly: true, top: 2 }).filter((m) => m.provider !== ownProvider); // operator rule (2026-07-20): only each provider's top two are offered
+  const rest = listProxyModels({ liveOnly: true }).filter((m) => m.provider !== ownProvider);
   return [...native, ...rest].filter((m) => {
     if (seen.has(m.id)) return false;
     seen.add(m.id);
@@ -394,7 +416,7 @@ export function isNativeModel(tool, model) {
 export function modelSupportsFast(model) {
   if (!model) return false;
   const route = routeForModel(model);
-  return route.proxy === 'codex' && CODEX_FAST_MODELS.has(route.model || route.id);
+  return !!route.supportsFast || (route.proxy === 'codex' && CODEX_FAST_MODELS.has(route.model || route.id));
 }
 
 export function needsCodexBridge(model) {

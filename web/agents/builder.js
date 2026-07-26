@@ -1,6 +1,7 @@
 // Agent Builder panel — describe an agent in natural language; the backend generates it (syntax-checked)
 // into data/agents/<id>/ DISABLED with no granted capabilities. The operator then reviews + grants caps in
 // the Agents tab. Editing an existing drop-in agent reuses the same flow with editId.
+import { groupedModelOptions } from '../model-select.js';
 
 let P = null;
 let host = null;
@@ -43,7 +44,10 @@ async function refreshList() {
 function render() {
   if (!host) return;
   const models = view().data?.models || [];
-  const opts = models.map((m) => `<option value="${esc(m.id)}" ${m.id === model ? 'selected' : ''}>${esc(m.label || m.id)}</option>`).join('') || `<option value="${esc(model)}">${esc(model || '(default)')}</option>`;
+  const opts = groupedModelOptions(models, {
+    selected: model,
+    leading: models.length ? [] : [{ value: model, label: model || '(default)' }],
+  });
   const manageWarn = !hasManage()
     ? '<div class="sup-hint sup-warn">The Builder needs the <b>manage-agents</b> capability to write agents. Enable Builder and grant it in the <b>Agents</b> tab first.</div>'
     : '';

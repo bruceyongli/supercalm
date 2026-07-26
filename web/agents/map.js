@@ -4,6 +4,7 @@ import { mountGraph3d } from './graph3d.js';
 import { mountGraph2d } from './graph2d.js';
 import { mountTimeline } from './timeline.js';
 import { mountIcicle } from './icicle.js';
+import { groupedModelOptions } from '../model-select.js';
 
 // Session "Graph" panel — a DETERMINISTIC, auto-built, zero-extra-LLM map of the session, parsed from the
 // agent transcript (GET /api/session/:id/space): requests → subtask clusters → tool calls (+ subagents),
@@ -263,20 +264,11 @@ function closeConfig() { host?.querySelector('#map-config-pop')?.remove(); }
 // by condition (e.g. local qwen normally; a cloud model when spark is busy). Grouped by provider; the local
 // spark group is floated to the top (free + fastest). A custom/current id not in the catalog is preserved.
 function modelSelectHtml(models, current, modelDefault) {
-  const groups = new Map();
-  for (const m of models || []) { const k = m.provider || 'Other'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
-  const order = [...groups.keys()].sort((a, b) => (/spark|local/i.test(b) ? 1 : 0) - (/spark|local/i.test(a) ? 1 : 0));
-  const known = new Set((models || []).map((m) => m.id));
-  let opts = `<option value="" ${!current ? 'selected' : ''}>Default · ${esc(modelDefault || 'gemini-3.1-flash-lite')}</option>`;
-  if (current && !known.has(current)) opts += `<option value="${esc(current)}" selected>${esc(current)} · custom</option>`;
-  for (const prov of order) {
-    opts += `<optgroup label="${esc(prov)}">` + groups.get(prov).map((m) => {
-      let short = String(m.label || m.id).split(' / ').slice(1).join(' / ') || m.id;
-      short = short.replace(/\s*\([^)]*\)\s*$/, ''); // drop trailing qualifiers: "(High)", "(NVFP4 Marlin)"
-      if (short.length > 26) short = short.slice(0, 25) + '…';
-      return `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''} title="${esc(m.label || m.id)}">${esc(short)}</option>`;
-    }).join('') + `</optgroup>`;
-  }
+  const opts = groupedModelOptions(models, {
+    selected: current,
+    leading: [{ value: '', label: `Default · ${modelDefault || 'gemini-3.1-flash-lite'}` }],
+    groupOrder: (a, b) => (/spark|local/i.test(b) ? 1 : 0) - (/spark|local/i.test(a) ? 1 : 0),
+  });
   return `<select id="cfg-model">${opts}</select>`;
 }
 async function openConfig(row) {

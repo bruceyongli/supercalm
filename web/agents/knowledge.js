@@ -1,4 +1,5 @@
 import { api, $, escapeHtml } from '../common.js';
+import { groupedModelOptions } from '../model-select.js';
 
 // "Project Knowledge" panel — manages #2 CONTEXT.md (shared vocabulary, injected into launches) and
 // #4 wiki (self-maintaining, served to agents over MCP), both PER-PROJECT. Always-on tab (like Graph);
@@ -18,12 +19,10 @@ const post = (path, body) => api(path, { method: 'POST', headers: { 'content-typ
 
 // model <select> from the live fleet catalog; value '' = auto (the module's default/fallback chain).
 function modelSelect(id, models, current) {
-  const groups = new Map();
-  for (const m of (models || [])) { const k = m.providerLabel || m.provider || '?'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(m); }
-  const known = new Set((models || []).map((m) => m.id));
-  let opts = `<option value="" ${!current ? 'selected' : ''}>Auto (default chain)</option>`;
-  if (current && !known.has(current)) opts += `<option value="${esc(current)}" selected>${esc(current)} · custom</option>`;
-  for (const [prov, list] of groups) opts += `<optgroup label="${esc(prov)}">` + list.map((m) => `<option value="${esc(m.id)}" ${m.id === current ? 'selected' : ''}>${esc((m.label || m.id).replace(prov + ' / ', ''))}</option>`).join('') + `</optgroup>`;
+  const opts = groupedModelOptions(models, {
+    selected: current,
+    leading: [{ value: '', label: 'Auto (default chain)' }],
+  });
   return `<select id="${id}" class="kn-model">${opts}</select>`;
 }
 

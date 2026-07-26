@@ -6,6 +6,7 @@ import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop rep
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
 import { FILE_REFERENCE_RX, cleanFileReference, localFilePath } from './file-reference.js';
+import { groupedModelOptions } from './model-select.js';
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
 // app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
@@ -2433,9 +2434,9 @@ function renderSettings(s, tmeta) {
   const activeModel = s.model || tmeta.model;
   const activeModelMeta = (tmeta.models || []).find((m) => m.id === activeModel);
   if ((tmeta.models || []).length > 1) {
-    const models = tmeta.models.map((m) => ({ v: m.id, l: m.label }));
-    if (s.model && !models.some((m) => m.v === s.model)) models.unshift({ v: s.model, l: s.model });
-    html += sel('Model', 'model', models, s.model);
+    html += `<label class="setting setting-select setting-model"><select name="session-model" data-set="model" aria-label="Model">` +
+      groupedModelOptions(tmeta.models, { selected: activeModel }) +
+      `</select></label>`;
   }
   if (s.tool === 'codex' && (s.fastCapable || activeModelMeta?.supportsFast)) html += toggle('fast', 'fastMode', !!s.fastMode);
   if ((tmeta.orchestrations || []).length) html += sel('Orchestration', 'orchestration', tmeta.orchestrations.map((v) => ({ v, l: v })), s.orchestration || 'off');

@@ -70,7 +70,7 @@
         <div class="row"><span class="k">Models</span><span class="v" id="modelsInfo">—</span></div>
         <div class="btnrow"><button class="btn sm" id="checkTools">Check updates + rescan models</button></div>
         <div class="msg" id="toolsMsg"></div>
-        <p class="hint">One click: compares each CLI against its registry and re-pulls every model the proxy fleet serves right now — new models become selectable in New Session / session settings immediately.</p>
+        <p class="hint">One click: compares each CLI against its registry, pulls models from signed-in subscription CLIs first, refreshes configured API providers second, then scans the proxy fleet. New models become selectable immediately; the same model refresh also runs automatically every hour.</p>
       </div>
       <div id="providers"></div>
     </main>

@@ -134,7 +134,7 @@ $('checkTools').onclick = async () => {
     const r = await api('api/tools/check', { method: 'POST' });
     renderTools(r);
     const fresh = (r.tools || []).filter((t) => t.updateAvailable).length;
-    toolsMsg(fresh ? `${fresh} update(s) available` : 'CLIs up to date · model catalog rescanned', 'ok');
+    toolsMsg(fresh ? `${fresh} update(s) available` : 'CLIs up to date · subscription/API model catalog refreshed', 'ok');
   } catch (e) { toolsMsg(e.message, 'err'); }
   b.disabled = false;
 };

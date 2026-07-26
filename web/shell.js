@@ -6,6 +6,7 @@
 import { api, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
 import { navigate } from './navigation.js';
 import { isStaleSessionPatch, mergeSessionPatch, mergeSessionSnapshot } from './session-state.js';
+import { groupedModelOptions } from './model-select.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -390,7 +391,10 @@ export async function openLaunch(opts = {}) {
   const toolBtns = [...m.querySelectorAll('#nl-tool [data-tool]')];
   const fillModels = () => {
     const t = tools.find((x) => x.id === (toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool));
-    q('#nl-model').innerHTML = (t?.models || []).map((mo) => `<option value="${esc(mo.id || mo)}" ${String(mo.id || mo) === String(t.model) ? 'selected' : ''}>${esc(mo.label || mo.id || mo)}</option>`).join('') || '<option value="">default</option>';
+    q('#nl-model').innerHTML = groupedModelOptions(t?.models || [], {
+      selected: t?.model || '',
+      leading: (t?.models || []).length ? [] : [{ value: '', label: 'default' }],
+    });
   };
   fillModels();
   for (const b of toolBtns) b.onclick = () => { toolBtns.forEach((x) => x.classList.toggle('on', x === b)); fillModels(); };

@@ -60,6 +60,20 @@ function runAgyModels() {
   });
 }
 
+export function parseAgyModels(output) {
+  return [...new Set(String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !/\s/.test(line) && !/^(?:model|available models?):?$/i.test(line)))];
+}
+
+// The same authenticated CLI probe powers both auth status and model discovery. Returning the
+// actual ids avoids a second `agy models` process in the catalog scanner.
+export async function listAgyModels() {
+  const { stdout } = await runAgyModels();
+  return parseAgyModels(stdout);
+}
+
 function normalizeError(e) {
   const out = `${e?.stdout || ''}${e?.stderr || ''}${e?.message || ''}`.replace(/\s+/g, ' ').trim();
   if (
@@ -84,7 +98,7 @@ export async function probeAgyCli({ force = false } = {}) {
   if (!force && cache && now - cache.at < CACHE_MS) return cache.value;
   let value;
   try {
-    await runAgyModels();
+    await listAgyModels();
     value = { loggedIn: true, message: 'Antigravity CLI is signed in.', detail: null };
   } catch (e) {
     value = normalizeError(e);

@@ -1,4 +1,5 @@
 import { api, $, escapeHtml } from '../common.js';
+import { groupedModelOptions } from '../model-select.js';
 
 // "Council" panel (dual-mode). COUNCIL: an always-open thinking space — open a Thread (explore / review /
 // debate / design / decision), talk it through with a panel of models grounded in the project's decision
@@ -108,10 +109,10 @@ function kindChipsHtml() {
   return `<div class="cl-kinds">${kinds.map((k) => `<button class="cl-kind k-${esc(k)} ${active.kind === k ? 'on' : ''}" data-kind="${esc(k)}">${esc(k)}</button>`).join('')}</div>`;
 }
 function modelTagsHtml() {
-  const avail = (data?.models || []).map((m) => m.id).filter((id) => !panelModels.includes(id));
-  const opts = avail.slice(0, 60).map((id) => `<option value="${esc(id)}">${esc(id)}</option>`).join('');
+  const avail = (data?.models || []).filter((model) => !panelModels.includes(model.id)).slice(0, 60);
+  const opts = groupedModelOptions(avail, { leading: [{ value: '', label: '+ add' }], custom: false });
   return `<div class="cl-models-row"><span class="cl-ml-label">panel</span>${panelModels.map((m) => `<span class="cl-tag">${esc(m)}<button class="cl-tag-x" data-rm="${esc(m)}">×</button></span>`).join('')}
-    <select id="cl-add-model" class="cl-add-model"><option value="">+ add</option>${opts}</select></div>`;
+    <select id="cl-add-model" class="cl-add-model">${opts}</select></div>`;
 }
 function captureStatusHtml() {
   if (!captureResult) return '';

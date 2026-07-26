@@ -1,5 +1,6 @@
 import { $, $$, api, coalesce, fmtAgo, escapeHtml, wireMic, registerSW, enablePush, pushStatus, isInteracting, setDashboardBrowserIdentity } from './common.js';
 import { startVoiceMode } from './voicemode.js';
+import { groupedModelOptions } from './model-select.js';
 
 let STATE = { sessions: [], projects: [], queue: [], tools: [], counts: {} };
 
@@ -337,7 +338,7 @@ function updateToolDeps() {
       modelSel.style.display = '';
       if (modelLabel) modelLabel.style.display = '';
       if (!models.some((m) => m.id === nsModel)) nsModel = t.model || models[0].id;
-      modelSel.innerHTML = models.map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.label || m.id)}</option>`).join('');
+      modelSel.innerHTML = groupedModelOptions(models, { selected: nsModel || '' });
       modelSel.value = nsModel;
       modelSel.onchange = () => {
         nsModel = modelSel.value;

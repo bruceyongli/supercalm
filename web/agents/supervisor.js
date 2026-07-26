@@ -1,4 +1,5 @@
 import { fmtAgo } from '../common.js';
+import { groupedModelOptions } from '../model-select.js';
 
 // Supervisor panel module — { mount, update } over the agent SDK. Config/verdict/history/models all
 // come from the registry view (papi.view()); actions go through papi.call(); enable/caps/config through
@@ -420,16 +421,10 @@ function renderHeader() {
 function chainEditorHtml(d, models, chain) {
   const custom = !!d.fallback_models?.length;
   const inChain = new Set(chain);
-  const byProvider = new Map();
-  for (const m of models) {
-    if (inChain.has(m.id)) continue;
-    const p = m.provider || 'other';
-    if (!byProvider.has(p)) byProvider.set(p, []);
-    byProvider.get(p).push(m);
-  }
-  const groups = [...byProvider.entries()]
-    .map(([p, ms]) => `<optgroup label="${esc(p)}">${ms.map((m) => `<option value="${esc(m.id)}">${esc(m.label)}${m.vision ? ' (vision)' : ''}</option>`).join('')}</optgroup>`)
-    .join('');
+  const groups = groupedModelOptions(models.filter((model) => !inChain.has(model.id)), {
+    leading: [{ value: '', label: 'Add model…' }],
+    custom: false,
+  });
   const rows = chain.map((id, i) => {
     const m = models.find((mm) => mm.id === id);
     return `<div class="sup-chain-row" data-idx="${i}">
@@ -446,7 +441,7 @@ function chainEditorHtml(d, models, chain) {
     <div class="sup-hint">Tried in order until one answers. First is the primary model.${custom ? '' : ' <span class="muted">(tool-aware default — edit to customize)</span>'}</div>
     ${rows || '<div class="sup-hint muted">No models in the chain.</div>'}
     <div class="sup-chain-add">
-      <select id="sup-chain-add"><option value="">Add model…</option>${groups}</select>
+      <select id="sup-chain-add">${groups}</select>
       ${custom ? '<button type="button" class="btn ghost sm" id="sup-chain-reset">Reset to default</button>' : ''}
     </div>
   </div>`;

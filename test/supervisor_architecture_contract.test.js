@@ -343,7 +343,8 @@ const ctx = {
   assert.doesNotMatch(ui, /id="sup-observe"/, 'the legacy observe-only checkbox is gone (the mode control replaced it)');
   assert.doesNotMatch(ui, /id="sup-fallbacks"/, 'the raw comma-separated chain input is gone (the chain editor replaced it)');
   assert.match(ui, /id="sup-chain-add"/, 'chain editor add-select exists');
-  assert.match(ui, /optgroup/, 'chain add-select groups models by provider');
+  assert.match(ui, /groupedModelOptions/, 'chain add-select uses the shared provider-group renderer');
+  assert.match(readFileSync(new URL('../web/model-select.js', import.meta.url), 'utf8'), /optgroup/, 'shared renderer groups models by provider');
   // Learning card: collapsible shell with count badges in the summary, and the one-click triage
   // (review + apply) available in the panel, not only on /decisions.
   assert.match(ui, /sup-learn-wrap/, 'Learning card is collapsible');

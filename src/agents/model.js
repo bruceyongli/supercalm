@@ -172,19 +172,33 @@ function callOnce(route, messages, { temperature = 0.1, maxTokens = 4000, json =
   });
 }
 
-// Curated, de-duped list of recommended chat models from the live proxy catalog, with vision flags.
+// De-duped list of available chat models from the live catalog, with grouping + vision metadata.
 // Shared by agents that expose a model picker (supervisor, builder).
 export function curatedModels(defaultModel) {
   const seen = new Set();
   const out = [];
   for (const m of listProxyModels({ liveOnly: true })) {
-    if ((m.kind || 'chat') === 'image' || !m.recommended || seen.has(m.id)) continue;
+    if ((m.kind || 'chat') !== 'chat' || seen.has(m.id)) continue;
     seen.add(m.id);
-    out.push({ id: m.id, label: m.label, provider: m.provider, vision: isVisionRoute(routeForModel(m.id)) });
+    out.push({
+      id: m.id,
+      label: m.label,
+      modelLabel: m.modelLabel,
+      provider: m.provider,
+      providerLabel: m.providerLabel,
+      vision: m.vision || isVisionRoute(routeForModel(m.id)),
+    });
   }
   if (defaultModel && !seen.has(defaultModel)) {
     const r = routeForModel(defaultModel);
-    out.unshift({ id: defaultModel, label: r.providerLabel ? `${r.providerLabel} / ${r.label}` : defaultModel, provider: r.proxy, vision: isVisionRoute(r) });
+    out.unshift({
+      id: defaultModel,
+      label: r.providerLabel ? `${r.providerLabel} / ${r.label}` : defaultModel,
+      modelLabel: r.label || defaultModel,
+      provider: r.proxy,
+      providerLabel: r.providerLabel || r.proxy,
+      vision: isVisionRoute(r),
+    });
   }
   return out;
 }

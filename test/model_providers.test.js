@@ -7,7 +7,7 @@ import http from 'node:http';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-prov-'));
 
-const { listProviders, upsertProvider, deleteProvider, normalizeBase, providerRoutes, probeProvider } = await import('../src/model_providers.js');
+const { listProviders, upsertProvider, deleteProvider, normalizeBase, providerRoutes, probeProvider, refreshProviderModels } = await import('../src/model_providers.js');
 const { routeForModel, listProxyModels, userRoutes } = await import('../src/model_catalog.js');
 const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js');
 
@@ -91,6 +91,11 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const probe = await probeProvider({ kind: 'openai', base_url: 'http://127.0.0.1:9999', api_key: 'k' });
   assert.equal(probe.ok, true);
   assert.deepEqual(probe.models, ['m-one', 'm-two']);
+  const testProv = listProviders().find((provider) => provider.name === 'TestProv');
+  upsertProvider({ id: testProv.id, name: testProv.name, kind: testProv.kind, base_url: testProv.base_url, models: ['stale-model'] });
+  const refreshed = await refreshProviderModels();
+  assert.ok(refreshed.updated >= 1, 'configured API provider lists refresh automatically');
+  assert.deepEqual(listProviders().find((provider) => provider.id === testProv.id).models, ['m-one', 'm-two']);
   await new Promise((ok) => mock.close(ok));
 }
 
