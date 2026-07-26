@@ -141,10 +141,18 @@ route('GET', '/api/changes', async (req, res, params, url) => {
       if (d && !seen.has(k)) { seen.add(k); raw.push(d); }
     }
   }
-  const distilled = await distillChanges(raw);
-  const body = { ok: true, from, to, changes: (distilled && distilled.length) ? distilled : raw.slice(0, 6), total: raw.length, distilled: !!distilled };
+  // Release comments are latency-sensitive UI content. Return the cleaned commits immediately instead
+  // of making the toast wait for an LLM rewrite; refine the cache asynchronously for later tabs/views.
+  const body = { ok: true, from, to, changes: raw.slice(0, 6), total: raw.length, distilled: false };
   _changeCache.set(key, { body, at: Date.now() });
   json(res, 200, { ...body, url: compare });
+  if (raw.length) distillChanges(raw).then((distilled) => {
+    if (!distilled?.length) return;
+    _changeCache.set(key, {
+      body: { ok: true, from, to, changes: distilled, total: raw.length, distilled: true },
+      at: Date.now(),
+    });
+  }).catch(() => {});
 });
 route('POST', '/api/update/check', async (req, res) => {
   await checkNow();

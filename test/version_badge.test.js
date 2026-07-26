@@ -9,6 +9,7 @@ const styles = readFileSync(new URL('web/styles.css', root));
 const outDir = new URL('test-results/version-toast/', root);
 mkdirSync(outDir, { recursive: true });
 let releaseChannel = 'stable';
+let changesDelayMs = 0;
 
 const fixture = `<!doctype html>
 <html><head><base href="/"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -34,6 +35,13 @@ const server = createServer((req, res) => {
   if (path === '/styles.css') { res.writeHead(200, { 'content-type': 'text/css' }); res.end(styles); return; }
   if (path === '/api/version') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ version: '0.3.172', channel: releaseChannel })); return; }
   if (path === '/api/update') { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{}'); return; }
+  if (path === '/api/changes') {
+    setTimeout(() => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ changes: ['Faster release comments'], url: 'https://example.test/compare' }));
+    }, changesDelayMs);
+    return;
+  }
   res.writeHead(200, { 'content-type': 'text/html' }); res.end(fixture);
 });
 
@@ -53,6 +61,10 @@ try {
   await page.goto(base, { waitUntil: 'networkidle' });
   const toast = page.locator('#aios-version-toast.in');
   await toast.waitFor();
+  assert.equal((await toast.locator('.vt-line').innerText()).trim(), 'Updated v0.3.171 → v0.3.172',
+    'upgrade copy is only the old-to-new version transition');
+  assert.doesNotMatch(await toast.innerText(), /while you/i);
+  await page.waitForFunction(() => document.querySelector('[data-changes]')?.textContent?.includes('Faster release comments'));
 
   const [toastBox, composerBox] = await Promise.all([
     toast.boundingBox(),
@@ -95,6 +107,7 @@ try {
   await routineContext.close();
 
   releaseChannel = 'stable';
+  changesDelayMs = 400;
   const autoContext = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   await autoContext.addInitScript(() => {
     localStorage.setItem('aios_seen_version', '0.3.171');
@@ -103,8 +116,12 @@ try {
     window.setTimeout = (fn, delay, ...args) => realSetTimeout(fn, delay === 8000 ? 600 : delay, ...args);
   });
   const autoPage = await autoContext.newPage();
-  await autoPage.goto(base, { waitUntil: 'networkidle' });
+  await autoPage.goto(base, { waitUntil: 'domcontentloaded' });
   await autoPage.locator('#aios-version-toast.in').waitFor();
+  await autoPage.waitForTimeout(750);
+  assert.equal(await autoPage.locator('#aios-version-toast.in').count(), 1,
+    'dismissal interval starts after delayed release comments arrive, not when the toast first mounts');
+  assert.match(await autoPage.locator('[data-changes]').innerText(), /Faster release comments/);
   await autoPage.locator('#aios-version-toast').waitFor({ state: 'detached', timeout: 1500 });
   await autoContext.close();
 

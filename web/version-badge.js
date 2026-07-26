@@ -146,10 +146,12 @@
     };
     el.innerHTML =
       `<span class="vt-up">✦</span>` +
-      `<span class="vt-text"><span class="vt-line">Updated <b>v${seen}</b> → <b>v${version}</b> while you were away</span>` +
+      `<span class="vt-text"><span class="vt-line">Updated <b>v${seen}</b> → <b>v${version}</b></span>` +
       `<span class="vt-sub" data-changes>What’s new — loading…</span></span>` +
       `<span class="vt-x" data-dismiss="1" title="Dismiss">×</span>`;
-    revealToast(el, { autoDismiss: UPGRADE_NOTICE_MS });
+    // Keep the toast present while its release comments load. Starting the short dismissal window here
+    // used to make a slow /api/changes response arrive after the toast was already gone.
+    revealToast(el);
     // Fill in WHAT changed — cleaned commit subjects between the two versions + a details link to the GitHub
     // compare page. Fail-soft: on error/empty, keep the generic "review Settings" hint.
     getJson(`api/changes?from=${encodeURIComponent(seen)}&to=${encodeURIComponent(version)}`).then((r) => {
@@ -158,6 +160,9 @@
       const items = (r?.changes || []).slice(0, 4); // the distilled list is already the curated summary
       const link = r?.url ? ` · <a data-gh href="${esc(r.url)}" target="_blank" rel="noopener">what’s new ↗</a>` : '';
       sub.innerHTML = (items.length ? items.map(esc).join(' · ') : 'Things may have moved — review Settings') + link;
+    }).finally(() => {
+      // Give the operator the full display interval AFTER the comments (or fail-soft fallback) render.
+      if (shown === 'upgraded:' + version && el.isConnected) revealToast(el, { autoDismiss: UPGRADE_NOTICE_MS });
     });
   }
 
