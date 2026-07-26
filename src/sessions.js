@@ -41,6 +41,7 @@ import { chatJson } from './llm.js';
 import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
 import { ensureWorktree, isolatedWorktreeForLaunch, removeWorktree } from './worktrees.js';
+import { isolationResumeBlocked } from './resume_policy.js';
 import {
   attentionUnreadCount,
   clearAttentionDismissal,
@@ -49,6 +50,7 @@ import {
   markAttentionReportRead,
 } from './attention_store.js';
 import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
+import { agentInputReady } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -58,6 +60,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // pasted text; a brief pause lets the composer register the text so Enter submits.
 const SUBMIT_DELAY_MS = Number(process.env.AIOS_SUBMIT_DELAY || 320);
 const AUTH_GRACE_MS = Number(process.env.AIOS_AUTH_GRACE || 120000); // post-relaunch window where replayed 401s are ignored
+const RESUME_INPUT_READY_MS = Number(process.env.AIOS_RESUME_INPUT_READY_MS || 30_000);
 const POLL_MS = 1500;
 const TAIL_MS = 250;
 const TERMINAL_SNAPSHOT_LINES = Math.max(200, Math.min(20000, Number(process.env.AIOS_TERMINAL_SNAPSHOT_LINES || 6000)));
@@ -316,6 +319,17 @@ async function paneCmd(name) {
   } catch {
     return '';
   }
+}
+
+async function waitForAgentInput(name, timeoutMs = RESUME_INPUT_READY_MS) {
+  const deadline = now() + Math.max(0, Number(timeoutMs) || 0);
+  do {
+    const screen = await tmux('capture-pane', '-p', '-t', name).catch(() => '');
+    if (agentInputReady(screen)) return true;
+    if (!(await tmuxOk('has-session', '-t', name))) return false;
+    await sleep(250);
+  } while (now() < deadline);
+  return false;
 }
 
 // Is the pane currently on the alternate screen? Full-screen TUIs (Claude Code) enter it once at
@@ -828,7 +842,7 @@ export function queueLaunch(args) {
 }
 
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
-export async function resume(sid, { force = false } = {}) {
+export async function resume(sid, { force = false, waitForInput = false } = {}) {
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
@@ -844,13 +858,27 @@ export async function resume(sid, { force = false } = {}) {
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
   const project = s.project_id ? store.getProject(s.project_id) : null;
   // Isolated session: reuse its worktree (re-`git worktree add` if the registration was pruned). Its
-  // cwd wins over project.path for the pane AND the codex rollout lookup. Fail-open to the shared tree.
+  // cwd wins over project.path for the pane AND the codex rollout lookup.
   let cwd = undefined;
   if (s.worktree_path && project?.path) {
     try {
       const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
       cwd = wt?.path;
-    } catch (e) { console.error('[aios] worktree resume reuse failed (fail-open):', e?.message || e); }
+    } catch (e) { console.error('[aios] worktree resume reuse failed:', e?.message || e); }
+  }
+  // FAIL CLOSED on lost isolation. This used to fall through to the shared checkout, which silently
+  // dropped the deploy interlock: startPane derives `isolated = cwd !== project.path`, so a shared-tree
+  // cwd omits AIOS_NO_DEPLOY=1 and the relaunched agent can deploy from the live checkout while the DB
+  // row still claims a worktree. Automatic recovery (supervisor exit-recovery calls resume with
+  // force:true) makes that reachable with no human in the loop, so restore the recorded worktree or
+  // refuse — `force` overrides a launch-manifest mismatch only, never isolation (see resume_policy.js).
+  if (isolationResumeBlocked({ worktreePath: s.worktree_path, restoredCwd: cwd })) {
+    store.addEvent(sid, 'resume-refused', { reason: 'isolation-lost', worktree_path: s.worktree_path });
+    const err = new Error('resume refused — the isolated worktree could not be restored (' + s.worktree_path + '); refusing to relaunch in the shared checkout');
+    err.code = 'isolation-lost';
+    err.isolationLost = true;
+    err.sid = sid;
+    throw err;
   }
   // VERIFIED RESUME (v4 Phase 3, launch_contract.js): heal silently-lost flags from the manifest
   // (the lost-autonomy-flags incident class); refuse identity drift loudly instead of degrading.
@@ -902,7 +930,8 @@ export async function resume(sid, { force = false } = {}) {
   emitSessionStatus(updated, { previousStatus: s.status, source: 'resume' });
   bus.emit('changed');
   bus.emit('event', { type: 'resume', session: sid });
-  return updated;
+  if (!waitForInput) return updated;
+  return { ...updated, input_ready: await waitForAgentInput(name) };
 }
 
 function markExited(entry, code) {

@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 
 const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE, cardLifecycleDirective } = await import('../src/agents/supervisor/send_policy.js');
+const { DELEGATED_HOW_ADDENDUM, detectsPendingPlanApproval, enforceAnswerSafety } = await import('../src/agents/answer_prompt.js');
+
+// Hard reason codes are safety decisions, not advisory labels: a contradictory model action fails closed.
+for (const reason_code of ['integrity', 'goal_conflict', 'human_gate']) {
+  const guarded = enforceAnswerSafety({ action: 'answer', answer: 'Proceed anyway', reason_code, reason: 'hard blocker' });
+  assert.equal(guarded.action, 'escalate');
+  assert.equal(guarded.answer, '');
+}
+assert.equal(enforceAnswerSafety({ action: 'answer', answer: 'Use strict', reason_code: 'none' }).action, 'answer');
+const planContext = { question: 'Here is my implementation plan. Approve the plan / say go and I will start.' };
+assert.equal(detectsPendingPlanApproval(planContext), true);
+assert.equal(enforceAnswerSafety({ action: 'answer', answer: 'Go', reason_code: 'none' }, planContext).action, 'escalate');
+assert.equal(detectsPendingPlanApproval({ question: 'The approved plan is executing; choose the strict parser.' }), false);
+assert.match(DELEGATED_HOW_ADDENDUM, /all listed alternatives satisfy the established goal/i);
+assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|Tier-3)/);
 
 // ---- modeOf: legacy resolution (mode wins; observe_only only as fallback; NEVER default-merged) ----
 {
@@ -118,6 +133,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
   assert.match(ap, /"audience":"builder_blocked"/, 'addendum defines the audience field');
   assert.match(ap, /Do not escalate solely because the audience is the operator/, 'model answers on merits; the gate decides delivery');
+  assert.match(ap, /reversible implementation-method choice[\s\S]{0,180}not a product-scope fork/i, 'autopilot distinguishes reversible HOW choices from operator-owned WHAT choices');
   // the lab exists and covers the incident matrix
   const lab = readFileSync(new URL('../scripts/supervisor-lab.mjs', import.meta.url), 'utf8');
   for (const sc of ['1-self-echo-cross-session', '2-card-lifecycle-block', '3-reserved-deploy-menu', '4-operator-audience', '4b-audience-autopilot-delegation', '5-stage-plan-approval', '6-context-footer-not-wedge', '7-model-403-switch', '8-dig-for-truth', '9-between-tasks-dod-bound', '10-goal-doubt-hold']) {

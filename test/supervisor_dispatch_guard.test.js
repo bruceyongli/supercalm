@@ -9,7 +9,7 @@ import { join } from 'node:path';
 process.env.AIOS_DATA = process.env.AIOS_DATA || mkdtempSync(join(tmpdir(), 'aios-dispatch-guard-'));
 
 const assert = (await import('node:assert/strict')).default;
-const { dispatchSupervisorSend, triggeringSignal } = await import('../src/agents/supervisor/dispatch.js');
+const { correctiveFingerprint, dispatchSupervisorSend, triggeringSignal } = await import('../src/agents/supervisor/dispatch.js');
 const { db } = await import('../src/store.js');
 
 const sends = [];
@@ -21,6 +21,12 @@ const snapshot = {
   session: {},
 };
 const sig = () => triggeringSignal('agent_question', 'test ask', 'test');
+assert.equal(
+  correctiveFingerprint('Still unmet after 45s: run 2 tests.'),
+  correctiveFingerprint('Still unmet after 112s: run 2 tests.'),
+  'elapsed-only rewrites share one corrective fingerprint'
+);
+assert.notEqual(correctiveFingerprint('Fix criterion 1.'), correctiveFingerprint('Fix criterion 2.'), 'criterion numbers remain meaningful');
 
 // The verbatim incident directive, on the answer path: blocked, nothing delivered.
 const INCIDENT = 'Start the pending “Workflow Editor design + connection fixes” card as the active task. Treat the Workflow log UI redesign card as done/closed rather than merging the two goals; preserve its history, then continue on the editor card.';
@@ -53,12 +59,25 @@ const INCIDENT = 'Start the pending “Workflow Editor design + connection fixes
   assert.equal(sends.length, 2);
 }
 
+// A reply to our own challenge must not license the same demand against unchanged work. Recovery
+// remains exempt because its retry schedule is intentional.
+{
+  const correction = 'Still unmet: drive the composer walkthrough and paste full-suite output (45s).';
+  const first = await dispatchSupervisorSend(ctx, { snapshot, ruleId: 'verify.corrective', actionType: 'challenge', text: correction, allowedSend: true, triggeringSignal: sig() });
+  const duplicate = await dispatchSupervisorSend(ctx, { snapshot, ruleId: 'verify.corrective', actionType: 'challenge', text: correction.replace('45s', '112s'), allowedSend: true, triggeringSignal: sig() });
+  assert.equal(first.sent, true);
+  assert.equal(duplicate.sent, false);
+  assert.equal(duplicate.reason, 'duplicate-corrective-no-new-work');
+  const recovery = await dispatchSupervisorSend(ctx, { snapshot, ruleId: 'recover.retry', actionType: 'recover', text: correction, allowedSend: true, triggeringSignal: sig() });
+  assert.equal(recovery.sent, true, 'scheduled recovery is exempt from corrective dedupe');
+}
+
 // The blocks were RECORDED with the distinct reason (what the panel feed shows the operator).
 {
   const rows = db.prepare("SELECT suppression_reason, sent FROM supervisor_decisions WHERE session_id='s_disp_guard' ORDER BY ts").all();
-  assert.equal(rows.length, 4, 'every dispatch recorded a decision');
-  assert.deepEqual(rows.map((r) => r.suppression_reason), ['card-lifecycle-operator-reserved', 'card-lifecycle-operator-reserved', '', '']);
-  assert.deepEqual(rows.map((r) => r.sent), [0, 0, 1, 1]);
+  assert.equal(rows.length, 7, 'every dispatch recorded a decision');
+  assert.deepEqual(rows.map((r) => r.suppression_reason), ['card-lifecycle-operator-reserved', 'card-lifecycle-operator-reserved', '', '', '', 'duplicate-corrective-no-new-work', '']);
+  assert.deepEqual(rows.map((r) => r.sent), [0, 0, 1, 1, 1, 0, 1]);
 }
 
 console.log('supervisor_dispatch_guard.test ok');

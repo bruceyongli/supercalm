@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, buildAnswerUserText } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, enforceAnswerSafety } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -38,8 +38,13 @@ import {
   VERIFY_EVIDENCE_VERSION,
   VERIFY_PROMPT_VERSION,
   buildVerifierSystemPrompt,
+  deriveVerificationFacts,
+  detectOutOfBandEvidence,
+  detectUnsubmittedApprovalDraft,
+  enforceVerificationFacts,
   isVisualWork as detectVisualWork,
   normalizeVerificationResult,
+  verifierContractScope,
 } from './supervisor/verify.js';
 import {
   dispatchSupervisorCommand,
@@ -57,6 +62,8 @@ import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
 import { proxyAuthRecoveryMessage } from './external_recovery.js';
 import { currentOperatorRequirements, formatOperatorRequirements } from './operator_requirements.js';
+import { recoveryAttempt } from './exit_recovery.js';
+import { pendingComposerDraft } from '../agent_input_ready.js';
 
 // Supervisor — an active, auto-pilot supervisor for ONE coding-agent session, judged against a
 // markdown supervision doc (goal / hard rules / acceptance criteria / agreed decisions). Each tick it
@@ -92,6 +99,7 @@ const GATE_REPEAT_COOLDOWN_MS = Number(process.env.AIOS_SUPERVISOR_GATE_REPEAT_C
 const PROXY_RECOVERY_REPEAT_MS = Number(process.env.AIOS_SUPERVISOR_PROXY_RECOVERY_REPEAT_MS || 10 * 60 * 1000); // keep pushing a recoverable model-proxy auth blocker if the agent stays wedged
 const EXIT_RECOVERY_WINDOW_MS = Number(process.env.AIOS_SUPERVISOR_EXIT_RECOVERY_WINDOW_MS || 12 * 60 * 60 * 1000); // keep ticking recently exited supervised sessions long enough to recover unexpected exits
 const EXIT_RECOVERY_MAX_ATTEMPTS = Number(process.env.AIOS_SUPERVISOR_EXIT_RECOVERY_MAX_ATTEMPTS || 2); // bounded resumes per distinct unexpected-exit episode
+const COMPOSER_WEDGE_MS = Number(process.env.AIOS_SUPERVISOR_COMPOSER_WEDGE_MS || 20 * 60 * 1000); // unchanged pending composer text becomes one operator-visible incident
 const QUESTION_ONLY_WINDOW_MS = Number(process.env.AIOS_SUPERVISOR_QUESTION_ONLY_WINDOW_MS || 60 * 60 * 1000); // recent operator "answer only / don't fix" instructions suppress implementation gates
 const GOAL_CONFLICT_RESYNC_AFTER = Number(process.env.AIOS_SUPERVISOR_GOAL_CONFLICT_RESYNC_AFTER || 2); // repeated goal_conflict -> try a doc catch-up before holding again
 // Goal-doubt HOLD (default ON, env kill-switch): when the supervisor concludes the agent should NOT be
@@ -101,12 +109,6 @@ const GOAL_CONFLICT_RESYNC_AFTER = Number(process.env.AIOS_SUPERVISOR_GOAL_CONFL
 const GOAL_DOUBT = process.env.AIOS_SUPERVISOR_GOAL_DOUBT !== '0';
 const HOLD_REASONS = new Set(['goal_conflict', 'integrity', 'human_gate']); // reason_codes that arm the hold
 const goalDoubtOn = (cfg) => GOAL_DOUBT && cfg?.goal_doubt !== false; // env kill-switch AND the per-session toggle
-// Cross-provider fallback chain for the supervisor's OWN model calls — so a 429/outage on the primary
-// provider doesn't blind the supervisor. Overridable via config.fallback_models or env (comma list).
-const DEFAULT_FALLBACKS = (process.env.AIOS_SUPERVISOR_FALLBACKS || 'gpt-5.5,claude-haiku-4-5,gemini-3.1-flash-lite')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
 // Backoff before each retry when the AGENT session hits a transient/rate-limit error, then escalate.
 const DEFAULT_RETRY_INTERVALS = [60, 1800, 10800]; // 1 min, 30 min, 3 hr
 const MAX_DOC_CHARS = 40000;
@@ -537,7 +539,8 @@ function signoffStillSettled(ctx, cfg, st, gateKey) {
 
 export function buildChallenge(doc, ctx = null, snapshot = null) {
   const s = docSections(doc);
-  const crit = bySection(s, 'acceptance', 'criteria', 'definition of done', 'done');
+  const crit = bySection(s, 'acceptance', 'criteria', 'definition of done', 'done')
+    .filter((item) => !/^\(?\s*(?:none|none yet|tbd|to be defined)\s*\)?[.!]?$/i.test(item));
   const rules = filterHardRulesForCurrentTask(bySection(s, 'hard rule', 'rules', 'constraint', 'non-negotiable'), snapshot?.currentTask || null);
   const decs = filterHardRulesForCurrentTask(bySection(s, 'decision', 'agreement', 'agreed'), snapshot?.currentTask || null);
   const ack = ctx ? latestOperatorAck(ctx.sessionId) : null;
@@ -724,15 +727,39 @@ function canSend(ctx, cfg, kind = 'nudge', meta = {}) {
 // Tool-aware default fallback chain: LEAD with a different provider than the supervised session's own tool,
 // so the supervisor isn't down for the same reason the session is (a codex/GPT outage shouldn't also blind
 // a GPT-primary supervisor). Operator-overridable per session (cfg.fallback_models / the Model pick).
+const TOOL_AWARE_MODEL_CHAINS = Object.freeze({
+  // Measured Supervisor order (2026-07-22): strongest non-Codex head, cross-provider second,
+  // then same-provider redundancy before the supervised session's own provider.
+  codex: Object.freeze(['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol']),
+  // A Claude session must not share its failure domain with the Supervisor head. Keep two independent
+  // providers ahead of the Claude fallbacks, then use the measured Claude quality order.
+  claude: Object.freeze(['glm-5.2', 'gpt-5.6-sol', 'claude-opus-4-8', 'claude-fable-5']),
+  // Neutral tools use the measured quality order with provider diversity before Claude redundancy.
+  other: Object.freeze(['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol']),
+});
+
+function dedupeModels(chain) {
+  const out = [];
+  const seen = new Set();
+  for (const model of chain || []) {
+    const id = String(model || '').trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  }
+  return out;
+}
+
 export function defaultChain(tool) {
-  const fleet = tool === 'codex'
-    ? ['claude-opus-4-8', 'gpt-5.5', 'gemini-pro-agent'] // session=GPT -> lead Claude
-    : ['gpt-5.5', 'claude-opus-4-8', 'gemini-pro-agent']; // claude / agy / default -> lead GPT
+  const family = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : 'other';
+  const fleet = TOOL_AWARE_MODEL_CHAINS[family];
   // No fleet? User API providers (Auth & Models) tail the chain so the supervisor still thinks —
   // resolved live, so a provider added after enable is picked up on the next tick.
-  try { return [...fleet, ...userRoutes().slice(0, 2).map((r) => r.id)]; } catch { return fleet; }
+  try { return dedupeModels([...fleet, ...userRoutes().slice(0, 2).map((r) => r.id)]); }
+  catch { return [...fleet]; }
 }
-function modelChain(cfg, session) {
+export function modelChain(cfg, session) {
   const dflt = defaultChain(session?.tool);
   // A Model pick other than the framework default pins the primary; otherwise the tool-aware head leads.
   const pinned = cfg.model && cfg.model !== DEFAULT_MODEL ? cfg.model : null;
@@ -740,10 +767,7 @@ function modelChain(cfg, session) {
   if (Array.isArray(cfg.fallback_models) && cfg.fallback_models.length) chain = cfg.fallback_models; // explicit FULL chain (what the operator typed in the box)
   else if (pinned) chain = [pinned, ...dflt];
   else chain = dflt;
-  const out = [];
-  const seen = new Set();
-  for (const m of chain) if (m && !seen.has(m)) (seen.add(m), out.push(m));
-  return out;
+  return dedupeModels(chain);
 }
 function primaryModel(ctx, cfg) {
   return modelChain(cfg, ctx.session())[0] || cfg.model || DEFAULT_MODEL;
@@ -769,21 +793,54 @@ async function callChain(ctx, cfg, messages, opts = {}) {
   throw lastErr;
 }
 
+const JSON_USER_CONTRACT = 'Return the result as one valid json object.';
+// `userContent` is a STRING for text-only calls, but an ARRAY of content parts ({type:'text'} +
+// {type:'image_url'}) whenever the verifier attaches screenshots to a vision route (runVerify).
+// String()-coercing that array yields "[object Object],[object Object]": EVIDENCE_JSON and every
+// image are destroyed, and the model is asked for a verdict on a session it was never shown. It then
+// answers about a project it invented — measured 2026-07-25 on a frozen scenario, 6 of 20 calls
+// returned confident verdicts about six DIFFERENT fabricated codebases (a Vite scaffold, a rate
+// limiter, a WAL torture harness...). So the contract is APPENDED AS ITS OWN PART, never by
+// coercion. Text-only routes lose nothing: callChain's textOnly() joins every text part, including
+// this one, and drops only the images the route cannot accept.
+function withJsonContract(userContent) {
+  if (Array.isArray(userContent)) return [...userContent.filter(Boolean), { type: 'text', text: JSON_USER_CONTRACT }];
+  return String(userContent || '') + '\n\n' + JSON_USER_CONTRACT;
+}
+
 async function callJson(ctx, cfg, sys, userContent, opts = {}) {
   let raw = null;
   let error = null;
   let parsed = null;
   let model = primaryModel(ctx, cfg);
-  try {
-    const r = await callChain(ctx, cfg, [
-      { role: 'system', content: sys },
-      { role: 'user', content: userContent },
-    ], { json: true, ...opts });
-    raw = r.content;
-    model = r.model;
-    parsed = parseJsonObject(raw);
-  } catch (e) {
-    error = String(e.message || e);
+  // Codex /responses requires the literal lowercase word "json" in an input message when
+  // response_format=json_object. Its chat adapter maps the system prompt to `instructions`, so the
+  // contract must ride in user content too; putting it only in the system prompt still fails 400.
+  const system = String(sys || '') + '\n\nOUTPUT FORMAT: Return exactly one valid json object and nothing else.';
+  const user = withJsonContract(userContent);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const r = await callChain(ctx, cfg, [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ], { json: true, ...opts });
+      raw = r.content;
+      model = r.model;
+      try {
+        parsed = parseJsonObject(raw);
+        error = null;
+        break;
+      } catch (e) {
+        error = String(e.message || e);
+        if (attempt === 0) {
+          ctx.log(`model '${model}' returned unusable json; retrying once`);
+          continue;
+        }
+      }
+    } catch (e) {
+      error = String(e.message || e);
+      break;
+    }
   }
   return { parsed, raw, error, model };
 }
@@ -911,10 +968,25 @@ function formatFactCheckEvidence(ev) {
   return parts.join('\n\n');
 }
 
+function answerEscalationKey(session) {
+  return h32((session?.category || '') + '|' + clampLine(session?.question || session?.summary || '', 200).toLowerCase());
+}
+
 async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sentTries = tries) {
   const s = ctx.session();
   const question = s?.question || s?.summary || '';
   if (await maybeSendProxyAuthRecovery(ctx, cfg, ev, trigger, snapshot)) return;
+  // Once a choice has been escalated, it belongs to the operator until a NEW submitted operator
+  // message arrives. A later model tick cannot quietly answer the same question itself.
+  const escKey0 = answerEscalationKey(s);
+  const open0 = Array.isArray(ctx.getState().openEscalations) ? ctx.getState().openEscalations : [];
+  const bound0 = open0.find((item) => item?.key === escKey0);
+  if (bound0 && !hasOperatorMessageSince(db, ctx.sessionId, Number(bound0.at || 0))) {
+    logIntervention(ctx, { kind: 'escalate', trigger, model: null, verdict: 'held', assessment: 'This decision was already escalated to the operator and remains binding; no submitted operator reply has resolved it.', message: '', sent: 0 });
+    ctx.emit('review', { verdict: 'held', summary: 'awaiting the operator on an escalated decision' });
+    return;
+  }
+  if (bound0) applySupervisorState(ctx, { openEscalations: open0.filter((item) => item?.key !== escKey0) });
   // On a re-grill the agent has resisted a directive that was actually DELIVERED (sentTries — drafts the
   // mode held never reached it, so there is nothing to refute). Pull git GROUND TRUTH so the answer model
   // can fact-check the claim, instead of just re-asserting. Only re-grills pay for the diff.
@@ -1021,22 +1093,48 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   let sys = pb.sys_answer;
   if (calibrated) sys += '\n\n' + pb.calibration_addendum;
   if (auto) sys += '\n\n' + pb.autonomy_addendum;
+  if (auto) sys += '\n\n' + DELEGATED_HOW_ADDENDUM;
   sys += '\n\n' + STAGE_ADDENDUM; // stand down if the agent is still planning / awaiting plan approval (any playbook version)
   sys += '\n\n' + RESERVED_APPROVAL_ADDENDUM; // deploy-incident hardening: operator words ONLY from OPERATOR_MESSAGES, never the terminal
   sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: other sessions' work is subject matter, not jurisdiction; card lifecycle is the operator's
+  sys += '\n\n' + ESCALATION_HYGIENE_ADDENDUM; // escalation-record hygiene: name the reserved CLASS abstractly, never parrot the agent's approval/deploy verbs (cleans raw + reason)
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
-  const { parsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
+  const { parsed: modelParsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
+  const parsed = enforceAnswerSafety(modelParsed, {
+    question,
+    summary: s?.summary,
+    terminalTail: ev.terminal_tail,
+  });
 
   const answer = clampLine(parsed?.answer, 1500);
   // Audience gate (self-echo first domino): the model must classify WHO the pending item is for.
   // A report/option list addressed to the OPERATOR gets answered only under an explicit autopilot
   // stance (real delegation); otherwise it escalates no matter how confident the model is.
   // Deterministic on the model's own JSON field; absent field = legacy playbook, no-op.
-  if (parsed && String(parsed.audience || '') === 'operator_choice' && resolveStance(ctx.getState().operatorStance) !== 'autopilot') {
+  if (parsed && parsed.action !== 'escalate' && String(parsed.audience || '') === 'operator_choice' && resolveStance(ctx.getState().operatorStance) !== 'autopilot') {
     parsed.action = 'escalate';
+    parsed.answer = ''; // hygiene (blocker): an escalation must not carry the operator-reserved pick — it would leak into the parsed binding record / any consumer that renders answer independently of action
     if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
-    parsed.reason = `The pending item is addressed to the operator (audience=operator_choice, no autopilot delegation)${parsed.reason ? ' — ' + parsed.reason : ''}`;
+    // FIXED abstract reason — never concatenate the model's own text. A deterministic post-model rewrite
+    // cannot be sanitized by the prompt, and the model's reason can re-introduce the parroted approval/deploy
+    // verbs ESCALATION_HYGIENE_ADDENDUM forbids. The `action !== 'escalate'` guard also stops this generic
+    // reason from clobbering a more-specific plan-approval/human_gate reason enforceAnswerSafety already set.
+    parsed.reason = 'The pending item is addressed to the operator (audience=operator_choice, no autopilot delegation); this fork is the operator\'s to make.';
+  }
+  // Deterministic backstop (scenario-24 incident): the audience gate above trusts the model to SELF-CLASSIFY
+  // audience="operator_choice"; a weaker model that misreads a labeled operator-handed fork ("(a)…/(b)…, your
+  // call — say the word") answers it and SENDS. This catches the fork from the ask text itself, independent of
+  // the model's audience field. Stance-gated identically to the audience gate: an explicit autopilot stance is
+  // real delegation and suppresses it.
+  if (parsed && parsed.action !== 'escalate' && resolveStance(ctx.getState().operatorStance) !== 'autopilot'
+      && detectsOperatorDirectedChoice({ question, summary: s?.summary, terminalTail: ev.terminal_tail })) {
+    parsed.action = 'escalate';
+    parsed.answer = ''; // hygiene (blocker): drop the drafted pick so the reserved fork can't leak through the binding record
+    if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
+    // FIXED abstract reason — no concatenation of untrusted model text (see the audience gate above): a
+    // post-model rewrite can't be prompt-sanitized, and the model reason may parrot the forbidden verbs.
+    parsed.reason = 'The agent handed a labeled multi-option choice to the operator ("your call") — that fork is the operator\'s to make, not a delegated implementation pick.';
   }
   // Deterministic backstop (self-echo incident): a drafted answer that DIRECTS task-card lifecycle
   // ("start/activate/close/abandon the … card", "treat … as done") is operator territory in every
@@ -1050,7 +1148,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     const note = calibrated ? ` [reserved=${parsed?.reserved === true}${conf}${aud}]` : aud ? ` [${aud.trim()}]` : '';
     // Non-repeating escalation: don't re-notify the SAME reserved ask until the operator has engaged
     // since (a stable key on the ask itself, not the volatile screen). Avoids escalation spam / silence.
-    const escKey = h32((s?.category || '') + '|' + clampLine(question || s?.summary || '', 200).toLowerCase());
+    const escKey = answerEscalationKey(s);
     const st = ctx.getState();
     const engaged = st.lastEscalateAt ? hasOperatorMessageSince(db, ctx.sessionId, st.lastEscalateAt) : true;
     const dup = calibrated && st.lastEscalateKey === escKey && !engaged;
@@ -1059,11 +1157,18 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     // pushes until the operator weighs in, so the next tick can't override this with a "stop stalling" shove.
     const hardReason = goalDoubtOn(cfg) && HOLD_REASONS.has(parsed?.reason_code) ? parsed.reason_code : null;
     if (hardReason && !st.needsOperatorHold) applySupervisorState(ctx, { needsOperatorHold: { at: now(), reason: hardReason, workFp: progressFp(ev).work, gateKey: gateScopeKey(cfg.doc) } });
+    const open = Array.isArray(st.openEscalations) ? st.openEscalations : [];
+    applySupervisorState(ctx, {
+      openEscalations: [...open.filter((item) => item?.key !== escKey), { key: escKey, at: now(), question: clampLine(question || s?.summary || '', 240) }].slice(-8),
+    });
     const holdNote = hardReason ? ` — HELD (${hardReason}): not pushing the agent until you confirm` : '';
     logIntervention(ctx, { kind: 'escalate', trigger, model, verdict: dup ? 'escalate-dup' : 'escalated', assessment: (parsed?.reason || error || 'Needs an operator decision') + note + holdNote, message: '', sent: 0, raw, error });
     if (!dup) {
       ctx.notifyOperator('Supervisor needs your call', s?.summary || question || 'A question needs your decision');
-      applySupervisorState(ctx, { lastEscalateKey: escKey, lastEscalateAt: now() });
+      applySupervisorState(ctx, {
+        lastEscalateKey: escKey,
+        lastEscalateAt: now(),
+      });
     }
     ctx.emit('review', { verdict: 'escalated', summary: clampLine(s?.summary || question, 160) });
     return;
@@ -1172,13 +1277,38 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
   const canSee = modelChain(cfg, ctx.session()).some((m) => ctx.visionRoute(m)); // any model in the chain can see the screenshot
   const sendable = images.filter((i) => i.dataUrl);
   const productAudits = images.filter((i) => i.kind === 'product-audit' && i.audit).map((i) => ({ label: i.label, audit: i.audit }));
+  const submittedOperatorMessages = [
+    ...(opSignals.messages || []),
+    ...(ctxData.recent_messages || []).filter((m) => m?.dir === 'in'),
+  ];
+  const operatorInputProvenance = detectUnsubmittedApprovalDraft(ctxData.terminal_tail, submittedOperatorMessages);
+  const outOfBandEvidence = detectOutOfBandEvidence(ctxData);
   const dodQuery = [
     cfg.doc,
     ctxData.summary,
     ...(ctxData.recent_messages || []).map((m) => m?.text || ''),
   ].filter(Boolean).join('\n');
   const dod = findDoD(ctxData.project?.path, { query: dodQuery }); // the repo's real spec/definition-of-done (bridge B)
-  const visual = detectVisualWork(ctxData, (dod.text || '') + ' ' + (cfg.doc || '')); // #1: UI/visual work?
+  const contractScope = verifierContractScope({
+    betweenTasks: !!ctx.__betweenTasks,
+    supervisionDocument: cfg.doc,
+    definitionOfDone: dod.text,
+    definitionOfDoneFiles: dod.files,
+    currentOperatorRequirements: opReq,
+  });
+  const verificationFacts = deriveVerificationFacts({
+    contractText: [
+      contractScope.supervisionDocument,
+      contractScope.definitionOfDone,
+      opReqText,
+      sess?.title,
+      sess?.summary,
+    ].filter(Boolean).join('\n'),
+    ctxData,
+    productAudits,
+    outOfBandEvidence,
+  });
+  const visual = detectVisualWork(ctxData, contractScope.definitionOfDone + ' ' + (cfg.doc || '')); // #1: UI/visual work?
   const hasVisualProof = canSee && sendable.length > 0; // the model can actually SEE a rendered screenshot
   const prior = formatLedger(recentVerifications(ctx.sessionId, 6)); // #2: memory of what's already proven
   const patterns = formatFailurePatterns(recentFailurePatterns(ctxData.project?.id, 5)); // #3: learned watch-list
@@ -1196,23 +1326,33 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     trigger,
     verify_prompt_version: VERIFY_PROMPT_VERSION,
     verify_evidence_version: VERIFY_EVIDENCE_VERSION,
-    supervision_doc: cfg.doc || '',
+    supervision_doc: contractScope.supervisionDocument,
     ...(reviewBehaviorTemplate(cfg) ? { review_behavior_template: reviewBehaviorTemplate(cfg) } : {}),
-    ...(dod.text ? { definition_of_done: dod.text, dod_files: dod.files } : {}),
+    ...(contractScope.includeDefinitionOfDone ? {
+      definition_of_done: contractScope.definitionOfDone,
+      dod_files: contractScope.definitionOfDoneFiles,
+    } : {}),
     ...(prior ? { prior_verifications: prior } : {}),
     ...(patterns ? { recent_failure_patterns: patterns } : {}),
     ...(verifyDoctrine ? { operator_doctrine: verifyDoctrine } : {}),
     ...(projectKnowledge ? { project_knowledge: projectKnowledge } : {}),
     ...(priorFailures ? { prior_failures: priorFailures } : {}),
     visual_work: visual,
-    ...(opReq ? { current_operator_requirements: opReq } : {}),
+    ...(contractScope.currentOperatorRequirements ? {
+      current_operator_requirements: contractScope.currentOperatorRequirements,
+    } : {}),
     ...ctxData,
     screenshot_labels: images.map((i) => i.label),
     ...(productAuditSpec ? { product_audit_requested: productAuditSpec } : {}),
     ...(productAudits.length ? { product_audit: productAudits } : {}),
-    visual_note: !canSee && sendable.length ? 'The selected model is text-only; the screenshot was captured but not shown.' : sendable.length ? 'A preview screenshot is attached.' : 'No preview screenshot available.',
+    ...(operatorInputProvenance ? { operator_input_provenance: operatorInputProvenance } : {}),
+    ...(verificationFacts.flags.length ? { deterministic_review_flags: verificationFacts.flags } : {}),
+    ...(outOfBandEvidence ? { out_of_band_evidence: outOfBandEvidence } : {}),
+    visual_note: outOfBandEvidence
+      ? `Rendered proof exists out-of-band at ${outOfBandEvidence.channel}; this verifier cannot inspect that channel.`
+      : !canSee && sendable.length ? 'The selected model is text-only; the screenshot was captured but not shown.' : sendable.length ? 'A preview screenshot is attached.' : 'No preview screenshot available.',
   };
-  const textPart = 'Review this session against the supervision document' + (dod.text ? ' AND the authoritative definition_of_done (ground truth)' : '') + '. Return JSON only.\n\nEVIDENCE_JSON:\n' + JSON.stringify(evidence).slice(0, MAX_CONTEXT_CHARS);
+  const textPart = 'Review this session against the supervision document' + (contractScope.includeDefinitionOfDone ? ' AND the authoritative definition_of_done (ground truth)' : '') + '. Return JSON only.\n\nEVIDENCE_JSON:\n' + JSON.stringify(evidence).slice(0, MAX_CONTEXT_CHARS);
   let userContent = textPart;
   if (canSee && sendable.length) {
     userContent = [{ type: 'text', text: textPart }];
@@ -1222,9 +1362,11 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     }
   }
   const verifyPrompt = buildVerifierSystemPrompt({
-    hasDefinitionOfDone: !!dod.text,
+    hasDefinitionOfDone: contractScope.includeDefinitionOfDone,
     visualWork: visual,
     hasVisualProof,
+    hasOutOfBandEvidence: !!outOfBandEvidence,
+    hasInteractionProofGap: verificationFacts.interactionProofGap,
     hasPriorVerifications: !!prior,
     hasFailurePatterns: !!patterns,
     hasProbes: (ctxData.probes || []).length > 0,
@@ -1242,7 +1384,10 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
   }
   sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: verify's message_to_agent obeys jurisdiction + card-admin rules too
   const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);
-  const parsed = normalizeVerificationResult(rawParsed || null, { error: error || 'no output' });
+  const parsed = enforceVerificationFacts(
+    normalizeVerificationResult(rawParsed || null, { error: error || 'no output' }),
+    { operatorInputProvenance, facts: verificationFacts },
+  );
   // DOCTRINE AUDIT (run 2 — doctrine as enforcement): the operator's audit-type rules are CHECKED
   // against the evidence, not just injected as prose (TRACE 2606.13174: prompt-only rules leak ~57%).
   // Violations become unmet criteria — which blocks a 'complete' sign-off mechanically — and feed the
@@ -1553,7 +1698,10 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
   const ev = await ctx.getEvidence({ diff: false, terminalMax: 12000, baseRef: st.baseRef || null }).catch(() => ({}));
   const reason = unexpectedExitReason(s, ev);
   const exitKey = h32('unexpected-exit|' + exitKeyBase + '|' + reason);
-  const attempt = st.exitRecoveryKey === exitKey ? Number(st.exitRecoveryAttempt || 0) : 0;
+  // A resumed process that exits again before sign-off is the SAME recovery episode even though its
+  // ended_at (and therefore exitKey) changed. Carry the attempt count across that chain so repeated
+  // crash/relaunch cycles remain genuinely bounded.
+  const attempt = recoveryAttempt(st, exitKey, t, EXIT_RECOVERY_WINDOW_MS);
   const fp = progressFp(ev);
   const operatorIntent = latestOperatorIntent(ctx.sessionId, t);
   // REPEATED COMPLAINT (Phase 4, A4): the operator re-raised the same issue across a real gap —
@@ -1605,13 +1753,21 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
   }
 
   applySupervisorState(ctx, { exitRecoveryKey: exitKey, exitRecoveryAttempt: attempt + 1, exitRecoveryLastAt: now(), exitRecoveryResolved: false, exitRecoveryReason: reason, exitRecoveryNotified: false });
+  let resumed;
   try {
-    await ctx.resumeSession({ force: true });
+    resumed = await ctx.resumeSession({ force: true, waitForInput: true });
   } catch (e) {
     applySupervisorState(ctx, { exitRecoveryNotified: true });
     logIntervention(ctx, { kind: 'escalate', trigger: 'unexpected-exit', model: cfg.model, verdict: 'blocked', assessment: `Tried to resume an unexpectedly exited session but resume failed: ${String(e.message || e).slice(0, 400)}. Original reason: ${reason}`, message: '', sent: 0 });
     ctx.notifyOperator('Session resume failed', clampLine((s.title || 'Session') + ': ' + String(e.message || e), 130));
     ctx.emit('review', { verdict: 'blocked', summary: 'unexpected exit resume failed' });
+    return true;
+  }
+  if (resumed?.input_ready === false) {
+    applySupervisorState(ctx, { exitRecoveryNotified: true, exitRecoveryResolved: true });
+    logIntervention(ctx, { kind: 'recover', trigger: 'unexpected-exit', model: cfg.model, verdict: 'blocked', assessment: `Recovery relaunched the session but its input composer was not ready within the bounded startup window. Attempt ${attempt + 1}/${EXIT_RECOVERY_MAX_ATTEMPTS}; no text was injected.`, message: '', sent: 0 });
+    ctx.notifyOperator('Session relaunched but not ready', clampLine((s.title || 'Session') + ': recovery input was not delivered', 130));
+    ctx.emit('review', { verdict: 'blocked', summary: 'recovery composer not ready' });
     return true;
   }
   const msg = buildExitRecoveryMessage(ctx, cfg, reason);
@@ -1626,7 +1782,12 @@ async function maybeRecoverUnexpectedExit(ctx, cfg, t) {
     reasons: ['supervised session exited before verified completion', 'resume remaining work instead of idling'],
   });
   logIntervention(ctx, { kind: 'recover', trigger: 'unexpected-exit', model: cfg.model, verdict: r.sent ? 'resumed' : 'blocked', assessment: `Unexpected exit recovery attempt ${attempt + 1}/${EXIT_RECOVERY_MAX_ATTEMPTS}: ${reason}`, message: msg, sent: r.sent ? 1 : 0, sent_text: r.message || '' });
-  ctx.notifyOperator('Recovered exited session', clampLine((s.title || 'Session') + ': resumed after unexpected exit', 130));
+  if (r.sent) {
+    ctx.notifyOperator('Recovered exited session', clampLine((s.title || 'Session') + ': resumed after unexpected exit', 130));
+  } else {
+    applySupervisorState(ctx, { exitRecoveryNotified: true, exitRecoveryResolved: true });
+    ctx.notifyOperator('Session relaunched; recovery blocked', clampLine((s.title || 'Session') + ': ' + (r.reason || 'recovery input was not delivered'), 130));
+  }
   ctx.emit('review', { verdict: r.sent ? 'resumed' : 'blocked', summary: 'unexpected exit recovery' });
   return true;
 }
@@ -1669,6 +1830,25 @@ async function checkThrash(ctx, cfg) {
     ctx.notifyOperator('Fleet thrash — sessions overwriting each other', `${project.name || project.path}: ${det.kind}, ${1 + live.length} sessions involved${det.files.length ? ` (${det.files[0]}…)` : ''}. Checkpointed ${cp?.tag || ''}; holds applied.`);
     ctx.emit('review', { verdict: 'escalated', summary: `fleet thrash: ${det.kind} — held` });
   } catch (e) { ctx.log('thrash check skipped:', e.message); }
+}
+
+// Deterministic fallback for the work-derived boundary path: when the classifier returns nothing
+// usable (empty/unparseable output — a weak model can exhaust callJson's bounded retry), derive a
+// conservative task title straight from the commit subjects so an uncarded work stream is still
+// surfaced as a suggestion instead of being silently marked "judged" and vanishing. Prefers the
+// newest substantive subject (skips pure test/chore/scaffolding commits), strips the short-hash
+// prefix, and sanitizes to one shell/prompt-safe line.
+function boundaryTitleFromCommits(commits) {
+  const lines = String(commits || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return '';
+  const subject = (line) => line
+    .replace(/^[0-9a-f]{6,40}\s+/i, '')      // "<shorthash> subject" -> subject
+    .replace(/\s+/g, ' ')
+    .replace(/[`$<>|]/g, '')                  // never let commit text reach a shell/prompt boundary
+    .trim();
+  const isScaffold = (s) => !s || /^(test|chore|style|docs|ci|build|merge)\b|\btest\(/i.test(s);
+  const subjects = lines.map(subject);
+  return subjects.find((s) => !isScaffold(s)) || subjects[0] || '';
 }
 
 async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
@@ -1734,14 +1914,42 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
     if (!commits || commits.split('\n').length < 2) return; // needs accumulated committed work, not a stray commit
     const wfp = h32(commits);
     if (st.boundaryWorkFp === wfp) return; // this exact commit set was already judged — don't re-ask
-    applySupervisorState(ctx, { boundaryWorkTs: t, boundaryWorkFp: wfp });
+    // Cost/retry bound ONLY: stamp the timestamp so the next tick honours MIN_RECHECK, but DEFER the
+    // fingerprint. The original spent boundaryWorkFp here, BEFORE the model call — so a transport failure
+    // or an empty/unparseable reply permanently marked this commit set "judged" with no suggestion ever
+    // recorded, and the uncarded stream vanished forever (glm rep2, scn12). The fingerprint is burned
+    // below only on a DEFINITIVE outcome: a valid classification, or a deterministic fallback we built.
+    applySupervisorState(ctx, { boundaryWorkTs: t });
     const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
     const user = 'ACTIVE TASK CARD:\n(no active card — between tasks)\n\nRECENT COMMITTED WORK (git log, newest first):\n' + commits.slice(0, 1800) + (latest ? '\n\nLATEST OPERATOR MESSAGE (context, may be stale):\n' + latest.slice(0, 600) : '');
-    const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
-    if (parsed?.fit && parsed.fit !== 'none' && (parsed.title || parsed.goal)) {
-      applySupervisorState(ctx, { pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp || t, at: t, fromWork: true } });
+    const { parsed, raw } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+    // Validate `fit` against SYS_BOUNDARY's explicit enum. An out-of-enum value (e.g. "banana") is a
+    // malformed classification, not a decision — it must NOT burn the fingerprint on the strength of a
+    // hallucinated key; it falls through to the same replied-but-invalid fallback as empty output.
+    const fit = parsed?.fit;
+    const validFit = fit === 'new' || fit === 'amend' || fit === 'none';
+    if ((fit === 'new' || fit === 'amend') && (parsed.title || parsed.goal)) {
+      // valid classification with a concrete boundary → suggestion; fingerprint judged.
+      applySupervisorState(ctx, { boundaryWorkFp: wfp, pendingBoundary: { title: clampLine(parsed.title || '', 120), goal: clampLine(parsed.goal || '', 300), reason: clampLine(parsed.reason || '', 200), msgTs: lastOp || t, at: t, fromWork: true } });
       ctx.emit('review', { verdict: 'suggested', summary: 'uncarded work stream — task suggestion in the panel' });
+    } else if (validFit) {
+      // valid classification, nothing to open (a well-formed 'none', or new/amend without a boundary) →
+      // judged: record the fingerprint so the same set is not re-asked, but make no suggestion.
+      applySupervisorState(ctx, { boundaryWorkFp: wfp });
+    } else if (raw != null) {
+      // the model REPLIED but the result was empty, unparseable, or an out-of-enum fit (glm rep2, scn12).
+      // Synthesize a conservative suggestion from the commit subjects — suggestion-only, no card mutation
+      // and no agent send, identical downstream to a model 'new'. Burn the fingerprint only when a fallback
+      // was actually constructed; a blank subject set leaves it unspent for a bounded retry next window.
+      const derivedTitle = boundaryTitleFromCommits(commits);
+      if (derivedTitle) {
+        applySupervisorState(ctx, { boundaryWorkFp: wfp, pendingBoundary: { title: clampLine(derivedTitle, 120), goal: clampLine('Accumulated committed work has no task card; capture it as a boundary so the supervision loop has a live contract.', 300), reason: clampLine('Derived from commit subjects after the classifier returned no usable output.', 200), msgTs: lastOp || t, at: t, fromWork: true, derived: true } });
+        ctx.emit('review', { verdict: 'suggested', summary: 'uncarded work stream — task suggestion in the panel' });
+      }
     }
+    // else: raw == null && no parse → transport/model-chain failure, the model never weighed in. Leave
+    // boundaryWorkFp UNSPENT so this exact commit set is re-judged next window (bounded by boundaryWorkTs).
+    // Infrastructure timeouts are not correctness failures.
   } catch (e) { ctx.log('boundary suggestion skipped:', e.message); }
 }
 
@@ -1871,6 +2079,29 @@ async function realityCheck(ctx) {
   } catch { return null; }
 }
 
+async function checkWedge(ctx, cfg, ev, t = now()) {
+  const draft = pendingComposerDraft(ev?.terminal_tail || '');
+  const st = ctx.getState();
+  if (!draft) {
+    if (st.composerWedgeKey) applySupervisorState(ctx, { composerWedgeKey: null, composerWedgeSince: null, composerWedgeNotified: false });
+    return false;
+  }
+  const key = h32(`${draft.marker}|${draft.text}|${ctx.session()?.status || ''}`);
+  if (st.composerWedgeKey !== key) {
+    applySupervisorState(ctx, { composerWedgeKey: key, composerWedgeSince: t, composerWedgeNotified: false });
+    return true;
+  }
+  const since = Number(st.composerWedgeSince || t);
+  if (!st.composerWedgeNotified && t - since >= COMPOSER_WEDGE_MS) {
+    applySupervisorState(ctx, { composerWedgeNotified: true });
+    const assessment = `The pane has been unchanged for ${fmtDur((t - since) / 1000)} with text still sitting in the input composer. Displayed text is not submitted operator input, so Supercalm did not press Enter or send anything.`;
+    logIntervention(ctx, { kind: 'escalate', trigger: 'composer-wedge', model: cfg.model, verdict: 'escalated', assessment, message: '', sent: 0 });
+    ctx.notifyOperator('Session frozen with an unsubmitted draft', clampLine(`${ctx.session()?.title || 'Session'}: ${draft.text}`, 130));
+    ctx.emit('review', { verdict: 'escalated', summary: 'frozen pane with unsubmitted composer text' });
+  }
+  return true;
+}
+
 export async function onTick(ctx) {
   const s = ctx.session();
   const cfg = ctx.getConfig();
@@ -1934,6 +2165,7 @@ export async function onTick(ctx) {
   });
   const gateBeat = Math.min(
     HEARTBEAT_MS,
+    COMPOSER_WEDGE_MS,
     Math.max(60_000, (Number(cfg.stuck_timeout_sec) > 0 ? Number(cfg.stuck_timeout_sec) * 1000 : HEARTBEAT_MS)),
     cfg.checkpoint ? Math.max(60_000, (Number(cfg.checkpoint_interval_sec) > 0 ? Number(cfg.checkpoint_interval_sec) * 1000 : HEARTBEAT_MS)) : HEARTBEAT_MS,
   );
@@ -2030,6 +2262,10 @@ export async function onTick(ctx) {
     }
     return;
   }
+
+  // Pending composer text is display state, never operator input. Hold every agent-facing lane while
+  // it is present; if the same pane remains frozen for the bounded window, escalate once and stay quiet.
+  if (await checkWedge(ctx, cfg, ev, t)) return;
 
   // 0) transient/rate-limit API-error recovery — highest priority, and works even without a doc:
   //    a wedged session is the most urgent thing, and rescuing it shouldn't require a supervision doc.
@@ -2548,6 +2784,20 @@ async function runGateChallenge(ctx, cfg, snapshot = null) {
     return { sent: 0, message: '' };
   }
   const msg = buildChallenge(cfg.doc, ctx, snapshot);
+  const gateEvidence = await ctx.getEvidence({ diff: false, terminalMax: 800 }).catch(() => ({}));
+  const activeKey = h32(`active|${gateScopeKey(cfg.doc)}|${progressFp(gateEvidence).work}|${msg}`);
+  const activeState = ctx.getState();
+  const operatorEngaged = activeState.gateActiveChallengeAt
+    ? hasOperatorMessageSince(db, ctx.sessionId, activeState.gateActiveChallengeAt)
+    : false;
+  if (activeState.gateActiveChallengeKey === activeKey && !operatorEngaged) {
+    if (activeState.gateActiveHeldKey !== activeKey) {
+      applySupervisorState(ctx, { gateActiveHeldKey: activeKey });
+      logIntervention(ctx, { kind: 'gate', trigger: 'completion', model: null, verdict: 'held', assessment: 'The same completion challenge already reached the agent and neither the contract nor work evidence changed. Standing down instead of self-exciting another demand.', message: '', sent: 0 });
+      ctx.emit('review', { verdict: 'held', summary: 'unchanged completion challenge stands down' });
+    }
+    return { sent: 0, message: '' };
+  }
   let sent = 0;
   let sent_text = '';
   const allowed = canSend(ctx, cfg, 'challenge');
@@ -2564,6 +2814,7 @@ async function runGateChallenge(ctx, cfg, snapshot = null) {
   });
   sent = r.sent ? 1 : 0;
   sent_text = r.message || '';
+  if (sent) applySupervisorState(ctx, { gateActiveChallengeKey: activeKey, gateActiveChallengeAt: now(), gateActiveHeldKey: null });
   logIntervention(ctx, { kind: 'gate', trigger: 'completion', model: cfg.model, verdict: 'challenged', assessment: 'Asked the agent to prove each acceptance criterion, hard rule, and agreed decision before sign-off.', message: msg, sent, sent_text });
   ctx.emit('review', { verdict: 'challenged', summary: 'completion check' });
   return { sent: sent === 1 };
@@ -3035,4 +3286,4 @@ export const actions = {
 // with synthetic sessions/evidence on an isolated AIOS_DATA and grades decisions against the
 // incident matrix (docs/improve/supervisor-lab.md). Not a public API — nothing in the runtime
 // imports this.
-export const __lab = { runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, runGateChallenge, runUnstick, runKeepWorking, maybeRecoverApiError, checkThrash, onTick, latestOperatorIntent };
+export const __lab = { callJson, runAnswer, runVerify, applyActiveCard, maybeSuggestBoundary, boundaryTitleFromCommits, runGateChallenge, runUnstick, runKeepWorking, maybeRecoverApiError, maybeRecoverUnexpectedExit, checkWedge, checkThrash, onTick, latestOperatorIntent };

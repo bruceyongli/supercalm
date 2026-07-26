@@ -4,7 +4,17 @@ import { readFileSync } from 'node:fs';
 const { decideSupervisorAction } = await import('../src/agents/supervisor/decide.js');
 const { parseSupervisionDoc } = await import('../src/agents/supervisor/doc_model.js');
 const { readSupervisorState } = await import('../src/agents/supervisor/state.js');
-const { buildVerifierSystemPrompt, isVisualWork, normalizeVerificationResult } = await import('../src/agents/supervisor/verify.js');
+const {
+  VERIFY_EVIDENCE_VERSION,
+  VERIFY_PROMPT_VERSION,
+  buildVerifierSystemPrompt,
+  isVisualWork,
+  normalizeVerificationResult,
+  verifierContractScope,
+} = await import('../src/agents/supervisor/verify.js');
+
+assert.equal(VERIFY_PROMPT_VERSION, 'supervisor.verify.2026-07-23.2');
+assert.equal(VERIFY_EVIDENCE_VERSION, 'supervisor.evidence.2026-07-23.2');
 
 function merge(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return b ?? a;
@@ -82,6 +92,8 @@ Improve Supervisor
   assert.match(prompt.systemPrompt, /PRODUCT WALKTHROUGH/);
   assert.match(prompt.systemPrompt, /CURRENT_OPERATOR_REQUIREMENTS/);
   assert.match(prompt.systemPrompt, /OPERATOR LATEST WORDS WIN/);
+  assert.match(prompt.systemPrompt, /DECISIVE EVIDENCE CHECKS/);
+  assert.match(prompt.systemPrompt, /still screenshot or text visible in a composer proves only that pixels rendered/i);
   // The rubric must offer the out-of-band blind-channel kind (proof served at a URL / committed
   // artifacts / chat-only), so the verifier reports the unreadable channel instead of re-demanding it.
   assert.match(prompt.systemPrompt, /out_of_band/);
@@ -94,6 +106,58 @@ Improve Supervisor
   // escalate-once-then-quiet loop-breaker, identical to no_git/auth_wall).
   const oob = normalizeVerificationResult({ verdict: 'needs_attention', score: 55, assessment: 'proof is served at /review but not in git or the screenshot', unmet: [], goal_conflict: false, unverifiable: 'out_of_band', message_to_agent: '' });
   assert.equal(oob.unverifiable, 'out_of_band');
+
+  // Development regression: between tasks, a repository-wide DoD is background rather than the
+  // contract. Remove it mechanically instead of asking a stochastic model to resolve two conflicting
+  // instructions ("enumerate every DoD gate" versus "do not demand the full spec").
+  const betweenScope = verifierContractScope({
+    betweenTasks: true,
+    supervisionDocument: '# Between tasks\n\nStand by for the operator to start the next task card.',
+    definitionOfDone: 'All five phases of the grand refactor must be complete.',
+    definitionOfDoneFiles: ['docs/specs/grand-plan.md'],
+    currentOperatorRequirements: {
+      acceptance_items: ['Show the exact passing command output before sign-off.'],
+    },
+  });
+  assert.equal(betweenScope.includeDefinitionOfDone, false);
+  assert.equal(betweenScope.supervisionDocument, '# Between tasks\n\nNo active task contract. Evaluate only whether the work just reported is honestly evidenced.');
+  assert.doesNotMatch(betweenScope.supervisionDocument, /start (the )?next/i);
+  assert.equal(betweenScope.definitionOfDone, '');
+  assert.deepEqual(betweenScope.definitionOfDoneFiles, []);
+  assert.deepEqual(betweenScope.currentOperatorRequirements, {
+    acceptance_items: ['Show the exact passing command output before sign-off.'],
+  }, 'explicit current operator requirements remain a between-task sign-off gate');
+  const activeScope = verifierContractScope({
+    betweenTasks: false,
+    supervisionDocument: '# Active task\n\nShip the storage slice.',
+    definitionOfDone: 'All five phases of the grand refactor must be complete.',
+    definitionOfDoneFiles: ['docs/specs/grand-plan.md'],
+  });
+  assert.equal(activeScope.includeDefinitionOfDone, true, 'active-task DoD enforcement remains intact');
+  assert.equal(activeScope.supervisionDocument, '# Active task\n\nShip the storage slice.', 'active-task document remains intact');
+
+  // Corroborated renders in an unreadable channel are still a hold, but not a "nothing rendered"
+  // failure. A dedicated prompt must replace—not accompany—the generic missing-visual prompt.
+  const outOfBandPrompt = buildVerifierSystemPrompt({
+    visualWork: true,
+    hasVisualProof: false,
+    hasOutOfBandEvidence: true,
+  });
+  assert.deepEqual(outOfBandPrompt.addenda, ['out_of_band_visual']);
+  assert.doesNotMatch(outOfBandPrompt.systemPrompt, /VISUAL PROOF REQUIRED/);
+  assert.match(outOfBandPrompt.systemPrompt, /set "unverifiable" to "out_of_band"/);
+  assert.match(outOfBandPrompt.systemPrompt, /do not state that no visual evidence exists/i);
+
+  const conflict = normalizeVerificationResult({
+    verdict: 'needs_attention',
+    score: 80,
+    assessment: 'The active task conflicts with the authoritative spec.',
+    unmet: [],
+    goal_conflict: true,
+    unverifiable: 'none',
+    message_to_agent: '',
+  });
+  assert.equal(conflict.goal_conflict, true, 'genuine active-task goal doubt still arms the hold path');
 }
 
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/supervisor_replay/incidents.json', import.meta.url), 'utf8'));
@@ -122,6 +186,11 @@ for (const fx of fixtures) {
 {
   const { readFileSync } = await import('node:fs');
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
+  assert.match(sup, /verifierContractScope\(\{[\s\S]{0,180}betweenTasks: !!ctx\.__betweenTasks/, 'live verifier mechanically scopes project DoD away between tasks');
+  assert.match(sup, /currentOperatorRequirements: opReq/, 'live verifier passes current operator gates through contract scoping');
+  assert.match(sup, /supervision_doc: contractScope\.supervisionDocument/, 'live verifier uses the bounded between-task document');
+  assert.match(sup, /current_operator_requirements: contractScope\.currentOperatorRequirements/, 'live evidence retains current operator gates independently of project DoD');
+  assert.match(sup, /hasOutOfBandEvidence: !!outOfBandEvidence/, 'live verifier selects the dedicated rendered-out-of-band prompt');
   assert.match(sup, /const outOfBandStanding = !!st\.outOfBandEscalatedAt && !hasOperatorMessageSince/, 'out-of-band standing flag is computed session-level');
   assert.match(sup, /!gateRecentlySent && !outOfBandStanding/, 'completion gate stops re-challenging while the out-of-band channel is standing');
   assert.match(sup, /parsed\.unverifiable === 'out_of_band' && outOfBandStanding\) return;/, 'a standing out-of-band verdict does not re-escalate to the operator per commit');

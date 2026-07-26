@@ -82,6 +82,14 @@ export async function gitHead(cwd) {
   return sha || null;
 }
 
+// Git evidence must describe the checkout the agent is actually editing. Isolated sessions run in
+// their own worktree, whose HEAD and dirty state can legitimately differ from the project's shared
+// checkout. A recorded worktree therefore wins; if it is stale/missing, callers fail closed there
+// instead of silently substituting unrelated project state.
+export function sessionRepoPath(session, project) {
+  return session?.worktree_path || project?.path || null;
+}
+
 // A session's project path may be a WORKSPACE that holds several sibling git repos (a monorepo-of-repos
 // layout, e.g. ~/openhand/share/{openhand,openhand-web,...}) rather than a repo itself. A plain git read at
 // the root then sees nothing -> the supervisor is BLIND to all the work and loops demanding evidence it can't
@@ -852,7 +860,7 @@ export async function gatherImages(session, { preview_url, preview_auth = null, 
 // messages, terminal tail. `includeDiff` adds the full unified diff (heavier).
 export async function sessionContext(session, { terminalMax = 16000, includeDiff = false, baseRef = null } = {}) {
   const project = session.project_id ? getProject(session.project_id) : null;
-  const cwd = project?.path || null;
+  const cwd = sessionRepoPath(session, project);
   const [git, terminal, graph] = await Promise.all([
     cwd ? gitEvidence(cwd, { baseRef }).catch(() => null) : null,
     terminalTail(session.id, terminalMax),
@@ -885,6 +893,7 @@ export async function sessionContext(session, { terminalMax = 16000, includeDiff
       summary: session.summary,
       title: session.title,
       autonomy: session.autonomy,
+      worktree_path: session.worktree_path || null,
       started_at: session.started_at,
       last_activity: session.last_activity,
     },

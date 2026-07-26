@@ -108,6 +108,20 @@ export function emptyKernelState() {
   };
 }
 
+// A relaunched tmux pane cannot have received pane-local sends from the pane it replaced. Clear
+// dedupe/min-gap/breaker/receipt state so one recovery note can reach the new composer, while
+// retaining rolling-hour and work-item budgets so relaunches cannot bypass global spam bounds.
+export function rebaseKernelForNewPane(state) {
+  const st = state && typeof state === 'object' ? state : emptyKernelState();
+  return {
+    ...st,
+    lastSendTs: 0,
+    ring: [],
+    circuit: { ...emptyKernelState().circuit },
+    pending: null,
+  };
+}
+
 // The transition function. proposal: { kind, text, paneSig, lease? } where lease = { paneSig } captured
 // when the proposing brain STARTED reasoning. Returns a NEW state (never mutates). `escalate` is true when
 // this block is worth exactly one operator notification (escalateKey dedupes). `receipt` reports the FATE

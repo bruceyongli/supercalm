@@ -14,6 +14,40 @@ const { dispatchSupervisorSend, triggeringSignal, recordSupervisorDecision } = a
 const { guardSupervisorSendContext } = await import('../src/agents/supervisor/context_guard.js');
 const { applySupervisorState } = await import('../src/agents/supervisor/effects.js');
 const { decisionHistory, latestDecision } = await import('../src/agents/supervisor/decision_records.js');
+const { defaultChain, modelChain } = await import('../src/agents/supervisor.js');
+
+// Tool-aware Supervisor model routing: exact measured order, independent provider at the head for
+// Codex/Claude sessions, full-list overrides, and stable dedupe when a primary is pinned.
+{
+  const codex = ['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol'];
+  const claude = ['glm-5.2', 'gpt-5.6-sol', 'claude-opus-4-8', 'claude-fable-5'];
+  const other = ['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol'];
+  assert.deepEqual(defaultChain('codex'), codex);
+  assert.deepEqual(defaultChain('claude'), claude);
+  assert.deepEqual(defaultChain('agy'), other);
+  assert.deepEqual(defaultChain('opencode'), other);
+  assert.doesNotMatch(defaultChain('codex')[0], /^gpt-/i, 'Codex session gets a non-Codex Supervisor head');
+  assert.doesNotMatch(defaultChain('claude')[0], /^claude-/i, 'Claude session gets a non-Claude Supervisor head');
+  for (const chain of [codex, claude, other]) {
+    assert.equal(new Set(chain).size, chain.length, 'built-in chain is deduplicated');
+    assert.equal(chain.includes('qwen3.8-max-preview'), false, 'unsafe/slow Qwen preview is excluded');
+    assert.equal(chain.some((model) => /gemini/i.test(model)), false, 'unavailable Gemini is excluded');
+  }
+
+  assert.deepEqual(
+    modelChain({ model: 'claude-fable-5' }, { tool: 'codex' }),
+    ['claude-fable-5', 'claude-opus-4-8', 'glm-5.2', 'gpt-5.6-sol'],
+    'a selected non-default model is pinned and its default occurrence is deduped',
+  );
+  assert.deepEqual(
+    modelChain(
+      { model: 'glm-5.2', fallback_models: ['gpt-5.6-sol', 'glm-5.2', 'gpt-5.6-sol', '', 'claude-opus-4-8'] },
+      { tool: 'claude' },
+    ),
+    ['gpt-5.6-sol', 'glm-5.2', 'claude-opus-4-8'],
+    'an explicit full chain overrides the selected/default order and dedupes exact IDs',
+  );
+}
 
 {
   assert.equal(classifyOperatorText('not ask for fixing anything but answer my question only').kind, 'question_only');
