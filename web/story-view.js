@@ -213,13 +213,14 @@ function askHtml(ev) {
 
 function listenLabel(st, idleLabel) {
   if (!st) return idleLabel;
-  if (st.phase === 'loading') return '… preparing';
+  if (st.phase === 'loading') return st.level === 'verbatim' ? '… preparing' : '… tailoring';
   if (st.phase === 'playing') return st.total > 1 ? `⏹ stop · ${st.part}/${st.total}` : '⏹ stop';
   if (st.phase === 'error') return '⚠ retry';
   return idleLabel;
 }
-// The listen controls on reports long enough to be worth hearing: ▶ listen (full polished report),
-// ▶ quick (a ~30s digest, only on long sources), and a live speech-rate chip while playing.
+// The listen controls on reports long enough to be worth hearing:
+// guided = owner-prompt-aware structured report; quick = ~30s; read all = no summarization.
+// A live speech-rate chip appears while playing.
 // Labels re-derive from listenState on every wholesale re-render; between renders paintListen()
 // repaints the row in place. Clicks are DELEGATED on panelEl (initStoryView), so repaints and
 // re-renders never need handler rebinding.
@@ -229,10 +230,11 @@ function listenRowInner(key, srcLen) {
     const on = st && st.level === level;
     return `<button class="story-listen${on ? ' ' + st.phase : ''}" data-story-listen data-evkey="${esc(key)}" data-level="${level}" title="${title}">${on ? listenLabel(st, idleLabel) : idleLabel}</button>`;
   };
-  let html = btn('full', '▶ listen', 'Listen to this report');
+  let html = btn('full', '▶ guided', 'A structured voice report focused on what you asked');
   // Offer the ~30s digest once the full read-out is long enough for it to help (buildScript gives full
   // ≥150 words above ~800 chars = a 1-2 min listen). The old 2000-char gate hid it on most reports.
   if (srcLen > 800) html += btn('brief', '▶ quick', 'Quick ~30-second version');
+  if (srcLen > 800) html += btn('verbatim', '▶ read all', 'Read the complete report without summarizing');
   if (st && st.phase === 'playing') html += `<button class="story-listen rate" data-story-listen-rate title="Speech speed">${currentRate()}×</button>`;
   return html;
 }
@@ -268,15 +270,29 @@ async function onListenTap(key, level = 'full') {
   listenActive = { key, handle, level };
   setListen(key, { phase: 'loading', level });
   try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 20000);
-    const r = await fetch(`api/session/${sid}/voice-report`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, ts: ev.ts || 0, level }), signal: ctrl.signal,
-    }).finally(() => clearTimeout(t));
-    if (!r.ok) throw new Error('voice-report ' + r.status);
-    const vr = await r.json();
-    const parts = Array.isArray(vr.parts) && vr.parts.length && vr.parts[0] ? vr.parts : [text.slice(0, 900)];
+    const requestBody = JSON.stringify({ text, ts: ev.ts || 0, level });
+    const prepareDeadline = Date.now() + 90000;
+    let vr = null;
+    while (!handle.stopped && Date.now() < prepareDeadline) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 15000);
+      const r = await fetch(`api/session/${sid}/voice-report`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: requestBody, signal: ctrl.signal,
+      }).finally(() => clearTimeout(t));
+      const body = await r.json().catch(() => ({}));
+      if (r.status === 202 || body.status === 'preparing') {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(300, Math.min(2000, Number(body.retryAfterMs) || 700))));
+        continue;
+      }
+      if (!r.ok) throw new Error('voice-report ' + r.status);
+      vr = body;
+      break;
+    }
+    if (handle.stopped) return clearListen(key);
+    const parts = Array.isArray(vr?.parts) && vr.parts.length && vr.parts.every((part) => typeof part === 'string' && part)
+      ? vr.parts : null;
+    if (!parts) throw new Error('voice report did not become ready');
     for (let i = 0; i < parts.length; i++) {
       if (handle.stopped) break;
       setListen(key, { phase: 'playing', part: i + 1, total: parts.length, level });
