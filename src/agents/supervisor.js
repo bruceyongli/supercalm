@@ -57,6 +57,7 @@ import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
 import { proxyAuthRecoveryMessage } from './external_recovery.js';
 import { currentOperatorRequirements, formatOperatorRequirements } from './operator_requirements.js';
+import { automaticSupervisorChain } from './supervisor/model_defaults.js';
 
 // Supervisor — an active, auto-pilot supervisor for ONE coding-agent session, judged against a
 // markdown supervision doc (goal / hard rules / acceptance criteria / agreed decisions). Each tick it
@@ -69,7 +70,8 @@ import { currentOperatorRequirements, formatOperatorRequirements } from './opera
 // It touches the session ONLY through `ctx` and owns two domain tables (intervention log + templates).
 // Scheduler/episode state lives in ctx grant state (baseRef, progress fingerprints, gate phase, caps).
 
-const DEFAULT_MODEL = process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'glm-5.2'; // antigravity down (2026-07-20); glm-5.2 = verified-working aliyun top pick
+// Empty means automatic live-catalog selection. The env remains an explicit global primary override.
+const DEFAULT_MODEL = String(process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || '').trim();
 const MAX_NUDGES = Number(process.env.AIOS_SUPERVISOR_MAX_NUDGES || 3); // corrective sends per work-state (resets on real progress)
 const BLIND_LIMIT = Number(process.env.AIOS_SUPERVISOR_BLIND_LIMIT || 2); // blind verifies on a work-state before escalating the real blocker (vs re-demanding unreadable evidence)
 const WEDGE_STUCK_MS = Number(process.env.AIOS_SUPERVISOR_WEDGE_STUCK_MS || 120000); // a real overflow error must persist with a FROZEN screen this long before we act (vs a still-working agent)
@@ -101,9 +103,8 @@ const GOAL_CONFLICT_RESYNC_AFTER = Number(process.env.AIOS_SUPERVISOR_GOAL_CONFL
 const GOAL_DOUBT = process.env.AIOS_SUPERVISOR_GOAL_DOUBT !== '0';
 const HOLD_REASONS = new Set(['goal_conflict', 'integrity', 'human_gate']); // reason_codes that arm the hold
 const goalDoubtOn = (cfg) => GOAL_DOUBT && cfg?.goal_doubt !== false; // env kill-switch AND the per-session toggle
-// Cross-provider fallback chain for the supervisor's OWN model calls — so a 429/outage on the primary
-// provider doesn't blind the supervisor. Overridable via config.fallback_models or env (comma list).
-const DEFAULT_FALLBACKS = (process.env.AIOS_SUPERVISOR_FALLBACKS || 'gpt-5.5,claude-haiku-4-5,gemini-3.1-flash-lite')
+// Explicit global override only. Without it, defaults are recomputed from the live catalog every tick.
+const DEFAULT_FALLBACKS = String(process.env.AIOS_SUPERVISOR_FALLBACKS || '')
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
@@ -725,17 +726,17 @@ function canSend(ctx, cfg, kind = 'nudge', meta = {}) {
 // so the supervisor isn't down for the same reason the session is (a codex/GPT outage shouldn't also blind
 // a GPT-primary supervisor). Operator-overridable per session (cfg.fallback_models / the Model pick).
 export function defaultChain(tool) {
-  const fleet = tool === 'codex'
-    ? ['claude-opus-4-8', 'gpt-5.5', 'gemini-pro-agent'] // session=GPT -> lead Claude
-    : ['gpt-5.5', 'claude-opus-4-8', 'gemini-pro-agent']; // claude / agy / default -> lead GPT
-  // No fleet? User API providers (Auth & Models) tail the chain so the supervisor still thinks —
-  // resolved live, so a provider added after enable is picked up on the next tick.
+  const automatic = DEFAULT_FALLBACKS.length ? DEFAULT_FALLBACKS : automaticSupervisorChain(tool);
+  const fleet = DEFAULT_MODEL ? [DEFAULT_MODEL, ...automatic.filter((model) => model !== DEFAULT_MODEL)] : automatic;
+  // Configured API providers remain a secondary fail-open tail after the requested builtin groups.
   try { return [...fleet, ...userRoutes().slice(0, 2).map((r) => r.id)]; } catch { return fleet; }
 }
 function modelChain(cfg, session) {
   const dflt = defaultChain(session?.tool);
-  // A Model pick other than the framework default pins the primary; otherwise the tool-aware head leads.
-  const pinned = cfg.model && cfg.model !== DEFAULT_MODEL ? cfg.model : null;
+  // Empty/the global default/legacy glm-5.2 mean automatic. A custom chain still pins any model,
+  // including glm-5.2, through fallback_models.
+  const configured = String(cfg.model || '').trim();
+  const pinned = configured && configured !== DEFAULT_MODEL && configured !== 'glm-5.2' ? configured : null;
   let chain;
   if (Array.isArray(cfg.fallback_models) && cfg.fallback_models.length) chain = cfg.fallback_models; // explicit FULL chain (what the operator typed in the box)
   else if (pinned) chain = [pinned, ...dflt];
@@ -746,7 +747,7 @@ function modelChain(cfg, session) {
   return out;
 }
 function primaryModel(ctx, cfg) {
-  return modelChain(cfg, ctx.session())[0] || cfg.model || DEFAULT_MODEL;
+  return modelChain(cfg, ctx.session())[0] || cfg.model || DEFAULT_MODEL || null;
 }
 function textOnly(content) {
   return Array.isArray(content) ? content.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(content || '');

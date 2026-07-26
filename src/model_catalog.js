@@ -214,6 +214,10 @@ export function applyCatalog(providers, meta = {}) {
       nativeFor: Array.isArray(p.nativeFor) ? p.nativeFor : [],
       up: p.up !== false,
       deprecated: p.deprecated || null,
+      // Ordered provider recommendation ids come from subscription CLI priority first, then the
+      // provider/fleet catalog. Consumers such as the Supervisor can follow newly released models
+      // without baking model ids into AIOS.
+      recommended: [...new Set((Array.isArray(p.recommended) ? p.recommended : []).filter(Boolean).map(String))],
       models: p.models
         .filter((m) => m && m.id)
         .map((m) => ({
@@ -306,6 +310,36 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
       kind: 'chat',
       supportsFast: false,
     })) : []);
+}
+
+// Ordered, runnable chat recommendations for one builtin provider. Unlike listProxyModels({ top }),
+// this follows the provider's ordered live recommendation list and deliberately does not give old
+// operator pins priority. The model catalog refresh updates this in place, so callers never carry
+// release-specific ids. If an older/offline catalog has no provider-level order, model recommendation
+// flags and then the provider's own order are the fail-open fallback.
+export function topProviderModels(proxy, limit = 3, { liveOnly = true } = {}) {
+  const cap = Math.max(0, Number(limit) || 0);
+  if (!cap) return [];
+  const provider = PROVIDERS.find((p) => p.proxy === proxy);
+  if (!provider || (liveOnly && provider.up === false)) return [];
+  const models = listProxyModels({ providers: [proxy], liveOnly })
+    .filter((model) => (model.kind || 'chat') === 'chat');
+  const byId = new Map(models.map((model) => [model.id, model]));
+  const orderedIds = [
+    ...(provider.recommended || []),
+    ...provider.models.filter((model) => (model.kind || 'chat') === 'chat' && model.recommended).map((model) => model.id),
+    ...provider.models.filter((model) => (model.kind || 'chat') === 'chat').map((model) => model.id),
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const id of orderedIds) {
+    const model = byId.get(id);
+    if (!model || seen.has(id)) continue;
+    seen.add(id);
+    out.push(model);
+    if (out.length >= cap) break;
+  }
+  return out;
 }
 
 export function toolModels(tool) {

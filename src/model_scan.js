@@ -81,6 +81,11 @@ async function scanProvider(seed, ov, key) {
     nativeFor: seed.nativeFor || [],
     up: !!ids?.length,
     deprecated: ov?.deprecated || seed.deprecated || null,
+    // Preserve the provider's ordered recommendation list instead of reducing it to booleans.
+    // This is the automatic "best current models" signal consumed by Supervisor defaults.
+    recommended: Array.isArray(ov?.recommended)
+      ? ov.recommended.filter((id) => typeof id === 'string' && id)
+      : models.filter((model) => model.recommended).map((model) => model.id),
     models,
   };
 }
@@ -111,7 +116,13 @@ export function mergeCliCatalog(providers, cliProviders = {}) {
     const merged = new Map();
     for (const model of cli) merged.set(model.id, model);
     for (const model of provider.models || []) if (!merged.has(model.id)) merged.set(model.id, model);
-    return { ...provider, models: [...merged.values()] };
+    // Subscription CLI order is authoritative. Its top/recommended models lead the provider/fleet
+    // recommendations, with the latter retained as automatic fallbacks.
+    const recommended = [...new Set([
+      ...cli.filter((model) => model.recommended).map((model) => model.id),
+      ...(provider.recommended || []),
+    ])];
+    return { ...provider, recommended, models: [...merged.values()] };
   });
 }
 
