@@ -69,6 +69,7 @@ applyCatalog([
       { id: 'gpt-one', label: 'GPT One', supportsFast: true, vision: true },
       { id: 'gpt-two', label: 'GPT Two' },
       { id: 'gpt-three', label: 'GPT Three', vision: false },
+      { id: 'whisper-test', label: 'Whisper Test', kind: 'utility' },
     ],
   },
 ], { source: 'test' });
@@ -78,6 +79,7 @@ assert.equal(listing.vision, true);
 assert.equal(listProxyModels().find((model) => model.id === 'gpt-three').vision, false, 'an explicit CLI text-only capability outranks provider defaults');
 assert.equal(modelSupportsFast('gpt-one'), true);
 assert.ok(toolModels('codex').some((model) => model.id === 'gpt-three'), 'subscription selectors list the complete discovered catalog');
+assert.ok(!listProxyModels({ includeImages: true }).some((model) => model.id === 'whisper-test'), 'voice utility endpoints never leak into model selectors');
 
 const scanSource = readFileSync(new URL('../src/model_scan.js', import.meta.url), 'utf8');
 const cliAt = scanSource.indexOf('await discoverCliModels()');

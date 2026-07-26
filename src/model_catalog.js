@@ -264,7 +264,9 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
     .filter((p) => !allow || allow.has(p.proxy))
     .filter((p) => !liveOnly || p.up !== false)
     .flatMap((p) => {
-      let models = p.models.filter((m) => includeImages || (m.kind || 'chat') !== 'image');
+      // Utility endpoints (Whisper/TTS) belong in voice settings, never in an agent model picker.
+      // includeImages expands chat + image models for admin/image surfaces; it still excludes utility.
+      let models = p.models.filter((m) => (m.kind || 'chat') !== 'utility' && (includeImages || (m.kind || 'chat') !== 'image'));
       if (top > 0) {
         const chat = models.filter((m) => (m.kind || 'chat') === 'chat');
         // operator pins > recommended > the fleet's own order; dedupe BEFORE slicing or a model in
