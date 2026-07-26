@@ -68,13 +68,14 @@ applyCatalog([
     models: [
       { id: 'gpt-one', label: 'GPT One', supportsFast: true, vision: true },
       { id: 'gpt-two', label: 'GPT Two' },
-      { id: 'gpt-three', label: 'GPT Three' },
+      { id: 'gpt-three', label: 'GPT Three', vision: false },
     ],
   },
 ], { source: 'test' });
 const listing = listProxyModels().find((model) => model.id === 'gpt-one');
 assert.equal(listing.supportsFast, true, 'CLI capability metadata survives catalog normalization');
 assert.equal(listing.vision, true);
+assert.equal(listProxyModels().find((model) => model.id === 'gpt-three').vision, false, 'an explicit CLI text-only capability outranks provider defaults');
 assert.equal(modelSupportsFast('gpt-one'), true);
 assert.ok(toolModels('codex').some((model) => model.id === 'gpt-three'), 'subscription selectors list the complete discovered catalog');
 

@@ -186,7 +186,7 @@ export function curatedModels(defaultModel) {
       modelLabel: m.modelLabel,
       provider: m.provider,
       providerLabel: m.providerLabel,
-      vision: m.vision || isVisionRoute(routeForModel(m.id)),
+      vision: m.vision ?? isVisionRoute(routeForModel(m.id)),
     });
   }
   if (defaultModel && !seen.has(defaultModel)) {
@@ -197,7 +197,7 @@ export function curatedModels(defaultModel) {
       modelLabel: r.label || defaultModel,
       provider: r.proxy,
       providerLabel: r.providerLabel || r.proxy,
-      vision: isVisionRoute(r),
+      vision: r.vision ?? isVisionRoute(r),
     });
   }
   return out;

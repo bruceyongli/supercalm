@@ -222,7 +222,7 @@ export function applyCatalog(providers, meta = {}) {
           recommended: !!m.recommended,
           pinned: !!m.pinned,
           supportsFast: !!m.supportsFast,
-          vision: !!m.vision,
+          vision: m.vision === true ? true : m.vision === false ? false : null,
           source: m.source || null,
           // Utility models (STT/TTS on the spark box) arrive untyped from /v1/models and were leaking
           // into chat pickers (whisper offered as a coding-session model). Type them by id.
@@ -286,7 +286,7 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
             port: p.port,
             recommended: !!m.recommended,
             kind: m.kind || 'chat',
-            vision: !!m.vision || providerSupportsVision(p.proxy, m.id),
+            vision: m.vision ?? providerSupportsVision(p.proxy, m.id),
             source: m.source || null,
             supportsFast: !!m.supportsFast || (p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id)),
           };
@@ -327,7 +327,7 @@ export function toolModels(tool) {
             port: m?.port || 8789,
             recommended: true,
             kind: 'chat',
-            vision: !!m?.vision || providerSupportsVision('claude', concrete),
+            vision: m?.vision ?? providerSupportsVision('claude', concrete),
             supportsFast: false,
           };
         })
