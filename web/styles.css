@@ -1617,7 +1617,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   /* No width:100% here — the box is a grid item with side margins; forcing 100% pushed it 16px past
      the viewport and clipped the send button at the right edge on phones. Stretch deducts margins. */
   .message-box { box-sizing: border-box; gap: 5px; padding: 6px; border-radius: 8px; overflow: hidden; }
-  .message-box textarea { min-height: 34px; padding: 2px 3px; }
+  /* iOS zooms the whole page when a focused text control is below 16px. The composer inherited the
+     13px body font, so focusing it narrowed visualViewport, clipped mic/send, and left the page zoomed
+     after the keyboard closed. Keep the visual size compact through line-height/padding, not font size. */
+  .message-box textarea { min-height: 34px; padding: 2px 3px; font-size: 16px; }
   .attachment-list { display: grid; grid-template-columns: 1fr; }
   /* composer chips are full-width rows on phones — .message-box .attachment-list beats the ≤600
      compact-row block on order alone, which re-shrunk chips to 120px squares with wrapped buttons */
@@ -1629,7 +1632,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   }
   .composer-actions {
     order: 1; width: 100%; max-width: 100%; min-width: 0; margin-left: 0; align-self: stretch; gap: 6px;
-    display: grid; grid-template-columns: 36px minmax(0, 1fr) minmax(0, max-content) 36px 36px; align-items: center;
+    /* The controls are 40px wide; 36px tracks made the row overflow and clipped the send button. */
+    display: grid; grid-template-columns: 40px minmax(0, 1fr) minmax(0, max-content) 40px 40px; align-items: center;
   }
   .composer-action-spacer { display: block; min-width: 0; }
   .composer-actions .mic-status {
