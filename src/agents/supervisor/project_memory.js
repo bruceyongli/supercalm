@@ -131,6 +131,15 @@ applyMigrations(db, [{
         ON pm_standard_uses(session_id, used_at DESC);
     `);
   },
+}, {
+  id: '0109_unpin_rollout_inspector',
+  description: 'Remove Evidence pins inherited from its initial always-on rollout',
+  up(conn) {
+    // v0.3.250 introduced Evidence as default-enabled, so opening the agent manager during that
+    // release could persist an enabled grant even after the tool became optional. Run once: later
+    // operator choices to pin the on-demand inspector are made after this migration and will persist.
+    conn.exec("DELETE FROM agent_grants WHERE agent_id = 'inspector'");
+  },
 }]);
 
 // ---- card + versioning ---------------------------------------------------------------------------

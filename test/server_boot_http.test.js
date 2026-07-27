@@ -96,6 +96,7 @@ try {
     '0106_council_thread_complete_shape',
     '0107_supervisor_review_complete_shape',
     '0108_project_memory_standard_usage',
+    '0109_unpin_rollout_inspector',
   ]) {
     assert(applied.has(id), `startup applies and records ${id}`);
   }
