@@ -5,7 +5,10 @@ const statusPill = $('#status-pill');
 const statusLabel = statusPill.querySelector('b');
 const detail = $('#connection-detail');
 const setup = $('#setup');
+const setupTitle = $('#setup-title');
 const setupCopy = $('#setup-copy');
+const useFallback = $('#use-fallback');
+const modeSelect = $('#mode');
 const voiceSelect = $('#voice');
 const startButton = $('#start');
 const stopButton = $('#stop');
@@ -28,6 +31,7 @@ let sessionId = null;
 let partialAssistant = '';
 let bridgeBusy = false;
 let playback = null;
+let capability = null;
 
 function api(path, options = {}) {
   return fetch(path, {
@@ -111,7 +115,7 @@ function handleRealtimeEvent(event) {
       finalizeAssistant(partialAssistant);
       break;
     case 'error':
-      setStatus('error', 'Error', event.error?.message || 'Realtime session error');
+      setStatus('error', 'Native error', event.error?.message || 'Realtime session error');
       break;
   }
 }
@@ -250,7 +254,7 @@ async function recoverBridgeSession(error) {
   log('bridge reconnecting', { code: error.code, status: error.status });
   sessionId = null;
   stopButton.disabled = true;
-  setStatus('checking', 'Reconnecting', 'AIOS restarted during the turn. Reconnecting without losing your transcript…');
+  setStatus('checking', 'Fallback reconnecting', 'AIOS restarted during the turn. Reconnecting without losing your transcript…');
   let lastError = error;
   for (let attempt = 1; attempt <= 3; attempt++) {
     if (attempt > 1) await wait(attempt * 400);
@@ -280,15 +284,15 @@ async function requestBridgeTurn(text) {
 
 async function runBridgeText(text) {
   addTurn('user', text);
-  setStatus('checking', 'Thinking', 'Codex is preparing a short spoken answer…');
+  setStatus('checking', 'Fallback thinking', 'Codex is preparing a short text response for local speech synthesis…');
   const result = await requestBridgeTurn(text);
   addTurn('assistant', result.text);
   log('bridge turn', { model: result.model, firstTokenMs: result.firstTokenMs, latencyMs: result.latencyMs });
-  setStatus('live', 'Speaking', `${result.model} answered in ${(result.latencyMs / 1000).toFixed(1)}s.`);
+  setStatus('live', 'Fallback speaking', `${result.model} answered in ${(result.latencyMs / 1000).toFixed(1)}s; Kokoro is speaking locally.`);
   startButton.querySelector('[data-label]').textContent = 'Speaking…';
   playback = newPlayback();
   await speakSmart(result.text, playback);
-  setStatus('ready', 'Ready', 'Codex bridge is ready for another turn.');
+  setStatus('ready', 'Fallback ready', 'Local Whisper and Kokoro are active; this is not native Codex realtime.');
 }
 
 async function bridgeVoiceTurn() {
@@ -298,23 +302,23 @@ async function bridgeVoiceTurn() {
   stopAllPlayback();
   startButton.disabled = true;
   startButton.querySelector('[data-label]').textContent = 'Listening…';
-  setStatus('live', 'Listening', 'Speak naturally. The turn ends after a short silence.');
+  setStatus('live', 'Fallback listening', 'Local Whisper recording is active. The turn ends after a short silence.');
   try {
     // Warm the Codex thread while the operator is speaking so first-turn setup
     // is hidden behind microphone time instead of added after it.
     const session = ensureBridgeSession();
     const recording = recordUntilSilence();
     const [, blob] = await Promise.all([session, recording]);
-    setStatus('checking', 'Transcribing', 'Local Whisper is transcribing this turn…');
+    setStatus('checking', 'Fallback transcribing', 'Local Whisper is transcribing this turn…');
     const text = await transcribe(blob);
     if (!text) {
-      setStatus('ready', 'Ready', 'I did not hear speech. Tap Speak and try again.');
+      setStatus('ready', 'Fallback ready', 'Local Whisper did not hear speech. Tap Speak and try again.');
       return;
     }
     await runBridgeText(text);
   } catch (error) {
     log('bridge failed', { code: error.code, message: error.message });
-    setStatus('error', 'Unavailable', error.message);
+    setStatus('error', 'Fallback error', error.message);
   } finally {
     bridgeBusy = false;
     startButton.disabled = false;
@@ -325,7 +329,7 @@ async function bridgeVoiceTurn() {
 async function startNative() {
   startButton.disabled = true;
   startButton.querySelector('[data-label]').textContent = 'Connecting…';
-  setStatus('checking', 'Connecting', 'Requesting microphone access and creating the WebRTC offer…');
+  setStatus('checking', 'Native connecting', 'Requesting microphone access and creating the Codex WebRTC offer…');
   try {
     media = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -339,7 +343,7 @@ async function startNative() {
     peer.onconnectionstatechange = () => {
       log('peer state', { state: peer?.connectionState });
       if (peer?.connectionState === 'failed') {
-        setStatus('error', 'Disconnected', 'The realtime peer connection failed.');
+        setStatus('error', 'Native disconnected', 'The realtime peer connection failed.');
       }
     };
     media.getAudioTracks().forEach((track) => peer.addTrack(track, media));
@@ -349,7 +353,7 @@ async function startNative() {
       try { handleRealtimeEvent(JSON.parse(message.data)); }
       catch { log('unparsed event'); }
     };
-    channel.onerror = () => setStatus('error', 'Channel error', 'The realtime event channel failed.');
+    channel.onerror = () => setStatus('error', 'Native channel error', 'The realtime event channel failed.');
 
     const offer = await peer.createOffer();
     await peer.setLocalDescription(offer);
@@ -364,12 +368,12 @@ async function startNative() {
     stopButton.disabled = false;
     textInput.disabled = false;
     textSubmit.disabled = false;
-    setStatus('live', 'Live', `Connected to ${result.voice} over Codex realtime ${result.version}.`);
+    setStatus('live', 'Native live', `Connected to ${result.voice} over Codex realtime ${result.version}.`);
     log('native session started', { threadId: result.threadId, voice: result.voice, version: result.version });
   } catch (error) {
     log('native start failed', { code: error.code, message: error.message });
     await stop({ remote: false });
-    setStatus('error', 'Unavailable', error.message);
+    setStatus('error', 'Native unavailable', error.message);
   }
 }
 
@@ -379,14 +383,91 @@ function renderIdle() {
     startButton.querySelector('[data-label]').textContent = 'Speak';
     textInput.disabled = false;
     textSubmit.disabled = false;
-    setStatus('ready', 'Ready', 'Audio is processed locally; transcript text is sent to the Codex endpoint.');
+    setStatus('ready', 'Fallback ready', 'Local Whisper and Kokoro are active; this is not native Codex realtime.');
   } else if (mode === 'native') {
     startButton.disabled = false;
     startButton.querySelector('[data-label]').textContent = 'Start realtime';
     textInput.disabled = true;
     textSubmit.disabled = true;
-    setStatus('ready', 'Ready', 'Native Codex realtime is ready.');
+    setStatus('ready', 'Native ready', 'Microphone audio and synthesized speech will use the Codex Realtime WebRTC endpoint.');
   }
+}
+
+function showPipeline(pipeline, note) {
+  speechInputRoute.textContent = pipeline?.speechInput
+    ? `${pipeline.speechInput.location} · ${pipeline.speechInput.model}`
+    : 'Unavailable';
+  responseRoute.textContent = pipeline?.response
+    ? `${pipeline.response.location} · ${pipeline.response.model}`
+    : 'Unavailable';
+  speechOutputRoute.textContent = pipeline?.speechOutput
+    ? `${pipeline.speechOutput.location} · ${pipeline.speechOutput.model}`
+    : 'Unavailable';
+  pipelineNote.textContent = note;
+}
+
+function populateNativeVoices() {
+  const voices = capability?.voices?.v2 || [];
+  voiceSelect.replaceChildren(...voices.map((voice) => {
+    const option = document.createElement('option');
+    option.value = voice;
+    option.textContent = voice[0].toUpperCase() + voice.slice(1);
+    option.selected = voice === (capability?.voices?.defaultV2 || 'marin');
+    return option;
+  }));
+}
+
+function renderMode(nextMode) {
+  mode = nextMode;
+  modeSelect.value = nextMode;
+  stopButton.disabled = true;
+  if (mode === 'native') {
+    populateNativeVoices();
+    voiceSelect.disabled = !capability?.nativeReady;
+    showPipeline(
+      capability?.pipelines?.native,
+      capability?.nativeReady
+        ? 'This test sends microphone audio to OpenAI and receives synthesized audio over native Codex WebRTC.'
+        : 'Native mode is selected, but no audio or transcript is being sent until API-key setup is complete.',
+    );
+    if (!capability?.nativeReady) {
+      setup.hidden = false;
+      setupTitle.textContent = 'Platform API key needed for native Codex realtime.';
+      setupCopy.textContent = capability?.setup || 'Add OPENAI_API_KEY to the private AIOS environment and restart.';
+      useFallback.hidden = !capability?.bridgeReady;
+      startButton.disabled = true;
+      startButton.querySelector('[data-label]').textContent = 'Native unavailable';
+      textInput.disabled = true;
+      textSubmit.disabled = true;
+      setStatus('blocked', 'Native unavailable', 'The native Codex Realtime endpoint is not connected. No fallback is running.');
+      return;
+    }
+    setup.hidden = true;
+    useFallback.hidden = true;
+    renderIdle();
+    return;
+  }
+
+  voiceSelect.replaceChildren(new Option('Local Kokoro', 'bridge', true, true));
+  voiceSelect.disabled = true;
+  showPipeline(
+    capability?.pipelines?.bridge,
+    'Fallback mode keeps microphone audio on AIOS. Only transcript text and conversation are sent to Codex.',
+  );
+  if (!capability?.bridgeReady) {
+    setup.hidden = false;
+    setupTitle.textContent = 'Codex sign-in needed for fallback mode.';
+    setupCopy.textContent = 'Sign in to the installed Codex CLI, then restart AIOS.';
+    useFallback.hidden = true;
+    startButton.disabled = true;
+    textInput.disabled = true;
+    textSubmit.disabled = true;
+    setStatus('blocked', 'Fallback unavailable', 'The installed Codex CLI is not signed in.');
+    return;
+  }
+  setup.hidden = true;
+  useFallback.hidden = true;
+  renderIdle();
 }
 
 async function stop({ remote = true } = {}) {
@@ -411,50 +492,25 @@ async function stop({ remote = true } = {}) {
 async function loadStatus() {
   try {
     const result = await api('api/codex-realtime/status');
-    mode = result.mode;
+    capability = result;
     log('capability', {
-      mode,
+      preferredMode: result.preferredMode,
       authType: result.authType,
+      nativeAuthType: result.nativeAuthType,
       nativeReady: result.nativeReady,
       bridgeReady: result.bridgeReady,
     });
-    if (!result.ready) {
-      setup.hidden = false;
-      setupCopy.textContent = result.setup;
-      setStatus('blocked', 'Setup needed', 'The installed Codex CLI is not signed in.');
-      return;
-    }
-    setup.hidden = true;
-    if (mode === 'native') {
-      const voices = result.voices?.v2 || [];
-      voiceSelect.replaceChildren(...voices.map((voice) => {
-        const option = document.createElement('option');
-        option.value = voice;
-        option.textContent = voice[0].toUpperCase() + voice.slice(1);
-        option.selected = voice === (result.voices.defaultV2 || 'marin');
-        return option;
-      }));
-      voiceSelect.disabled = false;
-      speechInputRoute.textContent = result.pipeline?.speechInput
-        ? `${result.pipeline.speechInput.location}`
-        : 'OpenAI Codex Realtime endpoint';
-      responseRoute.textContent = result.pipeline?.response
-        ? `${result.pipeline.response.location}`
-        : 'OpenAI Codex Realtime endpoint';
-      speechOutputRoute.textContent = result.pipeline?.speechOutput
-        ? `${result.pipeline.speechOutput.location}`
-        : 'OpenAI Codex Realtime endpoint';
-      pipelineNote.textContent = 'Native mode sends microphone audio to the Codex Realtime endpoint.';
-    } else {
-      voiceSelect.replaceChildren(new Option(`Local speech + Codex endpoint`, 'bridge', true, true));
-      voiceSelect.disabled = true;
-      const pipeline = result.pipeline || {};
-      speechInputRoute.textContent = `${pipeline.speechInput?.location || 'Local'} · ${pipeline.speechInput?.model || 'Whisper'}`;
-      responseRoute.textContent = `${pipeline.response?.location || 'OpenAI Codex endpoint'} · ${pipeline.response?.model || result.bridgeModel}`;
-      speechOutputRoute.textContent = `${pipeline.speechOutput?.location || 'Local'} · ${pipeline.speechOutput?.model || 'Kokoro'}`;
-      pipelineNote.textContent = 'Microphone audio stays on AIOS. Only transcript text and conversation are sent to Codex.';
-    }
-    renderIdle();
+    const nativeOption = new Option(
+      result.nativeReady ? 'Native Codex realtime · ready' : 'Native Codex realtime · API key needed',
+      'native',
+      true,
+      true,
+    );
+    const fallbackOption = new Option('Local speech fallback · Whisper + Kokoro', 'bridge');
+    fallbackOption.disabled = !result.bridgeReady;
+    modeSelect.replaceChildren(nativeOption, fallbackOption);
+    modeSelect.disabled = false;
+    renderMode('native');
   } catch (error) {
     log('capability failed', { code: error.code, message: error.message });
     setStatus('error', 'Unavailable', error.message);
@@ -464,6 +520,14 @@ async function loadStatus() {
 startButton.addEventListener('click', () => {
   if (mode === 'bridge') bridgeVoiceTurn();
   else if (mode === 'native') startNative();
+});
+modeSelect.addEventListener('change', async () => {
+  if (sessionId) await stop();
+  renderMode(modeSelect.value);
+});
+useFallback.addEventListener('click', () => {
+  modeSelect.value = 'bridge';
+  renderMode('bridge');
 });
 stopButton.addEventListener('click', () => stop());
 $('#clear').addEventListener('click', () => {
@@ -482,7 +546,7 @@ textForm.addEventListener('submit', async (event) => {
       await ensureBridgeSession();
       await runBridgeText(text);
     } catch (error) {
-      setStatus('error', 'Send failed', error.message);
+      setStatus('error', 'Fallback send failed', error.message);
     } finally {
       bridgeBusy = false;
     }
@@ -496,7 +560,7 @@ textForm.addEventListener('submit', async (event) => {
       body: JSON.stringify({ text }),
     });
   } catch (error) {
-    setStatus('error', 'Send failed', error.message);
+    setStatus('error', 'Native send failed', error.message);
   }
 });
 window.addEventListener('pagehide', () => {

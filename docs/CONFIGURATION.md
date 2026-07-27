@@ -68,6 +68,23 @@ Providers are stored in `data/model_providers.json` (chmod 600; keys never leave
 APIs redact them). "Test & add" verifies the key and auto-discovers the model list. Model ids collide?
 Address a provider's model explicitly as `<provider-name>/<model>`.
 
+### Experimental native Codex realtime voice
+
+The Codex voice lab at `/aios/codex-realtime.html` defaults to the experimental
+native Codex WebRTC path. The installed Codex App Server currently requires
+Platform API-key authentication for that path:
+
+| Var | Default | Notes |
+|---|---|---|
+| `OPENAI_API_KEY` | *(unset)* | Enables native Codex realtime. Put it only in gitignored `data/aios.env`; Platform usage is billed separately. |
+| `AIOS_CODEX_VOICE_HOME` | `data/codex-realtime-home` | Isolated Codex auth/state for native voice. The normal ChatGPT Codex login is not replaced. |
+
+On restart, AIOS passes the key to `codex login --with-api-key` over stdin and
+stores the resulting `auth.json` with owner-only permissions under the isolated
+voice home. Without a key, native mode stays visibly unavailable. The existing
+Whisper/Codex-text/Kokoro bridge can be selected manually as a fallback; it is
+never chosen automatically by the experiment.
+
 ## 2. System binaries
 
 Supercalm shells out to a few tools. Paths are **auto-resolved** across `/opt/homebrew/bin` (macOS ARM),

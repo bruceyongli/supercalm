@@ -5,8 +5,8 @@ This lab exposes the installed Codex CLI as a voice surface without replacing AI
 ## What is implemented
 
 - AIOS can initialize `codex app-server` with `experimentalApi: true`.
-- With Platform API-key auth, AIOS creates an ephemeral Codex thread and negotiates native WebRTC realtime.
-- With the existing ChatGPT login, AIOS automatically uses a working bridge: local Whisper input, an OpenAI Codex endpoint reached through a persistent local Codex App Server thread, and local Kokoro output.
+- With Platform API-key auth, AIOS creates an ephemeral Codex thread and negotiates native WebRTC realtime. This is the lab's default and primary experiment.
+- With the existing ChatGPT login, AIOS offers an explicit fallback: local Whisper input, an OpenAI Codex endpoint reached through a persistent local Codex App Server thread, and local Kokoro output. The fallback is never selected automatically.
 - The bridge automatically creates a fresh Codex thread and retries the pending transcript once if an AIOS restart invalidates the active session.
 - The OpenAI credential remains server-side. The browser receives only SDP and a random AIOS session id.
 - The realtime prompt explicitly avoids canned trailing sign-offs such as "Thank you."
@@ -23,7 +23,7 @@ Codex CLI 0.142.5 exposes the realtime methods, but native speech-to-speech requ
 realtime conversation requires API key auth
 ```
 
-No extra credential is required for the bridged mode. AIOS uses the existing ChatGPT-authenticated Codex CLI plus its existing local speech services. On this host, a short `gpt-5.3-codex-spark` bridge turn measured about seven seconds.
+No extra credential is required for the fallback mode. AIOS uses the existing ChatGPT-authenticated Codex CLI plus its existing local speech services. On this host, a short `gpt-5.3-codex-spark` bridge turn measured about seven seconds.
 
 In bridged mode, microphone audio is sent only to AIOS and transcribed by the
 local Whisper service. The transcript and conversation text are sent to the
@@ -40,13 +40,24 @@ process OPENAI_API_KEY: absent
 data/aios.env OPENAI_API_KEY: absent
 ```
 
-To opt into native WebRTC later, use the existing gitignored `data/aios.env` rather than adding a tracked config file:
+To enable the native WebRTC experiment, use the existing gitignored
+`data/aios.env` rather than adding a tracked config file:
 
 ```dotenv
 OPENAI_API_KEY=…
 ```
 
-Restart AIOS after changing that file. The API key is used by the local Codex App Server process and is never returned to the browser. Platform API usage is billed separately from a ChatGPT subscription. Without it, the page remains usable in bridged mode.
+Restart AIOS after changing that file. The API key is used by the local Codex App Server process and is never returned to the browser. Platform API usage is billed separately from a ChatGPT subscription. Without it, the bridged mode remains available only after explicit operator selection.
+
+AIOS does not replace the operator's normal ChatGPT Codex login. At startup it
+passes the API key over stdin to `codex login --with-api-key` inside an isolated
+`data/codex-realtime-home` and starts native voice App Server processes with
+that `CODEX_HOME`. The isolated directory and `auth.json` are under the
+gitignored `data/` directory with owner-only permissions.
+
+Without the key, the page stays on **Native Codex realtime · API key needed**
+with the start button disabled. The operator must explicitly choose **Use
+local fallback instead** to run the Whisper/Codex-text/Kokoro pipeline.
 
 ## Try it
 
@@ -62,7 +73,9 @@ Then start AIOS and open:
 https://YOUR-AIOS-HOST/aios/codex-realtime.html
 ```
 
-The page reports the actual Codex auth type. With `apiKey` auth it uses native realtime; with `chatgpt` auth it automatically uses the working Codex bridge.
+The page reports the actual Codex auth type and the processing location for
+speech input, model response, and speech output. Native mode remains selected
+by default. Fallback mode is available only by explicit selection.
 
 ## Experimental boundary
 

@@ -125,6 +125,7 @@ h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
 }
 .setup strong { color: var(--amber); }
 .setup p { margin: 6px 0 14px; color: var(--muted); line-height: 1.45; }
+.setup button { color: var(--text); }
 .setup code {
   display: block;
   padding: 10px 12px;
@@ -138,12 +139,12 @@ h2 { margin: 0; font-size: 20px; letter-spacing: -.02em; }
 .controls label {
   display: grid;
   gap: 6px;
-  margin-right: auto;
   color: var(--muted);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .08em;
 }
+.controls .voice-field { margin-right: auto; }
 select, input {
   border: 1px solid var(--line);
   border-radius: 10px;

@@ -1,15 +1,18 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { route, json, readJson } from './server.js';
-import { ROOT } from './config.js';
+import { DATA_DIR, ROOT } from './config.js';
 import { CodexAppServerClient, publicRealtimeError } from './codex_realtime_client.js';
 
 const SESSION_TTL_MS = 15 * 60 * 1000;
 const MAX_SESSIONS = 2;
 const MAX_SDP_CHARS = 256 * 1024;
 const BRIDGE_MODEL = process.env.AIOS_CODEX_VOICE_MODEL || 'gpt-5.3-codex-spark';
+const VOICE_CODEX_HOME = process.env.AIOS_CODEX_VOICE_HOME || join(DATA_DIR, 'codex-realtime-home');
 const VOICES = new Set([
   'alloy', 'arbor', 'ash', 'ballad', 'breeze', 'cedar', 'coral', 'cove', 'echo', 'ember',
   'juniper', 'maple', 'marin', 'sage', 'shimmer', 'sol', 'spruce', 'vale', 'verse',
@@ -26,6 +29,7 @@ Return plain speakable text only: no markdown, URLs, file paths, or emoji.`;
 
 const sessions = new Map();
 let statusCache = null;
+let nativeLoginPromise = null;
 
 function codexBinary() {
   if (process.env.AIOS_CODEX_BIN) return process.env.AIOS_CODEX_BIN;
@@ -46,6 +50,72 @@ export function createCodexRealtimeClient(options = {}) {
     cwd: process.env.AIOS_CODEX_REALTIME_CWD || ROOT,
     ...options,
   });
+}
+
+function scrubApiKeyEnv(overrides = {}) {
+  const env = { ...process.env, ...overrides };
+  delete env.OPENAI_API_KEY;
+  delete env.CODEX_API_KEY;
+  return env;
+}
+
+function runApiKeyLogin(apiKey) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      codexBinary(),
+      ['login', '--with-api-key', '-c', 'cli_auth_credentials_store="file"'],
+      {
+        cwd: ROOT,
+        env: scrubApiKeyEnv({ CODEX_HOME: VOICE_CODEX_HOME }),
+        stdio: ['pipe', 'ignore', 'pipe'],
+      },
+    );
+    let diagnostic = '';
+    child.stderr.on('data', (chunk) => {
+      diagnostic = (diagnostic + String(chunk)).slice(-1000);
+    });
+    child.on('error', () => reject(new Error('Could not launch Codex API-key login')));
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Codex API-key login failed (${code ?? 'unknown'})${diagnostic ? ': see server diagnostics' : ''}`));
+    });
+    child.stdin.on('error', () => {});
+    child.stdin.end(`${apiKey}\n`);
+  });
+}
+
+async function prepareNativeCodexEnv() {
+  const apiKey = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!apiKey) return null;
+  if (nativeLoginPromise) return nativeLoginPromise;
+  nativeLoginPromise = (async () => {
+    await mkdir(VOICE_CODEX_HOME, { recursive: true, mode: 0o700 });
+    await chmod(VOICE_CODEX_HOME, 0o700).catch(() => {});
+    const configPath = join(VOICE_CODEX_HOME, 'config.toml');
+    let config = await readFile(configPath, 'utf8').catch(() => '');
+    if (!/^\s*cli_auth_credentials_store\s*=/m.test(config)) {
+      config = `${config.trim()}${config.trim() ? '\n' : ''}cli_auth_credentials_store = "file"\n`;
+      await writeFile(configPath, config, { mode: 0o600 });
+    }
+    const fingerprint = createHash('sha256').update(apiKey).digest('hex');
+    const fingerprintPath = join(VOICE_CODEX_HOME, '.api-key-fingerprint');
+    const priorFingerprint = await readFile(fingerprintPath, 'utf8').catch(() => '');
+    if (priorFingerprint.trim() !== fingerprint || !existsSync(join(VOICE_CODEX_HOME, 'auth.json'))) {
+      await runApiKeyLogin(apiKey);
+      await writeFile(fingerprintPath, `${fingerprint}\n`, { mode: 0o600 });
+      await chmod(join(VOICE_CODEX_HOME, 'auth.json'), 0o600).catch(() => {});
+    }
+    return scrubApiKeyEnv({ CODEX_HOME: VOICE_CODEX_HOME });
+  })().catch((error) => {
+    nativeLoginPromise = null;
+    throw error;
+  });
+  return nativeLoginPromise;
+}
+
+async function createNativeCodexRealtimeClient() {
+  const env = await prepareNativeCodexEnv();
+  return createCodexRealtimeClient(env ? { env } : {});
 }
 
 function waitForRealtimeSignal(client, threadId, timeoutMs = 25_000) {
@@ -114,43 +184,61 @@ export async function negotiateCodexRealtime({
 }
 
 async function inspectCapability() {
-  const client = createCodexRealtimeClient();
+  const bridgeClient = createCodexRealtimeClient();
+  let nativeClient = null;
   try {
-    await client.initialize();
-    const [account, voices] = await Promise.all([client.account(), client.voices()]);
-    const authType = account?.account?.type || 'none';
-    const nativeReady = authType === 'apiKey';
+    await bridgeClient.initialize();
+    const [bridgeAccount, bridgeVoices] = await Promise.all([bridgeClient.account(), bridgeClient.voices()]);
+    const authType = bridgeAccount?.account?.type || 'none';
     const bridgeReady = authType === 'chatgpt' || authType === 'apiKey';
-    const mode = nativeReady ? 'native' : bridgeReady ? 'bridge' : null;
+    let nativeAuthType = authType === 'apiKey' ? 'apiKey' : 'none';
+    let voices = bridgeVoices;
+    let nativeError = null;
+    if (process.env.OPENAI_API_KEY) {
+      try {
+        nativeClient = await createNativeCodexRealtimeClient();
+        await nativeClient.initialize();
+        const [nativeAccount, nativeVoices] = await Promise.all([nativeClient.account(), nativeClient.voices()]);
+        nativeAuthType = nativeAccount?.account?.type || 'none';
+        voices = nativeVoices || voices;
+      } catch (error) {
+        nativeError = publicRealtimeError(error);
+      }
+    }
+    const nativeReady = nativeAuthType === 'apiKey';
+    const nativePipeline = {
+      speechInput: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime' },
+      response: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime', authType: nativeAuthType },
+      speechOutput: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime' },
+    };
+    const bridgePipeline = {
+      speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
+      response: { location: 'OpenAI Codex endpoint', model: BRIDGE_MODEL, authType },
+      speechOutput: { location: 'Local', model: 'Kokoro' },
+    };
     return {
       ok: true,
       experimental: true,
       ready: nativeReady || bridgeReady,
       nativeReady,
       bridgeReady,
-      mode,
+      mode: nativeReady ? 'native' : null,
+      preferredMode: 'native',
       authType,
+      nativeAuthType,
+      nativeCredentialConfigured: Boolean(process.env.OPENAI_API_KEY),
       voices,
       bridgeModel: BRIDGE_MODEL,
-      pipeline: mode === 'bridge'
-        ? {
-            speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
-            response: { location: 'OpenAI Codex endpoint', model: BRIDGE_MODEL, authType },
-            speechOutput: { location: 'Local', model: 'Kokoro' },
-          }
-        : mode === 'native'
-          ? {
-              speechInput: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime' },
-              response: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime', authType },
-              speechOutput: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime' },
-            }
-          : null,
-      setup: bridgeReady
+      pipelines: { native: nativePipeline, bridge: bridgePipeline },
+      pipeline: nativeReady ? nativePipeline : null,
+      setup: nativeReady
         ? null
-        : 'Codex is not authenticated on this host. Sign in to the installed Codex CLI, then restart AIOS.',
+        : nativeError?.message
+          || 'Native Codex realtime needs a Platform API key in the gitignored data/aios.env. Add OPENAI_API_KEY and restart AIOS; the normal ChatGPT Codex login stays unchanged.',
     };
   } finally {
-    client.close();
+    bridgeClient.close();
+    nativeClient?.close();
   }
 }
 
@@ -206,7 +294,7 @@ route('POST', '/api/codex-realtime/start', async (req, res) => {
     return json(res, 400, { error: 'Unsupported realtime voice.', code: 'invalid-voice' });
   }
 
-  const client = createCodexRealtimeClient();
+  const client = await createNativeCodexRealtimeClient();
   try {
     const negotiated = await negotiateCodexRealtime({ client, sdp, voice });
     const id = randomUUID();

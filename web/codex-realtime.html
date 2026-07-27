@@ -21,7 +21,7 @@
         <p class="eyebrow">CODEX VOICE</p>
         <h1>Talk to Codex</h1>
       </div>
-      <p class="lede">See exactly where speech and model inference run. Your current route is shown below.</p>
+      <p class="lede">Native Codex realtime is the experiment. The existing local speech stack is available only as an explicit fallback.</p>
     </header>
 
     <section class="panel" aria-labelledby="connection-title">
@@ -34,13 +34,20 @@
       </div>
 
       <div id="setup" class="setup" hidden>
-        <strong>Codex sign-in needed.</strong>
+        <strong id="setup-title">Native Codex realtime setup needed.</strong>
         <p id="setup-copy"></p>
+        <button id="use-fallback" class="secondary" type="button" hidden>Use local fallback instead</button>
       </div>
 
       <div class="controls">
-        <label>
-          Voice path
+        <label class="mode-field">
+          Test mode
+          <select id="mode" aria-label="Voice test mode" disabled>
+            <option value="native">Native Codex realtime</option>
+          </select>
+        </label>
+        <label class="voice-field">
+          Realtime voice
           <select id="voice" aria-label="Realtime voice" disabled>
             <option value="marin">Marin</option>
           </select>

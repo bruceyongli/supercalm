@@ -48,16 +48,26 @@ const server = createServer(async (req, res) => {
       ready: nativeReady || bridgeReady,
       nativeReady,
       bridgeReady,
-      mode: nativeReady ? 'native' : bridgeReady ? 'bridge' : null,
+      mode: nativeReady ? 'native' : null,
+      preferredMode: 'native',
       authType,
+      nativeAuthType: nativeReady ? 'apiKey' : 'none',
+      nativeCredentialConfigured: nativeReady,
       voices,
       bridgeModel: 'gpt-5.3-codex-spark',
-      pipeline: bridgeReady && !nativeReady ? {
-        speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
-        response: { location: 'OpenAI Codex endpoint', model: 'gpt-5.3-codex-spark', authType },
-        speechOutput: { location: 'Local', model: 'Kokoro' },
-      } : null,
-      setup: bridgeReady ? null : 'Codex is not authenticated.',
+      pipelines: {
+        native: {
+          speechInput: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime' },
+          response: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime', authType: nativeReady ? 'apiKey' : 'none' },
+          speechOutput: { location: 'OpenAI Codex Realtime endpoint', model: 'Codex Realtime' },
+        },
+        bridge: {
+          speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
+          response: { location: 'OpenAI Codex endpoint', model: 'gpt-5.3-codex-spark', authType },
+          speechOutput: { location: 'Local', model: 'Kokoro' },
+        },
+      },
+      setup: nativeReady ? null : 'Native Codex realtime needs a Platform API key.',
     }));
     return;
   }
@@ -241,7 +251,13 @@ try {
   const blockedContext = await browser.newContext({ viewport: { width: 1100, height: 900 } });
   const blockedPage = await blockedContext.newPage();
   await blockedPage.goto(base, { waitUntil: 'networkidle' });
-  assert.equal(await blockedPage.locator('#status-pill b').innerText(), 'Setup needed');
+  assert.equal(await blockedPage.locator('#status-pill b').innerText(), 'Native unavailable');
+  assert.equal(await blockedPage.locator('#mode').inputValue(), 'native');
+  assert.equal(
+    await blockedPage.locator('#mode option').nth(1).evaluate((option) => option.disabled),
+    true,
+    'fallback is disabled without ChatGPT auth',
+  );
   assert.equal(await blockedPage.locator('#start').isDisabled(), true, 'signed-out Codex cannot start a voice session');
   await blockedPage.screenshot({ path: new URL('credential-gate.png', outDir).pathname, fullPage: true });
   await blockedContext.close();
@@ -251,9 +267,15 @@ try {
   await installBridgeMock(bridgeContext);
   const bridgePage = await bridgeContext.newPage();
   await bridgePage.goto(base, { waitUntil: 'networkidle' });
-  assert.equal(await bridgePage.locator('#status-pill b').innerText(), 'Ready');
+  assert.equal(await bridgePage.locator('#status-pill b').innerText(), 'Native unavailable');
+  assert.equal(await bridgePage.locator('#mode').inputValue(), 'native', 'native experiment remains the default');
+  assert.equal(await bridgePage.locator('#start').isDisabled(), true, 'fallback is never selected silently');
+  assert.match(await bridgePage.locator('#speech-input-route').innerText(), /OpenAI Codex Realtime endpoint/);
+  await bridgePage.locator('#use-fallback').click();
+  assert.equal(await bridgePage.locator('#status-pill b').innerText(), 'Fallback ready');
+  assert.equal(await bridgePage.locator('#mode').inputValue(), 'bridge');
   assert.equal(await bridgePage.locator('#voice').inputValue(), 'bridge');
-  assert.equal(await bridgePage.locator('#voice option').innerText(), 'Local speech + Codex endpoint');
+  assert.equal(await bridgePage.locator('#voice option').innerText(), 'Local Kokoro');
   assert.match(await bridgePage.locator('#speech-input-route').innerText(), /local.*Whisper large-v3-turbo/i);
   assert.match(await bridgePage.locator('#response-route').innerText(), /OpenAI Codex endpoint.*gpt-5\.3-codex-spark/);
   assert.match(await bridgePage.locator('#speech-output-route').innerText(), /local.*Kokoro/i);
@@ -264,7 +286,7 @@ try {
   assert.match(await bridgePage.locator('#transcript').innerText(), /The Codex bridge can hear you\./);
   assert.ok(requests.some((request) => request.path.endsWith('/bridge/start')));
   assert.ok(requests.some((request) => request.path.endsWith('/bridge/turn') && request.body.text === 'Can you hear the bridge?'));
-  await bridgePage.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Ready');
+  await bridgePage.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Fallback ready');
   await bridgePage.locator('#text-input').fill('Recover after restart');
   await bridgePage.locator('#text-form button').click();
   await bridgePage.waitForFunction(
@@ -284,12 +306,14 @@ try {
   await installWebRtcMock(readyContext);
   const page = await readyContext.newPage();
   await page.goto(base, { waitUntil: 'networkidle' });
-  assert.equal(await page.locator('#status-pill b').innerText(), 'Ready');
+  assert.equal(await page.locator('#status-pill b').innerText(), 'Native ready');
+  assert.equal(await page.locator('#mode').inputValue(), 'native');
+  assert.match(await page.locator('#pipeline-note').innerText(), /sends microphone audio to OpenAI/);
   assert.equal(await page.locator('#voice option').allTextContents().then((v) => v.join(',')), 'Alloy,Marin,Cedar');
   await page.screenshot({ path: new URL('ready.png', outDir).pathname, fullPage: true });
 
   await page.locator('#start').click();
-  await page.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Live');
+  await page.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Native live');
   assert.equal(await page.evaluate(() => window.__remoteSdp), 'v=0\r\nmock-answer');
   const nativeStart = requests.find((request) => request.path === '/aios/api/codex-realtime/start');
   assert.equal(nativeStart?.body.sdp, 'v=0\r\nmock-offer');
@@ -315,11 +339,11 @@ try {
   await page.waitForFunction(() => document.querySelector('#text-input')?.value === '');
   assert.ok(requests.some((r) => r.path.endsWith('/text') && r.body.text === 'Text fallback'));
   await page.locator('#stop').click();
-  await page.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Ready');
+  await page.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Native ready');
   assert.equal(await page.evaluate(() => window.__trackStopped), true, 'stop releases the microphone');
   await readyContext.close();
 
-  console.log('codex_realtime_ui.test ok: bridge voice turn, native WebRTC SDP, transcript and mic cleanup verified');
+  console.log('codex_realtime_ui.test ok: native-default gate, explicit fallback, restart recovery, WebRTC SDP and mic cleanup verified');
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
