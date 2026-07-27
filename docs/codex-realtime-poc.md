@@ -6,7 +6,8 @@ This lab exposes the installed Codex CLI as a voice surface without replacing AI
 
 - AIOS can initialize `codex app-server` with `experimentalApi: true`.
 - With Platform API-key auth, AIOS creates an ephemeral Codex thread and negotiates native WebRTC realtime.
-- With the existing ChatGPT login, AIOS automatically uses a working bridge: local Whisper input, a persistent Codex App Server thread, and local Kokoro output.
+- With the existing ChatGPT login, AIOS automatically uses a working bridge: local Whisper input, an OpenAI Codex endpoint reached through a persistent local Codex App Server thread, and local Kokoro output.
+- The bridge automatically creates a fresh Codex thread and retries the pending transcript once if an AIOS restart invalidates the active session.
 - The OpenAI credential remains server-side. The browser receives only SDP and a random AIOS session id.
 - The realtime prompt explicitly avoids canned trailing sign-offs such as "Thank you."
 
@@ -23,6 +24,13 @@ realtime conversation requires API key auth
 ```
 
 No extra credential is required for the bridged mode. AIOS uses the existing ChatGPT-authenticated Codex CLI plus its existing local speech services. On this host, a short `gpt-5.3-codex-spark` bridge turn measured about seven seconds.
+
+In bridged mode, microphone audio is sent only to AIOS and transcribed by the
+local Whisper service. The transcript and conversation text are sent to the
+OpenAI Codex endpoint for inference. The returned text is synthesized into
+audio locally by Kokoro. Running `codex app-server` on the host does not make
+the Codex model itself local; it is the local client for the authenticated
+Codex service.
 
 Before proposing optional native realtime, the standard operator locations were checked by key name only:
 

@@ -14,6 +14,8 @@ const outDir = new URL('test-results/codex-realtime-poc/', root);
 mkdirSync(outDir, { recursive: true });
 let authType = 'none';
 const requests = [];
+let bridgeStarts = 0;
+let recoveryFailures = 0;
 
 const voices = {
   v1: ['cove'],
@@ -50,6 +52,11 @@ const server = createServer(async (req, res) => {
       authType,
       voices,
       bridgeModel: 'gpt-5.3-codex-spark',
+      pipeline: bridgeReady && !nativeReady ? {
+        speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
+        response: { location: 'OpenAI Codex endpoint', model: 'gpt-5.3-codex-spark', authType },
+        speechOutput: { location: 'Local', model: 'Kokoro' },
+      } : null,
       setup: bridgeReady ? null : 'Codex is not authenticated.',
     }));
     return;
@@ -63,10 +70,11 @@ const server = createServer(async (req, res) => {
   const raw = await body(req);
   requests.push({ method: req.method, path, body: raw ? JSON.parse(raw) : {} });
   if (path.endsWith('/bridge/start')) {
+    bridgeStarts++;
     res.writeHead(201, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
-      id: 'bridge-session',
+      id: `bridge-session-${bridgeStarts}`,
       threadId: 'bridge-thread',
       mode: 'bridge',
       model: 'gpt-5.3-codex-spark',
@@ -75,10 +83,22 @@ const server = createServer(async (req, res) => {
     return;
   }
   if (path.endsWith('/bridge/turn')) {
+    const turn = raw ? JSON.parse(raw) : {};
+    if (turn.text === 'Recover after restart' && recoveryFailures++ === 0) {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        error: 'Codex realtime could not start.',
+        code: 'codex-realtime-failed',
+      }));
+      return;
+    }
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       ok: true,
-      text: 'The Codex bridge can hear you.',
+      text: turn.text === 'Recover after restart'
+        ? 'The bridge recovered without losing your turn.'
+        : 'The Codex bridge can hear you.',
       model: 'gpt-5.3-codex-spark',
       firstTokenMs: 70,
       latencyMs: 90,
@@ -233,13 +253,29 @@ try {
   await bridgePage.goto(base, { waitUntil: 'networkidle' });
   assert.equal(await bridgePage.locator('#status-pill b').innerText(), 'Ready');
   assert.equal(await bridgePage.locator('#voice').inputValue(), 'bridge');
-  assert.match(await bridgePage.locator('#voice option').innerText(), /Kokoro.*gpt-5\.3-codex-spark/);
+  assert.equal(await bridgePage.locator('#voice option').innerText(), 'Local speech + Codex endpoint');
+  assert.match(await bridgePage.locator('#speech-input-route').innerText(), /local.*Whisper large-v3-turbo/i);
+  assert.match(await bridgePage.locator('#response-route').innerText(), /OpenAI Codex endpoint.*gpt-5\.3-codex-spark/);
+  assert.match(await bridgePage.locator('#speech-output-route').innerText(), /local.*Kokoro/i);
+  assert.match(await bridgePage.locator('#pipeline-note').innerText(), /Only transcript text.*sent to Codex/);
   await bridgePage.locator('#start').click();
   await bridgePage.waitForFunction(() => document.querySelector('#transcript')?.textContent?.includes('The Codex bridge can hear you.'), null, { timeout: 5000 });
   assert.match(await bridgePage.locator('#transcript').innerText(), /Can you hear the bridge\?/);
   assert.match(await bridgePage.locator('#transcript').innerText(), /The Codex bridge can hear you\./);
   assert.ok(requests.some((request) => request.path.endsWith('/bridge/start')));
   assert.ok(requests.some((request) => request.path.endsWith('/bridge/turn') && request.body.text === 'Can you hear the bridge?'));
+  await bridgePage.waitForFunction(() => document.querySelector('#status-pill b')?.textContent === 'Ready');
+  await bridgePage.locator('#text-input').fill('Recover after restart');
+  await bridgePage.locator('#text-form button').click();
+  await bridgePage.waitForFunction(
+    () => document.querySelector('#transcript')?.textContent?.includes('The bridge recovered without losing your turn.'),
+    null,
+    { timeout: 5000 },
+  );
+  const recoveredTranscript = await bridgePage.locator('#transcript').innerText();
+  assert.equal((recoveredTranscript.match(/Recover after restart/g) || []).length, 1, 'recovery does not duplicate user transcript');
+  assert.ok(bridgeStarts >= 2, '502 recovery creates a fresh Codex bridge session');
+  assert.match(await bridgePage.locator('#events').textContent(), /bridge reconnected/);
   await bridgePage.screenshot({ path: new URL('bridge-live.png', outDir).pathname, fullPage: true });
   await bridgeContext.close();
 

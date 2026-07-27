@@ -15,6 +15,10 @@ const remoteAudio = $('#remote-audio');
 const textForm = $('#text-form');
 const textInput = $('#text-input');
 const textSubmit = textForm.querySelector('button');
+const speechInputRoute = $('#speech-input-route');
+const responseRoute = $('#response-route');
+const speechOutputRoute = $('#speech-output-route');
+const pipelineNote = $('#pipeline-note');
 
 let mode = null;
 let peer = null;
@@ -37,6 +41,7 @@ function api(path, options = {}) {
         : body.error || `Request failed (${response.status})`;
       const error = new Error(message);
       error.code = body.code;
+      error.status = response.status;
       throw error;
     }
     return body;
@@ -232,13 +237,51 @@ async function ensureBridgeSession() {
   return result;
 }
 
-async function runBridgeText(text) {
-  addTurn('user', text);
-  setStatus('checking', 'Thinking', 'Codex is preparing a short spoken answer…');
-  const result = await api(`api/codex-realtime/${encodeURIComponent(sessionId)}/bridge/turn`, {
+function isRecoverableBridgeError(error) {
+  return error?.code === 'session-not-found'
+    || [502, 503, 504].includes(error?.status)
+    || error instanceof TypeError;
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function recoverBridgeSession(error) {
+  if (!isRecoverableBridgeError(error)) throw error;
+  log('bridge reconnecting', { code: error.code, status: error.status });
+  sessionId = null;
+  stopButton.disabled = true;
+  setStatus('checking', 'Reconnecting', 'AIOS restarted during the turn. Reconnecting without losing your transcript…');
+  let lastError = error;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (attempt > 1) await wait(attempt * 400);
+    try {
+      return await ensureBridgeSession();
+    } catch (nextError) {
+      lastError = nextError;
+      if (!isRecoverableBridgeError(nextError)) throw nextError;
+    }
+  }
+  throw lastError;
+}
+
+async function requestBridgeTurn(text) {
+  const send = () => api(`api/codex-realtime/${encodeURIComponent(sessionId)}/bridge/turn`, {
     method: 'POST',
     body: JSON.stringify({ text }),
   });
+  try {
+    return await send();
+  } catch (error) {
+    await recoverBridgeSession(error);
+    log('bridge reconnected', { sessionId });
+    return send();
+  }
+}
+
+async function runBridgeText(text) {
+  addTurn('user', text);
+  setStatus('checking', 'Thinking', 'Codex is preparing a short spoken answer…');
+  const result = await requestBridgeTurn(text);
   addTurn('assistant', result.text);
   log('bridge turn', { model: result.model, firstTokenMs: result.firstTokenMs, latencyMs: result.latencyMs });
   setStatus('live', 'Speaking', `${result.model} answered in ${(result.latencyMs / 1000).toFixed(1)}s.`);
@@ -336,7 +379,7 @@ function renderIdle() {
     startButton.querySelector('[data-label]').textContent = 'Speak';
     textInput.disabled = false;
     textSubmit.disabled = false;
-    setStatus('ready', 'Ready', 'Codex bridge uses local Whisper and Kokoro with your existing ChatGPT login.');
+    setStatus('ready', 'Ready', 'Audio is processed locally; transcript text is sent to the Codex endpoint.');
   } else if (mode === 'native') {
     startButton.disabled = false;
     startButton.querySelector('[data-label]').textContent = 'Start realtime';
@@ -392,9 +435,24 @@ async function loadStatus() {
         return option;
       }));
       voiceSelect.disabled = false;
+      speechInputRoute.textContent = result.pipeline?.speechInput
+        ? `${result.pipeline.speechInput.location}`
+        : 'OpenAI Codex Realtime endpoint';
+      responseRoute.textContent = result.pipeline?.response
+        ? `${result.pipeline.response.location}`
+        : 'OpenAI Codex Realtime endpoint';
+      speechOutputRoute.textContent = result.pipeline?.speechOutput
+        ? `${result.pipeline.speechOutput.location}`
+        : 'OpenAI Codex Realtime endpoint';
+      pipelineNote.textContent = 'Native mode sends microphone audio to the Codex Realtime endpoint.';
     } else {
-      voiceSelect.replaceChildren(new Option(`Kokoro + ${result.bridgeModel}`, 'bridge', true, true));
+      voiceSelect.replaceChildren(new Option(`Local speech + Codex endpoint`, 'bridge', true, true));
       voiceSelect.disabled = true;
+      const pipeline = result.pipeline || {};
+      speechInputRoute.textContent = `${pipeline.speechInput?.location || 'Local'} · ${pipeline.speechInput?.model || 'Whisper'}`;
+      responseRoute.textContent = `${pipeline.response?.location || 'OpenAI Codex endpoint'} · ${pipeline.response?.model || result.bridgeModel}`;
+      speechOutputRoute.textContent = `${pipeline.speechOutput?.location || 'Local'} · ${pipeline.speechOutput?.model || 'Kokoro'}`;
+      pipelineNote.textContent = 'Microphone audio stays on AIOS. Only transcript text and conversation are sent to Codex.';
     }
     renderIdle();
   } catch (error) {

@@ -21,7 +21,7 @@
         <p class="eyebrow">CODEX VOICE</p>
         <h1>Talk to Codex</h1>
       </div>
-      <p class="lede">Uses native realtime when available, otherwise Codex with local Whisper and Kokoro.</p>
+      <p class="lede">See exactly where speech and model inference run. Your current route is shown below.</p>
     </header>
 
     <section class="panel" aria-labelledby="connection-title">
@@ -51,6 +51,21 @@
         </button>
         <button id="stop" class="secondary" type="button" disabled>Stop</button>
       </div>
+      <dl class="pipeline" aria-label="Voice processing locations">
+        <div>
+          <dt>Speech in</dt>
+          <dd id="speech-input-route">Checking…</dd>
+        </div>
+        <div>
+          <dt>Response</dt>
+          <dd id="response-route">Checking…</dd>
+        </div>
+        <div>
+          <dt>Speech out</dt>
+          <dd id="speech-output-route">Checking…</dd>
+        </div>
+      </dl>
+      <p id="pipeline-note" class="pipeline-note"></p>
       <p id="connection-detail" class="detail" role="status">Inspecting the local Codex installation…</p>
       <audio id="remote-audio" autoplay></audio>
     </section>

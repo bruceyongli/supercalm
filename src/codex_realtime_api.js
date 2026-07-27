@@ -121,16 +121,30 @@ async function inspectCapability() {
     const authType = account?.account?.type || 'none';
     const nativeReady = authType === 'apiKey';
     const bridgeReady = authType === 'chatgpt' || authType === 'apiKey';
+    const mode = nativeReady ? 'native' : bridgeReady ? 'bridge' : null;
     return {
       ok: true,
       experimental: true,
       ready: nativeReady || bridgeReady,
       nativeReady,
       bridgeReady,
-      mode: nativeReady ? 'native' : bridgeReady ? 'bridge' : null,
+      mode,
       authType,
       voices,
       bridgeModel: BRIDGE_MODEL,
+      pipeline: mode === 'bridge'
+        ? {
+            speechInput: { location: 'Local', model: 'Whisper large-v3-turbo' },
+            response: { location: 'OpenAI Codex endpoint', model: BRIDGE_MODEL, authType },
+            speechOutput: { location: 'Local', model: 'Kokoro' },
+          }
+        : mode === 'native'
+          ? {
+              speechInput: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime' },
+              response: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime', authType },
+              speechOutput: { location: 'OpenAI Codex Realtime endpoint', model: 'realtime' },
+            }
+          : null,
       setup: bridgeReady
         ? null
         : 'Codex is not authenticated on this host. Sign in to the installed Codex CLI, then restart AIOS.',
