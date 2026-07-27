@@ -257,7 +257,7 @@ function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth() - 86); // -86px for the labeled agent-dock rail column
+  return Math.max(640, window.innerWidth - railWidth() - 44); // -44px for the compact agent-dock rail column
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {
@@ -1805,7 +1805,7 @@ function mountAgentPanel() {
     panelsEl: $('#side-panels'),
     legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
     onTabChange: () => setTimeout(syncSize, 80),
-    dock: true, // labeled rail + slide-over drawer (session view); phone.js keeps the classic tab strip
+    dock: true, // compact icon rail + slide-over drawer (session view); phone.js keeps the classic tab strip
   });
 }
 mountAgentPanel();
@@ -2439,6 +2439,21 @@ async function loadMap() {
 
 
 // ---- on-the-fly settings (autonomy / effort / model) ------------------------
+const PERMISSION_MODE = {
+  ask: { label: 'Ask', impact: 'asks before changes' },
+  auto: { label: 'Auto', impact: 'works independently · pauses at risk' },
+  full: { label: 'Full', impact: 'hands-off · reserved actions still pause' },
+};
+
+function paintPermissionMode(box, mode) {
+  const group = box?.querySelector('[data-permission-control]');
+  if (!group) return;
+  const info = PERMISSION_MODE[mode] || PERMISSION_MODE.ask;
+  group.dataset.mode = mode;
+  const impact = group.querySelector('[data-permission-impact]');
+  if (impact) impact.textContent = info.impact;
+}
+
 function renderSettings(s, tmeta) {
   const box = $('#s-settings');
   const sel = (label, key, options, cur) =>
@@ -2447,7 +2462,13 @@ function renderSettings(s, tmeta) {
     `</select></label>`;
   const toggle = (label, key, on) =>
     `<button class="setting setting-toggle setting-${escapeHtml(key)} ${on ? 'on' : ''}" type="button" data-toggle="${key}" aria-pressed="${on ? 'true' : 'false'}" aria-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`;
-  let html = sel('Permissions', 'autonomy', ['ask', 'auto', 'full'].map((v) => ({ v, l: v })), s.autonomy);
+  const permission = PERMISSION_MODE[s.autonomy] || PERMISSION_MODE.ask;
+  let html = `<div class="permission-control" data-permission-control data-mode="${escapeHtml(s.autonomy || 'ask')}"
+      title="Approval behavior for this session. Filesystem and network boundaries are separate.">
+    <span class="permission-scope">This session</span>
+    ${sel('Permissions', 'autonomy', Object.entries(PERMISSION_MODE).map(([v, info]) => ({ v, l: info.label })), s.autonomy)}
+    <span class="permission-impact" data-permission-impact>${escapeHtml(permission.impact)}</span>
+  </div>`;
   if ((tmeta.efforts || []).length) html += sel('Effort', 'effort', tmeta.efforts.map((v) => ({ v, l: v })), s.effort);
   const activeModel = s.model || tmeta.model;
   const activeModelMeta = (tmeta.models || []).find((m) => m.id === activeModel);
@@ -2475,6 +2496,7 @@ function renderSettings(s, tmeta) {
     }
     el.onchange = async () => {
       const requestToken = requestScope.capture();
+      const previous = el.dataset.set === 'autonomy' ? s.autonomy : '';
       fitSettingSelect(el);
       el.disabled = true;
       try {
@@ -2485,11 +2507,17 @@ function renderSettings(s, tmeta) {
           signal: requestToken.signal,
         });
         requestScope.guard(requestToken);
+        if (el.dataset.set === 'autonomy') paintPermissionMode(box, el.value);
         if (r.applied === 'relaunched') setTimeout(() => {
           if (requestScope.isCurrent(requestToken)) location.reload();
         }, 1000);
       } catch (e) {
         if (isSessionAbort(e)) return;
+        if (el.dataset.set === 'autonomy') {
+          el.value = previous;
+          fitSettingSelect(el);
+          paintPermissionMode(box, previous);
+        }
         alert('Update failed: ' + e.message);
       } finally {
         el.disabled = false;

@@ -251,12 +251,12 @@ function listenRowHtml(ev) {
 // A compact outcome entry point, not a second transcript. It appears only on events that can prove,
 // contradict, or summarize work; opening it focuses the right-side Evidence drawer on this timestamp.
 function evidenceResultHtml(ev) {
-  if (!['fail', 'check', 'ship', 'report'].includes(ev.kind)) return '';
+  // Reports and shipped results already explain themselves. Adding an inspector button there merely
+  // renders the same prose twice; reserve the entry point for an exception or an actual verification.
+  if (!['fail', 'check'].includes(ev.kind)) return '';
   const labels = {
     fail: ['Exception', 'Inspect what failed'],
     check: ['Check', 'Inspect verification'],
-    ship: ['Result', 'Inspect delivery'],
-    report: ['Result', 'Inspect report evidence'],
   };
   const [label, action] = labels[ev.kind];
   const learned = learnedEvidence.has(Number(ev.ts) || 0);

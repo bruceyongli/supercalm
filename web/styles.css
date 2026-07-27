@@ -475,7 +475,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
-  --dock-rail-w: 86px;    /* labeled agent-dock rail (the last column) */
+  --dock-rail-w: 44px;    /* compact agent-dock icon rail (the last column) */
   --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
   --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
@@ -665,7 +665,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .side-tab-panel { display: grid; gap: 8px; }
 .side-tab-panel[hidden] { display: none !important; }
 
-/* ---- Agent dock: labeled rail (always visible) + one slide-over drawer ---------------------------- */
+/* ---- Agent dock: compact icon rail (always visible) + one slide-over drawer ----------------------- */
 /* minimal dock rail (design): icons float on the right edge — no boxed rail, no boxed glyphs */
 .agent-dock-rail {
   grid-column: -2 / -1; grid-row: 3; align-self: stretch;
@@ -673,25 +673,15 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 2px; background: transparent; border: 0; z-index: 6;
 }
-.agent-dock-rail .dock-glyphs { width: 100%; gap: 4px; padding: 0; }
-.agent-dock-rail .dock-glyph {
-  position: relative; width: 82px; height: 36px; display: flex; align-items: center; gap: 6px;
-  padding: 0 6px; background: transparent; border: 0; color: var(--dim); border-radius: 9px;
-}
-.agent-dock-rail .dock-glyph::after, .agent-dock-rail .dock-gear::after {
-  content: attr(aria-label); min-width: 0; overflow: hidden; text-overflow: ellipsis;
-  font: 700 8.5px/1.1 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: 0; white-space: nowrap;
-}
-.agent-dock-rail .dock-glyph svg { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
+.agent-dock-rail .dock-glyphs { gap: 6px; padding: 0; }
+.agent-dock-rail .dock-glyph { position: relative; width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
+.agent-dock-rail .dock-glyph svg { width: 20px; height: 20px; display: block; }
 .agent-dock-rail .dock-glyph-letter { font-size: 14px; font-weight: 800; }
 .agent-dock-rail .dock-glyph:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
 .agent-dock-rail .dock-glyph.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
 .agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 3px; right: 3px; margin: 0; }
-.agent-dock-rail .dock-gear {
-  width: 82px; height: 36px; display: flex; align-items: center; gap: 6px; padding: 0 6px;
-  background: transparent; border: 0; color: var(--dim); border-radius: 9px;
-}
-.agent-dock-rail .dock-gear svg { width: 15px; height: 15px; flex: 0 0 15px; }
+.agent-dock-rail .dock-gear { width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
+.agent-dock-rail .dock-gear svg { width: 18px; height: 18px; }
 .agent-dock-rail .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
 .agent-dock-rail .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
 /* Drawer closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
@@ -719,7 +709,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     z-index: 45; box-shadow: -18px 0 48px rgba(1, 4, 9, 0.5);
   }
   /* Touch targets ≥38–40px on iPad/compact (design). */
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 82px; height: 40px; }
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 40px; height: 40px; }
   .main-tabs button { width: 38px; height: 38px; min-width: 38px; }
   .story-toggle [data-mode] { min-height: 38px; }
   .session-title-icon { width: 34px; min-width: 34px; min-height: 34px; }
@@ -1358,6 +1348,21 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .settings select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 12px; text-transform: none; }
 .settings input[type="checkbox"] { width: 15px; height: 15px; margin: 0; }
 .settings.composer-settings { flex: 1 1 auto; min-width: 0; gap: 5px; align-items: center; }
+.permission-control {
+  display: inline-flex; align-items: center; min-width: 0; min-height: 32px; padding: 0 7px 0 5px;
+  border: 1px solid #2a3441; border-radius: 8px; background: #0c121a; color: var(--muted);
+}
+.permission-control .setting { padding: 0 3px; color: #d9e4f0; font-weight: 700; }
+.permission-control .setting:hover, .permission-control .setting:focus-within { background: transparent; color: #fff; }
+.permission-scope {
+  padding-right: 6px; margin-right: 3px; border-right: 1px solid #293342; color: #6f7d8f;
+  font: 700 8.5px/1 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
+}
+.permission-impact { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #8391a3; font-size: 10px; white-space: nowrap; }
+.permission-control[data-mode="auto"] { border-color: #355377; background: #0d1724; }
+.permission-control[data-mode="full"] { border-color: #315a3d; background: #0d1812; }
+.permission-control[data-mode="full"] .permission-impact { color: #70b983; }
+.permission-control[data-mode="ask"] .permission-impact { color: #c5a75f; }
 .settings.composer-settings .setting {
   flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   min-width: 0; height: 32px; min-height: 32px; padding: 0 7px; border: 0; border-radius: 7px;
@@ -1396,7 +1401,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .footer-composer { padding-bottom: env(safe-area-inset-bottom); }
 .footer-composer textarea { min-height: 42px; }
 
-/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + labeled rail +
+/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + compact rail +
    overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
 @media (max-width: 600px) {
   /* Phone session layout: a flex column with EXPLICIT order — header · banner · main · agent bar.
@@ -1492,6 +1497,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
   .composer-hint { display: none; }
   .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 2px 4px; font-size: 11px; } /* smaller type → the 4 controls fit one row (no 4th composer row) */
+  .permission-control { flex: 1 1 100%; }
+  .permission-impact { margin-left: auto; }
   .settings.composer-settings .setting { flex: 0 0 auto; padding: 0 5px; }
   .settings.composer-settings select { max-width: 46vw; } /* width itself comes from fitSettingSelect's --select-width */
   /* Attachments: compact rows, not gallery cards — the 180px hover-none card filled the composer and
@@ -2745,6 +2752,22 @@ body.map-expanded-open { overflow: hidden; }
 .ev-kicker { color: #5c6675; font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .ev-purpose { margin: -3px 2px 1px; color: #8a95a5; font-size: 11.5px; line-height: 1.45; }
 .ev-loading, .ev-empty { color: #8a95a5; padding: 16px 8px; font-size: 12px; }
+.ev-diagnosis {
+  display: grid; gap: 0; border: 1px solid #2a3441; border-radius: 11px;
+  background: #0d1219; padding: 11px 12px;
+}
+.ev-diagnosis .ev-section-head { padding-bottom: 8px; border-bottom: 1px solid #202833; }
+.ev-diagnosis .ev-section-head > span:last-child { display: inline-flex; align-items: center; gap: 8px; }
+.ev-diagnosis-row { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-bottom: 1px solid #1b232d; }
+.ev-diagnosis-row b { color: #7f8da0; font-size: 10px; line-height: 1.45; text-transform: uppercase; letter-spacing: .055em; }
+.ev-diagnosis-row p { margin: 0; color: #c3cdd9; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.ev-diagnosis-row.next p { color: #9ecbff; font-weight: 600; }
+.ev-rerun { display: grid; gap: 5px; padding-top: 10px; }
+.ev-rerun span { color: #5c6675; font-size: 9.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.ev-rerun code { display: block; color: #b9c4d4; overflow-wrap: anywhere; font: 10.5px/1.5 'JetBrains Mono', ui-monospace, monospace; }
+.ev-unmet { padding-top: 9px; color: #8a95a5; font-size: 11px; }
+.ev-unmet summary { cursor: pointer; }
+.ev-unmet ul { margin: 7px 0 0; padding-left: 18px; color: #d7b669; line-height: 1.45; }
 .ev-review, .ev-focus, .ev-rules-in-run, .ev-teach, .ev-learned, .ev-ledger {
   border: 1px solid #21262d; border-radius: 10px; background: #0d1219; padding: 11px 12px;
 }
@@ -2820,5 +2843,6 @@ body.map-expanded-open { overflow: hidden; }
 @media (max-width: 600px) {
   .story-result-card { width: 100%; }
   .story-result-card button { flex: 1; text-align: left; }
+  .ev-diagnosis-row { grid-template-columns: 1fr; gap: 4px; }
   .ev-pane { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
 }

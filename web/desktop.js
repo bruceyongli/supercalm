@@ -74,7 +74,7 @@ function renderInbox(home) {
       </div>
       <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
       ${choicesHtml(s, questions)}
-      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}&inspect=1">Inspect evidence</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
+      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}&inspect=1">Why it needs you</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>`;
   }).join('') || ((home.sessions || []).length === 0

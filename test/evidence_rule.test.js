@@ -47,17 +47,23 @@ assert.equal(memory.listStandards('p_rule').length, 0);
 
 const story = readFileSync(new URL('../web/story-view.js', import.meta.url), 'utf8');
 const inspector = readFileSync(new URL('../web/agents/inspector.js', import.meta.url), 'utf8');
+const inspectorMeta = readFileSync(new URL('../src/agents/inspector.js', import.meta.url), 'utf8');
 const knowledge = readFileSync(new URL('../web/agents/knowledge.js', import.meta.url), 'utf8');
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
 const dashboard = readFileSync(new URL('../web/views/dashboard.js', import.meta.url), 'utf8');
+const settings = readFileSync(new URL('../web/views/settings.js', import.meta.url), 'utf8');
 
 assert.match(story, /data-story-evidence/, 'Story result cards open focused evidence');
 assert.match(story, /aios:evidence-learned/, 'Story marks an exception after a rule is saved');
-assert.match(inspector, /Evidence → Rule/, 'the dock panel exposes the autonomy feedback loop');
+assert.match(inspector, /Exception review/, 'the panel leads with a focused diagnosis instead of another report');
+assert.match(inspector, /Next autonomous move/, 'the diagnosis makes the next autonomous action explicit');
 assert.match(inspector, /teach\/.+\/retry/, 'the current session can retry with the saved rule');
+assert.match(inspectorMeta, /defaultEnabled:\s*false/, 'Evidence is optional and does not occupy the dock by default');
 assert.match(knowledge, /Autonomy rules/, 'Knowledge exposes the durable rule ledger');
 assert.match(knowledge, /never used/, 'the ledger distinguishes saved rules that never reached a run');
 assert.match(sessions, /<project_rules>/, 'future launches receive active project rules');
-assert.match(dashboard, /Inspect evidence/, 'Needs you links directly into focused diagnosis');
+assert.match(dashboard, /Why it needs you/, 'Needs you links directly into focused diagnosis');
+assert.match(settings, /Search settings/, 'Settings has a first-class search control');
+assert.match(settings, /id="st-permissions"/, 'Settings explains permission modes as their own category');
 
 console.log('evidence_rule.test ok');

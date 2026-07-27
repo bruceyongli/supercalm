@@ -41,7 +41,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   let homeEl = null;
   const modules = new Map(); // id -> { el, inst, papi, dirty }
   const base = document.baseURI;
-  // Agent dock (session view only, `dock:true`): a labeled rail is always visible; ONE drawer opens on
+  // Agent dock (session view only, `dock:true`): a compact icon rail is always visible; ONE drawer opens on
   // demand, defaulting CLOSED so the log surface is full-width. Non-dock callers (the phone panels
   // sheet) keep the classic always-open tab strip — `open` stays true so tabs highlight + refresh()
   // renders the Agents home. `shellEl`/`scrimEl` are null off the session view; every use is guarded.
@@ -68,7 +68,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function renderTabs() {
     const tabs = tabbable();
     if (dock) {
-      // Agent dock: one labeled glyph per active agent (+ attention dot) with the gear pinned for
+      // Agent dock: one compact glyph per active agent (+ attention dot) with the gear pinned for
       // the Agents manager. A glyph click toggles ITS drawer (see onGlyphClick).
       tabsEl.innerHTML =
         `<div class="rail-mini-col dock-glyphs">${tabs.map(glyphBtn).join('')}</div>` +
@@ -266,7 +266,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     const sorted = [...agents].filter((a) => !NON_TAB.has(a.id)).sort((a, b) => (b.recommend || 0) - (a.recommend || 0) || (a.ui?.order ?? 100) - (b.ui?.order ?? 100));
     homeEl.innerHTML =
       `<div class="agents-home-head"><h2>Agents</h2><div class="agents-home-actions"><button class="btn sm" id="agents-create" title="Build a new custom agent">+ Create agent</button><button class="btn ghost sm" id="agents-reload" title="Re-scan drop-in agents">Reload</button></div></div>` +
-      `<p class="agents-home-hint muted">Activate agents for this session. <strong>High-risk capabilities</strong> (sending input, writing files, running code) are off by default — grant them explicitly.</p>` +
+      `<p class="agents-home-hint muted">Activate background agents or pin optional tools for this session. <strong>High-risk capabilities</strong> (sending input, writing files, running code) are off by default — grant them explicitly.</p>` +
       sorted.map(agentCard).join('');
     homeEl.querySelector('#agents-reload').onclick = async () => {
       await api('api/agents/reload', { method: 'POST' }).catch(() => {});

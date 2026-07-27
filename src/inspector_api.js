@@ -41,6 +41,8 @@ function eventView(event) {
   };
 }
 
+const DIAGNOSTIC_KINDS = new Set(['fail', 'ask', 'check']);
+
 function focusIndex(events, requestedTs) {
   if (!events.length) return -1;
   if (requestedTs) {
@@ -48,11 +50,20 @@ function focusIndex(events, requestedTs) {
     for (let i = 1; i < events.length; i++) {
       if (Math.abs(Number(events[i].ts || 0) - requestedTs) < Math.abs(Number(events[best].ts || 0) - requestedTs)) best = i;
     }
-    return best;
+    if (DIAGNOSTIC_KINDS.has(events[best]?.kind)) return best;
+    // Result/report cards already contain their own prose. When an old deep link points at one, walk
+    // backward to the check, decision, or exception that produced it instead of echoing the report.
+    for (let i = best - 1; i >= 0; i--) {
+      if (DIAGNOSTIC_KINDS.has(events[i]?.kind)) return i;
+    }
   }
-  for (const kind of ['fail', 'ask', 'check', 'report', 'ship']) {
-    const i = events.map((event) => event.kind).lastIndexOf(kind);
-    if (i >= 0) return i;
+  // Prefer the newest real exception/decision. A successful check is useful only when no failure or
+  // unanswered decision exists in the loaded window.
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.kind === 'fail' || events[i]?.kind === 'ask') return i;
+  }
+  for (let i = events.length - 1; i >= 0; i--) {
+    if (events[i]?.kind === 'check') return i;
   }
   return events.length - 1;
 }
@@ -98,6 +109,41 @@ function suggestedRule(focus, review) {
   return `When a verification step fails in this project, correct the underlying issue and rerun that exact check. For this failure — ${issue} — do not report completion until the check passes and its actual result is recorded.`;
 }
 
+function relevantOutput(terminal) {
+  const lines = String(terminal || '').replace(/\r/g, '').split('\n').filter((line) => line.trim());
+  return clip(lines.slice(-36).join('\n'), 4200);
+}
+
+function diagnosisFor(focus, review, commandSteps) {
+  if (!focus) return {
+    happened: 'No exception or decision was found in the recent work.',
+    stopped: 'The session may only have a completed report; there is nothing useful to diagnose here.',
+    next: 'Return to Story unless a new failed check or question appears.',
+  };
+  const command = commandSteps.find((step) => step.cmd)?.cmd || '';
+  const unmet = review?.unmet?.filter(Boolean) || [];
+  const exit = focus.exitCode != null ? `The recorded command exited with code ${focus.exitCode}.` : '';
+  const stopped = unmet[0]
+    || review?.assessment
+    || exit
+    || (focus.kind === 'ask'
+      ? 'The agent needs an operator decision before it can choose the next branch.'
+      : focus.kind === 'fail'
+        ? 'A required verification failed, so the agent cannot honestly mark the work complete.'
+      : 'The available result does not yet prove that the intended verification passed.');
+  const next = command
+    ? `Correct the underlying issue, then rerun: ${command}`
+    : focus.kind === 'ask'
+      ? 'Answer the decision, then let the agent continue and verify the resulting path.'
+      : 'Correct the underlying issue, rerun the failed verification, and record the passing result.';
+  return {
+    happened: clip(focus.body || focus.title, 520),
+    stopped: clip(stopped, 520),
+    next: clip(next, 720),
+    unmet: unmet.slice(0, 5).map((item) => clip(item, 420)),
+  };
+}
+
 route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, url) => {
   const session = getSession(sessionId);
   if (!session) return json(res, 404, { error: 'no such session' });
@@ -106,7 +152,7 @@ route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, ur
   try {
     const [context, story] = await Promise.all([
       sessionContext(session, { terminalMax: 8000, includeDiff: true }).catch(() => null),
-      storyFor(sessionId, { rounds: 3, full: false }).catch(() => ({ events: [] })),
+      storyFor(sessionId, { rounds: 8, full: false }).catch(() => ({ events: [] })),
     ]);
     const events = story?.events || [];
     const index = focusIndex(events, requestedTs);
@@ -140,6 +186,7 @@ route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, ur
       focus,
       focusIndex: index,
       commandSteps: commandEvent?.steps || [],
+      diagnosis: diagnosisFor(focus, review, commandEvent?.steps || []),
       timeline,
       review,
       evidence: {
@@ -150,7 +197,7 @@ route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, ur
           diffHunk: firstDiffHunk(git.diff || git.committed_diff),
           touchedTests: git.touched_test_files || [],
         } : null,
-        terminal: clip(context?.terminal_tail, 8000),
+        terminal: relevantOutput(context?.terminal_tail),
       },
       guidance: {
         context: projectContext?.doc ? {

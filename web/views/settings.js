@@ -10,8 +10,19 @@ import { api, escapeHtml as esc } from '../common.js';
 const SETTINGS_CSS = `
     /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
     .st-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: start; }
-    .st-head { grid-column: 1 / -1; }
+    .st-head { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 390px); gap: 18px; align-items: end; }
     .st-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 26px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0 0 6px; }
+    .st-head p { margin: 0; color: #6f7d8f; font-size: 12.5px; }
+    .st-search { position: relative; display: block; }
+    .st-search::before { content: '⌕'; position: absolute; left: 12px; top: 50%; transform: translateY(-52%); color: #667487; font-size: 18px; pointer-events: none; }
+    .st-search input { -webkit-appearance: none; appearance: none; width: 100%; min-height: 42px; padding: 9px 36px 9px 38px; border: 1px solid #293442; border-radius: 11px; background: #0b1017; color: #e3eaf2; font: 13px/1.2 'IBM Plex Sans', system-ui, sans-serif; box-sizing: border-box; }
+    .st-search input::-webkit-search-cancel-button { display: none; }
+    .st-search input:focus { outline: 2px solid #173252; border-color: #4b78aa; }
+    .st-search input::placeholder { color: #596779; }
+    .st-search-clear { position: absolute; right: 7px; top: 6px; width: 30px; height: 30px; border: 0; border-radius: 7px; background: transparent; color: #6f7d8f; cursor: pointer; }
+    .st-search-clear:hover { color: #e9eef5; background: #18202b; }
+    .st-search-empty { padding: 24px 14px; border: 1px dashed #293442; border-radius: 12px; color: #8a95a5; text-align: center; }
+    .st-search-empty[hidden] { display: none; }
     .st-nav { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 3px; padding: 0; margin: 0; align-items: stretch; }
     .st-nav a { color: #8a95a5; text-decoration: none; font-size: 13px; font-weight: 500; padding: 8px 12px; border-radius: 9px; }
     .st-nav a:hover { background: #10151d; }
@@ -20,6 +31,7 @@ const SETTINGS_CSS = `
     /* Phone: stack the sub-nav over the content (full-width, readable) + clear the shell's ☰ menu button. */
     @media (max-width: 720px) {
       .st-wrap { grid-template-columns: 1fr; padding: 52px 14px 90px; gap: 14px; }
+      .st-head { grid-template-columns: 1fr; align-items: stretch; }
       .st-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
       .st-nav a { border: 1px solid #232c38; border-radius: 999px; padding: 8px 12px; min-height: 38px; display: inline-flex; align-items: center; }
       /* provider rows: name + "use" toggle on the first line, the long endpoint details wrap
@@ -38,6 +50,16 @@ const SETTINGS_CSS = `
     }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
     .st-sec h2 { font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; font-weight: 600; color: #e9eef5; margin: 0 0 10px; }
+    .st-mode-summary { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-bottom: 1px solid #1b2430; color: #8a95a5; font-size: 12px; }
+    .st-mode-summary b { color: #dce5ef; }
+    .st-mode-default { margin-left: auto; padding: 3px 8px; border: 1px solid #315a3d; border-radius: 999px; color: #70c58a; background: #0d1812; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .st-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
+    .st-mode { padding: 13px; border-right: 1px solid #1b2430; }
+    .st-mode:last-child { border-right: 0; }
+    .st-mode b { display: block; margin-bottom: 5px; color: #dce5ef; font-size: 13px; }
+    .st-mode p { margin: 0; color: #6f7d8f; font-size: 11.5px; line-height: 1.45; }
+    .st-mode-note { margin: 0; padding: 11px 13px; border-top: 1px solid #1b2430; color: #5f6d7e; font-size: 11px; line-height: 1.45; }
+    @media (max-width: 720px) { .st-mode-grid { grid-template-columns: 1fr; } .st-mode { border-right: 0; border-bottom: 1px solid #1b2430; } .st-mode:last-child { border-bottom: 0; } }
     .st-pref { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #10151d; }
     .st-pref b { font-weight: 600; color: #dde5ee; font-size: 13.5px; }
     .st-pref .sub { color: #5c6675; font-size: 12px; }
@@ -119,7 +141,54 @@ const SETTINGS_CSS = `
 
 let host = null;
 let onScroll = null;
+let searchObserver = null;
 const $ = (s) => document.querySelector(s);
+
+function applySettingsSearch() {
+  if (!host) return;
+  const input = host.querySelector('[data-st-search]');
+  const query = String(input?.value || '').trim().toLowerCase();
+  const sections = [...host.querySelectorAll('.st-sec')];
+  for (const section of sections) {
+    const heading = `${section.querySelector('h2')?.textContent || ''} ${section.dataset.search || ''}`.toLowerCase();
+    const headingMatch = !!query && heading.includes(query);
+    const items = [...section.querySelectorAll('.ob-row, .st-pref, .vc2-row, .vc2-prov')];
+    for (const item of items) item.hidden = !!query && !headingMatch && !item.textContent.toLowerCase().includes(query);
+    const textMatch = !query || headingMatch || section.textContent.toLowerCase().includes(query);
+    const itemMatch = items.some((item) => !item.hidden);
+    section.hidden = !textMatch || (!!query && items.length > 0 && !headingMatch && !itemMatch);
+  }
+  for (const link of host.querySelectorAll('[data-st-nav] a')) {
+    const section = host.querySelector(link.getAttribute('href'));
+    link.hidden = !!section?.hidden;
+  }
+  const visible = sections.filter((section) => !section.hidden);
+  const empty = host.querySelector('[data-st-empty]');
+  if (empty) empty.hidden = visible.length > 0;
+  const clear = host.querySelector('[data-st-clear]');
+  if (clear) clear.hidden = !query;
+}
+
+async function loadPermissions() {
+  const box = $('#st-permissionscard');
+  if (!box) return;
+  try {
+    const state = await api('api/state');
+    if (!$('#st-permissionscard')) return;
+    const mode = String(state?.defaults?.autonomy || 'full');
+    const label = { ask: 'Ask', auto: 'Auto', full: 'Full' }[mode] || mode;
+    box.innerHTML = `
+      <div class="st-mode-summary"><b>Approval behavior</b><span>Each session can override this from its composer.</span><span class="st-mode-default">${esc(label)} default</span></div>
+      <div class="st-mode-grid">
+        <div class="st-mode"><b>Ask</b><p>Pauses before acting so you approve the next change.</p></div>
+        <div class="st-mode"><b>Auto</b><p>Works independently inside the project and pauses at risky boundaries.</p></div>
+        <div class="st-mode"><b>Full</b><p>Runs hands-off in scope. Reserved, destructive, or external actions still require a gate.</p></div>
+      </div>
+      <p class="st-mode-note">Permissions control approval behavior. Filesystem, network, and project boundaries remain separate safeguards.</p>`;
+  } catch (error) {
+    if (box) box.textContent = 'Permission defaults unavailable: ' + (error?.message || error);
+  }
+}
 
 // ---- Agents & sign-in --------------------------------------------------------------------------
 async function loadAgents() {
@@ -570,41 +639,68 @@ export function init(el) {
   }
   host.innerHTML = `
     <div class="st-wrap" data-st>
-      <div class="st-head"><h1>Settings</h1></div>
+      <div class="st-head">
+        <div><h1>Settings</h1><p>Models, access, voice, and operator preferences in one place.</p></div>
+        <div class="st-search"><input type="search" data-st-search placeholder="Search settings…" autocomplete="off" aria-label="Search settings" /><button class="st-search-clear" data-st-clear type="button" title="Clear search" hidden>×</button></div>
+      </div>
       <nav class="st-nav" data-st-nav>
-        <a href="#st-agents" class="active">Agents &amp; sign-in</a>
-        <a href="#st-providers">API providers</a>
+        <a href="#st-agents" class="active">Agents &amp; access</a>
+        <a href="#st-permissions">Permissions</a>
+        <a href="#st-providers">Models &amp; providers</a>
         <a href="#st-voice">Voice</a>
         <a href="#st-remote">Remote access</a>
         <a href="#st-prefs">Preferences</a>
       </nav>
       <div class="st-body">
-      <section class="st-sec" id="st-agents" data-st-agents>
-        <h2>Agents &amp; sign-in</h2>
+      <section class="st-sec" id="st-agents" data-st-agents data-search="cli login authentication subscription codex claude">
+        <h2>Agents &amp; access</h2>
         <div class="ob-card" id="st-authpath">loading…</div>
         <div class="ob-card" id="st-clis">loading…</div>
       </section>
-      <section class="st-sec" id="st-providers" data-st-providers>
-        <h2>API providers</h2>
+      <section class="st-sec" id="st-permissions" data-st-permissions data-search="approval ask auto full autonomy scope safety">
+        <h2>Permissions</h2>
+        <div class="ob-card" id="st-permissionscard">loading…</div>
+      </section>
+      <section class="st-sec" id="st-providers" data-st-providers data-search="models api endpoints keys pricing openai anthropic aliyun">
+        <h2>Models &amp; providers</h2>
         <div class="ob-card" id="st-prov">loading…</div>
       </section>
-      <section class="st-sec" id="st-voice" data-st-voice>
+      <section class="st-sec" id="st-voice" data-st-voice data-search="speech tts stt dictation microphone spark whisper">
         <h2>Voice</h2>
         <div class="ob-card" id="st-voicecard">loading…</div>
       </section>
-      <section class="st-sec" id="st-remote" data-st-remote>
+      <section class="st-sec" id="st-remote" data-st-remote data-search="tailscale phone url network expose">
         <h2>Remote access</h2>
         <div class="ob-card" id="st-remotecard">loading…</div>
       </section>
-      <section class="st-sec" id="st-prefs" data-st-prefs>
+      <section class="st-sec" id="st-prefs" data-st-prefs data-search="notifications autoplay quick keys voice rate interface">
         <h2>Preferences</h2>
         <div class="ob-card" id="st-prefscard"></div>
       </section>
+      <div class="st-search-empty" data-st-empty hidden>No settings match that search.</div>
       </div>
     </div>`;
 
+  const search = host.querySelector('[data-st-search]');
+  const clear = host.querySelector('[data-st-clear]');
+  search.oninput = applySettingsSearch;
+  search.onkeydown = (event) => {
+    if (event.key === 'Escape' && search.value) {
+      event.preventDefault();
+      search.value = '';
+      applySettingsSearch();
+    }
+  };
+  clear.onclick = () => {
+    search.value = '';
+    applySettingsSearch();
+    search.focus();
+  };
+  searchObserver = new MutationObserver(() => applySettingsSearch());
+  searchObserver.observe(host.querySelector('.st-body'), { childList: true, subtree: true });
+
   // sticky sub-nav active state follows scroll
-  const links = [...document.querySelectorAll('[data-st-nav] a')];
+  const links = [...host.querySelectorAll('[data-st-nav] a')];
   onScroll = () => {
     let cur = links[0];
     for (const a of links) { const sec = document.querySelector(a.getAttribute('href')); if (sec && sec.getBoundingClientRect().top < 120) cur = a; }
@@ -612,11 +708,13 @@ export function init(el) {
   };
   addEventListener('scroll', onScroll, { passive: true });
 
-  loadAgents(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
+  loadAgents(); loadPermissions(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
 }
 
 export function teardown() {
   if (onScroll) removeEventListener('scroll', onScroll);
+  searchObserver?.disconnect();
+  searchObserver = null;
   onScroll = null;
   host = null;
 }

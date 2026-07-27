@@ -46,26 +46,6 @@ function verdictClass(verdict) {
   return '';
 }
 
-function stepRows(steps) {
-  if (!steps?.length) return '<p class="ev-empty">No command was attached to this event.</p>';
-  return steps.map((step) => `<div class="ev-step">
-    <span>${esc(step.human || 'Command')}</span>
-    ${step.cmd ? `<code>$ ${esc(step.cmd)}</code>` : ''}
-  </div>`).join('');
-}
-
-function ruleRow(rule) {
-  const usage = rule.usedInThisRun
-    ? '<span class="ev-rule-use current">in this run</span>'
-    : rule.reuseCount
-      ? `<span class="ev-rule-use">used ${rule.reuseCount}×</span>`
-      : '<span class="ev-rule-use never">never used</span>';
-  return `<li class="ev-rule${rule.id === savedStandardId ? ' learned' : ''}">
-    <div><span class="ev-rule-dot"></span><span>${esc(rule.text)}</span></div>
-    <footer>${usage}${rule.lastUsedAt ? `<span>${esc(when(rule.lastUsedAt))}</span>` : ''}</footer>
-  </li>`;
-}
-
 function render() {
   if (!host) return;
   if (loading && !data) {
@@ -79,38 +59,36 @@ function render() {
   }
   const event = data?.focus;
   const review = data?.review;
+  const diagnosis = data?.diagnosis || {};
   const git = data?.evidence?.git;
   const rules = data?.guidance?.standards || [];
   const rulesInRun = rules.filter((rule) => rule.usedInThisRun);
   const context = data?.guidance?.context;
   const saved = savedStandardId ? rules.find((rule) => rule.id === savedStandardId) : null;
-  const focusTitle = event?.title || (review?.assessment ? 'Supervisor review' : 'Latest session evidence');
-  const focusBody = event?.body || review?.assessment || 'No exception has been recorded yet. Evidence will appear as the agent works.';
   const touched = git?.stat || git?.status || '';
+  const command = (data?.commandSteps || []).find((step) => step.cmd)?.cmd || '';
   host.innerHTML = `
     <div class="ev-pane">
       <div class="ev-head">
-        <div><span class="ev-kicker">Exception loop</span><h2>Evidence → Rule</h2></div>
+        <div><span class="ev-kicker">On-demand · no background work</span><h2>Exception review</h2></div>
         <button class="btn ghost sm" data-ev-refresh title="Refresh evidence">↻</button>
       </div>
-      <p class="ev-purpose">Find the smallest useful failure, teach the system once, then let the agent try again.</p>
+      <p class="ev-purpose">A short diagnosis of what blocked autonomy and the correction that should prevent another interruption.</p>
 
-      ${review ? `<section class="ev-review">
-        <div><span class="ev-verdict ${verdictClass(review.verdict)}">${esc(String(review.verdict || 'review').replaceAll('_', ' '))}</span>${review.score != null ? `<span class="ev-score">${Number(review.score)}/100</span>` : ''}</div>
-        <p>${esc(review.assessment || review.message || '')}</p>
-        ${review.unmet?.length ? `<ul>${review.unmet.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
-      </section>` : ''}
-
-      <section class="ev-focus">
-        <div class="ev-section-head"><span>Focused step</span>${event?.ts ? `<time>${esc(when(event.ts))}</time>` : ''}</div>
-        <h3>${esc(focusTitle)}</h3>
-        <p>${esc(focusBody)}</p>
-        ${event?.exitCode != null ? `<span class="ev-exit">exit ${Number(event.exitCode)}</span>` : ''}
-        <div class="ev-steps">${stepRows(data?.commandSteps || [])}</div>
+      <section class="ev-diagnosis">
+        <div class="ev-section-head">
+          <span>${event?.kind === 'ask' ? 'Decision needed' : 'What needs correction'}</span>
+          <span>${review?.verdict ? `<span class="ev-verdict ${verdictClass(review.verdict)}">${esc(String(review.verdict).replaceAll('_', ' '))}</span>` : ''}${event?.ts ? `<time>${esc(when(event.ts))}</time>` : ''}</span>
+        </div>
+        <div class="ev-diagnosis-row"><b>What happened</b><p>${esc(diagnosis.happened || 'No useful exception was found in the recent work.')}</p></div>
+        <div class="ev-diagnosis-row"><b>Why it stopped</b><p>${esc(diagnosis.stopped || 'The available evidence does not yet prove the check passed.')}</p></div>
+        <div class="ev-diagnosis-row next"><b>Next autonomous move</b><p>${esc(diagnosis.next || 'Return to Story and continue from the latest meaningful step.')}</p></div>
+        ${diagnosis.unmet?.length > 1 ? `<details class="ev-unmet"><summary>${diagnosis.unmet.length} unmet checks</summary><ul>${diagnosis.unmet.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></details>` : ''}
+        ${command ? `<div class="ev-rerun"><span>Rerun after correction</span><code>$ ${esc(command)}</code></div>` : ''}
       </section>
 
       <section class="ev-rules-in-run">
-        <div class="ev-section-head"><span>Guidance in this run</span><button class="ev-link" data-ev-knowledge>Open Knowledge</button></div>
+        <div class="ev-section-head"><span>Guidance the agent had</span><button class="ev-link" data-ev-knowledge>Manage rules</button></div>
         <div class="ev-rule-chips">
           ${context?.enabled ? '<span class="ev-rule-chip">Project context</span>' : ''}
           ${rulesInRun.map((rule) => `<span class="ev-rule-chip" title="${esc(rule.text)}">${esc(rule.text.slice(0, 110))}</span>`).join('')}
@@ -118,10 +96,10 @@ function render() {
         </div>
       </section>
 
-      <div class="ev-details">
+      <div class="ev-details"><div class="ev-section-head"><span>Supporting evidence</span><span>open only if needed</span></div>
         ${touched ? `<details><summary>Changed files</summary><pre>${esc(touched)}</pre></details>` : ''}
         ${git?.diffHunk ? `<details><summary>Focused diff hunk</summary><pre>${esc(git.diffHunk)}</pre></details>` : ''}
-        ${data?.evidence?.terminal ? `<details><summary>Terminal tail</summary><pre>${esc(data.evidence.terminal)}</pre></details>` : ''}
+        ${data?.evidence?.terminal ? `<details><summary>Relevant terminal slice</summary><pre>${esc(data.evidence.terminal)}</pre></details>` : ''}
         ${data?.timeline?.length ? `<details><summary>Nearby timeline · ${data.timeline.length} events</summary><ol>${data.timeline.map((item) => `<li><span>${esc(item.kind)}</span>${esc(item.title || item.body || '')}</li>`).join('')}</ol></details>` : ''}
       </div>
 
@@ -136,10 +114,6 @@ function render() {
         <button class="btn sm" data-ev-retry>Retry with this rule</button>
       </section>` : `<button class="ev-teach-primary" data-ev-teach ${data?.project ? '' : 'disabled'}>Teach from this exception</button>`}
 
-      ${rules.length ? `<section class="ev-ledger">
-        <div class="ev-section-head"><span>Project rule ledger</span><span>${rules.length} active</span></div>
-        <ul>${rules.slice(-6).reverse().map(ruleRow).join('')}</ul>
-      </section>` : ''}
     </div>`;
   wire();
 }
