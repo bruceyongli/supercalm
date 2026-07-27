@@ -24,6 +24,7 @@ const _reportPrompts = db.prepare(`
   FROM messages
   WHERE session_id = ?
     AND direction = 'in'
+    AND ts > ?
     AND ts <= ?
     AND source IN ('text','text+attachments','task','voice','operator','operator-correction','phone','phone+attachments')
   ORDER BY ts DESC
@@ -74,7 +75,12 @@ route('POST', '/api/session/:id/voice-report', async (req, res, { id: sid }) => 
   if (!text.trim()) return json(res, 400, { error: 'text required' });
   const level = b.level === 'brief' ? 'brief' : b.level === 'verbatim' ? 'verbatim' : 'full';
   const reportTs = Number(b.ts) || Date.now();
-  const prompts = _reportPrompts.all(sid, reportTs).reverse();
+  // The client supplies the preceding report timestamp, which is the completed-round boundary.
+  // Without this lower bound, "latest four prompts" could reach across that report and make Guided
+  // answer both the prior request and the request associated with the selected report.
+  const requestedFocusAfter = Number(b.focusAfterTs) || 0;
+  const focusAfterTs = requestedFocusAfter > 0 && requestedFocusAfter < reportTs ? requestedFocusAfter : 0;
+  const prompts = _reportPrompts.all(sid, focusAfterTs, reportTs).reverse();
   const focus = reportFocusText({ title: session.title || '', prompts });
   const key = cacheKey(sid, text, level, focus);
   const respond = (script, model, source, polished, cached) => {

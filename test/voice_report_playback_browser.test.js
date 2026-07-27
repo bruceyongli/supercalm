@@ -25,6 +25,7 @@ const wav = silentWav();
 let voiceCalls = 0;
 let ttsCalls = 0;
 let ttsCallsBeforeReady = null;
+const voiceBodies = [];
 const report = 'This is a detailed final report sentence. '.repeat(45);
 const readyParts = [
   'Part one gives the direct answer.',
@@ -51,13 +52,19 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify({
       ok: true,
       status: 'waiting',
-      events: [{ kind: 'report', ts: 10, body: report }],
+      events: [
+        { kind: 'report', ts: 5, body: 'The previous round is finished.' },
+        { kind: 'you', ts: 8, body: 'Refine the current report only.' },
+        { kind: 'report', ts: 10, body: report },
+      ],
       meta: { source: 'transcript', file: '/rollouts/voice.jsonl' },
     }));
     return;
   }
   if (path === '/api/session/s_voice/voice-report') {
-    for await (const _chunk of req) { /* drain the POST */ }
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    voiceBodies.push(JSON.parse(body));
     voiceCalls++;
     res.writeHead(voiceCalls < 3 ? 202 : 200, { 'content-type': 'application/json' });
     if (voiceCalls < 3) {
@@ -100,6 +107,8 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.equal(voiceCalls, 3, 'the client polls while the guided script is tailoring');
+  assert.ok(voiceBodies.every((body) => body.focusAfterTs === 5),
+    'every preparation poll scopes owner prompts to after the preceding report');
   assert.equal(ttsCallsBeforeReady, 0, 'a 202 never starts a raw fallback read-out');
   assert.equal(ttsCalls, readyParts.length, 'every stable generated part is played exactly once');
 } finally {

@@ -129,7 +129,9 @@ assert.equal(PROMPT_VERSION, 'vr2', 'the prompt-aware script invalidates old vr1
 // returns 202 instead of beginning the old long fallback and later changing the part count.
 {
   const api = readFileSync(new URL('../src/voice_report_api.js', import.meta.url), 'utf8');
+  assert.match(api, /AND ts > \?/);
   assert.match(api, /ts <= \?/);
+  assert.match(api, /focusAfterTs/);
   assert.match(api, /reportFocusText\(\{ title: session\.title/);
   assert.match(api, /cacheKey\(sid, text, level, focus\)/);
   assert.match(api, /generationJobs/);

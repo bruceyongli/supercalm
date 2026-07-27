@@ -270,7 +270,18 @@ async function onListenTap(key, level = 'full') {
   listenActive = { key, handle, level };
   setListen(key, { phase: 'loading', level });
   try {
-    const requestBody = JSON.stringify({ text, ts: ev.ts || 0, level });
+    // Guided/quick context belongs to this report's round only. Use the preceding report as a hard
+    // lower boundary so the server can include same-round refinements without pulling a completed
+    // request/report pair into this voice script.
+    const eventIndex = events.findIndex((candidate) => evKey(candidate) === key);
+    let focusAfterTs = 0;
+    for (let i = eventIndex - 1; i >= 0; i--) {
+      if (events[i]?.kind === 'report') {
+        focusAfterTs = Number(events[i].ts) || 0;
+        break;
+      }
+    }
+    const requestBody = JSON.stringify({ text, ts: ev.ts || 0, level, focusAfterTs });
     const prepareDeadline = Date.now() + 90000;
     let vr = null;
     while (!handle.stopped && Date.now() < prepareDeadline) {
