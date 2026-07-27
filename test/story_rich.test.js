@@ -312,6 +312,8 @@ assert.ok(Number(svKey) >= 4, 'cache key bumped past v3 — cached notification 
 assert.ok(storyView.includes('data-story-prev') && storyView.includes('data-story-earlier'), 'both load-earlier controls exist');
 assert.ok(/rounds > 1 \? `\?rounds=\$\{rounds\}` : ''/.test(storyView), 'refreshStory passes the incremental rounds window');
 assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewport anchored (content prepends)');
+assert.ok(/has-working-status/.test(storyView) && css.includes('.story-panel.has-working-status .story-latest-btn'),
+  'Latest clears the detailed live-status footer instead of covering it');
 
 
 // Source-switch dedupe (E2E finding #3): the fallback-spine story arrives BEFORE the CLI transcript is
