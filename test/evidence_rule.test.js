@@ -48,6 +48,7 @@ assert.equal(memory.listStandards('p_rule').length, 0);
 const story = readFileSync(new URL('../web/story-view.js', import.meta.url), 'utf8');
 const inspector = readFileSync(new URL('../web/agents/inspector.js', import.meta.url), 'utf8');
 const inspectorMeta = readFileSync(new URL('../src/agents/inspector.js', import.meta.url), 'utf8');
+const inspectorApi = readFileSync(new URL('../src/inspector_api.js', import.meta.url), 'utf8');
 const knowledge = readFileSync(new URL('../web/agents/knowledge.js', import.meta.url), 'utf8');
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
 const dashboard = readFileSync(new URL('../web/views/dashboard.js', import.meta.url), 'utf8');
@@ -59,6 +60,8 @@ assert.match(inspector, /Exception review/, 'the panel leads with a focused diag
 assert.match(inspector, /Next autonomous move/, 'the diagnosis makes the next autonomous action explicit');
 assert.match(inspector, /teach\/.+\/retry/, 'the current session can retry with the saved rule');
 assert.match(inspectorMeta, /defaultEnabled:\s*false/, 'Evidence is optional and does not occupy the dock by default');
+assert.match(inspectorApi, /kind IN \('verify', 'checkpoint'\)/, 'diagnosis ignores unrelated supervisor bookkeeping');
+assert.match(inspectorApi, /opaqueToolReceipt/, 'opaque tool receipts are replaced with the failed command');
 assert.match(knowledge, /Autonomy rules/, 'Knowledge exposes the durable rule ledger');
 assert.match(knowledge, /never used/, 'the ledger distinguishes saved rules that never reached a run');
 assert.match(sessions, /<project_rules>/, 'future launches receive active project rules');

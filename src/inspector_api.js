@@ -80,10 +80,17 @@ function firstDiffHunk(diff) {
   return clip([...header, ...body].join('\n'), 9000);
 }
 
-function latestReview(sessionId) {
+function latestReview(sessionId, focusTs = 0) {
   try {
-    const row = db.prepare(`SELECT ts, kind, verdict, score, assessment, message, raw
-      FROM supervisor_reviews WHERE session_id = ? ORDER BY ts DESC LIMIT 1`).get(sessionId);
+    const row = focusTs
+      ? db.prepare(`SELECT ts, kind, verdict, score, assessment, message, raw
+          FROM supervisor_reviews
+          WHERE session_id = ? AND kind IN ('verify', 'checkpoint') AND abs(ts - ?) <= ?
+          ORDER BY abs(ts - ?) LIMIT 1`).get(sessionId, focusTs, 15 * 60_000, focusTs)
+      : db.prepare(`SELECT ts, kind, verdict, score, assessment, message, raw
+          FROM supervisor_reviews
+          WHERE session_id = ? AND kind IN ('verify', 'checkpoint')
+          ORDER BY ts DESC LIMIT 1`).get(sessionId);
     if (!row) return null;
     let parsed = null;
     try { parsed = JSON.parse(row.raw || ''); } catch {}
@@ -110,7 +117,16 @@ function suggestedRule(focus, review) {
 }
 
 function relevantOutput(terminal) {
-  const lines = String(terminal || '').replace(/\r/g, '').split('\n').filter((line) => line.trim());
+  const lines = String(terminal || '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if ((line.match(/working/gi) || []).length >= 2) return false;
+      return !/(?:bypass permissions|shift\+tab|esc to interrupt|context (?:used|left)|tokens? used)/i.test(line);
+    });
   return clip(lines.slice(-36).join('\n'), 4200);
 }
 
@@ -136,8 +152,12 @@ function diagnosisFor(focus, review, commandSteps) {
     : focus.kind === 'ask'
       ? 'Answer the decision, then let the agent continue and verify the resulting path.'
       : 'Correct the underlying issue, rerun the failed verification, and record the passing result.';
+  const opaqueToolReceipt = /^Chunk ID:|^Wall time:/i.test(String(focus.body || '').trim());
+  const happened = opaqueToolReceipt && command
+    ? `The verification command failed${focus.exitCode != null ? ` with exit code ${focus.exitCode}` : ''}: ${command}`
+    : focus.body || focus.title;
   return {
-    happened: clip(focus.body || focus.title, 520),
+    happened: clip(happened, 520),
     stopped: clip(stopped, 520),
     next: clip(next, 720),
     unmet: unmet.slice(0, 5).map((item) => clip(item, 420)),
@@ -162,7 +182,7 @@ route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, ur
       ? focus
       : [...events.slice(Math.max(0, index - 4), Math.max(0, index))].reverse().map(eventView).find((event) => event?.steps?.length) || null;
     const timeline = events.slice(Math.max(0, index - 3), Math.min(events.length, index + 4)).map(eventView);
-    const review = latestReview(sessionId);
+    const review = latestReview(sessionId, focus?.ts || 0);
     const standards = project
       ? listStandardsForSession(project.id, sessionId).map((rule) => ({
           id: rule.id,
