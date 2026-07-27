@@ -466,14 +466,13 @@ function feedList() {
 function render() {
   if (!panelEl) return;
   const workingHtml = renderWorking();
-  panelEl.classList.toggle('has-working-status', !!workingHtml);
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(calmEvents(events)))}</span>
+      <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     </div>
     <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
-    <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     ${workingHtml}`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
