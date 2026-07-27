@@ -122,6 +122,7 @@ const FEATURE_MODULES = [
   './voice_report_api.js',
   './records.js',
   './story_api.js',
+  './inspector_api.js',
   './authapi.js',
   './usage.js',
   './model_proxy.js',

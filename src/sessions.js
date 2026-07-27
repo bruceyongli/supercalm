@@ -32,6 +32,7 @@ import { claudeSettingsPath, codexNotifyArg } from './hookcfg.js';
 import { getContext, setContext, generateContext, contextBlock } from './context_doc.js';
 import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js';
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
+import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, codexRolloutFiles } from './codex_rollouts.js';
 import { wikiMcpToken } from './mcp.js';
@@ -732,6 +733,20 @@ async function completeLaunch(spec) {
       }
     } catch (e) {
       console.error('[aios] lessons inject skipped (fail-open):', e?.message || e);
+    }
+  }
+  // Explicit operator Teach corrections are durable project rules, not another report to reread.
+  // Put the bounded active set in every future task launch and record the exact session that received
+  // each rule so Knowledge can distinguish "saved" from "actually used by an autonomous run".
+  if (project?.id && task && task.trim()) {
+    try {
+      const standards = formatProjectStandards(project.id);
+      if (standards.text && standards.text.length + launchTask.length + 48 <= 16000) {
+        launchTask = `<project_rules>\n${standards.text}\n</project_rules>\n\n${launchTask}`;
+        noteStandardsUsed(project.id, standards.ids, { sessionId: sid });
+      }
+    } catch (e) {
+      console.error('[aios] project rules inject skipped (fail-open):', e?.message || e);
     }
   }
   // codex only: snapshot the rollout set right before launch so captureCodexUuid can diff for the NEW

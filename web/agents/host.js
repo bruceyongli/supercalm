@@ -26,6 +26,7 @@ const NON_TAB = new Set(['builder']);
 // Same stroke style as GEAR_SVG. Drop-in agents fall back to their first letter (glyphBtn).
 const SVG = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
 const DOCK_ICON = {
+  inspector: SVG('<path d="M4 4h12v16H4z"/><path d="M8 8h4M8 12h3"/><circle cx="17" cy="16" r="3"/><path d="m19.2 18.2 2 2"/>'), // Evidence — focused document
   map: SVG('<circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2.2"/><path d="M6.7 7.2 10.6 16M17.3 7.2 13.4 16"/>'), // Graph — connected nodes
   supervisor: SVG('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>'), // Supervisor — eye
   knowledge: SVG('<path d="M12 6.5C10 5 7 5 5 5.4v12C7 17 10 17 12 18.5 14 17 17 17 19 17.4v-12C17 5 14 5 12 6.5z"/><path d="M12 6.5v12"/>'), // Knowledge — book
@@ -40,7 +41,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   let homeEl = null;
   const modules = new Map(); // id -> { el, inst, papi, dirty }
   const base = document.baseURI;
-  // Agent dock (session view only, `dock:true`): a 44px rail is always visible; ONE drawer opens on
+  // Agent dock (session view only, `dock:true`): a labeled rail is always visible; ONE drawer opens on
   // demand, defaulting CLOSED so the log surface is full-width. Non-dock callers (the phone panels
   // sheet) keep the classic always-open tab strip — `open` stays true so tabs highlight + refresh()
   // renders the Agents home. `shellEl`/`scrimEl` are null off the session view; every use is guarded.
@@ -67,7 +68,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function renderTabs() {
     const tabs = tabbable();
     if (dock) {
-      // Agent dock: a 44px rail — one glyph per active agent (+ attention dot) with the gear pinned for
+      // Agent dock: one labeled glyph per active agent (+ attention dot) with the gear pinned for
       // the Agents manager. A glyph click toggles ITS drawer (see onGlyphClick).
       tabsEl.innerHTML =
         `<div class="rail-mini-col dock-glyphs">${tabs.map(glyphBtn).join('')}</div>` +
@@ -348,6 +349,6 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     $('#dock-drawer-x')?.addEventListener('click', () => close(), { signal: dockAc.signal });
   }
 
-  load();
-  return { refresh, activate, reload: load, destroy, open: openDrawer, close, isOpen: () => open };
+  const ready = load();
+  return { ready, refresh, activate, reload: load, destroy, open: openDrawer, close, isOpen: () => open };
 }

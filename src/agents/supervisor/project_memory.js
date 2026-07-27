@@ -113,6 +113,24 @@ applyMigrations(db, [{
     ensureColumn(conn, 'pm_tasks', 'verify_facts_json', 'TEXT');
     ensureColumn(conn, 'pm_tasks', 'legacy_doc', 'TEXT');
   },
+}, {
+  id: '0108_project_memory_standard_usage',
+  description: 'Track where autonomy rules came from and which sessions received them',
+  up(conn) {
+    ensureColumn(conn, 'pm_standards', 'session_id', 'TEXT');
+    ensureColumn(conn, 'pm_standards', 'reuse_count', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(conn, 'pm_standards', 'last_used_at', 'INTEGER');
+    conn.exec(`
+      CREATE TABLE IF NOT EXISTS pm_standard_uses (
+        standard_id TEXT NOT NULL,
+        session_id  TEXT NOT NULL,
+        used_at     INTEGER NOT NULL,
+        PRIMARY KEY (standard_id, session_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pm_standard_uses_session
+        ON pm_standard_uses(session_id, used_at DESC);
+    `);
+  },
 }]);
 
 // ---- card + versioning ---------------------------------------------------------------------------
@@ -249,15 +267,62 @@ export function listEvents({ projectId, taskId = null, types = null, files = nul
 }
 
 // ---- standards + runtime ---------------------------------------------------------------------------
-export function addStandard(projectId, text, { sourceRef = '' } = {}) {
+// Project standards are explicit operator-authored corrections for future autonomous runs. Unlike
+// distilled lessons, they do not need a promotion pass: saving the Teach composer is the approval.
+// Exact-text dedupe keeps repeated diagnosis of one incident from growing a contradictory rule pile.
+export function addStandard(projectId, text, { sourceRef = '', sessionId = null } = {}) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 1000);
+  if (!projectId || !clean) return null;
+  const existing = db.prepare("SELECT id FROM pm_standards WHERE project_id = ? AND status = 'active' AND lower(text) = lower(?) LIMIT 1").get(projectId, clean);
+  if (existing?.id) return existing.id;
   const sid = 'std_' + genId();
   const ts = now();
-  db.prepare('INSERT INTO pm_standards (id, project_id, text, source_ref, status, created_at, updated_at) VALUES (?,?,?,?,?,?,?)')
-    .run(sid, projectId, String(text).slice(0, 1000), sourceRef, 'active', ts, ts);
+  db.prepare('INSERT INTO pm_standards (id, project_id, text, source_ref, status, created_at, updated_at, session_id) VALUES (?,?,?,?,?,?,?,?)')
+    .run(sid, projectId, clean, String(sourceRef || '').slice(0, 500), 'active', ts, ts, sessionId || null);
   return sid;
 }
 export function listStandards(projectId, { status = 'active' } = {}) {
   return db.prepare('SELECT * FROM pm_standards WHERE project_id = ? AND status = ? ORDER BY created_at').all(projectId, status);
+}
+export function getStandard(projectId, standardId) {
+  return db.prepare('SELECT * FROM pm_standards WHERE project_id = ? AND id = ?').get(projectId, standardId) || null;
+}
+export function listStandardsForSession(projectId, sessionId, { status = 'active' } = {}) {
+  return db.prepare(`SELECT s.*,
+      CASE WHEN u.session_id IS NULL THEN 0 ELSE 1 END AS used_in_this_run,
+      u.used_at AS used_in_this_run_at
+    FROM pm_standards s
+    LEFT JOIN pm_standard_uses u ON u.standard_id = s.id AND u.session_id = ?
+    WHERE s.project_id = ? AND s.status = ?
+    ORDER BY s.created_at`).all(sessionId || '', projectId, status);
+}
+export function retireStandard(projectId, standardId) {
+  const r = db.prepare("UPDATE pm_standards SET status = 'retired', updated_at = ? WHERE project_id = ? AND id = ? AND status = 'active'")
+    .run(now(), projectId, standardId);
+  return r.changes > 0;
+}
+export function noteStandardsUsed(projectId, ids = [], { sessionId = null } = {}) {
+  const usedAt = now();
+  for (const standardId of [...new Set(ids.filter(Boolean))]) {
+    const row = getStandard(projectId, standardId);
+    if (!row || row.status !== 'active') continue;
+    if (sessionId) {
+      const inserted = db.prepare('INSERT OR IGNORE INTO pm_standard_uses (standard_id, session_id, used_at) VALUES (?,?,?)')
+        .run(standardId, sessionId, usedAt);
+      if (!inserted.changes) continue;
+    }
+    db.prepare('UPDATE pm_standards SET reuse_count = reuse_count + 1, last_used_at = ?, updated_at = ? WHERE project_id = ? AND id = ?')
+      .run(usedAt, usedAt, projectId, standardId);
+  }
+}
+export function formatProjectStandards(projectId, { limit = 12 } = {}) {
+  const rows = listStandards(projectId).slice(-Math.max(1, limit));
+  if (!rows.length) return { text: '', ids: [] };
+  const text = [
+    'OPERATOR_PROJECT_RULES (explicit corrections the operator approved from earlier runs in THIS project; apply them to the current work and verification):',
+    ...rows.map((row) => `• ${row.text}`),
+  ].join('\n');
+  return { text, ids: rows.map((row) => row.id) };
 }
 export function upsertRuntime(sessionId, patch = {}) {
   const cur = db.prepare('SELECT * FROM pm_session_runtime WHERE session_id = ?').get(sessionId) || {};

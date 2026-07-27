@@ -257,7 +257,7 @@ function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth() - 44); // -44px for the agent-dock rail column
+  return Math.max(640, window.innerWidth - railWidth() - 86); // -86px for the labeled agent-dock rail column
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {
@@ -1805,10 +1805,27 @@ function mountAgentPanel() {
     panelsEl: $('#side-panels'),
     legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
     onTabChange: () => setTimeout(syncSize, 80),
-    dock: true, // 44px rail + slide-over drawer (session view); phone.js keeps the classic tab strip
+    dock: true, // labeled rail + slide-over drawer (session view); phone.js keeps the classic tab strip
   });
 }
 mountAgentPanel();
+// Story outcome cards and Needs-you deep links converge on the same focused inspector. Keep the
+// focus outside the agent host so a lazily-mounted panel can pick it up on its first render.
+window.addEventListener('aios:inspect-evidence', (event) => {
+  window.__aiosEvidenceFocus = event.detail || { sessionId: id };
+  agentPanel?.open?.('inspector');
+}, { signal: _sig });
+window.addEventListener('aios:open-agent', (event) => {
+  if (event.detail?.id) agentPanel?.open?.(event.detail.id);
+}, { signal: _sig });
+if (params.get('inspect') === '1') {
+  window.__aiosEvidenceFocus = {
+    sessionId: id,
+    ts: Number(params.get('focus_ts')) || 0,
+    kind: params.get('focus_kind') || '',
+  };
+  agentPanel.ready?.then(() => agentPanel?.open?.('inspector')).catch(() => {});
+}
 
 // Embedded SPA views subscribe immediately: the shell already owns the EventSource, and delaying this
 // callback created a real Starting -> Working race. Only the standalone page defers opening its own

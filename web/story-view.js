@@ -20,6 +20,8 @@ let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
 let openSteps = new Set(); // indices with the steps expander open
+let learnedEvidence = new Set(); // event timestamps whose exception produced a saved project rule
+let learnedListenerWired = false;
 // Client-side memory of asks the operator has already answered here, keyed stably per question. The story
 // re-renders wholesale on every SSE 'changed' tick; without this, an answered question bounces back to its
 // selection UI on the next refresh because the server story still reports it pending until the transcript
@@ -245,6 +247,26 @@ function listenRowHtml(ev) {
   const key = evKey(ev);
   return `<div class="story-listen-row" data-story-listen-row data-evkey="${esc(key)}" data-srclen="${text.length}">${listenRowInner(key, text.length)}</div>`;
 }
+
+// A compact outcome entry point, not a second transcript. It appears only on events that can prove,
+// contradict, or summarize work; opening it focuses the right-side Evidence drawer on this timestamp.
+function evidenceResultHtml(ev) {
+  if (!['fail', 'check', 'ship', 'report'].includes(ev.kind)) return '';
+  const labels = {
+    fail: ['Exception', 'Inspect what failed'],
+    check: ['Check', 'Inspect verification'],
+    ship: ['Result', 'Inspect delivery'],
+    report: ['Result', 'Inspect report evidence'],
+  };
+  const [label, action] = labels[ev.kind];
+  const learned = learnedEvidence.has(Number(ev.ts) || 0);
+  return `<div class="story-result-card ${ev.kind}${learned ? ' learned' : ''}" tabindex="0"
+      data-story-result data-evidence-ts="${Number(ev.ts) || 0}" data-evidence-kind="${esc(ev.kind)}">
+    <span class="story-result-label">${learned ? '✓ learned' : label}</span>
+    <button type="button" data-story-evidence>${action}</button>
+    <span class="story-result-key">E</span>
+  </div>`;
+}
 function paintListen(key) {
   const row = panelEl && panelEl.querySelector(`[data-story-listen-row][data-evkey="${CSS.escape(key)}"]`);
   if (!row) return; // scrolled/windowed out of the DOM — the state map still drives the next render
@@ -363,6 +385,7 @@ function eventHtml(ev, i) {
     ${body}
     ${stateChip}
     ${listenRowHtml(ev)}
+    ${evidenceResultHtml(ev)}
     ${ev.kind === 'plan' ? planHtml(ev) : ''}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
     ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
@@ -478,6 +501,24 @@ function wire() {
       document.body.appendChild(lb);
     };
   }
+  const openEvidence = (card) => {
+    window.dispatchEvent(new CustomEvent('aios:inspect-evidence', {
+      detail: {
+        sessionId: sid,
+        ts: Number(card.dataset.evidenceTs) || 0,
+        kind: card.dataset.evidenceKind || '',
+      },
+    }));
+  };
+  for (const card of panelEl.querySelectorAll('[data-story-result]')) {
+    card.querySelector('[data-story-evidence]')?.addEventListener('click', () => openEvidence(card));
+    card.addEventListener('keydown', (event) => {
+      if (event.key.toLowerCase() === 'e' || event.key === 'Enter') {
+        event.preventDefault();
+        openEvidence(card);
+      }
+    });
+  }
 }
 
 export async function refreshStory({ quiet = true } = {}) {
@@ -547,9 +588,18 @@ export function initStoryView({ sessionId, panel }) {
       if (b) onListenTap(b.dataset.evkey, b.dataset.level || 'full');
     });
   }
+  if (!learnedListenerWired) {
+    learnedListenerWired = true;
+    window.addEventListener('aios:evidence-learned', (event) => {
+      if (event.detail?.sessionId !== sid) return;
+      const ts = Number(event.detail?.eventTs) || 0;
+      if (ts) learnedEvidence.add(ts);
+      render();
+    });
+  }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

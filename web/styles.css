@@ -475,7 +475,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
-  --dock-rail-w: 44px;    /* always-visible agent-dock glyph rail (the last column) */
+  --dock-rail-w: 86px;    /* labeled agent-dock rail (the last column) */
   --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
   --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
@@ -665,7 +665,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .side-tab-panel { display: grid; gap: 8px; }
 .side-tab-panel[hidden] { display: none !important; }
 
-/* ---- Agent dock: 44px glyph rail (always visible) + one slide-over drawer ------------------------- */
+/* ---- Agent dock: labeled rail (always visible) + one slide-over drawer ---------------------------- */
 /* minimal dock rail (design): icons float on the right edge — no boxed rail, no boxed glyphs */
 .agent-dock-rail {
   grid-column: -2 / -1; grid-row: 3; align-self: stretch;
@@ -673,15 +673,25 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 2px; background: transparent; border: 0; z-index: 6;
 }
-.agent-dock-rail .dock-glyphs { gap: 6px; padding: 0; }
-.agent-dock-rail .dock-glyph { position: relative; width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
-.agent-dock-rail .dock-glyph svg { width: 20px; height: 20px; display: block; }
+.agent-dock-rail .dock-glyphs { width: 100%; gap: 4px; padding: 0; }
+.agent-dock-rail .dock-glyph {
+  position: relative; width: 82px; height: 36px; display: flex; align-items: center; gap: 6px;
+  padding: 0 6px; background: transparent; border: 0; color: var(--dim); border-radius: 9px;
+}
+.agent-dock-rail .dock-glyph::after, .agent-dock-rail .dock-gear::after {
+  content: attr(aria-label); min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font: 700 8.5px/1.1 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: 0; white-space: nowrap;
+}
+.agent-dock-rail .dock-glyph svg { width: 15px; height: 15px; flex: 0 0 15px; display: block; }
 .agent-dock-rail .dock-glyph-letter { font-size: 14px; font-weight: 800; }
 .agent-dock-rail .dock-glyph:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
 .agent-dock-rail .dock-glyph.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
 .agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 3px; right: 3px; margin: 0; }
-.agent-dock-rail .dock-gear { width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
-.agent-dock-rail .dock-gear svg { width: 18px; height: 18px; }
+.agent-dock-rail .dock-gear {
+  width: 82px; height: 36px; display: flex; align-items: center; gap: 6px; padding: 0 6px;
+  background: transparent; border: 0; color: var(--dim); border-radius: 9px;
+}
+.agent-dock-rail .dock-gear svg { width: 15px; height: 15px; flex: 0 0 15px; }
 .agent-dock-rail .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
 .agent-dock-rail .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
 /* Drawer closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
@@ -709,7 +719,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     z-index: 45; box-shadow: -18px 0 48px rgba(1, 4, 9, 0.5);
   }
   /* Touch targets ≥38–40px on iPad/compact (design). */
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 40px; height: 40px; }
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 82px; height: 40px; }
   .main-tabs button { width: 38px; height: 38px; min-width: 38px; }
   .story-toggle [data-mode] { min-height: 38px; }
   .session-title-icon { width: 34px; min-width: 34px; min-height: 34px; }
@@ -1386,7 +1396,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .footer-composer { padding-bottom: env(safe-area-inset-bottom); }
 .footer-composer textarea { min-height: 42px; }
 
-/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + 44px rail +
+/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + labeled rail +
    overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
 @media (max-width: 600px) {
   /* Phone session layout: a flex column with EXPLICIT order — header · banner · main · agent bar.
@@ -1413,6 +1423,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   }
   .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 2px; }
   .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; height: 40px; }
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { justify-content: center; padding: 0; }
+  .agent-dock-rail .dock-glyph::after, .agent-dock-rail .dock-gear::after { display: none; }
   /* The drawer opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
      on a 390px phone — unusable). Sits above the scrim; the ✕ / scrim / esc close it. */
   .session-shell.dock-open .session-usage-panel,
@@ -2698,3 +2710,115 @@ body.map-expanded-open { overflow: hidden; }
 .sup-mode-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .sup-mode-row .sup-bg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: #8a95a5; }
 .sup-mode-copy { color: #8a95a5; font-size: 12px; }
+
+/* Evidence → Rule: compact Story entry points + one focused exception drawer. */
+.story-result-card {
+  display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%;
+  margin: 8px 0 2px; padding: 5px 6px 5px 9px; border: 1px solid #222d3a; border-radius: 8px;
+  background: #0c121a; color: #8a95a5; outline: none;
+}
+.story-result-card:focus, .story-result-card:focus-within { border-color: #365a86; box-shadow: 0 0 0 2px #132338; }
+.story-result-card.fail { border-color: #4b2b2d; background: #151014; }
+.story-result-card.learned { border-color: #235538; background: #0c1711; }
+.story-result-label {
+  color: #8a95a5; font: 800 9.5px/1 'IBM Plex Sans', system-ui, sans-serif;
+  letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
+}
+.story-result-card.fail .story-result-label { color: #f28b82; }
+.story-result-card.learned .story-result-label { color: #4ecb6c; }
+.story-result-card button {
+  min-height: 26px; padding: 3px 8px; border: 0; border-radius: 6px; cursor: pointer;
+  background: #142033; color: #79b8ff; font: 700 10.5px/1.2 'IBM Plex Sans', system-ui, sans-serif;
+}
+.story-result-card button:hover { color: #e9eef5; background: #1c3150; }
+.story-result-key {
+  min-width: 18px; height: 18px; display: grid; place-items: center; border: 1px solid #2b3542;
+  border-radius: 4px; color: #5c6675; font: 700 9px/1 'JetBrains Mono', ui-monospace, monospace;
+}
+
+.ev-pane {
+  display: grid; gap: 12px; color: #b9c4d4; padding: 4px 2px 18px;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+}
+.ev-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 3px 2px 8px; border-bottom: 1px solid #21262d; }
+.ev-head h2 { margin: 2px 0 0; color: #e9eef5; font-size: 18px; }
+.ev-kicker { color: #5c6675; font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.ev-purpose { margin: -3px 2px 1px; color: #8a95a5; font-size: 11.5px; line-height: 1.45; }
+.ev-loading, .ev-empty { color: #8a95a5; padding: 16px 8px; font-size: 12px; }
+.ev-review, .ev-focus, .ev-rules-in-run, .ev-teach, .ev-learned, .ev-ledger {
+  border: 1px solid #21262d; border-radius: 10px; background: #0d1219; padding: 11px 12px;
+}
+.ev-review { border-left: 3px solid #d29922; }
+.ev-review > div:first-child { display: flex; align-items: center; gap: 7px; }
+.ev-verdict { padding: 2px 7px; border-radius: 999px; border: 1px solid #3a4453; color: #9aa7b8; font-size: 9px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.ev-verdict.ok { color: #4ecb6c; border-color: #28653b; }
+.ev-verdict.warn { color: #e2b23e; border-color: #6b5725; }
+.ev-verdict.bad { color: #f2554d; border-color: #79302e; }
+.ev-score { color: #5c6675; font: 700 10px/1 'JetBrains Mono', ui-monospace, monospace; }
+.ev-review p, .ev-focus p, .ev-learned p { margin: 7px 0 0; color: #b9c4d4; font-size: 12px; line-height: 1.5; white-space: pre-wrap; }
+.ev-review ul { margin: 8px 0 0; padding-left: 17px; color: #d7b669; font-size: 11px; line-height: 1.45; }
+.ev-section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: #8a95a5; font-size: 9.5px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.ev-section-head time, .ev-section-head > span:last-child { color: #5c6675; font-weight: 600; letter-spacing: 0; text-transform: none; }
+.ev-focus h3 { margin: 8px 0 0; color: #e9eef5; font-size: 14px; line-height: 1.35; }
+.ev-exit { display: inline-block; margin-top: 7px; color: #f28b82; font: 700 10px/1 'JetBrains Mono', ui-monospace, monospace; }
+.ev-steps { display: grid; gap: 6px; margin-top: 10px; }
+.ev-step { display: grid; gap: 4px; padding-top: 7px; border-top: 1px solid #1b222c; color: #8a95a5; font-size: 11px; }
+.ev-step code { display: block; overflow-wrap: anywhere; color: #b9c4d4; font: 10.5px/1.45 'JetBrains Mono', ui-monospace, monospace; }
+.ev-rule-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.ev-rule-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid #284b3a; border-radius: 999px; background: #0f1b16; color: #6ed98a; padding: 3px 8px; font-size: 10px; }
+.ev-none { color: #5c6675; font-size: 11px; line-height: 1.4; }
+.ev-link { border: 0; background: none; color: #79b8ff; cursor: pointer; padding: 0; font: inherit; text-transform: none; letter-spacing: 0; }
+.ev-details { display: grid; gap: 6px; }
+.ev-details details { border: 1px solid #1d2631; border-radius: 8px; background: #0b1017; }
+.ev-details summary { cursor: pointer; padding: 9px 11px; color: #9aa7b8; font-size: 11px; font-weight: 700; }
+.ev-details pre {
+  max-height: 320px; overflow: auto; margin: 0; padding: 10px 11px; border-top: 1px solid #1d2631;
+  color: #aeb9c7; background: #080c12; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 10px/1.5 'JetBrains Mono', ui-monospace, monospace;
+}
+.ev-details ol { display: grid; gap: 6px; margin: 0; padding: 9px 12px 11px 30px; border-top: 1px solid #1d2631; color: #8a95a5; font-size: 11px; }
+.ev-details li span { display: inline-block; min-width: 48px; margin-right: 6px; color: #5c6675; font: 700 9px/1 'JetBrains Mono', ui-monospace, monospace; text-transform: uppercase; }
+.ev-teach textarea {
+  width: 100%; min-height: 108px; margin-top: 9px; resize: vertical; border: 1px solid #365a86; border-radius: 8px;
+  background: #080d14; color: #e9eef5; padding: 9px 10px; font: 12px/1.5 'IBM Plex Sans', system-ui, sans-serif;
+}
+.ev-teach textarea:focus { outline: 2px solid #132338; }
+.ev-teach p { margin: 6px 0 0; color: #5c6675; font-size: 10.5px; line-height: 1.4; }
+.ev-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 9px; }
+.ev-teach-primary {
+  width: 100%; min-height: 42px; border: 1px solid #365a86; border-radius: 9px; background: #132338;
+  color: #9ecbff; cursor: pointer; font: 800 12px/1 'IBM Plex Sans', system-ui, sans-serif;
+}
+.ev-teach-primary:hover { background: #19304d; color: #e9eef5; }
+.ev-teach-primary:disabled { opacity: .45; cursor: not-allowed; }
+.ev-learned { border-color: #285d3a; background: #0d1812; }
+.ev-learned > span { color: #4ecb6c; font-size: 11px; font-weight: 800; }
+.ev-learned button { margin-top: 10px; }
+.ev-ledger ul, .kn-standards { display: grid; gap: 7px; list-style: none; margin: 9px 0 0; padding: 0; }
+.ev-rule { display: grid; gap: 5px; padding-top: 7px; border-top: 1px solid #1b252f; }
+.ev-rule:first-child { border-top: 0; padding-top: 0; }
+.ev-rule > div { display: grid; grid-template-columns: 7px minmax(0, 1fr); gap: 7px; color: #b9c4d4; font-size: 10.5px; line-height: 1.4; }
+.ev-rule-dot { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: #3fb950; }
+.ev-rule footer { display: flex; gap: 7px; padding-left: 14px; color: #5c6675; font-size: 9.5px; }
+.ev-rule-use { color: #8a95a5; }
+.ev-rule-use.current { color: #4ecb6c; }
+.ev-rule-use.never { color: #d29922; }
+
+.kn-standard { display: grid; gap: 6px; padding: 8px 0; border-top: 1px solid #21262d; }
+.kn-standard:first-child { border-top: 0; }
+.kn-standard > div:first-child { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 7px; }
+.kn-standard b { color: #b9c4d4; font-size: 11px; line-height: 1.45; }
+.kn-standard-state { padding: 2px 6px; border: 1px solid #28653b; border-radius: 999px; color: #4ecb6c; font-size: 8.5px; font-weight: 800; text-transform: uppercase; }
+.kn-standard-state.never { color: #d29922; border-color: #6b5725; }
+
+.dk-inspect-btn {
+  display: inline-flex; align-items: center; min-height: 30px; padding: 4px 9px; border: 1px solid #2b3c50;
+  border-radius: 7px; color: #79b8ff; background: #0f1824; text-decoration: none; font-size: 11px; font-weight: 700;
+}
+.dk-inspect-btn:hover { color: #e9eef5; border-color: #4b78aa; }
+
+@media (max-width: 600px) {
+  .story-result-card { width: 100%; }
+  .story-result-card button { flex: 1; text-align: left; }
+  .ev-pane { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+}

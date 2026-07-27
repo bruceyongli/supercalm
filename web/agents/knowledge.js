@@ -33,15 +33,26 @@ async function load() {
   pid = s.project?.id || s.project_id || null;
   pname = s.project?.name || '';
   if (!pid) { data = null; return; }
-  const [helpers, ctx, wiki, assets, lessons, files] = await Promise.all([
+  const [helpers, ctx, wiki, assets, lessons, files, standards] = await Promise.all([
     api(`api/project/${pid}/helpers`).catch(() => null),
     api(`api/project/${pid}/context`).catch(() => null),
     api(`api/project/${pid}/wiki`).catch(() => null),
     api(`api/project/${pid}/assets?session=${encodeURIComponent(sid)}`).catch(() => null),
     api(`api/project/${pid}/lessons`).catch(() => null),
     api(`api/session/${sid}/files`).catch(() => null),
+    api(`api/project/${pid}/standards`).catch(() => null),
   ]);
-  data = { helpers: helpers?.helpers || {}, models: helpers?.models || [], ctx: ctx?.context || null, pages: wiki?.pages || [], assets: assets || { uploads: [], wiki: [] }, lessons: lessons?.lessons || [], files: files?.files || [], filesTrunc: !!files?.truncated };
+  data = {
+    helpers: helpers?.helpers || {},
+    models: helpers?.models || [],
+    ctx: ctx?.context || null,
+    pages: wiki?.pages || [],
+    assets: assets || { uploads: [], wiki: [] },
+    lessons: lessons?.lessons || [],
+    files: files?.files || [],
+    filesTrunc: !!files?.truncated,
+    standards: standards?.standards || [],
+  };
 }
 
 function lessonRow(l) {
@@ -57,6 +68,16 @@ function lessonRow(l) {
     <div><span style="display:inline-block;padding:0 6px;border-radius:8px;font-size:10px;border:1px solid ${color}99;color:${color}">${badge}</span> <b>${esc(l.title || l.task_type || 'lesson')}</b> <span class="kn-meta">${esc(l.task_type || '')}${reuse}${sha}</span></div>
     ${tip ? `<div class="kn-meta" style="margin:2px 0">${esc(tip).slice(0, 220)}</div>` : ''}
     <div class="kn-row">${act} <button class="btn sm" data-les-del="${esc(l.id)}">delete</button></div>
+  </li>`;
+}
+
+function standardRow(rule) {
+  const used = Number(rule.reuse_count) || 0;
+  const usage = used ? `included in ${used} launch${used === 1 ? '' : 'es'}` : 'never used';
+  const source = rule.session_id ? `from ${rule.session_id}` : (rule.source_ref || 'operator');
+  return `<li class="kn-standard">
+    <div><span class="kn-standard-state ${used ? 'used' : 'never'}">${used ? 'active' : 'new'}</span><b>${esc(rule.text)}</b></div>
+    <div class="kn-row"><span class="kn-meta">${esc(usage)} · ${esc(source)}</span><button class="btn ghost sm" data-std-retire="${esc(rule.id)}">Retire</button></div>
   </li>`;
 }
 
@@ -308,6 +329,12 @@ function render() {
       </section>
 
       <section class="kn-sec">
+        <div class="kn-sec-head"><h3>Autonomy rules</h3><span class="kn-meta">${(data.standards || []).length} active</span></div>
+        <p class="kn-note">Explicit corrections saved from Evidence. Every future project run receives these rules; usage shows whether a rule has reached an agent yet.</p>
+        <ul class="kn-standards">${(data.standards || []).map(standardRow).join('') || '<li class="kn-note">(none yet — inspect an exception and choose Teach)</li>'}</ul>
+      </section>
+
+      <section class="kn-sec">
         <div class="kn-sec-head"><h3>Files</h3><span class="kn-meta">${(() => { const t = (data.files || []).length; const v = filteredFiles(data.files).length; return filesFilterText.trim() ? `${v} of ${t}` : `${t}${data.filesTrunc ? '+' : ''}`; })()} in working tree</span></div>
         <p class="kn-note">Files the coding agent wrote or changed (newest first). Click to view; file paths in the terminal are also clickable.</p>
         ${(data.files || []).length ? `<input id="kn-files-filter" class="kn-files-search" type="search" placeholder="Filter by path…" value="${esc(filesFilterText)}" />` : ''}
@@ -384,6 +411,17 @@ function wire() {
   host.querySelectorAll('[data-les-promote]').forEach((b) => (b.onclick = () => lesAct(b.dataset.lesPromote, { status: 'active' })));
   host.querySelectorAll('[data-les-demote]').forEach((b) => (b.onclick = () => lesAct(b.dataset.lesDemote, { status: 'demoted' })));
   host.querySelectorAll('[data-les-del]').forEach((b) => (b.onclick = () => lesAct(b.dataset.lesDel, null, true)));
+  host.querySelectorAll('[data-std-retire]').forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try {
+      await post(`api/project/${pid}/standards/${b.dataset.stdRetire}/retire`, {});
+      await load();
+      render();
+    } catch {
+      b.disabled = false;
+      b.textContent = 'Retire failed';
+    }
+  }));
   host.querySelectorAll('[data-copy-asset]').forEach((b) => (b.onclick = () => copyAsset(assetById(b.dataset.copyAsset))));
   host.querySelectorAll('[data-insert-asset]').forEach((b) => (b.onclick = () => insertAsset(assetById(b.dataset.insertAsset))));
   host.querySelectorAll('[data-open-asset]').forEach((b) => (b.onclick = () => openAssetDetail(assetById(b.dataset.openAsset))));

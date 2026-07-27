@@ -590,6 +590,7 @@ function renderHome() {
       <div class="needacts">
         <button class="act listen" data-listen="${esc(s.id)}">${isPlaying ? '■ Stop' : '▶ Listen'}</button>
         <button class="act reply" data-replyto="${esc(s.id)}">● Reply</button>
+        <button class="act inspect" data-inspect-need="${esc(s.id)}">Evidence</button>
         <button class="act dismiss" data-dismiss-need="${esc(s.id)}">Dismiss</button>
         <button class="act open" data-open2="${esc(s.id)}">›</button>
       </div>
@@ -899,6 +900,10 @@ function wire() {
     e.stopPropagation();
     nav('session', el.dataset.replyto);
     setTimeout(() => startRec(), 300);
+  });
+  for (const el of app.querySelectorAll('[data-inspect-need]')) el.addEventListener('click', (event) => {
+    event.stopPropagation();
+    location.href = `session?id=${encodeURIComponent(el.dataset.inspectNeed)}&inspect=1`;
   });
   const submit = async (session, questions) => {
     const selections = phoneSelections(session);
