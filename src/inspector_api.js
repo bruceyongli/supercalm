@@ -142,12 +142,11 @@ function diagnosisFor(focus, review, commandSteps) {
   const exit = focus.exitCode != null ? `The recorded command exited with code ${focus.exitCode}.` : '';
   const stopped = unmet[0]
     || review?.assessment
-    || exit
     || (focus.kind === 'ask'
       ? 'The agent needs an operator decision before it can choose the next branch.'
       : focus.kind === 'fail'
         ? 'A required verification failed, so the agent cannot honestly mark the work complete.'
-      : 'The available result does not yet prove that the intended verification passed.');
+        : exit || 'The available result does not yet prove that the intended verification passed.');
   const next = conciseCommand
     ? `Correct the underlying issue, then rerun: ${conciseCommand}`
     : focus.kind === 'ask'
