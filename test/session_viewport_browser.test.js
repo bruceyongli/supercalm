@@ -19,9 +19,10 @@ const fixture = `<!doctype html>
         <div class="message-box footer-composer">
           <textarea id="reply" placeholder="Ask anything..."></textarea>
           <div class="composer-bottom">
-            <div class="composer-options"><div class="settings composer-settings"></div></div>
+            <div class="composer-options"><div class="composer-settings-popover"><div class="settings composer-settings"></div></div></div>
             <div class="composer-actions">
               <button class="btn ghost icon-btn attach-btn attach-mobile">+</button>
+              <button class="composer-settings-toggle">full · xhigh · GPT-5.6</button>
               <span class="composer-action-spacer"></span><span class="mic-status"></span>
               <button class="btn mic" id="mic">●</button><button class="btn ghost send-btn" id="send">↑</button>
             </div>
@@ -77,17 +78,23 @@ try {
   const closed = await page.evaluate(() => {
     const composer = document.querySelector('.footer-composer').getBoundingClientRect();
     const actions = document.querySelector('.composer-actions');
+    const attach = document.querySelector('.attach-mobile').getBoundingClientRect();
+    const settings = document.querySelector('.composer-settings-toggle').getBoundingClientRect();
     const mic = document.querySelector('#mic').getBoundingClientRect();
     const send = document.querySelector('#send').getBoundingClientRect();
     return {
       fontSize: getComputedStyle(document.querySelector('#reply')).fontSize,
       actionOverflow: actions.scrollWidth - actions.clientWidth,
       controlsInside: mic.right <= composer.right && send.right <= composer.right,
+      oneRow: Math.max(attach.top, settings.top, mic.top, send.top) - Math.min(attach.top, settings.top, mic.top, send.top) <= 3,
+      settingsWidth: settings.width,
     };
   });
   assert.equal(closed.fontSize, '16px');
   assert.ok(closed.actionOverflow <= 0, 'the phone action row does not overflow');
   assert.equal(closed.controlsInside, true, 'mic and send remain inside the composer');
+  assert.equal(closed.oneRow, true, 'attach, run settings, mic, and send stay on one row');
+  assert.ok(closed.settingsWidth > 100, 'the run-settings summary gets the flexible middle track');
 
   await page.evaluate(() => window.__viewportTest.open());
   await page.waitForTimeout(30);

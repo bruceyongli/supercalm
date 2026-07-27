@@ -65,7 +65,7 @@ assert.match(inspectorApi, /opaqueToolReceipt/, 'opaque tool receipts are replac
 assert.match(knowledge, /Autonomy rules/, 'Knowledge exposes the durable rule ledger');
 assert.match(knowledge, /never used/, 'the ledger distinguishes saved rules that never reached a run');
 assert.match(sessions, /<project_rules>/, 'future launches receive active project rules');
-assert.match(dashboard, /Why it needs you/, 'Needs you links directly into focused diagnosis');
+assert.match(dashboard, /Open session/, 'Needs you keeps a direct route to the full session without repeating its visible explanation');
 assert.match(settings, /Search settings/, 'Settings has a first-class search control');
 assert.doesNotMatch(settings, /id="st-permissions"/, 'Settings does not repeat familiar permission explanations');
 

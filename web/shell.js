@@ -363,10 +363,9 @@ function renderPalette() {
   const previewHtml = preview ? `
     <aside class="dk-pal-preview" aria-live="polite">
       <div class="dk-pal-preview-head"><span class="dk-pal-state ${esc(selected.session.status)}">${esc(preview.state)}</span>${selected.session.project ? `<span>${esc(selected.session.project)}</span>` : ''}</div>
-      <div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>
+      ${preview.need ? '' : `<div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>`}
       ${preview.outcome ? `<div class="dk-pal-preview-row"><b>Latest update</b><p>${esc(preview.outcome)}</p></div>` : ''}
-      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Why it needs you</b><p>${esc(preview.need)}</p></div>` : ''}
-      <div class="dk-pal-preview-row"><b>What happens next</b><p>${esc(preview.next)}</p></div>
+      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Needs you</b><p>${esc(preview.need)}</p></div>` : ''}
     </aside>` : `
     <aside class="dk-pal-preview quiet">
       <b>${esc(selected?.label || 'Jump anywhere')}</b>

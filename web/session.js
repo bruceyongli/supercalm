@@ -6,7 +6,7 @@ import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop rep
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
 import { FILE_REFERENCE_RX, cleanFileReference, localFilePath } from './file-reference.js';
-import { groupedModelOptions } from './model-select.js';
+import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
@@ -35,15 +35,14 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           </span>
         </div>
         <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
-        <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
-        <button class="btn danger sm" id="b-kill" title="Kill tmux session">Kill</button>
+        <span class="session-actions">
+          <button class="btn ghost sm session-more" id="session-more" type="button" title="Session actions" aria-label="Session actions" aria-expanded="false">•••</button>
+          <span class="session-actions-menu" id="session-actions-menu" role="menu" hidden>
+            <button type="button" id="b-stop" role="menuitem"><b>Stop &amp; park</b><span>Frees the pane and stays resumable</span></button>
+            <button type="button" id="b-kill" class="danger" role="menuitem"><b>Kill session</b><span>Ends the agent process</span></button>
+          </span>
+        </span>
       </header>
-
-      <div class="session-banner" id="session-banner" hidden>
-        <span class="session-banner-ok">✓ first session running</span>
-        <span class="session-banner-msg">You can leave — it lands in <b>Needs you</b> when it wants a decision. Reply here or from your phone.</span>
-        <button class="session-banner-x" id="session-banner-x" type="button" title="Dismiss" aria-label="Dismiss">×</button>
-      </div>
 
       <main class="session-main">
         <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
@@ -110,13 +109,20 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
           <div class="composer-bottom">
             <div class="composer-options">
-              <div class="settings composer-settings" id="s-settings"></div>
+              <div class="composer-settings-popover" id="composer-settings-popover">
+                <div class="composer-settings-head">
+                  <span>Run settings</span>
+                  <button type="button" id="composer-settings-close" aria-label="Close run settings">×</button>
+                </div>
+                <div class="settings composer-settings" id="s-settings"></div>
+              </div>
               <button class="btn ghost icon-btn attach-btn attach-desktop" id="attach-desktop" type="button" aria-label="Attach files/images">+</button>
               <input id="file-input" type="file" multiple hidden />
             </div>
             <button class="composer-hint" id="composer-hint" type="button" title="How Enter behaves — click to switch" hidden></button>
             <div class="composer-actions">
               <button class="btn ghost icon-btn attach-btn attach-mobile" id="attach" type="button" aria-label="Attach files/images">+</button>
+              <button class="composer-settings-toggle" id="composer-settings-toggle" type="button" aria-expanded="false" aria-controls="composer-settings-popover">Run settings</button>
               <span class="composer-action-spacer"></span>
               <span class="mic-status" id="mic-status"></span>
               <button class="btn mic" id="mic" type="button" aria-label="Dictate"></button>
@@ -134,7 +140,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
         </div>
       </aside>
-      <nav class="agent-dock-rail" id="side-tabs" role="tablist" aria-label="Session agents"></nav>
+      <nav class="agent-dock-rail" id="side-tabs" aria-label="Session tools"></nav>
       <div class="agent-dock-scrim" id="agent-dock-scrim" hidden></div>
     </div>`;
 
@@ -245,36 +251,55 @@ function automatedResizeClient() {
 
 function syncHeaderHeight() {
   const hh = document.querySelector('header')?.getBoundingClientRect().height || 52;
-  const bn = document.querySelector('#session-banner:not([hidden])')?.getBoundingClientRect().height || 0;
-  document.documentElement.style.setProperty('--session-header-h', `${Math.ceil(hh + bn)}px`);
+  document.documentElement.style.setProperty('--session-header-h', `${Math.ceil(hh)}px`);
 }
-// First-run reassurance banner: show once until the operator dismisses it (persisted).
-const BANNER_DISMISSED = 'aios.session.bannerDismissed';
-(() => {
-  const banner = document.getElementById('session-banner');
-  if (!banner) return;
-  try { if (localStorage.getItem(BANNER_DISMISSED) === '1') return; } catch {}
-  banner.hidden = false;
-  document.getElementById('session-banner-x')?.addEventListener('click', () => {
-    banner.hidden = true;
-    try { localStorage.setItem(BANNER_DISMISSED, '1'); } catch {}
-    syncHeaderHeight();
-  });
-})();
 syncHeaderHeight();
 if ('ResizeObserver' in window) {
   const headerObserver = new ResizeObserver(syncHeaderHeight);
   _obs.push(headerObserver);
   headerObserver.observe(document.querySelector('header'));
-  const bnr = document.getElementById('session-banner');
-  if (bnr) headerObserver.observe(bnr);
 }
+
+function setSessionActionsOpen(open) {
+  const trigger = $('#session-more');
+  const menu = $('#session-actions-menu');
+  if (!trigger || !menu) return;
+  trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  menu.hidden = !open;
+}
+$('#session-more')?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  setSessionActionsOpen($('#session-more').getAttribute('aria-expanded') !== 'true');
+});
+$('#session-actions-menu')?.addEventListener('click', () => setSessionActionsOpen(false));
+
+function setComposerSettingsOpen(open) {
+  const composer = $('#message-box');
+  const trigger = $('#composer-settings-toggle');
+  if (!composer || !trigger) return;
+  composer.classList.toggle('settings-open', open);
+  trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+$('#composer-settings-toggle')?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  setComposerSettingsOpen(!$('#message-box')?.classList.contains('settings-open'));
+});
+$('#composer-settings-close')?.addEventListener('click', () => setComposerSettingsOpen(false));
+document.addEventListener('click', (event) => {
+  if (!event.target.closest('.session-actions')) setSessionActionsOpen(false);
+  if (!event.target.closest('#message-box')) setComposerSettingsOpen(false);
+}, { signal: _sig });
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  setSessionActionsOpen(false);
+  setComposerSettingsOpen(false);
+}, { signal: _sig });
 
 function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth() - 44); // -44px for the compact agent-dock rail column
+  return Math.max(640, window.innerWidth - railWidth() - 58); // one clearly-labelled session-tools entry
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {
@@ -1832,10 +1857,6 @@ function fetchSessionInfo(reqId = id) {
   return promise;
 }
 
-function titleTags(s) {
-  return [s.modelLabel, s.fastMode ? 'fast' : null, s.effort, s.autonomy].filter(Boolean).join(' · ');
-}
-
 function titleActionButton(id, html, label, extra = '') {
   return `<button class="btn ghost sm session-title-icon ${extra}" id="${id}" type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${html}</button>`;
 }
@@ -1845,12 +1866,10 @@ function renderHeaderTitle(s) {
   latestSessionInfo = s;
   const el = $('#s-title');
   if (!el || titleEditing) return;
-  const tags = titleTags(s);
   el.innerHTML = `
     <span class="session-title-wrap">
       <b>${escapeHtml(s.project?.name || '(adhoc)')}</b>
       <span class="session-title-value" id="session-title-value" role="button" tabindex="0" title="Rename session">${escapeHtml(s.title || '')}</span>
-      ${tags ? ` <span class="badge" title="model · effort · autonomy">${escapeHtml(tags)}</span>` : ''}
     </span>`;
   // Design match: no visible rename/AI-title icon buttons in the header — the title itself is
   // click-to-rename (session-title-value below), so the icons were redundant clutter the design omits.
@@ -1888,6 +1907,8 @@ function applySessionInfo(s) {
   }
   const resume = $('#b-resume');
   if (resume && merged.status) resume.hidden = merged.status !== 'exited';
+  const stop = $('#b-stop');
+  if (stop && merged.status) stop.hidden = merged.status === 'exited';
   setSessionBrowserIdentity(merged);
 }
 
@@ -1895,7 +1916,6 @@ function startTitleEdit() {
   const s = latestSessionInfo;
   if (!s || titleBusy) return;
   titleEditing = true;
-  const tags = titleTags(s);
   $('#s-title').innerHTML = `
     <span class="session-title-wrap editing">
       <b>${escapeHtml(s.project?.name || '(adhoc)')}</b>
@@ -1904,7 +1924,6 @@ function startTitleEdit() {
         ${titleActionButton('session-title-save', TITLE_ICON_SAVE, 'Save title')}
         ${titleActionButton('session-title-cancel', TITLE_ICON_CANCEL, 'Cancel rename')}
       </span>
-      ${tags ? ` <span class="badge" title="model · effort · autonomy">${escapeHtml(tags)}</span>` : ''}
     </span>`;
   const input = $('#session-title-input');
   input?.focus();
@@ -2665,6 +2684,13 @@ function renderSettings(s, tmeta) {
   if (s.tool === 'codex' && (s.fastCapable || activeModelMeta?.supportsFast)) html += toggle('fast', 'fastMode', !!s.fastMode);
   if ((tmeta.orchestrations || []).length) html += sel('Orchestration', 'orchestration', tmeta.orchestrations.map((v) => ({ v, l: v })), s.orchestration || 'off');
   box.innerHTML = html;
+  const runSettings = $('#composer-settings-toggle');
+  if (runSettings) {
+    const activeLabel = activeModelMeta ? modelOptionLabel(activeModelMeta) : (s.modelLabel || activeModel || '');
+    const compactModel = String(activeLabel).replace(/\s*\(\s*vision\s*\)\s*$/i, '');
+    runSettings.textContent = [s.autonomy, s.effort, compactModel].filter(Boolean).join(' · ') || 'Run settings';
+    runSettings.title = 'Change permissions, effort, model, and run settings';
+  }
   box.querySelectorAll('select[data-set]').forEach((el) => {
     fitSettingSelect(el);
     const wrap = el.closest('.setting-select');

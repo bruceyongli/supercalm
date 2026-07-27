@@ -1,7 +1,7 @@
 // Desktop home = the app-shell (web/shell.js) + the Inbox triage in the main column. The shell (left
 // sidebar, ⌘K palette, launch modal, toast, live loop) is shared with every other page; this file only
 // owns the Inbox. Data: the phone contract's triage endpoint via the shell's load, handed to renderInbox.
-import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, toast } from './shell.js';
+import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, sessionAttentionPreview, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
@@ -64,17 +64,21 @@ function renderInbox(home) {
   $('#dk-cards').innerHTML = cards.map((s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
+    const preview = sessionAttentionPreview(s);
     return `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
         <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
         ${agentChip(s.tool)}
-        <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(shortTitle(s))}</a>
-        <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
+        <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(s.title || shortTitle(s))}</a>
+        <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
-      <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
+      <div class="dk-attention-preview">
+        ${preview.outcome ? `<div class="dk-attention-row"><span>Latest</span><p>${esc(preview.outcome)}</p></div>` : ''}
+        ${preview.need ? `<div class="dk-attention-row important"><span>Needs you</span><p>${esc(preview.need)}</p></div>` : ''}
+      </div>
       ${choicesHtml(s, questions)}
-      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}&inspect=1">Why it needs you</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
+      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>`;
   }).join('') || ((home.sessions || []).length === 0

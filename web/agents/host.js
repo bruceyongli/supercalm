@@ -47,6 +47,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   // sheet) keep the classic always-open tab strip — `open` stays true so tabs highlight + refresh()
   // renders the Agents home. `shellEl`/`scrimEl` are null off the session view; every use is guarded.
   let open = !dock;
+  let toolsOpen = false;
   const shellEl = panelsEl.closest('.session-shell');
   const scrimEl = $('#agent-dock-scrim');
   const dockAc = new AbortController();
@@ -69,12 +70,24 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function renderTabs() {
     const tabs = tabbable();
     if (dock) {
-      // Agent dock: one compact glyph per active agent (+ attention dot) with the gear pinned for
-      // the Agents manager. A glyph click toggles ITS drawer (see onGlyphClick).
+      // One named entry replaces the hard-to-decode permanent icon strip. The menu keeps every tool
+      // quickly reachable without making the session compete with six unlabeled controls.
       tabsEl.innerHTML =
-        `<div class="rail-mini-col dock-glyphs">${tabs.map(glyphBtn).join('')}</div>` +
-        `<button class="side-agents-btn dock-gear" data-tab="agents" title="Agents — activate, permissions & create" aria-label="Agents">${GEAR_SVG}</button>`;
-      tabsEl.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => onGlyphClick(b.dataset.tab)));
+        `<button class="dock-tools-trigger" type="button" data-dock-tools aria-controls="session-tools-menu" aria-expanded="${toolsOpen ? 'true' : 'false'}">${SVG('<path d="M5 7h14M5 12h14M5 17h14"/>')}<span>Tools</span></button>` +
+        `<div class="dock-tools-menu" id="session-tools-menu" data-dock-tools-menu role="menu" ${toolsOpen ? '' : 'hidden'}>` +
+          `${tabs.map(glyphBtn).join('')}` +
+          `<button class="dock-tool-option side-agents-btn" data-tab="agents" role="menuitem">${GEAR_SVG}<span><b>Agents</b><small>Manage tools and permissions</small></span></button>` +
+        `</div>`;
+      tabsEl.querySelector('[data-dock-tools]')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toolsOpen = !toolsOpen;
+        renderTabs();
+      });
+      tabsEl.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => {
+        toolsOpen = false;
+        onGlyphClick(b.dataset.tab);
+        renderTabs();
+      }));
     } else {
       // Classic tab strip (phone panels sheet): a tab per agent + the gear; a tab click reveals its panel.
       tabsEl.innerHTML =
@@ -89,9 +102,9 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   }
   function glyphBtn(a) {
     const label = a.ui?.tab || a.name;
-    // Minimal line-icon per agent (design); drop-ins / unknown ids fall back to their first letter.
     const icon = DOCK_ICON[a.id] || `<span class="dock-glyph-letter">${escapeHtml(String(a.ui?.glyph || label).trim().charAt(0).toUpperCase())}</span>`;
-    return `<button class="mini-btn dock-glyph" data-tab="${escapeHtml(a.id)}" role="tab" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${icon}${dotFor(a)}</button>`;
+    const description = a.description || a.ui?.description || 'Open session tool';
+    return `<button class="dock-tool-option" data-tab="${escapeHtml(a.id)}" role="menuitem">${icon}<span><b>${escapeHtml(label)}</b><small>${escapeHtml(description)}</small></span>${dotFor(a)}</button>`;
   }
   // Rail glyph click: toggle THIS agent's drawer (click the already-open one to close). Gear = manager.
   function onGlyphClick(id) {
@@ -118,6 +131,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function close() {
     if (!open || !dock) return;
     open = false;
+    toolsOpen = false;
     shellEl?.classList.remove('dock-open');
     if (scrimEl) scrimEl.hidden = true;
     markActiveTab();
@@ -136,6 +150,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
       b.classList.toggle('on', on);
       b.setAttribute('aria-selected', on ? 'true' : 'false');
     });
+    tabsEl.querySelector('[data-dock-tools]')?.classList.toggle('on', open);
   }
 
   // ---- panel activation ----------------------------------------------------
@@ -345,7 +360,22 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   if (dock) {
     // esc closes the topmost drawer; a scrim tap (compact overlay) or the drawer's own ✕ (compact
     // widths — CSS-hidden on desktop) closes it. All scoped to dock mode.
-    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && open) { e.stopPropagation(); close(); } }, { signal: dockAc.signal });
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      if (toolsOpen) {
+        toolsOpen = false;
+        renderTabs();
+        e.stopPropagation();
+      } else if (open) {
+        e.stopPropagation();
+        close();
+      }
+    }, { signal: dockAc.signal });
+    document.addEventListener('click', (event) => {
+      if (!toolsOpen || tabsEl.contains(event.target)) return;
+      toolsOpen = false;
+      renderTabs();
+    }, { signal: dockAc.signal });
     scrimEl?.addEventListener('click', () => close(), { signal: dockAc.signal });
     $('#dock-drawer-x')?.addEventListener('click', () => close(), { signal: dockAc.signal });
   }

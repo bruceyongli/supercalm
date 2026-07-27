@@ -134,12 +134,12 @@ try {
   await page.locator('[data-dk-card][data-sid="s_opt"] .dk-card-questions').waitFor();
 
   const optionCard = page.locator('[data-dk-card][data-sid="s_opt"]');
-  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Working on', 'Why it needs you', 'After you reply'],
-    'Needs you explains the task, exact attention reason, and next behavior without repeating a fake outcome');
+  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Needs you'],
+    'Needs you leads with the exact attention request without repeating the card title or generic next-step boilerplate');
   await page.locator('#dk-cmdk-row').click();
   await page.locator('#dk-palette-q').fill('Configure release');
   await page.locator('.dk-pal-preview-row.important').waitFor();
-  assert.match(await page.locator('.dk-pal-preview').innerText(), /Why it needs you[\s\S]*Choose the runtime and verification scope/i,
+  assert.match(await page.locator('.dk-pal-preview').innerText(), /Needs you[\s\S]*Choose the runtime and verification scope/i,
     '⌘K exposes the selected session attention preview before navigation');
   await page.screenshot({ path: join(outDir, 'command-preview.png') });
   await page.keyboard.press('Escape');

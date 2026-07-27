@@ -41,7 +41,9 @@ assert.doesNotMatch(session, /shell\.style\.height = Math\.round\(vv\.height\)/,
   'the stale height-only iOS workaround is removed');
 assert.match(styles, /\.message-box textarea \{[^}]*font-size: 16px/s,
   'the phone composer prevents iOS input auto-zoom');
-assert.match(styles, /grid-template-columns: 40px minmax\(0, 1fr\) minmax\(0, max-content\) 40px 40px/,
-  'composer action tracks match their 40px controls');
+assert.match(styles, /grid-template-columns: 40px minmax\(0, 1fr\) 40px 40px/,
+  'the phone composer keeps attach, one settings summary, mic, and send on one compact row');
+assert.match(session, /composer-settings-toggle/,
+  'run configuration stays available from the compact composer instead of repeating in the header');
 
 console.log('session_viewport.test ok');

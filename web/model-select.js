@@ -37,17 +37,26 @@ export function groupedModelOptions(models, {
   const normalized = (models || []).map((model) => typeof model === 'string'
     ? { id: model, label: model, provider: 'other', providerLabel: 'Other' }
     : model).filter((model) => model?.id);
-  const seen = new Set();
-  const groups = new Map();
+  const allIds = new Set(normalized.map((model) => String(model.id)));
+  // Provider catalogs often expose aliases for the same visible model (subscription id, API id,
+  // dated id). A picker is for choosing a model, not an auth route: show each provider/name once,
+  // preferring the currently-selected alias so reopening the menu never changes its value.
+  const byDisplay = new Map();
   for (const model of normalized) {
-    if (seen.has(String(model.id))) continue;
-    seen.add(String(model.id));
+    const provider = modelProviderLabel(model);
+    const key = `${provider.toLowerCase()}|${modelOptionLabel(model, provider).toLowerCase().replace(/\s+/g, ' ').trim()}`;
+    const current = byDisplay.get(key);
+    if (!current || String(model.id) === String(selected)) byDisplay.set(key, model);
+  }
+  const unique = [...byDisplay.values()];
+  const groups = new Map();
+  for (const model of unique) {
     const provider = modelProviderLabel(model);
     if (!groups.has(provider)) groups.set(provider, []);
     groups.get(provider).push(model);
   }
   const lead = [...leading];
-  if (custom && selected && !seen.has(String(selected)) && !lead.some((item) => String(item.value) === String(selected))) {
+  if (custom && selected && !allIds.has(String(selected)) && !lead.some((item) => String(item.value) === String(selected))) {
     lead.push({ value: selected, label: `${selected} · custom` });
   }
   let html = lead.map((item) => {

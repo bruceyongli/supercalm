@@ -67,6 +67,16 @@ function toast(t) {
   render();
 }
 function hhmm(ts) { const d = new Date(Number(ts)); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+function attentionPreview(session) {
+  const clean = (value, max = 300) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const need = clean(session.question || session.summary || session.last_key?.text);
+  const summary = clean(session.summary);
+  const comparable = (value) => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+  return {
+    need,
+    outcome: summary && comparable(summary) !== comparable(need) ? summary : '',
+  };
+}
 
 // unread = agent messages newer than the operator's last reply, not yet marked read (server truth)
 function unreadOf(detail) {
@@ -556,7 +566,7 @@ function renderHome() {
   const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
   const playing = S.playScope === 'home' || V.on;
-  const playLabel = V.on ? '■ End voice session' : totalUnread ? `▶ Play ${totalUnread} unread` : 'Voice — ask anything';
+  const playLabel = V.on ? '■ End voice session' : totalUnread ? '▶ Guided review' : 'Voice — ask anything';
 
   const optionList = (s, questions) => {
     if (!questions.length) return '';
@@ -578,26 +588,29 @@ function renderHome() {
   const needCards = needs.map((s) => {
     const [bLabel, bColor] = badgeFor(s) || ['REVIEW', '#3fbf5f'];
     const isPlaying = S.playScope === 'home' && S.speakingId === s.last_key?.id;
-    const summary = s.question || s.summary || s.last_key?.text || '';
+    const preview = attentionPreview(s);
     const questions = phoneOptionQuestions(s);
     ensureOptionQuestions(s, () => renderSoft());
     return `
     <div class="needcard" data-open="${esc(s.id)}">
       <div class="strip" style="background:${bColor}"></div>
-      <div class="needrow">
-        <span class="badge" style="color:${bColor};border:1px solid ${bColor}66;background:${bColor}14">${bLabel}</span>
-        <span class="agchip" style="color:${chipColor(s.tool)};border-color:${chipColor(s.tool)}8c">${esc(AGENT_LABEL[s.tool] || s.tool)}</span>
+      <div class="needtitle">
         <span class="needname">${esc(s.title || s.id)}</span>
-        <span style="flex:1"></span>
         ${isPlaying ? '<span class="reading-ind">▶ reading</span>' : ''}
         <span class="needtime">${ago(s.last_activity)}</span>
       </div>
-      <div class="needsum">${esc(String(summary).slice(0, 300))}</div>
+      <div class="needrow">
+        <span class="badge" style="color:${bColor};border:1px solid ${bColor}66;background:${bColor}14">${bLabel}</span>
+        <span class="agchip" style="color:${chipColor(s.tool)};border-color:${chipColor(s.tool)}8c">${esc(AGENT_LABEL[s.tool] || s.tool)}</span>
+      </div>
+      <div class="needpreview">
+        ${preview.outcome ? `<div><b>Latest</b><p>${esc(preview.outcome)}</p></div>` : ''}
+        <div class="important"><b>Needs you</b><p>${esc(preview.need)}</p></div>
+      </div>
       ${optionList(s, questions)}
       <div class="needacts">
         <button class="act listen" data-listen="${esc(s.id)}">${isPlaying ? '■ Stop' : '▶ Listen'}</button>
         <button class="act reply" data-replyto="${esc(s.id)}">● Reply</button>
-        <button class="act inspect" data-inspect-need="${esc(s.id)}">Why?</button>
         <button class="act dismiss" data-dismiss-need="${esc(s.id)}">Dismiss</button>
         <button class="act open" data-open2="${esc(s.id)}">›</button>
       </div>

@@ -131,6 +131,13 @@ function fmtClock(ts) {
   return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
+function resolvesFailure(event) {
+  if (event?.kind === 'check') return true;
+  if (event?.kind !== 'report') return false;
+  return /\b(?:done|fixed|passed|complete(?:d)?|shipped|resolved|successful)\b/i
+    .test(String(event.body || event.text || event.title || ''));
+}
+
 // Header rollup: active duration · files touched · worst check · unanswered asks (per README).
 function rollup(evs) {
   // r4: "active" = sum of ≤10-min gaps between events (wall-clock age is not activity);
@@ -146,7 +153,8 @@ function rollup(evs) {
   const recent = evs.slice(lastYou + 1);
   const files = new Set();
   for (const e of recent) if (e.kind === 'edit') for (const c of e.chips || []) files.add(String(c).split(' ')[0]);
-  const fails = recent.filter((e) => e.kind === 'fail').length;
+  const fails = recent.filter((e, i) => e.kind === 'fail'
+    && !recent.slice(i + 1).some(resolvesFailure)).length;
   const checks = recent.filter((e) => e.kind === 'check').length;
   const asks = evs.filter((e) => e.kind === 'ask' && !e.answered);
   const parts = [];
@@ -183,11 +191,11 @@ function planHtml(ev) {
   return `<ol class="story-plan-list" aria-label="Plan steps">${items.map((item, i) => {
     const status = item.status === 'completed' ? 'completed' : item.status === 'in_progress' ? 'in-progress' : 'pending';
     const marker = status === 'completed' ? '✓' : status === 'in-progress' ? '●' : String(i + 1);
-    const label = status === 'completed' ? 'Done' : status === 'in-progress' ? 'In progress' : 'Pending';
+    const label = status === 'in-progress' ? 'In progress' : '';
     return `<li class="story-plan-item ${status}">
       <span class="story-plan-marker" aria-hidden="true">${marker}</span>
       <span class="story-plan-text">${esc(item.text || item.step || item.title || '')}</span>
-      <span class="story-plan-status">${label}</span>
+      ${label ? `<span class="story-plan-status">${label}</span>` : ''}
     </li>`;
   }).join('')}</ol>`;
 }
@@ -341,6 +349,7 @@ async function onListenTap(key, level = 'full') {
 }
 
 function eventHtml(ev, i) {
+  if (Number.isInteger(ev._sourceIndex)) i = ev._sourceIndex;
   if (ev.kind === 'gap') {
     const mins = Math.max(1, Math.round((ev.durationMs || 0) / 60000));
     const fallback = ev.durationMs ? `quiet for ${mins >= 60 ? Math.round(mins / 6) / 10 + ' hr' : mins + ' min'}` : 'quiet stretch';
@@ -407,7 +416,9 @@ function renderWorking() {
   if (!working) return '';
   const dots = '<span class="story-working-dots"><i></i><i></i><i></i></span>';
   const ls = liveStatus;
-  if (!ls) return `<div class="story-working" data-story-working>${dots}<span class="story-working-verb">the agent is working…</span></div>`;
+  // The global header already says Working. Only add a foot-of-story status when the CLI contributes
+  // useful detail (elapsed time, background jobs, or a specific verb).
+  if (!ls) return '';
   const detail = ls.detail ? `<span class="story-working-detail">${esc(ls.detail)}</span>` : '';
   const bg = ls.bg ? `<span class="story-working-bg">${esc(ls.bg)}</span>` : '';
   return `<div class="story-working" data-story-working>${dots}<span class="story-working-verb">${esc(ls.verb)}</span>${detail}${bg}</div>`;
@@ -416,21 +427,53 @@ function renderWorking() {
 // The rendered feed = server events + still-pending composer echoes (as 'you' bubbles at their send
 // time — echoes are newest, so this rarely reorders anything). Read echoes vanish: the real
 // transcript event replaced them and carries the ✓ read chip via readMarks.
+function calmEvents(source) {
+  const out = [];
+  for (let i = 0; i < source.length; i++) {
+    const original = source[i];
+    if (!showFull && original.kind === 'fail') {
+      const beforeNextOperator = source.slice(i + 1).find((later) => later.kind === 'you');
+      const end = beforeNextOperator ? source.indexOf(beforeNextOperator, i + 1) : source.length;
+      if (source.slice(i + 1, end).some(resolvesFailure)) continue;
+    }
+    const ev = { ...original };
+    if (ev.kind === 'fail') {
+      const clean = String(ev.body || ev.text || '')
+        .replace(/(?:^|\n)\s*(?:Chunk ID|Process exited with code|Final output|Wall time):[^\n]*/gi, '')
+        .replace(/\n{3,}/g, '\n\n').trim();
+      if (Object.hasOwn(ev, 'body')) ev.body = clean;
+      else ev.text = clean;
+    }
+    const previous = out[out.length - 1];
+    if (!showFull && ev.kind === 'work' && previous?.kind === 'work') {
+      previous.steps = [...(previous.steps || []), ...(ev.steps || [])];
+      previous.ts = ev.ts || previous.ts;
+      previous.meta = previous.steps.length > 1 ? `${previous.steps.length} steps` : (ev.meta || previous.meta);
+      if (!previous.body && ev.body) previous.body = ev.body;
+      continue;
+    }
+    out.push(ev);
+  }
+  return out;
+}
+
 function feedList() {
   const pend = sendEchoes.filter((e) => e.state === 'pending').map((e) => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
-  return pend.length ? [...events, ...pend].sort((a, b) => (a.ts || 0) - (b.ts || 0)) : events;
+  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index })));
+  return pend.length ? [...base, ...pend].sort((a, b) => (a.ts || 0) - (b.ts || 0)) : base;
 }
 
 function render() {
   if (!panelEl) return;
+  const workingHtml = renderWorking();
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
-      <span class="story-rollup" data-story-rollup>${esc(rollup(events))}</span>
+      <span class="story-rollup" data-story-rollup>${esc(rollup(calmEvents(events)))}</span>
+      <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">‹ previous round</button><button class="story-earlier" data-story-earlier>↑ show the full story</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
-    <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
-    ${renderWorking()}`;
+    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    ${workingHtml}`;
   wire();
   const feed = panelEl.querySelector('.story-feed');
   if (feed) {
