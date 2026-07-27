@@ -69,8 +69,12 @@ assert.ok(!automaticSupervisorChain('agy').some((id) => id.startsWith('claude-')
   'a provider known to be down is skipped until a later scan marks it live');
 
 const supervisorSource = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
-assert.match(supervisorSource, /automaticSupervisorChain\(tool\)/,
-  'Supervisor defaults are resolved from the live automatic selector');
+assert.doesNotMatch(supervisorSource, /automaticSupervisorChain\(tool\)/,
+  'the operating chain is closed at the qualified pair instead of silently admitting catalog arrivals');
+assert.match(supervisorSource, /codex:\s*Object\.freeze\(\['claude-opus-4-8', 'gpt-5\.6-sol'\]\)/,
+  'Codex sessions lead with the available exact Claude Opus model');
+assert.match(supervisorSource, /claude:\s*Object\.freeze\(\['gpt-5\.6-sol', 'claude-opus-4-8'\]\)/,
+  'Claude sessions lead with GPT-5.6 Sol');
 assert.doesNotMatch(supervisorSource, /gemini-pro-agent'\]/,
   'the former hard-coded three-model fleet chain is gone');
 

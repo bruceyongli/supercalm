@@ -81,6 +81,22 @@ release actions for the operator.
 Autopilot is the accountable manager. It owns the sequence and decisions required to finish; the
 operator should normally see the final result, not the stages.
 
+## Operating models
+
+The built-in Supervisor chain is closed at two exact, qualified identities:
+
+| Watched session | Supervisor chain |
+|---|---|
+| Codex/GPT | `claude-opus-4-8` → `gpt-5.6-sol` |
+| Claude | `gpt-5.6-sol` → `claude-opus-4-8` |
+| Other tools | `claude-opus-4-8` → `gpt-5.6-sol` |
+
+The nonmatching provider leads so a provider outage does not blind both builder and Supervisor.
+No discovered model silently joins this chain. At this revision the configured live Claude catalog
+does not expose an exact `claude-opus-5` identity; `claude-opus-4-8` is therefore the exact tested
+Opus route and must not be relabeled. Move to Opus 5 only after that exact identity is available and
+passes the same public qualification.
+
 ## Autopilot operating guide
 
 For every active task, follow this loop:

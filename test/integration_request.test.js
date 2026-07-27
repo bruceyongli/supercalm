@@ -35,6 +35,7 @@ function deps(over = {}) {
     helperEnabled: (_pid, key) => !!flags[key],
     root,
     sameRepo: over.sameRepo || ((a, b) => a === b),
+    expectedCandidateSha: over.expectedCandidateSha || '',
     gitOut: async (cwd, args) => responses[`${args.join(' ')}@${cwd}`] || { text: '', error: 'unexpected git call' },
     listIntegrations: () => rows,
     enqueue: (row) => {
@@ -76,7 +77,7 @@ function deps(over = {}) {
   assert.equal((await requestSessionIntegration(session.id, d)).code, 'branch_mismatch');
 }
 {
-  const d = deps();
+  const d = deps({ expectedCandidateSha: 'candidate123' });
   const r = await requestSessionIntegration(session.id, d);
   assert.equal(r.ok, true);
   assert.equal(r.duplicate, false);
@@ -90,6 +91,18 @@ function deps(over = {}) {
     baseSha: 'base123',
   }]);
   assert.equal(d._kicked(), 1);
+}
+{
+  const d = deps({ expectedCandidateSha: 'verified-before-race' });
+  const r = await requestSessionIntegration(session.id, d);
+  assert.equal(r.code, 'candidate_changed');
+  assert.equal(d._enqueued.length, 0, 'a post-verification HEAD change never queues');
+  assert.equal(d._kicked(), 0);
+}
+{
+  const d = deps({ responses: { 'rev-parse HEAD@/repo/worktree': { text: 'stale-stdout', error: 'git failed' } } });
+  assert.equal((await requestSessionIntegration(session.id, d)).code, 'git_head_failed');
+  assert.equal(d._enqueued.length, 0, 'git errors fail closed even when stdout is non-empty');
 }
 {
   const prior = { id: 'int_prior', stage: 'VERIFYING', session_id: session.id, candidate_sha: 'candidate123' };

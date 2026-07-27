@@ -5,12 +5,12 @@ import { viewTaskState, routeTaskPatch } from './supervisor/task_state.js';
 import { recordUsage, getSessionLimit } from '../usage_store.js';
 import { routeForModel } from '../model_catalog.js';
 import { resume as resumeSessionById, sendText, noteReply, paneSig } from '../sessions.js';
-import { evaluateSend, emptyKernelState } from './send_kernel.js';
+import { evaluateSend, emptyKernelState, rebaseKernelForNewPane } from './send_kernel.js';
 import { consumeCapability } from '../capabilities.js';
 import { bus } from '../bus.js';
 import { now } from '../util.js';
 import { DATA_DIR } from '../config.js';
-import { sessionContext, gatherImages, gitHead } from './evidence.js';
+import { sessionContext, gatherImages, gitHead, sessionRepoPath } from './evidence.js';
 import { gitProbe, urlProbe } from './probes.js';
 import { callProxyModel, isVisionRoute } from './model.js';
 import { activePreviewProfiles, normalizePreviewProfiles } from '../preview_profiles.js';
@@ -146,7 +146,8 @@ export function makeContext(agent, session_id, extra = {}) {
       const s = getSession(session_id);
       const proj = s?.project_id ? getProject(s.project_id) : null;
       const out = [];
-      if (proj?.path) out.push(await gitProbe(proj.path));
+      const repoPath = sessionRepoPath(s, proj);
+      if (repoPath) out.push(await gitProbe(repoPath));
       for (const u of urls.slice(0, 4)) out.push(await urlProbe(String(u)));
       return out;
     },
@@ -157,7 +158,8 @@ export function makeContext(agent, session_id, extra = {}) {
       requireCap('read-context');
       const s = getSession(session_id);
       const proj = s?.project_id ? getProject(s.project_id) : null;
-      return proj?.path ? gitHead(proj.path) : null;
+      const repoPath = sessionRepoPath(s, proj);
+      return repoPath ? gitHead(repoPath) : null;
     },
 
     // ---- model-calls (metered + attributed) ---------------------------------
@@ -244,10 +246,14 @@ export function makeContext(agent, session_id, extra = {}) {
       requireCap('read-context');
       return paneSig(session_id);
     },
-    async resumeSession({ force = false } = {}) {
+    async resumeSession({ force = false, waitForInput = false } = {}) {
       requireCap('send-input');
       if (isGlobal) throw new Error('global agent cannot resume a session');
-      return await resumeSessionById(session_id, { force });
+      const prior = kernelStates.get(session_id);
+      const resumed = await resumeSessionById(session_id, { force, waitForInput });
+      if (prior?.pending) addEvent(session_id, 'send-receipt', { agent: agent.id, id: prior.pending.id, received: false, ms: now() - prior.pending.ts, reason: 'pane-replaced' });
+      kernelStates.set(session_id, rebaseKernelForNewPane(prior));
+      return resumed;
     },
 
     // ---- integrate (operator-enabled autonomous release pipeline) -----------
@@ -258,10 +264,14 @@ export function makeContext(agent, session_id, extra = {}) {
       if (isGlobal) return { ok: false, code: 'global_scope', error: 'global agent cannot integrate a session' };
       return integrationReadiness(session_id);
     },
-    async requestIntegration() {
+    async requestIntegration(expectedCandidateSha = '') {
       requireCap('integrate');
       if (isGlobal) return { ok: false, code: 'global_scope', error: 'global agent cannot integrate a session' };
-      return await requestSessionIntegration(session_id);
+      const expected = String(expectedCandidateSha || '').trim();
+      if (!expected) {
+        return { ok: false, code: 'verified_sha_missing', error: 'the completion verifier did not freeze a candidate commit' };
+      }
+      return await requestSessionIntegration(session_id, { expectedCandidateSha: expected });
     },
     integrationStatus(integrationId) {
       requireCap('read-context');

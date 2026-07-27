@@ -1,10 +1,19 @@
-import { makeDecision, persistDecision, updateDecisionSend } from './decision_records.js';
+import { decisionHistory, makeDecision, persistDecision, updateDecisionSend } from './decision_records.js';
 import { cardLifecycleDirective } from './send_policy.js';
 import { guardSupervisorSendContext } from './context_guard.js';
 import { renderIntent } from '../intents.js';
 
 function line(s, max = 1500) {
   return String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+export function correctiveFingerprint(text) {
+  return line(text, 2000)
+    .toLowerCase()
+    .replace(/\b\d+(?:\.\d+)?\s*(?:milliseconds?|ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b/g, '#')
+    .replace(/[^a-z0-9#]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function operatorIntentFromSnapshot(snapshot) {
@@ -102,6 +111,26 @@ export async function dispatchSupervisorSend(ctx, {
     suppressed = 'card-lifecycle-operator-reserved';
     guardedReasons = [...guardedReasons, 'drafted supervisor text directs task-card lifecycle (start/close/abandon/done) — operator territory in every mode'];
   }
+  // Replies to our own corrective send can re-arm the supervisor while the actual work state is
+  // unchanged. Suppress verbatim and digits-only rewrites at this final shared choke point. Recovery
+  // retries are schedule-driven and deliberately exempt.
+  const corrective = actionType === 'challenge' || actionType === 'nudge';
+  const correctiveFp = corrective ? correctiveFingerprint(msg) : '';
+  const workKey = String(snapshot?.agent?.progressFingerprint?.work || '');
+  if (allowed && correctiveFp) {
+    const cutoff = Date.now() - 10 * 60_000;
+    const duplicate = decisionHistory(ctx.sessionId, 60).find((d) => {
+      if (!d.sent || d.ts < cutoff || !['challenge', 'nudge'].includes(d.actionType)) return false;
+      const priorFp = d.sendResult?.correctiveFingerprint || correctiveFingerprint(d.sentText);
+      const priorWork = String(d.sendResult?.workKey || '');
+      return priorFp === correctiveFp && priorWork === workKey;
+    });
+    if (duplicate) {
+      allowed = false;
+      suppressed = 'duplicate-corrective-no-new-work';
+      guardedReasons = [...guardedReasons, 'an equivalent corrective send already reached this unchanged work state'];
+    }
+  }
   const decision = recordSupervisorDecision(ctx, {
     snapshot,
     ruleId,
@@ -137,7 +166,7 @@ export async function dispatchSupervisorSend(ctx, {
   // pass a finer sendOptions.budgetKey e.g. the gate scope). Rewording never resets the budget.
   const budgetKey = sendOptions.budgetKey || ((kind === 'challenge' || kind === 'nudge') && ruleId !== 'hold.resolve_send' ? ruleId : '');
   const result = await ctx.sendToAgent(msg, { ...sendOptions, kind, lease, budgetKey, intentName: typedIntent?.name || sendOptions.intentName || (ruleId === 'hold.resolve_send' ? 'OPERATOR_RELAY' : '') });
-  updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '' });
+  updateDecisionSend(decision.decisionId, { ...result, sent_text: result?.message || '', correctiveFingerprint: correctiveFp, workKey });
   return { ...result, draft: msg }; // draft = the rendered text, for caller logging even on kernel blocks
 }
 

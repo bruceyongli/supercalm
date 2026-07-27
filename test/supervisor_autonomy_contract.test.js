@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const DATA_DIR = mkdtempSync(join(tmpdir(), 'aios-autonomy-contract-'));
+process.env.AIOS_DATA = DATA_DIR;
+process.env.AIOS_NO_LISTEN = '1';
+process.on('exit', () => { try { rmSync(DATA_DIR, { recursive: true, force: true }); } catch {} });
 
 const { decideSupervisorAction } = await import('../src/agents/supervisor/decide.js');
+const { __lab } = await import('../src/agents/supervisor.js');
 const {
   AUTOPILOT_PLAN_ADDENDUM,
   AUTOPILOT_RELEASE_ADDENDUM,
@@ -73,7 +81,162 @@ assert.match(supervisor, /maybeMonitorIntegration\(ctx, cfg, st\)/, 'Autopilot m
 assert.match(supervisor, /row\.stage === 'GREEN'/, 'only GREEN produces released success');
 assert.match(supervisor, /row\.stage === 'HELD'/, 'ambiguous release state remains operator-held');
 assert.match(context, /requireCap\('integrate'\)/, 'integration actuator is capability-gated');
-assert.match(context, /requestSessionIntegration\(session_id\)/, 'context uses the shared exact-candidate request path');
+assert.match(context, /requestSessionIntegration\(session_id, \{ expectedCandidateSha: expected \}\)/,
+  'context uses the shared request path pinned to the verifier-observed commit');
 assert.match(panel, /d\.mode === 'autopilot' \? \['integrate'\] : \[\]/, 'only Autopilot mode grants the integration actuator');
+
+function releaseCtx({
+  sid = 's_release_' + Math.random().toString(16).slice(2),
+  initial = {},
+  ready = { ok: true },
+  request = null,
+  integration = null,
+  integrateCap = true,
+} = {}) {
+  let state = { ...initial };
+  const notes = [];
+  const events = [];
+  let requests = 0;
+  const expectedShas = [];
+  const ctx = {
+    sessionId: sid,
+    session: () => ({ id: sid, title: 'Autopilot release' }),
+    getState: () => ({ ...state }),
+    setState: (patch) => { state = { ...state, ...patch }; return { ...state }; },
+    hasCap: (cap) => cap === 'integrate' && integrateCap,
+    integrationReadiness: () => ready,
+    requestIntegration: async (expectedCandidateSha) => {
+      requests++;
+      expectedShas.push(expectedCandidateSha);
+      return request || {
+        ok: true,
+        duplicate: false,
+        candidateSha: 'candidate1234567890',
+        integration: { id: 'int_queued', stage: 'QUEUED', candidate_sha: 'candidate1234567890' },
+      };
+    },
+    integrationStatus: () => integration,
+    notifyOperator: (title, body) => notes.push({ title, body }),
+    emit: (type, payload) => events.push({ type, payload }),
+  };
+  return { ctx, notes, events, requests: () => requests, expectedShas };
+}
+
+{
+  const x = releaseCtx();
+  const result = await __lab.maybeAutoIntegrate(x.ctx, { mode: 'copilot' }, { workFp: 'work-a' });
+  assert.equal(result.active, false, 'Co-pilot cannot enter the release pipeline');
+  assert.equal(x.requests(), 0);
+}
+{
+  const x = releaseCtx({ ready: { ok: false, code: 'autopublish_off', error: 'off' } });
+  const result = await __lab.maybeAutoIntegrate(x.ctx, { mode: 'autopilot' }, {
+    workFp: 'work-a',
+    verifiedCandidateSha: 'candidate1234567890',
+  });
+  assert.equal(result.active, false, 'Autopilot without standing deployment delegation finishes locally');
+  assert.equal(x.requests(), 0);
+}
+{
+  const x = releaseCtx();
+  const result = await __lab.maybeAutoIntegrate(x.ctx, { mode: 'autopilot' }, {
+    workFp: 'work-a',
+    verifiedCandidateSha: 'candidate1234567890',
+  });
+  assert.equal(result.queued, true);
+  assert.equal(x.requests(), 1, 'verified Autopilot candidate enters the one prescribed request seam');
+  assert.deepEqual(x.expectedShas, ['candidate1234567890'], 'the request is pinned to the commit the verifier saw');
+  assert.equal(x.ctx.getState().integrationId, 'int_queued');
+  assert.equal(x.ctx.getState().integrationRequestedWorkFp, 'work-a');
+}
+{
+  const x = releaseCtx({
+    initial: { verifiedWorkFp: 'work-dirty', verifiedGateKey: 'gate', verifiedAt: 123 },
+    request: { ok: false, code: 'dirty_worktree', error: 'candidate is dirty' },
+  });
+  const result = await __lab.maybeAutoIntegrate(x.ctx, { mode: 'autopilot' }, {
+    workFp: 'work-dirty',
+    verifiedCandidateSha: 'candidate1234567890',
+  });
+  assert.equal(result.queued, false);
+  assert.equal(x.ctx.getState().verifiedWorkFp, null, 'a changed/unfrozen candidate loses verification');
+  assert.equal(x.ctx.getState().releaseFailure.code, 'dirty_worktree');
+}
+{
+  const row = { id: 'int_green', stage: 'GREEN', candidate_sha: 'green1234567890' };
+  const x = releaseCtx({ initial: { integrationId: row.id, integrationStage: 'VERIFYING' }, integration: row });
+  assert.equal(await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState()), true);
+  assert.equal(x.ctx.getState().integrationId, null);
+  assert.equal(x.ctx.getState().releaseFinalizedId, row.id);
+  assert.equal(x.events.at(-1)?.payload?.verdict, 'released', 'only GREEN emits released');
+}
+{
+  const row = { id: 'int_held', stage: 'HELD', failure_code: 'served_identity_ambiguous' };
+  const x = releaseCtx({ initial: { integrationId: row.id, integrationStage: 'VERIFYING' }, integration: row });
+  await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState());
+  await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState());
+  assert.equal(x.notes.length, 1, 'an ambiguous publication notifies once and remains held');
+  assert.equal(x.ctx.getState().integrationId, row.id);
+}
+{
+  const row = { id: 'int_rejected', stage: 'REJECTED', failure_code: 'tests_failed', failure_detail: 'suite red' };
+  const x = releaseCtx({
+    initial: { integrationId: row.id, integrationStage: 'VERIFYING', verifiedWorkFp: 'old', verifiedGateKey: 'gate', verifiedAt: 123 },
+    integration: row,
+  });
+  assert.equal(await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState()), false);
+  assert.equal(x.ctx.getState().verifiedWorkFp, null, 'a rejected candidate returns to correction');
+  assert.equal(x.ctx.getState().releaseFailure.code, 'tests_failed');
+}
+{
+  const heads = ['evidence-sha', 'changed-sha'];
+  let state = {};
+  const ctx = {
+    sessionId: 's_verify_race',
+    session: () => ({ id: 's_verify_race', tool: 'claude', status: 'waiting', autonomy: 'full', title: 'Release race' }),
+    project: () => null,
+    getState: () => ({ ...state }),
+    setState: (patch) => { state = { ...state, ...patch }; return { ...state }; },
+    getConfig: () => ({}),
+    setConfig: () => {},
+    getEvidence: async () => ({
+      images: [],
+      terminal_tail: 'Implemented and tested the parser fix.\n> ',
+      recent_messages: [{ dir: 'out', text: 'Parser fix complete; tests pass.' }],
+      git: { status: '', stat: '', diff: '', committed_stat: ' src/parser.js | 12 +-', committed_diff: '+fixed', commits_since_baseline: 'abc123 fix parser' },
+    }),
+    runProbes: async () => [],
+    gitHead: async () => heads.shift() || 'changed-sha',
+    visionRoute: () => false,
+    callModel: async (_messages, opts = {}) => ({
+      content: JSON.stringify({
+        verdict: 'complete',
+        score: 100,
+        assessment: 'The parser fix and tests satisfy the task.',
+        unmet: [],
+        goal_conflict: false,
+        unverifiable: 'none',
+        message_to_agent: '',
+      }),
+      model: opts.model,
+      route: { model: opts.model },
+      canSee: false,
+    }),
+    hasCap: () => true,
+    notifyOperator: () => {},
+    emit: () => {},
+    log: () => {},
+  };
+  const result = await __lab.runVerify(ctx, {
+    model: 'gpt-5.6-sol',
+    fallback_models: ['gpt-5.6-sol'],
+    mode: 'autopilot',
+    decision_memory: false,
+    doc: '# Task\n\n## Goal\nFix the parser.\n\n## Acceptance criteria\n- [ ] Parser fix is implemented and tested.\n',
+  }, 'manual', 'work-race');
+  assert.equal(result.parsed.verdict, 'needs_attention', 'a commit change during review invalidates COMPLETE');
+  assert.equal(result.verifiedGitSha, null);
+  assert.match(result.parsed.assessment, /HEAD changed during verification/i);
+}
 
 console.log('supervisor_autonomy_contract.test ok');

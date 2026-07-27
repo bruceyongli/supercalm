@@ -155,8 +155,25 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(llmSrc, /withUserTail/, 'voice chain gains the user tail');
   const sumSrc = readFileSync(new URL('../src/summarize.js', import.meta.url), 'utf8');
   assert.match(sumSrc, /userRoutes\(\)\[0\]/, 'summaries fall back to a user provider');
+  // The SUPERVISOR is the deliberate EXCEPTION to this block's story (operator, 2026-07-27). Voice and
+  // summaries degrade gracefully onto whatever brain is reachable; supervision does not. Enabling an API
+  // provider says "I have another model", not "this model may judge an agent's work" — so the built-in
+  // chain is CLOSED at the qualified Supervisor models, and an operator who wants one of their own
+  // routes to supervise says so per session (modelChain honours that as a full-chain override).
+  // Asserted BEHAVIOURALLY here, against the real user routes this suite registered — a stronger claim
+  // than the source-lock it replaces, and in the suite that owns the fleet-less story, so re-adding a
+  // user tail to the supervisor breaks here as well as in the architecture contract.
+  const { defaultChain } = await import('../src/agents/supervisor.js');
+  const userIds = new Set(userRoutes().map((r) => r.id));
+  assert.ok(userIds.size >= 2, 'user providers really are registered for the exclusion check below');
+  for (const tool of ['codex', 'claude', 'agy', undefined]) {
+    const chain = defaultChain(tool);
+    assert.ok(chain.length > 0, `supervisor defaultChain(${tool}) is non-empty`);
+    assert.deepEqual(chain.filter((m) => userIds.has(m)), [],
+      `supervisor defaultChain(${tool}) must not admit a discovered user route`);
+  }
   const supSrc = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
-  assert.match(supSrc, /userRoutes\(\)\.slice\(0, 2\)\.map\(\(r\) => r\.id\)/, 'supervisor default chain tails into user providers');
+  assert.ok(!/\buserRoutes\b/.test(supSrc), 'supervisor carries no discovered-route tail at all');
   const rel = readFileSync(new URL('../bin/release', import.meta.url), 'utf8');
   assert.match(rel, /RELEASE_SKIP_TESTS/, 'releases are test-gated');
   assert.match(rel, /GITHUB_PAT_AIOS/, 'release auto-loads the GitHub token');

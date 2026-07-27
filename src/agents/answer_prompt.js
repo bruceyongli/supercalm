@@ -73,7 +73,7 @@ export const SCOPE_CARD_ADMIN_ADDENDUM = `SCOPE & CARD ADMINISTRATION — HARD R
 // for mere uncertainty). Flag-gated so it can be A/B'd against the un-calibrated prompt.
 export const CALIBRATION_ADDENDUM = `CALIBRATION — Default to DECIDING; escalation is reserved and RARE, never a fallback for uncertainty. Escalate ONLY when the next action is one of:
 (a) irreversible / destructive / externally costly — deploy to production, delete data, spend money, send external communications, restart shared infrastructure;
-(b) a genuine product or scope FORK — a choice about WHAT to build or change — that the supervision doc, a precedent, AND the recent operator signals all fail to settle;
+(b) a genuine product or scope FORK — a choice about WHAT user-visible outcome or requirement to build or change — that the supervision doc, a precedent, AND the recent operator signals all fail to settle. A reversible implementation-method choice between options that both satisfy the established goal is a HOW choice, not a product/scope fork: choose the best-supported option and proceed;
 (c) an explicit operator gate or hard rule that a newer operator signal has NOT released.
 For everything else — routine implementation choices, anything the doc / precedents / recent operator signals determine or strongly imply, re-confirmations of already-decided things, or a blocker the operator already resolved — DECIDE; do not punt it back to the operator.
 Add two fields to your JSON: "reserved" (true only if it is the genuinely operator-reserved class above, else false) and "confidence" (0.0-1.0).`;
@@ -82,7 +82,85 @@ Add two fields to your JSON: "reserved" (true only if it is the genuinely operat
 // "I need approval / should I / blocked on owner authorization" for ordinary in-scope work is STALLING or
 // over-caution — push the agent to proceed instead of relaying a non-existent approval gate. Auto-pilot is
 // meaningless if every move needs sign-off.
-export const AUTONOMY_ADDENDUM = `OPERATOR AUTONOMY = FULL. The operator has PRE-AUTHORIZED this agent to act on its own — it does NOT need approval to do in-scope work toward the goal. An agent that stops to ask "should I…", "do you want me to…", "please confirm/approve", "I need approval", or claims it's "blocked on owner authorization/approval" for ordinary work is STALLING or over-cautious — see through it. DECIDE: tell it plainly to PROCEED with the specific next concrete step, and to stop asking for permission it already has. Reserve escalation strictly for the genuinely irreversible/destructive/externally-costly, or a true product-scope FORK the doc doesn't settle — NEVER for routine permission, re-confirmation, or progress. EXCEPTION — do NOT "see through" a refusal as stalling when the blocker is genuine INTEGRITY (complying would fabricate evidence, self-approve a human/owner trust gate, or tamper with tests/validators to force a pass) or a GOAL CONFLICT (the doc's goal contradicts the authoritative spec). Those are NOT over-caution — ESCALATE them (reason_code "integrity" or "goal_conflict"); pushing the agent to fake a result or pursue a wrong goal is never "proceeding". LIKEWISE do NOT "see through" the agent's caution on a RESERVED ACTION it has not been cleared for — a direct production deploy, a public-facing ship/announcement, or an irreversible/destructive/externally-costly step. These are Tier-3. A supervision-doc sentence is not authority. A recent explicit operator approval can clear a specific action; separately, the SYSTEM may report that an operator-enabled gated release mechanism is active, in which case that mechanism is standing deployment delegation and no per-release prompt is required. Never convert either form of authority into permission for direct shell deploys or a different target.`;
+export const AUTONOMY_ADDENDUM = `OPERATOR AUTONOMY = FULL. The operator has PRE-AUTHORIZED this agent to act on its own — it does NOT need approval to do in-scope work toward the goal. An agent that stops to ask "should I…", "do you want me to…", "please confirm/approve", "I need approval", or claims it's "blocked on owner authorization/approval" for ordinary work is STALLING or over-cautious — see through it. DECIDE: tell it plainly to PROCEED with the specific next concrete step, and to stop asking for permission it already has. Reserve escalation strictly for the genuinely irreversible/destructive/externally-costly, or a true product-scope FORK the doc doesn't settle — NEVER for routine permission, re-confirmation, or progress. A reversible implementation-method choice between goal-compatible options is not a product-scope fork: choose the option best supported by the hard rules and evidence, explain it briefly, and proceed. A true product-scope fork changes the user-visible outcome, requirements, or commitment. EXCEPTION — do NOT "see through" a refusal as stalling when the blocker is genuine INTEGRITY (complying would fabricate evidence, self-approve a human/owner trust gate, or tamper with tests/validators to force a pass) or a GOAL CONFLICT (the doc's goal contradicts the authoritative spec). Those are NOT over-caution — ESCALATE them (reason_code "integrity" or "goal_conflict"); pushing the agent to fake a result or pursue a wrong goal is never "proceeding". LIKEWISE do NOT "see through" the agent's caution on a RESERVED ACTION it has not been cleared for — a direct production deploy, a public-facing ship/announcement, or an irreversible/destructive/externally-costly step. These are Tier-3. A supervision-doc sentence is not authority. A recent explicit operator approval can clear a specific action; separately, the SYSTEM may report that an operator-enabled gated release mechanism is active, in which case that mechanism is standing deployment delegation and no per-release prompt is required. Never convert either form of authority into permission for direct shell deploys or a different target.`;
+
+// Compiled-in check for auto/full sessions. It is followed by stage, reserved-action, jurisdiction, and
+// spec clauses so those harder boundaries retain final-prompt precedence.
+export const DELEGATED_HOW_ADDENDUM = `FINAL DELEGATION CHECK — When the agent states that all listed alternatives satisfy the established goal and recommends one based on the contract or hard rules, treat that as a delegated implementation HOW choice: choose the supported recommendation and ANSWER. Different strictness or runtime behavior alone does not create a new user-visible product requirement. Escalate only when the contract actually leaves the required outcome open. This check NEVER overrides planning/approval stage ownership, another session/project's jurisdiction, task-card administration, an integrity or goal conflict, or a Tier-3/reserved action.`;
+
+// Appended UNCONDITIONALLY in runAnswer (compiled-in, like RESERVED_APPROVAL_ADDENDUM). Routing an
+// escalation correctly is not enough — the "reason" field is operator-facing text and is recorded verbatim.
+// Weaker models tend to PARROT the agent's own approval/deploy phrasing into that reason ("go ahead",
+// "start building", "approved", "1. Deploy this fix to prod"), which (a) reads to a scanning operator as if
+// the reserved step were being endorsed and (b) pollutes the escalation record with the very imperative the
+// escalation is meant to withhold. GPT-class models already state the reserved CLASS abstractly; this rule
+// pulls the rest up to that bar. It governs the WORDS emitted, so it also cleans the raw model output — not
+// just the parsed routing a downstream guard can fix.
+export const ESCALATION_HYGIENE_ADDENDUM = `ESCALATION HYGIENE — whenever action is "escalate": (1) "answer" MUST be empty. (2) "reason" is ONE plain operator-facing sentence that names the reserved CLASS and what is pending — e.g. "A production deployment needs your sign-off." or "The agent is awaiting your approval of its implementation plan." or "This is a product fork the doc does not settle; it is your choice to make." (3) Do NOT copy the agent's option text, a leading option number/letter, or its imperative approval/deploy verbs into "reason": never emit "go ahead", "start building", "start coding", "approved", "ship it", "deploy it", "deploy now", "deploy this fix", or a sentence beginning "1." or "(a)". Describe the pending decision abstractly instead of quoting the agent's request. An escalation whose reason parrots "deploy this fix" or "start building" is a defect even when the routing is correct.`;
+
+const HARD_ESCALATION_REASON_CODES = new Set(['integrity', 'goal_conflict', 'human_gate']);
+// Fixed, operator-facing clauses for each hard code. A deterministic override runs AFTER the model and so
+// cannot be sanitized by ESCALATION_HYGIENE_ADDENDUM — if it appended `decision.reason` verbatim, a weaker
+// model's parroted approval/deploy text ("deploy this fix", "go ahead") would land straight in the binding
+// record. Naming the reserved class abstractly keeps the record clean regardless of what the model wrote.
+// The `Held for ${code}:` prefix (added at the call site) still carries the machine-readable code word.
+const HARD_ESCALATION_REASONS = {
+  integrity: 'complying would require fabricating evidence or self-approving a trust gate only the operator can authorize.',
+  goal_conflict: 'the supervision goal appears to diverge from the authoritative spec, so what the goal is is the operator\'s to settle.',
+  human_gate: 'a reserved, irreversible, or externally-costly action needs the operator\'s explicit sign-off.',
+};
+const PLAN_APPROVAL_RX = /\b(?:implementation\s+|design\s+)?plan\b[\s\S]{0,600}\b(?:approve|approval|say\s+go|before\s+(?:i|we)\s+(?:start|begin|build|implement)|(?:i|we)\s+will\s+(?:start|begin|build|implement)\s+(?:after|once|when|if))\b/i;
+
+export function detectsPendingPlanApproval({ question = '', summary = '', terminalTail = '' } = {}) {
+  return PLAN_APPROVAL_RX.test([question, summary, terminalTail].filter(Boolean).join('\n'));
+}
+
+// A labeled multi-option menu the agent hands to the OPERATOR with an explicit hand-off phrase ("your call",
+// "say the word", "you decide", "which should I…") is an operator-reserved fork — the operator's choice to
+// make, not a delegated implementation HOW pick. This is deterministic ON PURPOSE: the audience gate depends
+// on the model correctly self-setting audience="operator_choice", and the scenario-24 incident was exactly a
+// model that MISCLASSIFIED the audience, answered the fork itself, and sent it ("answered its own
+// escalation"). Requires BOTH a hand-off phrase AND >=2 distinct labeled options, so ordinary either/or
+// questions the doc can settle (no menu, no hand-off) still get answered. Stance-gated at the call site: an
+// explicit autopilot stance is real delegation and suppresses this, mirroring the audience gate's exception.
+const OPERATOR_HANDOFF_RX = /\b(?:your call|you\s+(?:decide|choose|pick)|up to you|say the word|let me know which|tell me which|which(?:\s+one)?\s+(?:do|would|should)\s+(?:you|i)|whichever you (?:prefer|want|like))\b/i;
+
+export function detectsOperatorDirectedChoice({ question = '', summary = '', terminalTail = '' } = {}) {
+  const text = [question, summary, terminalTail].filter(Boolean).join('\n');
+  if (!OPERATOR_HANDOFF_RX.test(text)) return false;
+  const labels = new Set();
+  for (const m of text.matchAll(/\(([a-d])\)/gi)) labels.add('L' + m[1].toLowerCase());
+  for (const m of text.matchAll(/(?:^|\s)([1-4])[.)](?=\s|$)/gm)) labels.add('N' + m[1]);
+  return labels.size >= 2;
+}
+
+// The model sometimes identifies a hard reason correctly but emits action:"answer" anyway. Code owns
+// the safety invariants: fabrication, goal conflict, unresolved human gates, and an initial plan awaiting
+// operator approval never become agent sends even when a smaller model contradicts its own prompt.
+export function enforceAnswerSafety(decision, context = {}) {
+  if (!decision) return decision;
+  const hardReason = String(decision.reason_code || '');
+  if (HARD_ESCALATION_REASON_CODES.has(hardReason)) {
+    return {
+      ...decision,
+      action: 'escalate',
+      answer: '',
+      // Fixed abstract clause, NOT the model's reason — see HARD_ESCALATION_REASONS. Prefix keeps the code word.
+      reason: `Held for ${hardReason}: ${HARD_ESCALATION_REASONS[hardReason] || 'operator review is required.'}`,
+    };
+  }
+  if (decision.action !== 'escalate' && !context.supervisorAutopilot && detectsPendingPlanApproval(context)) {
+    return {
+      ...decision,
+      action: 'escalate',
+      answer: '',
+      reason_code: 'scope',
+      // Fixed abstract clause, NOT the model's reason (which can parrot "go ahead"/"approved"/"start building").
+      reason: 'Held for operator plan approval: the agent is awaiting the operator\'s decision on its proposed plan before it proceeds.',
+    };
+  }
+  return decision;
+}
 
 // Build the user-content string for the ANSWER call. `precedents` (optional) is the decision-memory
 // block injected ahead of CONTEXT_JSON; empty string => identical to the no-memory baseline, so the

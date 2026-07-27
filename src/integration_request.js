@@ -54,10 +54,16 @@ export async function requestSessionIntegration(sessionId, deps = {}) {
   const { session: s, project } = ready;
 
   const head = await git(s.worktree_path, ['rev-parse', 'HEAD']);
+  if (head.error) return refusal('git_head_failed', 'could not verify the session worktree HEAD');
   const candidateSha = String(head.text || '').trim();
   if (!candidateSha) return refusal('no_candidate', 'could not resolve the session worktree HEAD');
+  const expectedCandidateSha = String(deps.expectedCandidateSha || '').trim();
+  if (expectedCandidateSha && candidateSha !== expectedCandidateSha) {
+    return refusal('candidate_changed', `candidate changed after verification (verified ${expectedCandidateSha.slice(0, 12)}, current ${candidateSha.slice(0, 12)})`);
+  }
 
   const branch = await git(s.worktree_path, ['branch', '--show-current']);
+  if (branch.error) return refusal('git_branch_failed', 'could not verify the session worktree branch');
   if (String(branch.text || '').trim() !== s.branch) {
     return refusal('branch_mismatch', `session branch is ${s.branch}, but the worktree is on ${String(branch.text || '').trim() || '(detached)'}`);
   }
@@ -80,6 +86,7 @@ export async function requestSessionIntegration(sessionId, deps = {}) {
   }
 
   const base = await git(project.path, ['rev-parse', 'HEAD']);
+  if (base.error) return refusal('git_base_failed', 'could not resolve the integration base HEAD');
   const baseSha = String(base.text || '').trim();
   if (!baseSha) return refusal('no_base', 'could not resolve the integration base HEAD');
 
