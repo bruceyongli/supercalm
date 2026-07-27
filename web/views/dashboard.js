@@ -1,7 +1,7 @@
 // SPA dashboard view (the "Needs you" inbox + sessions list). Mounts into #view; subscribes to the shared
 // home-data loop; tears the subscription down on leave. Logic mirrors the legacy desktop.js (which the
 // server cutover will retire). View contract: export init(host, params) + teardown().
-import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, toast } from '../shell.js';
+import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, sessionAttentionPreview, openLaunch, toast } from '../shell.js';
 // cards/rows show the full first line (the rail keeps shortTitle); CSS ellipsizes/clamps per width
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
@@ -123,6 +123,7 @@ function renderInbox(home) {
   const cardSpecs = cards.map((s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
+    const preview = sessionAttentionPreview(s);
     return { key: `card:${s.id}`, html: `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
@@ -131,7 +132,12 @@ function renderInbox(home) {
         <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(fullTitle(s))}</a>
         <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
       </div>
-      <div class="dk-card-msg">${esc((s.question || s.summary || '').slice(0, 400))}</div>
+      <div class="dk-attention-preview">
+        <div class="dk-attention-row"><span>Working on</span><p>${esc(preview.doing)}</p></div>
+        ${preview.outcome ? `<div class="dk-attention-row"><span>Latest update</span><p>${esc(preview.outcome)}</p></div>` : ''}
+        <div class="dk-attention-row important"><span>Why it needs you</span><p>${esc(preview.need || 'The session is waiting for your direction.')}</p></div>
+        <div class="dk-attention-row"><span>After you reply</span><p>${esc(preview.next)}</p></div>
+      </div>
       ${choicesHtml(s, questions)}
       <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}&inspect=1">Why it needs you</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>

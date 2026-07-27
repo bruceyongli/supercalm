@@ -19,9 +19,20 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         <span class="title" id="s-title"></span>
         <span class="status-txt" id="s-status"></span>
         <div class="spacer"></div>
-        <div class="story-toggle" data-story-toggle role="tablist" aria-label="Log view">
-          <button data-mode="story" type="button" title="Plain-language story of the session">☰ story</button>
-          <button data-mode="terminal" type="button" title="Raw terminal">⌨ terminal</button>
+        <div class="story-toggle workspace-tabs" data-story-toggle role="tablist" aria-label="Session workspace">
+          <button data-mode="story" type="button" title="Plain-language story of the session">Story</button>
+          <button data-mode="terminal" type="button" title="Raw terminal">Terminal</button>
+          <button data-mode="files" data-optional-workspace type="button" title="Files changed or referenced by this session" hidden>Files</button>
+          <button data-mode="preview" data-optional-workspace type="button" title="Preview session-produced files" hidden>Preview</button>
+          <span class="workspace-add-wrap">
+            <button class="workspace-add" id="workspace-add" type="button" title="Open a workspace tool" aria-label="Open workspace tool" aria-expanded="false">+</button>
+            <span class="workspace-menu" id="workspace-menu" role="menu" hidden>
+              <button type="button" data-workspace-add="files" role="menuitem"><b>Files</b><span>Browse the session worktree</span></button>
+              <button type="button" data-workspace-add="preview" role="menuitem"><b>Preview</b><span>See images, markdown, and HTML</span></button>
+              <button type="button" data-workspace-agent="review" role="menuitem"><b>Review</b><span>Ask Council, then decide what to send</span></button>
+              <button type="button" data-workspace-agent="inspector" role="menuitem"><b>Evidence</b><span>Inspect a failed check on demand</span></button>
+            </span>
+          </span>
         </div>
         <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
         <button class="btn ghost sm" id="b-stop" title="Stop &amp; park — frees the pane, stays resumable">Stop</button>
@@ -51,6 +62,12 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         </section>
         <section id="agent-view" class="agent-view main-view-panel" data-main-panel="agent" hidden aria-live="polite">
           <div class="timeline-empty">Open Agent View to load request-level artifacts and events.</div>
+        </section>
+        <section id="workspace-files" class="workspace-view main-view-panel" data-main-panel="files" hidden aria-live="polite">
+          <div class="timeline-empty">Open Files to browse this session's worktree.</div>
+        </section>
+        <section id="workspace-preview" class="workspace-view main-view-panel" data-main-panel="preview" hidden aria-live="polite">
+          <div class="timeline-empty">Open Preview to see session-produced files.</div>
         </section>
         <div class="session-tools">
           <div class="keys" id="keys"></div>
@@ -490,6 +507,8 @@ termEl.addEventListener('paste', (e) => {
 const conversationEl = $('#conversation');
 const agentEl = $('#agent-view');
 const scrollbackEl = $('#scrollback');
+const workspaceFilesEl = $('#workspace-files');
+const workspacePreviewEl = $('#workspace-preview');
 const scrollbackText = $('#scrollback-text');
 const scrollbackMeta = $('#scrollback-meta');
 const jumpLatest = document.createElement('button');
@@ -509,7 +528,7 @@ let userPausedTail = false;
 let lastDims = '';
 let lastTrustedResizeActivity = 0;
 const requestedMainView = params.get('view');
-const MAIN_VIEWS = new Set(['terminal', 'scrollback', 'conversation', 'agent', 'story']);
+const MAIN_VIEWS = new Set(['terminal', 'scrollback', 'conversation', 'agent', 'story', 'files', 'preview']);
 let activeMainView = MAIN_VIEWS.has(requestedMainView) ? requestedMainView : localStorage.getItem(PREF_MAIN_VIEW) || 'story'; // design handoff: story is the default log view
 let timelineLoaded = false;
 let latestTimelineData = null;
@@ -525,6 +544,20 @@ let latestMap = null;
 let mapBusy = false;
 const timelineOpenGroups = new Set();
 const timelineClosedGroups = new Set();
+let workspaceFilesData = null;
+let workspaceFilesBusy = false;
+let workspaceSelectedPath = '';
+let workspaceFilter = '';
+const PREF_WORKSPACE_TABS = 'aios.session.workspaceTabs';
+const openWorkspaceTabs = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PREF_WORKSPACE_TABS) || '[]');
+    return new Set((Array.isArray(saved) ? saved : []).filter((view) => view === 'files' || view === 'preview'));
+  } catch {
+    return new Set();
+  }
+})();
+if (activeMainView === 'files' || activeMainView === 'preview') openWorkspaceTabs.add(activeMainView);
 
 async function loadAgentView({ refresh = false } = {}) {
   if (!agentEl) return;
@@ -615,6 +648,128 @@ $('#scrollback-latest')?.addEventListener('click', () => {
   loadScrollback({ quiet: true }).then(scrollbackToLatest);
 });
 
+function workspacePreviewable(path) {
+  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg)$/i.test(String(path || ''));
+}
+
+function workspaceStatusLabel(status) {
+  return status === 'new' ? 'new' : status === 'modified' ? 'changed' : 'file';
+}
+
+async function renderWorkspaceDocument(file, target, { preview = false } = {}) {
+  if (!file || !target) return;
+  const requestToken = requestScope.capture();
+  workspaceSelectedPath = file.path;
+  target.innerHTML = `<div class="workspace-empty">Loading ${escapeHtml(file.path)}…</div>`;
+  try {
+    const meta = await api(`api/session/${requestToken.id}/file?path=${encodeURIComponent(file.path)}`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
+    const toolbar = `
+      <div class="workspace-detail-head">
+        <div><b>${escapeHtml(meta.path || file.path)}</b><span>${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</span></div>
+        <span class="workspace-detail-actions">
+          <a class="btn ghost sm" href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open tab ↗</a>
+          <a class="btn ghost sm" href="${escapeHtml(meta.downloadUrl)}" download>Download</a>
+        </span>
+      </div>`;
+    if (meta.contentKind === 'image') {
+      target.innerHTML = `${toolbar}<div class="workspace-document image"><img src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" /></div>`;
+      return;
+    }
+    if (meta.contentKind === 'pdf') {
+      target.innerHTML = `${toolbar}<div class="workspace-empty"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open this PDF in a new tab ↗</a></div>`;
+      return;
+    }
+    if (meta.binary) {
+      target.innerHTML = `${toolbar}<div class="workspace-empty">This binary file can be downloaded but not previewed here.</div>`;
+      return;
+    }
+    const response = await fetch(meta.viewUrl, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
+    const text = response.ok ? await response.text() : '';
+    requestScope.guard(requestToken);
+    const isMarkdown = /\.(?:md|markdown)$/i.test(meta.path || file.path);
+    const isHtml = /\.html?$/i.test(meta.path || file.path);
+    if (preview && isHtml) {
+      target.innerHTML = `${toolbar}<div class="workspace-document html"></div>`;
+      const frame = document.createElement('iframe');
+      frame.title = `Preview of ${meta.path || file.path}`;
+      frame.setAttribute('sandbox', '');
+      frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">${text}`;
+      target.querySelector('.workspace-document.html')?.appendChild(frame);
+    } else if (isMarkdown) {
+      target.innerHTML = `${toolbar}<div class="workspace-document markdown md-view">${renderMarkdown(text)}</div>`;
+    } else {
+      target.innerHTML = `${toolbar}<pre class="workspace-document source">${escapeHtml(text)}${meta.truncated ? '\n\n… truncated at 2 MB' : ''}</pre>`;
+    }
+  } catch (error) {
+    if (isSessionAbort(error)) return;
+    target.innerHTML = `<div class="workspace-empty error">Could not open ${escapeHtml(file.path)}: ${escapeHtml(error?.message || error)}</div>`;
+  }
+}
+
+function renderWorkspaceBrowser(view) {
+  const panel = view === 'preview' ? workspacePreviewEl : workspaceFilesEl;
+  if (!panel || !workspaceFilesData) return;
+  const all = workspaceFilesData.files || [];
+  const files = view === 'preview' ? all.filter((file) => workspacePreviewable(file.path)) : all;
+  const selected = files.find((file) => file.path === workspaceSelectedPath) || files[0] || null;
+  if (selected) workspaceSelectedPath = selected.path;
+  const noun = view === 'preview' ? 'previewable files' : 'files';
+  panel.innerHTML = `
+    <div class="workspace-head">
+      <div><b>${view === 'preview' ? 'Preview' : 'Files'}</b><span>${files.length} ${noun}${workspaceFilesData.truncated ? ' · recent 200' : ''}</span></div>
+      <input type="search" data-workspace-filter value="${escapeHtml(workspaceFilter)}" placeholder="Filter files…" aria-label="Filter files" />
+      <button class="btn ghost sm" type="button" data-workspace-refresh>Refresh</button>
+    </div>
+    <div class="workspace-split">
+      <nav class="workspace-file-list" aria-label="${view === 'preview' ? 'Previewable files' : 'Session files'}">
+        ${files.length ? files.map((file) => `<button type="button" class="workspace-file${file.path === selected?.path ? ' selected' : ''}" data-workspace-file="${escapeHtml(file.path)}" data-workspace-search="${escapeHtml(file.path.toLowerCase())}">
+          <span class="workspace-file-status ${escapeHtml(file.status || '')}">${workspaceStatusLabel(file.status)}</span>
+          <code>${escapeHtml(file.path)}</code><small>${escapeHtml(formatBytes(file.bytes))}</small>
+        </button>`).join('') : `<div class="workspace-empty">${view === 'preview' ? 'No images, markdown, or HTML files yet.' : 'No changed or recent project files yet.'}</div>`}
+      </nav>
+      <article class="workspace-detail" data-workspace-detail>${selected ? '' : '<div class="workspace-empty">Select a file to open it.</div>'}</article>
+    </div>`;
+  const filter = panel.querySelector('[data-workspace-filter]');
+  if (filter) filter.oninput = () => {
+    workspaceFilter = filter.value;
+    const needle = workspaceFilter.trim().toLowerCase();
+    for (const row of panel.querySelectorAll('[data-workspace-file]')) row.hidden = !!needle && !row.dataset.workspaceSearch.includes(needle);
+  };
+  panel.querySelector('[data-workspace-refresh]')?.addEventListener('click', () => loadWorkspaceFiles({ refresh: true, view }));
+  const detail = panel.querySelector('[data-workspace-detail]');
+  for (const row of panel.querySelectorAll('[data-workspace-file]')) {
+    row.onclick = () => {
+      for (const sibling of panel.querySelectorAll('[data-workspace-file]')) sibling.classList.toggle('selected', sibling === row);
+      const file = files.find((item) => item.path === row.dataset.workspaceFile);
+      renderWorkspaceDocument(file, detail, { preview: view === 'preview' });
+    };
+  }
+  if (selected) renderWorkspaceDocument(selected, detail, { preview: view === 'preview' });
+}
+
+async function loadWorkspaceFiles({ refresh = false, view = activeMainView } = {}) {
+  const panel = view === 'preview' ? workspacePreviewEl : workspaceFilesEl;
+  if (!panel || workspaceFilesBusy) return;
+  if (workspaceFilesData && !refresh) {
+    renderWorkspaceBrowser(view);
+    return;
+  }
+  const requestToken = requestScope.capture();
+  workspaceFilesBusy = true;
+  panel.innerHTML = '<div class="timeline-empty">Loading session files…</div>';
+  try {
+    workspaceFilesData = await api(`api/session/${requestToken.id}/files`, { signal: requestToken.signal });
+    requestScope.guard(requestToken);
+    renderWorkspaceBrowser(view);
+  } catch (error) {
+    if (!isSessionAbort(error)) panel.innerHTML = `<div class="timeline-empty">Files unavailable: ${escapeHtml(error?.message || error)}</div>`;
+  } finally {
+    workspaceFilesBusy = false;
+  }
+}
+
 function setMainView(view) {
   activeMainView = MAIN_VIEWS.has(view) ? view : 'terminal';
   localStorage.setItem(PREF_MAIN_VIEW, activeMainView);
@@ -622,8 +777,9 @@ function setMainView(view) {
   shell.classList.toggle('agent-mode', activeMainView === 'agent');
   shell.classList.toggle('scrollback-mode', activeMainView === 'scrollback');
   shell.classList.toggle('story-mode', activeMainView === 'story'); // hides quick-keys (terminal-only per spec)
+  shell.classList.toggle('workspace-mode', activeMainView === 'files' || activeMainView === 'preview');
   document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
-    b.classList.toggle('active', (b.dataset.mode === 'story') === (activeMainView === 'story'));
+    b.classList.toggle('active', b.dataset.mode === activeMainView);
   });
   document.querySelectorAll('[data-main-view]').forEach((b) => {
     const on = b.dataset.mainView === activeMainView;
@@ -637,16 +793,58 @@ function setMainView(view) {
   else if (activeMainView === 'conversation') loadTimeline();
   else if (activeMainView === 'agent') setTimeout(() => loadAgentView(), 0);
   else if (activeMainView === 'scrollback') loadScrollback();
+  else if (activeMainView === 'files' || activeMainView === 'preview') loadWorkspaceFiles({ view: activeMainView });
   else setTimeout(syncSize, 80);
   if (activeMainView === 'terminal') ensureTerminalData(true); // lazy: history + byte-stream on first open
 }
 document.querySelectorAll('[data-main-view]').forEach((b) => {
   b.onclick = () => setMainView(b.dataset.mainView);
 });
-// Story/terminal segmented toggle (design handoff DOM contract).
+// Session workspace tabs. Story and Terminal stay visible; optional file surfaces appear after the
+// operator adds them from +, matching the quiet default used by Codex.
 document.querySelectorAll('[data-story-toggle] [data-mode]').forEach((b) => {
-  b.onclick = () => setMainView(b.dataset.mode === 'story' ? 'story' : 'terminal');
+  b.onclick = () => setMainView(b.dataset.mode);
 });
+function syncOptionalWorkspaceTabs() {
+  document.querySelectorAll('[data-optional-workspace]').forEach((button) => {
+    button.hidden = !openWorkspaceTabs.has(button.dataset.mode);
+  });
+  try { localStorage.setItem(PREF_WORKSPACE_TABS, JSON.stringify([...openWorkspaceTabs])); } catch {}
+}
+syncOptionalWorkspaceTabs();
+const workspaceAdd = $('#workspace-add');
+const workspaceMenu = $('#workspace-menu');
+function closeWorkspaceMenu() {
+  if (workspaceMenu) workspaceMenu.hidden = true;
+  workspaceAdd?.setAttribute('aria-expanded', 'false');
+  shell.classList.remove('workspace-menu-open');
+}
+if (workspaceAdd && workspaceMenu) {
+  workspaceAdd.onclick = (event) => {
+    event.stopPropagation();
+    workspaceMenu.hidden = !workspaceMenu.hidden;
+    workspaceAdd.setAttribute('aria-expanded', workspaceMenu.hidden ? 'false' : 'true');
+    shell.classList.toggle('workspace-menu-open', !workspaceMenu.hidden);
+  };
+  workspaceMenu.querySelectorAll('[data-workspace-add]').forEach((button) => {
+    button.onclick = () => {
+      const view = button.dataset.workspaceAdd;
+      openWorkspaceTabs.add(view);
+      syncOptionalWorkspaceTabs();
+      closeWorkspaceMenu();
+      setMainView(view);
+    };
+  });
+  workspaceMenu.querySelectorAll('[data-workspace-agent]').forEach((button) => {
+    button.onclick = () => {
+      closeWorkspaceMenu();
+      agentPanel?.open?.(button.dataset.workspaceAgent);
+    };
+  });
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest('.workspace-add-wrap')) closeWorkspaceMenu();
+  }, { signal: _sig });
+}
 let storyInited = false;
 let storyLoadPromise = null;
 function loadStoryView() {
@@ -1845,6 +2043,10 @@ const onSessionStatus = (payload) => {
   if (activeMainView === 'agent') loadAgentView({ refresh: true });
   if (activeMainView === 'scrollback') loadScrollback({ quiet: true });
   if (activeMainView === 'story') loadStoryView();
+  if (activeMainView === 'files' || activeMainView === 'preview') {
+    workspaceFilesData = null;
+    loadWorkspaceFiles({ view: activeMainView });
+  }
 };
 if (embedded) {
   unsubscribeSessionEvents = subscribeSessionEvents(onSessionStatus, { replayId: id });
@@ -2439,21 +2641,6 @@ async function loadMap() {
 
 
 // ---- on-the-fly settings (autonomy / effort / model) ------------------------
-const PERMISSION_MODE = {
-  ask: { label: 'Ask', impact: 'asks before changes' },
-  auto: { label: 'Auto', impact: 'works independently · pauses at risk' },
-  full: { label: 'Full', impact: 'hands-off · reserved actions still pause' },
-};
-
-function paintPermissionMode(box, mode) {
-  const group = box?.querySelector('[data-permission-control]');
-  if (!group) return;
-  const info = PERMISSION_MODE[mode] || PERMISSION_MODE.ask;
-  group.dataset.mode = mode;
-  const impact = group.querySelector('[data-permission-impact]');
-  if (impact) impact.textContent = info.impact;
-}
-
 function renderSettings(s, tmeta) {
   const box = $('#s-settings');
   const sel = (label, key, options, cur) =>
@@ -2462,13 +2649,11 @@ function renderSettings(s, tmeta) {
     `</select></label>`;
   const toggle = (label, key, on) =>
     `<button class="setting setting-toggle setting-${escapeHtml(key)} ${on ? 'on' : ''}" type="button" data-toggle="${key}" aria-pressed="${on ? 'true' : 'false'}" aria-label="${escapeHtml(label)}">${escapeHtml(label)}</button>`;
-  const permission = PERMISSION_MODE[s.autonomy] || PERMISSION_MODE.ask;
-  let html = `<div class="permission-control" data-permission-control data-mode="${escapeHtml(s.autonomy || 'ask')}"
-      title="Approval behavior for this session. Filesystem and network boundaries are separate.">
-    <span class="permission-scope">This session</span>
-    ${sel('Permissions', 'autonomy', Object.entries(PERMISSION_MODE).map(([v, info]) => ({ v, l: info.label })), s.autonomy)}
-    <span class="permission-impact" data-permission-impact>${escapeHtml(permission.impact)}</span>
-  </div>`;
+  let html = sel('Permissions', 'autonomy', [
+    { v: 'ask', l: 'Ask' },
+    { v: 'auto', l: 'Auto' },
+    { v: 'full', l: 'Full' },
+  ], s.autonomy);
   if ((tmeta.efforts || []).length) html += sel('Effort', 'effort', tmeta.efforts.map((v) => ({ v, l: v })), s.effort);
   const activeModel = s.model || tmeta.model;
   const activeModelMeta = (tmeta.models || []).find((m) => m.id === activeModel);
@@ -2507,7 +2692,6 @@ function renderSettings(s, tmeta) {
           signal: requestToken.signal,
         });
         requestScope.guard(requestToken);
-        if (el.dataset.set === 'autonomy') paintPermissionMode(box, el.value);
         if (r.applied === 'relaunched') setTimeout(() => {
           if (requestScope.isCurrent(requestToken)) location.reload();
         }, 1000);
@@ -2516,7 +2700,6 @@ function renderSettings(s, tmeta) {
         if (el.dataset.set === 'autonomy') {
           el.value = previous;
           fitSettingSelect(el);
-          paintPermissionMode(box, previous);
         }
         alert('Update failed: ' + e.message);
       } finally {

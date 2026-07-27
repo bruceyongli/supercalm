@@ -67,6 +67,6 @@ assert.match(knowledge, /never used/, 'the ledger distinguishes saved rules that
 assert.match(sessions, /<project_rules>/, 'future launches receive active project rules');
 assert.match(dashboard, /Why it needs you/, 'Needs you links directly into focused diagnosis');
 assert.match(settings, /Search settings/, 'Settings has a first-class search control');
-assert.match(settings, /id="st-permissions"/, 'Settings explains permission modes as their own category');
+assert.doesNotMatch(settings, /id="st-permissions"/, 'Settings does not repeat familiar permission explanations');
 
 console.log('evidence_rule.test ok');

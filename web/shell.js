@@ -173,6 +173,38 @@ export function dismissedAttention() {
     .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
 }
 
+function cleanPreviewText(value, max = 220) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+// One compact, shared interpretation for attention cards and ⌘K. The home projection contains the
+// task/title, latest curated summary, and current question; do not pretend to know a deeper outcome
+// when those fields do not contain one.
+export function sessionAttentionPreview(s) {
+  const status = String(s?.status || 'stopped');
+  const state = status === 'working' ? 'Working'
+    : status === 'waiting' ? 'Needs you'
+      : status === 'starting' ? 'Starting'
+        : status === 'error' ? 'Failed'
+          : s?.dismissed ? 'Dismissed' : 'Stopped';
+  const doing = cleanPreviewText(s?.title || s?.project || s?.id, 180);
+  const need = status === 'waiting' ? cleanPreviewText(s?.question || s?.summary, 300) : '';
+  const summary = cleanPreviewText(s?.summary, 220);
+  const comparable = (value) => cleanPreviewText(value, 300).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+  const outcome = summary && comparable(summary) !== comparable(need) && comparable(summary) !== comparable(doing)
+    ? summary : '';
+  const next = status === 'waiting'
+    ? 'Reply continues the session; Dismiss only clears this report.'
+    : status === 'working' || status === 'starting'
+      ? 'No attention needed; the session keeps working.'
+      : status === 'error'
+        ? 'Open the session to inspect the failure and choose a recovery.'
+        : s?.dismissed
+          ? 'It stays out of Needs you until a newer report arrives.'
+          : 'Resume the session when you want it to continue.';
+  return { state, doing, outcome, need, next };
+}
+
 // ---- sidebar --------------------------------------------------------------------------------------
 function keyedNode(html, key) {
   const t = document.createElement('template');
@@ -310,7 +342,13 @@ function paletteItems(q) {
   items.push({ kind: 'action', label: 'Re-auth CLIs', run: () => (location.href = 'auth') });
   for (const s of home.sessions || []) {
     if (!['starting', 'working', 'waiting'].includes(s.status)) continue;
-    items.push({ kind: 'session', label: shortTitle(s), sub: (s.summary || '').slice(0, 60), run: () => navigate(`session?id=${s.id}`) });
+    items.push({
+      kind: 'session',
+      label: railTitle(s),
+      sub: (s.question || s.summary || s.project || '').slice(0, 90),
+      session: s,
+      run: () => navigate(`session?id=${s.id}`),
+    });
   }
   const needle = q.trim().toLowerCase();
   return (needle ? items.filter((i) => (i.label + ' ' + (i.sub || '')).toLowerCase().includes(needle)) : items).slice(0, 12);
@@ -320,10 +358,31 @@ function renderPalette() {
   const q = $('#dk-palette-q').value;
   const items = paletteItems(q);
   palSel = Math.min(palSel, Math.max(0, items.length - 1));
-  $('#dk-palette-list').innerHTML = items.map((i, n) => `
-    <div class="dk-pal-item${n === palSel ? ' sel' : ''}" data-n="${n}"><span class="dk-pal-kind">${i.kind}</span><b>${esc(i.label)}</b>${i.sub ? `<span class="dk-pal-sub">${esc(i.sub)}</span>` : ''}</div>`).join('')
+  const selected = items[palSel];
+  const preview = selected?.session ? sessionAttentionPreview(selected.session) : null;
+  const previewHtml = preview ? `
+    <aside class="dk-pal-preview" aria-live="polite">
+      <div class="dk-pal-preview-head"><span class="dk-pal-state ${esc(selected.session.status)}">${esc(preview.state)}</span>${selected.session.project ? `<span>${esc(selected.session.project)}</span>` : ''}</div>
+      <div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>
+      ${preview.outcome ? `<div class="dk-pal-preview-row"><b>Latest update</b><p>${esc(preview.outcome)}</p></div>` : ''}
+      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Why it needs you</b><p>${esc(preview.need)}</p></div>` : ''}
+      <div class="dk-pal-preview-row"><b>What happens next</b><p>${esc(preview.next)}</p></div>
+    </aside>` : `
+    <aside class="dk-pal-preview quiet">
+      <b>${esc(selected?.label || 'Jump anywhere')}</b>
+      <p>${selected?.kind === 'action' ? 'Run this action.' : 'Open this Supercalm screen.'}</p>
+    </aside>`;
+  const list = $('#dk-palette-list');
+  list.innerHTML = `<div class="dk-pal-layout"><div class="dk-pal-results">${items.map((i, n) => `
+    <div class="dk-pal-item${n === palSel ? ' sel' : ''}" data-n="${n}"><span class="dk-pal-kind">${i.kind}</span><b>${esc(i.label)}</b>${i.sub ? `<span class="dk-pal-sub">${esc(i.sub)}</span>` : ''}</div>`).join('')}</div>${previewHtml}</div>`
     + `<div class="dk-pal-foot">↑↓ navigate · ⏎ open · esc close · ⌘K anywhere</div>`;
-  for (const el of document.querySelectorAll('.dk-pal-item')) el.onclick = () => { items[Number(el.dataset.n)]?.run(); closePalette(); };
+  for (const el of list.querySelectorAll('.dk-pal-item')) {
+    el.onclick = () => { items[Number(el.dataset.n)]?.run(); closePalette(); };
+    el.onpointerenter = () => {
+      const next = Number(el.dataset.n);
+      if (next !== palSel) { palSel = next; renderPalette(); }
+    };
+  }
   return items;
 }
 function openPalette() { if (!$('#dk-palette')) return; $('#dk-palette').hidden = false; $('#dk-palette-q').value = ''; palSel = 0; renderPalette(); $('#dk-palette-q').focus(); }

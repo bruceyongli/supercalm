@@ -18,7 +18,7 @@ import { makeContext, HIGH_RISK_CAPS, CapabilityError } from './context.js';
 const TICK_MS = Number(process.env.AIOS_AGENT_TICK_MS || process.env.AIOS_SUPERVISOR_TICK_MS || 15000);
 const INFLIGHT_TTL_MS = Number(process.env.AIOS_AGENT_INFLIGHT_TTL_MS || 300000);
 const TICK_TIMEOUT_MS = Number(process.env.AIOS_AGENT_TICK_TIMEOUT_MS || 120000);
-const BUILTIN_IDS = ['supervisor', 'map', 'usage', 'builder', 'knowledge', 'preflight', 'inspector'];
+const BUILTIN_IDS = ['supervisor', 'map', 'usage', 'builder', 'knowledge', 'preflight', 'inspector', 'review'];
 const AGENTS_DIR = join(DATA_DIR, 'agents');
 
 const registry = new Map(); // id -> { meta, source, dir?, onTick?, actions?, appliesTo? }

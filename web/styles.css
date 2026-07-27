@@ -742,7 +742,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   padding: 6px 8px 10px;
 }
 .conversation-view,
-.agent-view {
+.agent-view,
+.workspace-view {
   min-height: 0; height: 100%; overflow: auto; align-content: start;
   display: grid; gap: 8px; padding: 8px;
   background: #0d1117; border: 0; border-radius: 0; /* de-framed full-bleed */
@@ -766,7 +767,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .session-shell.conversation-mode .conversation-view,
 .session-shell.agent-mode .agent-view,
-.session-shell.scrollback-mode .scrollback-view {
+.session-shell.scrollback-mode .scrollback-view,
+.session-shell.workspace-mode .workspace-view {
   width: 100%;
   justify-self: stretch;
 }
@@ -775,19 +777,82 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell.agent-mode .session-tools,
 .session-shell.agent-mode .footer-composer,
 .session-shell.scrollback-mode .session-tools,
-.session-shell.scrollback-mode .footer-composer {
+.session-shell.scrollback-mode .footer-composer,
+.session-shell.workspace-mode .session-tools,
+.session-shell.workspace-mode .footer-composer {
   width: 100%;
   justify-self: stretch;
 }
 .session-shell.conversation-mode .session-tools,
 .session-shell.agent-mode .session-tools,
-.session-shell.scrollback-mode .session-tools {
+.session-shell.scrollback-mode .session-tools,
+.session-shell.workspace-mode .session-tools {
   justify-content: flex-end;
 }
 .session-shell.conversation-mode .keys,
 .session-shell.agent-mode .keys,
-.session-shell.scrollback-mode .keys {
+.session-shell.scrollback-mode .keys,
+.session-shell.workspace-mode .keys {
   display: none;
+}
+.workspace-view { padding: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr); }
+.workspace-head {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); background: #0d1117;
+}
+.workspace-head > div { min-width: 0; display: flex; align-items: baseline; gap: 8px; }
+.workspace-head b { color: var(--ink); font-size: 13px; }
+.workspace-head span { color: var(--dim); font-size: 11px; }
+.workspace-head input {
+  width: min(280px, 36vw); min-width: 120px; margin-left: auto; padding: 6px 9px;
+  color: var(--ink); background: var(--panel2); border: 1px solid var(--line2); border-radius: 7px; font: inherit;
+}
+.workspace-split { min-height: 0; display: grid; grid-template-columns: minmax(230px, 31%) minmax(0, 1fr); }
+.workspace-file-list {
+  min-width: 0; overflow: auto; padding: 7px; border-right: 1px solid var(--line); background: #090d13;
+}
+.workspace-file {
+  width: 100%; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 7px; align-items: center;
+  padding: 8px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); text-align: left; cursor: pointer;
+}
+.workspace-file:hover { background: rgba(255, 255, 255, .04); color: var(--ink); }
+.workspace-file.selected { background: #132338; color: var(--ink); }
+.workspace-file code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; background: transparent; font-size: 11.5px; }
+.workspace-file small { color: var(--dim); white-space: nowrap; }
+.workspace-file-status {
+  min-width: 44px; padding: 1px 5px; border: 1px solid var(--line2); border-radius: 999px;
+  color: var(--dim); font-size: 9px; line-height: 15px; text-align: center; text-transform: uppercase;
+}
+.workspace-file-status.new { color: var(--green); border-color: #3fb95055; }
+.workspace-file-status.modified { color: var(--yellow); border-color: #d2992255; }
+.workspace-detail { min-width: 0; min-height: 0; overflow: auto; display: grid; grid-template-rows: auto minmax(0, 1fr); background: #0d1117; }
+.workspace-detail-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  padding: 9px 11px; border-bottom: 1px solid var(--line); background: #0d1117;
+}
+.workspace-detail-head > div { min-width: 0; display: grid; gap: 2px; }
+.workspace-detail-head b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-size: 12px; }
+.workspace-detail-head span { color: var(--dim); font-size: 10px; }
+.workspace-detail-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.workspace-document { min-width: 0; min-height: 0; margin: 0; overflow: auto; }
+.workspace-document.source {
+  padding: 14px; color: #c9d1d9; background: #090d13;
+  white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.workspace-document.markdown { padding: 18px 22px; }
+.workspace-document.image { display: grid; place-items: center; padding: 14px; background: #090d13; }
+.workspace-document.image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.workspace-document.html { padding: 10px; background: #e8eaed; }
+.workspace-document.html iframe { display: block; width: 100%; height: 100%; min-height: 480px; border: 0; background: white; }
+.workspace-empty { padding: 18px; color: var(--muted); }
+.workspace-empty.error { color: var(--red); }
+@media (max-width: 720px) {
+  .workspace-head { flex-wrap: wrap; }
+  .workspace-head input { order: 3; width: 100%; margin-left: 0; }
+  .workspace-split { grid-template-columns: 1fr; grid-template-rows: minmax(120px, 34%) minmax(0, 1fr); }
+  .workspace-file-list { border-right: 0; border-bottom: 1px solid var(--line); }
+  .workspace-detail-head { align-items: flex-start; flex-direction: column; }
+  .workspace-document.markdown { padding: 14px; }
 }
 .timeline-empty {
   color: var(--muted); border: 1px dashed var(--line2); border-radius: 7px; padding: 14px;
@@ -1348,21 +1413,6 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .settings select { background: var(--panel2); color: var(--ink); border: 1px solid var(--line2); border-radius: 5px; padding: 3px 6px; font: inherit; font-size: 12px; text-transform: none; }
 .settings input[type="checkbox"] { width: 15px; height: 15px; margin: 0; }
 .settings.composer-settings { flex: 1 1 auto; min-width: 0; gap: 5px; align-items: center; }
-.permission-control {
-  display: inline-flex; align-items: center; min-width: 0; min-height: 32px; padding: 0 7px 0 5px;
-  border: 1px solid #2a3441; border-radius: 8px; background: #0c121a; color: var(--muted);
-}
-.permission-control .setting { padding: 0 3px; color: #d9e4f0; font-weight: 700; }
-.permission-control .setting:hover, .permission-control .setting:focus-within { background: transparent; color: #fff; }
-.permission-scope {
-  padding-right: 6px; margin-right: 3px; border-right: 1px solid #293342; color: #6f7d8f;
-  font: 700 8.5px/1 'IBM Plex Sans', system-ui, sans-serif; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
-}
-.permission-impact { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #8391a3; font-size: 10px; white-space: nowrap; }
-.permission-control[data-mode="auto"] { border-color: #355377; background: #0d1724; }
-.permission-control[data-mode="full"] { border-color: #315a3d; background: #0d1812; }
-.permission-control[data-mode="full"] .permission-impact { color: #70b983; }
-.permission-control[data-mode="ask"] .permission-impact { color: #c5a75f; }
 .settings.composer-settings .setting {
   flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   min-width: 0; height: 32px; min-height: 32px; padding: 0 7px; border: 0; border-radius: 7px;
@@ -1497,8 +1547,6 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
   .composer-hint { display: none; }
   .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 2px 4px; font-size: 11px; } /* smaller type → the 4 controls fit one row (no 4th composer row) */
-  .permission-control { flex: 1 1 100%; }
-  .permission-impact { margin-left: auto; }
   .settings.composer-settings .setting { flex: 0 0 auto; padding: 0 5px; }
   .settings.composer-settings select { max-width: 46vw; } /* width itself comes from fitSettingSelect's --select-width */
   /* Attachments: compact rows, not gallery cards — the 180px hover-none card filled the composer and
@@ -2018,6 +2066,35 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .cap.cap-hi span { color: var(--ink); }
 .cap-risk { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red); border: 1px solid #f8514955; border-radius: 4px; padding: 0 4px; }
 
+/* Council Review is an on-demand sidecar, not another rail agent. It can read/call a model; the only
+   send path is the explicit, confirmed operator button in web/agents/review.js. */
+.review-sidecar { display: grid; gap: 12px; min-width: 0; padding: 2px; }
+.review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.review-head h2 { margin: 0; color: var(--ink); font-size: 15px; }
+.review-head p { margin: 4px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+.review-readonly {
+  flex: none; padding: 2px 7px; border: 1px solid #3fb95055; border-radius: 999px;
+  color: var(--green); font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+}
+.review-focus, .review-result label { display: grid; gap: 5px; color: var(--muted); font-size: 11px; }
+.review-focus textarea, .review-result textarea {
+  width: 100%; min-width: 0; box-sizing: border-box; resize: vertical; padding: 8px 9px;
+  color: var(--ink); background: var(--panel2); border: 1px solid var(--line2); border-radius: 7px;
+  font: inherit; font-size: 12px; line-height: 1.45;
+}
+.review-actions, .review-send { display: flex; align-items: center; gap: 8px; }
+.review-actions span { color: var(--dim); font-size: 10px; }
+.review-result { display: grid; gap: 10px; padding: 10px; border: 1px solid var(--line2); border-radius: 9px; background: var(--panel); }
+.review-result-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.review-result-head b { color: var(--ink); font-size: 12px; }
+.review-result-head span { color: var(--dim); font-size: 10px; }
+.review-rendered { max-height: 34dvh; overflow: auto; color: var(--muted); font-size: 12px; line-height: 1.55; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+.review-rendered > :first-child { margin-top: 0; }
+.review-rendered > :last-child { margin-bottom: 0; }
+.review-send { justify-content: flex-end; }
+.review-empty { padding: 14px; border: 1px dashed var(--line2); border-radius: 8px; color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.review-notice { padding: 8px 9px; border: 1px solid #58a6ff44; border-radius: 7px; color: var(--blue); font-size: 11px; }
+
 /* New-version toast (web/version-badge.js) — fixed bottom-right, shown only after a deploy ships a
    newer version (no persistent pill). Click anywhere on it to reload. Apple-style "liquid glass":
    dark translucent panel + frosted backdrop blur. z-index sits below the modal/voice layer (100). */
@@ -2526,9 +2603,39 @@ body.map-expanded-open { overflow: hidden; }
 .resume-bar { margin: 6px 0; }
 
 /* ---- Story view (design handoff phase 1 — tokens from spec.tokens.json, EXACT) ------------------- */
-.story-toggle { display: inline-flex; gap: 5px; margin-right: 10px; }
+.story-toggle { display: inline-flex; align-items: center; gap: 5px; margin-right: 10px; }
 .story-toggle [data-mode] { height: 30px; padding: 0 11px; border-radius: 8px; border: 1px solid #232c38; background: transparent; color: #8a95a5; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; cursor: pointer; }
 .story-toggle [data-mode].active { border-color: rgba(88,166,255,.55); background: rgba(88,166,255,.08); color: #79b8ff; }
+.workspace-add-wrap { position: relative; display: inline-flex; }
+.story-toggle .workspace-add {
+  width: 30px; height: 30px; padding: 0; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 8px; background: transparent; color: #6f7d8f;
+  font: 500 19px/1 'IBM Plex Sans', system-ui, sans-serif; cursor: pointer;
+}
+.story-toggle .workspace-add:hover, .story-toggle .workspace-add[aria-expanded="true"] { color: #dce5ef; background: #151c26; border-color: #293442; }
+.workspace-menu {
+  position: absolute; top: 36px; right: 0; z-index: 60; width: 260px; padding: 6px;
+  border: 1px solid #2a3442; border-radius: 11px; background: #10161f; box-shadow: 0 18px 48px rgba(0, 0, 0, .48);
+}
+.workspace-menu[hidden] { display: none; }
+.session-shell.workspace-menu-open > header { position: relative; z-index: 41; }
+.workspace-menu > button {
+  width: 100%; display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px;
+  background: transparent; color: #d9e2ec; text-align: left; cursor: pointer;
+}
+.workspace-menu > button:hover { background: #192230; }
+.workspace-menu b { font-size: 12px; }
+.workspace-menu span { color: #687585; font-size: 10.5px; }
+@media (max-width: 720px) {
+  .story-toggle { max-width: 100%; overflow: visible; gap: 3px; margin-right: 0; }
+  .story-toggle [data-mode] { padding: 0 8px; }
+  /* Keep this anchored to +. `header` uses backdrop-filter, which turns fixed descendants into
+     header-relative boxes and clipped the first menu rows above the phone viewport. */
+  .workspace-menu {
+    position: absolute; top: 36px; right: auto; bottom: auto; left: 50%;
+    width: min(280px, calc(100vw - 20px)); transform: translateX(-50%);
+  }
+}
 /* The story is a prose-first "plain language" view, so its DEFAULT font is sans — not the monospace body
    font it used to inherit. The intentional-mono bits (.story-cmd/.story-chip/.story-icon/.story-rollup/
    .story-shot-cap/.story-toggle) each set JetBrains Mono explicitly, so this only affects prose/raw text:

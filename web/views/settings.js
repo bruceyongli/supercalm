@@ -50,16 +50,6 @@ const SETTINGS_CSS = `
     }
     .st-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
     .st-sec h2 { font-family: 'IBM Plex Sans', sans-serif; font-size: 17px; font-weight: 600; color: #e9eef5; margin: 0 0 10px; }
-    .st-mode-summary { display: flex; align-items: center; gap: 9px; padding: 11px 13px; border-bottom: 1px solid #1b2430; color: #8a95a5; font-size: 12px; }
-    .st-mode-summary b { color: #dce5ef; }
-    .st-mode-default { margin-left: auto; padding: 3px 8px; border: 1px solid #315a3d; border-radius: 999px; color: #70c58a; background: #0d1812; font-size: 10px; font-weight: 800; text-transform: uppercase; }
-    .st-mode-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; }
-    .st-mode { padding: 13px; border-right: 1px solid #1b2430; }
-    .st-mode:last-child { border-right: 0; }
-    .st-mode b { display: block; margin-bottom: 5px; color: #dce5ef; font-size: 13px; }
-    .st-mode p { margin: 0; color: #6f7d8f; font-size: 11.5px; line-height: 1.45; }
-    .st-mode-note { margin: 0; padding: 11px 13px; border-top: 1px solid #1b2430; color: #5f6d7e; font-size: 11px; line-height: 1.45; }
-    @media (max-width: 720px) { .st-mode-grid { grid-template-columns: 1fr; } .st-mode { border-right: 0; border-bottom: 1px solid #1b2430; } .st-mode:last-child { border-bottom: 0; } }
     .st-pref { display: flex; align-items: center; gap: 14px; padding: 10px 0; border-bottom: 1px solid #10151d; }
     .st-pref b { font-weight: 600; color: #dde5ee; font-size: 13.5px; }
     .st-pref .sub { color: #5c6675; font-size: 12px; }
@@ -167,27 +157,6 @@ function applySettingsSearch() {
   if (empty) empty.hidden = visible.length > 0;
   const clear = host.querySelector('[data-st-clear]');
   if (clear) clear.hidden = !query;
-}
-
-async function loadPermissions() {
-  const box = $('#st-permissionscard');
-  if (!box) return;
-  try {
-    const state = await api('api/state');
-    if (!$('#st-permissionscard')) return;
-    const mode = String(state?.defaults?.autonomy || 'full');
-    const label = { ask: 'Ask', auto: 'Auto', full: 'Full' }[mode] || mode;
-    box.innerHTML = `
-      <div class="st-mode-summary"><b>Approval behavior</b><span>Each session can override this from its composer.</span><span class="st-mode-default">${esc(label)} default</span></div>
-      <div class="st-mode-grid">
-        <div class="st-mode"><b>Ask</b><p>Pauses before acting so you approve the next change.</p></div>
-        <div class="st-mode"><b>Auto</b><p>Works independently inside the project and pauses at risky boundaries.</p></div>
-        <div class="st-mode"><b>Full</b><p>Runs hands-off in scope. Reserved, destructive, or external actions still require a gate.</p></div>
-      </div>
-      <p class="st-mode-note">Permissions control approval behavior. Filesystem, network, and project boundaries remain separate safeguards.</p>`;
-  } catch (error) {
-    if (box) box.textContent = 'Permission defaults unavailable: ' + (error?.message || error);
-  }
 }
 
 // ---- Agents & sign-in --------------------------------------------------------------------------
@@ -645,7 +614,6 @@ export function init(el) {
       </div>
       <nav class="st-nav" data-st-nav>
         <a href="#st-agents" class="active">Agents &amp; access</a>
-        <a href="#st-permissions">Permissions</a>
         <a href="#st-providers">Models &amp; providers</a>
         <a href="#st-voice">Voice</a>
         <a href="#st-remote">Remote access</a>
@@ -656,10 +624,6 @@ export function init(el) {
         <h2>Agents &amp; access</h2>
         <div class="ob-card" id="st-authpath">loading…</div>
         <div class="ob-card" id="st-clis">loading…</div>
-      </section>
-      <section class="st-sec" id="st-permissions" data-st-permissions data-search="approval ask auto full autonomy scope safety">
-        <h2>Permissions</h2>
-        <div class="ob-card" id="st-permissionscard">loading…</div>
       </section>
       <section class="st-sec" id="st-providers" data-st-providers data-search="models api endpoints keys pricing openai anthropic aliyun">
         <h2>Models &amp; providers</h2>
@@ -708,7 +672,7 @@ export function init(el) {
   };
   addEventListener('scroll', onScroll, { passive: true });
 
-  loadAgents(); loadPermissions(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
+  loadAgents(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
 }
 
 export function teardown() {
