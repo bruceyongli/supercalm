@@ -137,6 +137,7 @@ function diagnosisFor(focus, review, commandSteps) {
     next: 'Return to Story unless a new failed check or question appears.',
   };
   const command = commandSteps.find((step) => step.cmd)?.cmd || '';
+  const conciseCommand = command.length <= 240 ? command : '';
   const unmet = review?.unmet?.filter(Boolean) || [];
   const exit = focus.exitCode != null ? `The recorded command exited with code ${focus.exitCode}.` : '';
   const stopped = unmet[0]
@@ -147,14 +148,14 @@ function diagnosisFor(focus, review, commandSteps) {
       : focus.kind === 'fail'
         ? 'A required verification failed, so the agent cannot honestly mark the work complete.'
       : 'The available result does not yet prove that the intended verification passed.');
-  const next = command
-    ? `Correct the underlying issue, then rerun: ${command}`
+  const next = conciseCommand
+    ? `Correct the underlying issue, then rerun: ${conciseCommand}`
     : focus.kind === 'ask'
       ? 'Answer the decision, then let the agent continue and verify the resulting path.'
       : 'Correct the underlying issue, rerun the failed verification, and record the passing result.';
   const opaqueToolReceipt = /^Chunk ID:|^Wall time:/i.test(String(focus.body || '').trim());
-  const happened = opaqueToolReceipt && command
-    ? `The verification command failed${focus.exitCode != null ? ` with exit code ${focus.exitCode}` : ''}: ${command}`
+  const happened = opaqueToolReceipt
+    ? `A verification command failed${focus.exitCode != null ? ` with exit code ${focus.exitCode}` : ''}.`
     : focus.body || focus.title;
   return {
     happened: clip(happened, 520),
@@ -217,7 +218,11 @@ route('GET', '/api/session/:id/evidence', async (req, res, { id: sessionId }, ur
           diffHunk: firstDiffHunk(git.diff || git.committed_diff),
           touchedTests: git.touched_test_files || [],
         } : null,
-        terminal: relevantOutput(context?.terminal_tail),
+        // A live terminal tail is only evidence for a recent focused event. For older failures it is
+        // simply whatever the agent happens to be doing now, which is misleading rather than useful.
+        terminal: focus?.ts && session.last_activity && Math.abs(Number(session.last_activity) - Number(focus.ts)) <= 5 * 60_000
+          ? relevantOutput(context?.terminal_tail)
+          : '',
       },
       guidance: {
         context: projectContext?.doc ? {

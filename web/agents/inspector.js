@@ -66,7 +66,8 @@ function render() {
   const context = data?.guidance?.context;
   const saved = savedStandardId ? rules.find((rule) => rule.id === savedStandardId) : null;
   const touched = git?.stat || git?.status || '';
-  const command = (data?.commandSteps || []).find((step) => step.cmd)?.cmd || '';
+  const rawCommand = (data?.commandSteps || []).find((step) => step.cmd)?.cmd || '';
+  const command = rawCommand.length <= 240 ? rawCommand : '';
   host.innerHTML = `
     <div class="ev-pane">
       <div class="ev-head">
