@@ -22,10 +22,23 @@
   const DISMISS_KEY = 'aios_update_dismissed';
   const UPGRADE_NOTICE_KEY = 'aios_upgrade_notified_version';
   const UPGRADE_NOTICE_MS = 8_000;
+  const RELOAD_PARAM = '_aios_reload';
   let baseline = null; // version observed when this page loaded
+  let serverVersion = null; // latest version returned by the server
   let shown = null; // toast content key currently displayed (avoid rebuilding on every poll)
   let upstream = null; // {version, url} when GitHub has a newer release than this server
   let autoDismissTimer = null;
+  let publishedVersion = null;
+
+  // A cache-busting query is used only for the hard navigation. Remove it as soon as the fresh page
+  // starts so copied session/story links remain clean; all original route/query state is preserved.
+  try {
+    const clean = new URL(location.href);
+    if (clean.searchParams.has(RELOAD_PARAM)) {
+      clean.searchParams.delete(RELOAD_PARAM);
+      history.replaceState(history.state, '', clean.pathname + clean.search + clean.hash);
+    }
+  } catch {}
 
   async function getJson(path) {
     try {
@@ -36,6 +49,111 @@
     }
   }
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  function publishVersion(version) {
+    if (!version) return;
+    for (const el of document.querySelectorAll('[data-aios-version]')) el.textContent = `v${version}`;
+    if (publishedVersion === version) return;
+    publishedVersion = version;
+    dispatchEvent(new CustomEvent('aios:version', { detail: { version } }));
+  }
+
+  function updateControlEl() {
+    let wrap = document.getElementById('aios-update-control');
+    if (wrap) return wrap;
+    wrap = document.createElement('div');
+    wrap.id = 'aios-update-control';
+    wrap.className = 'app-update-control';
+    wrap.hidden = true;
+    wrap.innerHTML = `
+      <button class="auc-scrim" type="button" data-update-close aria-label="Close app update"></button>
+      <section class="auc-sheet" role="dialog" aria-modal="true" aria-labelledby="auc-title">
+        <div class="auc-head">
+          <div><span class="auc-kicker">SUPERCalm PWA</span><h2 id="auc-title">App update</h2></div>
+          <button class="auc-close" type="button" data-update-close aria-label="Close">×</button>
+        </div>
+        <div class="auc-versions" aria-live="polite">
+          <span>Opened</span><b data-update-current>—</b>
+          <span>Latest</span><b data-update-latest>checking…</b>
+        </div>
+        <p class="auc-status" data-update-status>Checking for the latest release…</p>
+        <div class="auc-actions">
+          <button class="auc-primary" type="button" data-update-reload>Reload latest</button>
+          <button class="auc-secondary" type="button" data-update-check>Check again</button>
+        </div>
+      </section>`;
+    (document.body || document.documentElement).appendChild(wrap);
+    return wrap;
+  }
+
+  function closeUpdateControl() {
+    const wrap = document.getElementById('aios-update-control');
+    if (!wrap || wrap.hidden) return;
+    wrap.hidden = true;
+    document.body?.classList.remove('app-update-open');
+  }
+
+  async function updateServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+      const registration = await navigator.serviceWorker.getRegistration();
+      if (!registration) return;
+      await registration.update();
+      const waiting = registration.waiting;
+      if (waiting) waiting.postMessage({ type: 'SKIP_WAITING' });
+    } catch {
+      // A service worker is optional here: app code is served no-store, so the hard navigation below
+      // remains the authoritative refresh path even when iOS declines a worker update.
+    }
+  }
+
+  async function inspectLatest() {
+    const wrap = updateControlEl();
+    const status = wrap.querySelector('[data-update-status]');
+    const latest = wrap.querySelector('[data-update-latest]');
+    status.textContent = 'Checking for the latest release…';
+    latest.textContent = 'checking…';
+    wrap.querySelector('[data-update-check]').disabled = true;
+    await updateServiceWorker();
+    const v = await getJson(`api/version?manual=${Date.now()}`);
+    wrap.querySelector('[data-update-check]').disabled = false;
+    if (!v?.version) {
+      latest.textContent = 'unavailable';
+      status.textContent = 'Could not reach the server. You can still reload and try again.';
+      return null;
+    }
+    serverVersion = v.version;
+    publishVersion(serverVersion);
+    latest.textContent = `v${serverVersion}`;
+    status.textContent = baseline && serverVersion !== baseline
+      ? `v${serverVersion} is ready. Reload to use it.`
+      : `You’re on the latest release, v${serverVersion}.`;
+    return v;
+  }
+
+  function openUpdateControl() {
+    dismissToast();
+    const wrap = updateControlEl();
+    wrap.querySelector('[data-update-current]').textContent = baseline ? `v${baseline}` : 'this app';
+    wrap.querySelector('[data-update-latest]').textContent = serverVersion ? `v${serverVersion}` : 'checking…';
+    wrap.hidden = false;
+    document.body?.classList.add('app-update-open');
+    wrap.querySelector('[data-update-reload]')?.focus({ preventScroll: true });
+    inspectLatest();
+  }
+
+  async function reloadLatest() {
+    const wrap = updateControlEl();
+    const button = wrap.querySelector('[data-update-reload]');
+    const status = wrap.querySelector('[data-update-status]');
+    button.disabled = true;
+    button.textContent = 'Loading…';
+    status.textContent = 'Loading the latest app…';
+    await updateServiceWorker();
+    const next = new URL(location.href);
+    next.searchParams.set(RELOAD_PARAM, String(Date.now()));
+    location.replace(next.href);
+  }
 
   function positionToast(el) {
     if (!el?.isConnected) return;
@@ -171,7 +289,7 @@
     shown = 'reload:' + version;
     const el = toastEl();
     el.title = 'Reload to load the new version';
-    el.onclick = () => location.reload();
+    el.onclick = () => reloadLatest();
     el.innerHTML =
       `<span class="vt-up">↑</span>` +
       `<span class="vt-text"><span class="vt-line">New ${isStable ? 'stable ' : ''}version <b>v${version}</b></span>` +
@@ -246,6 +364,8 @@
     const v = await getJson('api/version');
     const version = v?.version || null;
     if (!version) return;
+    serverVersion = version;
+    publishVersion(version);
     if (baseline == null) { baseline = version; checkUpgraded(version, v?.channel); } // first read = the running build
     const mode = releaseNotify();
     if (mode === 'off') return; // release notifications disabled entirely — no reload nudge, no upstream nudge
@@ -281,4 +401,18 @@
   addEventListener('focus', check);
   addEventListener('online', check);
   addEventListener('resize', () => positionToast(document.getElementById('aios-version-toast')), { passive: true });
+  addEventListener('aios:open-update', openUpdateControl);
+  document.addEventListener('click', (event) => {
+    if (event.target.closest?.('[data-aios-update]')) {
+      event.preventDefault();
+      openUpdateControl();
+      return;
+    }
+    if (event.target.closest?.('[data-update-close]')) closeUpdateControl();
+    if (event.target.closest?.('[data-update-check]')) inspectLatest();
+    if (event.target.closest?.('[data-update-reload]')) reloadLatest();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && !document.getElementById('aios-update-control')?.hidden) closeUpdateControl();
+  });
 })();

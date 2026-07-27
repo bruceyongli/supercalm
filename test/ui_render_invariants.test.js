@@ -170,6 +170,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   assert.ok(!/dk-status/.test(rs), 'rail rows carry no dk-status word — the dot is the status');
   assert.ok(/dk-sess-age/.test(rs) && /fmtAgo\(s\.last_activity\)/.test(rs), 'rail rows show the last-activity age instead');
   assert.ok(/appVersion/.test(rs), 'the footer leads with the running version');
+  assert.ok(/data-aios-update/.test(rs) && /dk-version/.test(rs), 'the footer version is a real app-update control');
   assert.ok(!/dk-clock/.test(shell), 'the footer wall clock is gone (the OS shows the time)');
   const dcss = read('desktop.css');
   assert.ok(/\.dk-sess-l1 b[^}]*flex: 1 1 auto/.test(dcss), 'the rail title flexes into the freed width');

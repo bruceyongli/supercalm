@@ -21,12 +21,17 @@ const fixture = `<!doctype html>
   .composer-bottom { display: flex; justify-content: flex-end; gap: 8px; }
   .fixture-btn { width: 44px; height: 40px; border-radius: 999px; border: 1px solid #3fb950; background: #183d25; color: white; }
 </style></head>
-<body class="session-page"><div class="fixture-stream">Rendered session composer fixture</div>
+<body class="session-page"><div class="fixture-stream">Rendered session composer fixture
+  <button id="version-trigger" type="button" data-aios-update data-aios-version>Version</button>
+</div>
 <div class="message-box footer-composer" aria-label="Message composer">
   <textarea rows="2" style="width:100%" placeholder="Ask anything…"></textarea>
   <div class="composer-bottom"><button id="mic" class="fixture-btn" aria-label="Dictate">●</button><button class="fixture-btn" aria-label="Send">↑</button></div>
 </div>
-<script>document.querySelector('#mic').addEventListener('click', e => e.currentTarget.dataset.clicks = String(Number(e.currentTarget.dataset.clicks || 0) + 1));</script>
+<script>
+  localStorage.setItem('version_fixture_loads', String(Number(localStorage.getItem('version_fixture_loads') || 0) + 1));
+  document.querySelector('#mic').addEventListener('click', e => e.currentTarget.dataset.clicks = String(Number(e.currentTarget.dataset.clicks || 0) + 1));
+</script>
 <script type="module" src="/version-badge.js"></script></body></html>`;
 
 const server = createServer((req, res) => {
@@ -89,6 +94,23 @@ try {
   assert.equal(new URL(page.url()).pathname, '/', 'mic click does not redirect to Settings');
   await page.screenshot({ path: new URL('composer-toast-dismissed.png', outDir).pathname, fullPage: true });
 
+  await page.locator('#version-trigger').click();
+  const updater = page.locator('#aios-update-control');
+  await updater.waitFor();
+  assert.equal(await page.locator('#version-trigger').innerText(), 'v0.3.172', 'the tappable version reflects the live server build');
+  assert.equal(await updater.locator('[data-update-current]').innerText(), 'v0.3.172', 'the update sheet names the opened build');
+  await page.waitForFunction(() => document.querySelector('[data-update-latest]')?.textContent === 'v0.3.172');
+  assert.equal(await updater.locator('[data-update-latest]').innerText(), 'v0.3.172', 'the manual no-store check names the latest server build');
+  await page.screenshot({ path: new URL('pwa-update-sheet.png', outDir).pathname, fullPage: true });
+  await updater.locator('[data-update-close]').last().click();
+  await updater.waitFor({ state: 'hidden' });
+
+  const loadsBefore = await page.evaluate(() => Number(localStorage.getItem('version_fixture_loads')));
+  await page.locator('#version-trigger').click();
+  await updater.locator('[data-update-reload]').click();
+  await page.waitForFunction((before) => Number(localStorage.getItem('version_fixture_loads')) > before, loadsBefore);
+  assert.equal(new URL(page.url()).searchParams.has('_aios_reload'), false, 'the hard-refresh cache buster is removed from the fresh visible URL');
+
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForTimeout(400);
   assert.equal(await page.locator('#aios-version-toast').count(), 0, 'post-upgrade toast is shown only once per version');
@@ -125,7 +147,23 @@ try {
   await autoPage.locator('#aios-version-toast').waitFor({ state: 'detached', timeout: 1500 });
   await autoContext.close();
 
-  console.log('version_badge: visible toast clears composer; dismissal removes hitbox; once/version + auto-dismiss ok');
+  const phoneContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await phoneContext.addInitScript(() => {
+    localStorage.setItem('aios_seen_version', '0.3.172');
+    localStorage.setItem('aios_upgrade_notified_version', '0.3.172');
+  });
+  const phonePage = await phoneContext.newPage();
+  await phonePage.goto(base, { waitUntil: 'networkidle' });
+  await phonePage.locator('#version-trigger').click();
+  const phoneSheet = phonePage.locator('#aios-update-control .auc-sheet');
+  await phoneSheet.waitFor();
+  const phoneBox = await phoneSheet.boundingBox();
+  assert.ok(phoneBox && Math.abs(phoneBox.y + phoneBox.height - 844) < 2, 'the iPhone update control is a bottom sheet');
+  assert.ok(phoneBox.x >= 0 && phoneBox.x + phoneBox.width <= 390, 'the iPhone update sheet stays inside the viewport');
+  await phonePage.screenshot({ path: new URL('pwa-update-sheet-iphone.png', outDir).pathname, fullPage: true });
+  await phoneContext.close();
+
+  console.log('version_badge: toast safety + once/version + manual PWA update sheet ok');
 } finally {
   await browser.close();
   await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));

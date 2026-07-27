@@ -2140,6 +2140,42 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .version-toast { transition: none; transform: none; }
 }
 
+/* Manual PWA refresh. The footer version opens this compact sheet on desktop and as an iOS-native
+   bottom sheet in standalone mode. It deliberately does not hide behind release-notification prefs:
+   checking/reloading is always available when the operator asks for it. */
+body.app-update-open { overflow: hidden; }
+.app-update-control { position: fixed; inset: 0; z-index: 110; display: grid; place-items: center; padding: 18px; }
+.app-update-control[hidden] { display: none; }
+.auc-scrim { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: rgba(3, 6, 10, .68); }
+.auc-sheet {
+  position: relative; width: min(390px, 100%); border: 1px solid var(--line2); border-radius: 18px;
+  background: #10151d; box-shadow: 0 24px 70px rgba(0, 0, 0, .58); padding: 20px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.auc-head { display: flex; align-items: flex-start; gap: 12px; }
+.auc-head > div { flex: 1; }
+.auc-kicker { display: block; color: var(--dim); font: 700 9px/1.2 'JetBrains Mono', monospace; letter-spacing: 1.3px; text-transform: uppercase; }
+.auc-head h2 { margin: 3px 0 0; color: var(--ink); font-size: 19px; }
+.auc-close { width: 40px; height: 40px; border: 1px solid var(--line2); border-radius: 10px; background: transparent; color: var(--muted); font-size: 20px; cursor: pointer; }
+.auc-versions { display: grid; grid-template-columns: 1fr auto; gap: 9px 16px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: #0d1219; }
+.auc-versions span { color: var(--muted); }
+.auc-versions b { color: var(--ink); font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+.auc-status { min-height: 20px; margin: 0; color: var(--muted); line-height: 1.45; }
+.auc-actions { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 9px; }
+.auc-actions button { min-height: 46px; border-radius: 11px; font: 700 13px/1 'IBM Plex Sans', system-ui, sans-serif; cursor: pointer; }
+.auc-actions button:disabled { opacity: .55; cursor: default; }
+.auc-primary { border: 1px solid #2ea043; background: #238636; color: #fff; }
+.auc-secondary { border: 1px solid var(--line2); background: transparent; color: var(--muted); }
+@media (max-width: 600px) {
+  .app-update-control { place-items: end stretch; padding: 0; }
+  .auc-sheet { width: 100%; padding: 20px 18px calc(20px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; border-width: 1px 0 0; }
+  .auc-actions { grid-template-columns: 1fr; }
+  .auc-actions button { min-height: 50px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auc-sheet { animation: none; }
+}
+
 /* The terminal is interactive now: cursorInactiveStyle:'none' (web/session.js) keeps the cursor hidden
    while the terminal is unfocused (calm idle viewing), and the active block shows only while you're
    actually typing into it — so no CSS cursor override here. */

@@ -294,7 +294,7 @@ function renderSide() {
   // gone — the OS shows the time.
   const am = authMode; // fetched once per page (fetchAuthMode below); null until known
   const chip = am == null ? '' : am.badge;
-  $('#dk-foot').innerHTML = `<span title="Supercalm build">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${chip}</span>`;
+  $('#dk-foot').innerHTML = `<button class="dk-version" type="button" data-aios-update data-aios-version title="Check for an app update">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</button><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${chip}</span>`;
 }
 
 // Auth-mode footer chip: one fetch per page load (a footer status, not a live feed). proxy (external
@@ -314,7 +314,7 @@ let appVersion = null; // footer build stamp; renderSide falls back to the hostn
   } catch { authMode = { badge: '' }; }
   const foot = $('#dk-foot');
   if (foot && (authMode || appVersion)) {
-    foot.innerHTML = `<span title="Supercalm build">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</span><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${authMode?.badge || ''}</span>`;
+    foot.innerHTML = `<button class="dk-version" type="button" data-aios-update data-aios-version title="Check for an app update">${appVersion ? 'v' + esc(appVersion) : esc(location.hostname)}</button><span class="dk-foot-sp"></span><span class="dk-foot-proxy">${authMode?.badge || ''}</span>`;
   }
 })();
 

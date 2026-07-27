@@ -103,6 +103,9 @@ a { color: var(--blue); text-decoration: none; }
 .ph-sysnav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .ph-sysnav a { display: flex; align-items: center; justify-content: center; min-height: 46px; background: var(--bg-row); border: 1px solid var(--bd-soft2); border-radius: 12px; color: var(--tx); font-size: 13px; font-weight: 600; text-decoration: none; }
 .ph-sysnav a:active { background: #10161f; }
+.ph-app-foot { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px 4px 2px; color: var(--tx-faint); font-size: 10px; }
+.ph-app-foot button { min-height: 34px; color: var(--tx-mut); text-decoration: underline; text-underline-offset: 3px; }
+.ph-app-foot button:active { color: var(--tx); }
 .sec-label .cnt.neutral { background: rgba(120, 170, 255, .16); color: #79b8ff; }
 .dot { width: 8px; height: 8px; border-radius: 4px; flex-shrink: 0; }
 .dot.pulse { animation: scPulse 2.8s ease-in-out infinite; }

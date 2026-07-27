@@ -246,6 +246,15 @@ try {
   ]);
   assert.ok(cardBox && actionsBox && actionsBox.x >= cardBox.x && actionsBox.x + actionsBox.width <= cardBox.x + cardBox.width,
     'phone option-card actions stay inside the card');
+  const phoneVersion = phone.locator('.ph-app-foot [data-aios-update]');
+  await phone.waitForFunction(() => document.querySelector('.ph-app-foot [data-aios-version]')?.textContent === 'vtest');
+  await phoneVersion.click();
+  const phoneUpdateSheet = phone.locator('#aios-update-control .auc-sheet');
+  await phoneUpdateSheet.waitFor();
+  const phoneUpdateBox = await phoneUpdateSheet.boundingBox();
+  assert.ok(phoneUpdateBox && Math.abs(phoneUpdateBox.y + phoneUpdateBox.height - 844) < 2,
+    'the phone footer version opens the PWA refresh bottom sheet');
+  await phone.screenshot({ path: join(outDir, 'phone-pwa-update.png'), fullPage: true });
   await phone.close();
 } finally {
   await browser.close();

@@ -120,6 +120,8 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-sess-proj { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; padding: 1px 6px; margin-right: 6px; }
 .dk-empty-side { color: #3a4453; font-size: 12px; padding: 6px 9px; }
 .dk-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5c6675; padding: 8px 6px 2px; }
+.dk-version { border: 0; background: none; color: inherit; font: inherit; padding: 4px 0; cursor: pointer; border-radius: 5px; }
+.dk-version:hover, .dk-version:focus-visible { color: #9aa7b8; outline: none; text-decoration: underline; text-underline-offset: 3px; }
 .dk-foot-sp { flex: 1; }
 .dk-foot-proxy { display: inline-flex; align-items: center; gap: 5px; color: #4ecb6c; }
 

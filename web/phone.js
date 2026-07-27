@@ -36,7 +36,14 @@ const S = {
   killArmed: false, killTimer: null,
   toast: '', toastTimer: null,
   dismissedOpen: false,
+  appVersion: null,
 };
+addEventListener('aios:version', (event) => {
+  const version = event.detail?.version;
+  if (!version || version === S.appVersion) return;
+  S.appVersion = version;
+  if (S.screen === 'home') renderSoft();
+});
 
 // ---- utils -------------------------------------------------------------------------------------
 const $ = (sel) => app.querySelector(sel);
@@ -654,6 +661,7 @@ function renderHome() {
         <a href="./?desktop=1">Desktop site ›</a>
       </nav>
       ${others.length ? `<div class="sec-label" style="padding-top:12px">ALL SESSIONS <span class="cnt neutral">${others.length}</span></div>${otherRows}` : ''}
+      <div class="ph-app-foot"><button type="button" data-aios-update data-aios-version>${S.appVersion ? `v${esc(S.appVersion)}` : 'Check for update'}</button><span>tap to refresh the installed app</span></div>
     </div>
   </div>`;
 }
