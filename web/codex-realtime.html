@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <base href="/aios/" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0e14" />
+  <title>Codex realtime lab · Supercalm</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="codex-realtime.css" />
+</head>
+<body>
+  <main class="lab">
+    <nav class="topbar">
+      <a href="./" class="back" aria-label="Back to Supercalm">← Supercalm</a>
+      <span class="experimental">Experimental</span>
+    </nav>
+
+    <header class="hero">
+      <div>
+        <p class="eyebrow">CODEX VOICE</p>
+        <h1>Talk to Codex</h1>
+      </div>
+      <p class="lede">Uses native realtime when available, otherwise Codex with local Whisper and Kokoro.</p>
+    </header>
+
+    <section class="panel" aria-labelledby="connection-title">
+      <div class="panel-head">
+        <div>
+          <p class="kicker">CONNECTION</p>
+          <h2 id="connection-title">Voice session</h2>
+        </div>
+        <div id="status-pill" class="status checking"><span></span><b>Checking</b></div>
+      </div>
+
+      <div id="setup" class="setup" hidden>
+        <strong>Codex sign-in needed.</strong>
+        <p id="setup-copy"></p>
+      </div>
+
+      <div class="controls">
+        <label>
+          Voice path
+          <select id="voice" aria-label="Realtime voice" disabled>
+            <option value="marin">Marin</option>
+          </select>
+        </label>
+        <button id="start" class="primary" type="button" disabled>
+          <span class="mic">●</span>
+          <span data-label>Speak</span>
+        </button>
+        <button id="stop" class="secondary" type="button" disabled>Stop</button>
+      </div>
+      <p id="connection-detail" class="detail" role="status">Inspecting the local Codex installation…</p>
+      <audio id="remote-audio" autoplay></audio>
+    </section>
+
+    <section class="panel conversation" aria-labelledby="conversation-title">
+      <div class="panel-head">
+        <div>
+          <p class="kicker">LIVE TRANSCRIPT</p>
+          <h2 id="conversation-title">Conversation</h2>
+        </div>
+        <button id="clear" class="quiet" type="button">Clear</button>
+      </div>
+      <div id="transcript" class="transcript" aria-live="polite">
+        <p class="empty">Start the session, then speak naturally. Server VAD decides when your turn ends.</p>
+      </div>
+      <form id="text-form" class="text-form">
+        <input id="text-input" type="text" maxlength="4000" autocomplete="off" placeholder="Or send a text turn…" disabled />
+        <button type="submit" disabled>Send</button>
+      </form>
+    </section>
+
+    <details class="diagnostics">
+      <summary>Protocol diagnostics</summary>
+      <pre id="events">Waiting for capability check…</pre>
+    </details>
+  </main>
+  <script type="module" src="codex-realtime.js"></script>
+</body>
+</html>

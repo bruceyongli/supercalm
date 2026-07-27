@@ -53,6 +53,7 @@
     "test:phone": "node test/phone_api.test.js",
     "test:voice-brief": "node test/voice_brief.test.js",
     "test:voice-report": "node test/voice_report.test.js",
+    "poc:codex-realtime": "node scripts/codex-realtime-smoke.mjs",
     "test:dispatch-guard": "node test/supervisor_dispatch_guard.test.js",
     "test:claude-transcripts": "node test/claude_transcripts.test.js",
     "test:survey-gate": "node test/feedback_survey_gate.test.js",
