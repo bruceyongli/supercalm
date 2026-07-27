@@ -204,11 +204,11 @@ await answerScenario('4b-audience-autopilot-delegation', {
   expect: { action: 'answer', minSends: 1, mustNot: [/escalat/i] },
 });
 
-// 5. Stage: plan approval pending
+// 5. Stage: explicit Supervisor Autopilot owns plan review (accept/correct; never blind operator relay)
 await answerScenario('5-stage-plan-approval', {
   session: { question: 'Here is my implementation plan (3 phases). Approve the plan / say go and I will start.', summary: 'agent awaits plan approval', category: 'decision' },
   evidence: { terminal_tail: 'PLAN:\nPhase 1 schema, Phase 2 API, Phase 3 UI.\nReply "go" to approve the plan and I will start building.\n> ' },
-  expect: { action: 'escalate', maxSends: 0, mustNot: [/\bgo ahead\b|start (build|cod)ing|approved/i] },
+  expect: { action: 'answer', minSends: 1, must: [/plan|phase|schema|test|evidence/i], mustNot: [/operator.{0,40}(approve|go-ahead)|needs your call|human_gate/i] },
 });
 
 // 6. Claude footer is not a wedge: doc-settled routine question with the scary footer present

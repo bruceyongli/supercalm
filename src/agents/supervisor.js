@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, buildAnswerUserText } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, buildAnswerUserText } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -1022,8 +1022,14 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   let sys = pb.sys_answer;
   if (calibrated) sys += '\n\n' + pb.calibration_addendum;
   if (auto) sys += '\n\n' + pb.autonomy_addendum;
-  sys += '\n\n' + STAGE_ADDENDUM; // stand down if the agent is still planning / awaiting plan approval (any playbook version)
-  sys += '\n\n' + RESERVED_APPROVAL_ADDENDUM; // deploy-incident hardening: operator words ONLY from OPERATOR_MESSAGES, never the terminal
+  // In Co-pilot/legacy modes, planning remains operator-owned. Explicit Supervisor Autopilot instead
+  // makes this brain the PLAN REVIEWER — accept, correct, or reject, never rubber-stamp.
+  sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_PLAN_ADDENDUM : STAGE_ADDENDUM);
+  let delegatedRelease = false;
+  if (cfg.mode === 'autopilot' && ctx.hasCap('integrate') && typeof ctx.integrationReadiness === 'function') {
+    try { delegatedRelease = !!ctx.integrationReadiness()?.ok; } catch {}
+  }
+  sys += '\n\n' + (delegatedRelease ? AUTOPILOT_RELEASE_ADDENDUM : RESERVED_APPROVAL_ADDENDUM);
   sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: other sessions' work is subject matter, not jurisdiction; card lifecycle is the operator's
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
@@ -1034,7 +1040,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   // A report/option list addressed to the OPERATOR gets answered only under an explicit autopilot
   // stance (real delegation); otherwise it escalates no matter how confident the model is.
   // Deterministic on the model's own JSON field; absent field = legacy playbook, no-op.
-  if (parsed && String(parsed.audience || '') === 'operator_choice' && resolveStance(ctx.getState().operatorStance) !== 'autopilot') {
+  if (parsed && String(parsed.audience || '') === 'operator_choice' && cfg.mode !== 'autopilot' && resolveStance(ctx.getState().operatorStance) !== 'autopilot') {
     parsed.action = 'escalate';
     if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
     parsed.reason = `The pending item is addressed to the operator (audience=operator_choice, no autopilot delegation)${parsed.reason ? ' — ' + parsed.reason : ''}`;
@@ -1432,7 +1438,7 @@ export const meta = {
   description: 'Auto-pilot supervisor: answers the agent’s questions from a supervision doc (or escalates), unsticks it when it stalls, recovers it from transient/rate-limit API errors with backoff, and interrogates + verifies completion before sign-off.',
   kind: 'agent',
   scope: 'session',
-  capabilities: ['read-context', 'screenshot', 'model-calls', 'send-input', 'write-files'],
+  capabilities: ['read-context', 'screenshot', 'model-calls', 'send-input', 'integrate', 'write-files'],
   ui: { tab: 'Supervisor', order: 20 },
   tick: true,
   defaults: {
@@ -1872,6 +1878,129 @@ async function realityCheck(ctx) {
   } catch { return null; }
 }
 
+// Explicit Supervisor Autopilot + the separately-enabled project autoPublish mechanism is the standing
+// deployment delegation. Verification freezes the exact work state; this function only submits its clean
+// worktree HEAD into the existing integration state machine. It never shells out or publishes directly.
+async function maybeAutoIntegrate(ctx, cfg, { workFp = '', assessment = '', snapshot = null } = {}) {
+  if (cfg.mode !== 'autopilot') return { active: false, reason: 'mode-not-autopilot' };
+  if (!ctx.hasCap('integrate')) {
+    const st = ctx.getState();
+    if (st.releaseBlockedKey !== 'integrate-capability-missing') {
+      applySupervisorState(ctx, { releaseBlockedKey: 'integrate-capability-missing' }, { snapshot });
+      logIntervention(ctx, { kind: 'escalate', trigger: 'release', model: null, verdict: 'held', assessment: 'Autopilot verified the task but cannot submit it: the narrowly-scoped integrate capability is not granted. Re-select/save Autopilot to grant it; no deployment was attempted.', message: '', sent: 0 });
+      ctx.notifyOperator('Verified, but release authority is incomplete', 'Supervisor Autopilot needs its integrate capability; no deployment was attempted.');
+    }
+    return { active: true, queued: false, error: 'integrate capability is not granted' };
+  }
+  if (typeof ctx.integrationReadiness !== 'function' || typeof ctx.requestIntegration !== 'function') {
+    return { active: true, queued: false, error: 'Supervisor integration actuator is unavailable' };
+  }
+  const ready = ctx.integrationReadiness();
+  // autoPublish OFF means there is intentionally no standing deployment delegation. Local verification is
+  // still a valid final result; do not nag the operator to turn deployment on.
+  if (!ready?.ok && ready?.code === 'autopublish_off') return { active: false, reason: ready.code };
+  if (!ready?.ok) {
+    const key = `${ready?.code || 'not-ready'}|${workFp}`;
+    const st = ctx.getState();
+    if (st.releaseBlockedKey !== key) {
+      applySupervisorState(ctx, { releaseBlockedKey: key }, { snapshot });
+      logIntervention(ctx, { kind: 'escalate', trigger: 'release', model: null, verdict: 'held', assessment: `Autopilot verified the task but the standing release path is not ready: ${ready?.error || ready?.code || 'unknown readiness failure'}. No deployment was attempted.`, message: '', sent: 0 });
+      ctx.notifyOperator('Verified, but delegated release is blocked', clampLine(ready?.error || ready?.code || 'release path unavailable', 140));
+    }
+    return { active: true, queued: false, error: ready?.error || ready?.code || 'release path unavailable' };
+  }
+  const st = ctx.getState();
+  if (st.integrationRequestedWorkFp === workFp && st.integrationId) {
+    return { active: true, queued: true, duplicate: true, integrationId: st.integrationId };
+  }
+  const result = await ctx.requestIntegration();
+  if (!result?.ok) {
+    const failure = {
+      id: '',
+      stage: 'REQUEST_REFUSED',
+      code: result?.code || 'request_failed',
+      detail: result?.error || 'integration request failed',
+      at: now(),
+    };
+    applySupervisorState(ctx, {
+      releaseBlockedKey: `${failure.code}|${workFp}`,
+      ...(['dirty_worktree', 'branch_mismatch', 'no_candidate', 'git_status_failed', 'candidate_previously_failed'].includes(failure.code)
+        ? { verifiedWorkFp: null, verifiedGateKey: null, verifiedAt: null, releaseFailure: failure }
+        : {}),
+    }, { snapshot });
+    logIntervention(ctx, { kind: 'escalate', trigger: 'release', model: null, verdict: 'held', assessment: `Verified candidate was not queued: ${failure.code} — ${failure.detail}. No deployment was attempted.`, message: '', sent: 0 });
+    ctx.notifyOperator('Verified, but delegated release could not start', clampLine(`${failure.code}: ${failure.detail}`, 140));
+    return { active: true, queued: false, error: failure.detail, code: failure.code };
+  }
+  const row = result.integration;
+  applySupervisorState(ctx, {
+    integrationId: row.id,
+    integrationStage: row.stage,
+    integrationRequestedWorkFp: workFp,
+    integrationCandidateSha: result.candidateSha || row.candidate_sha,
+    releaseBlockedKey: null,
+    releaseFailure: null,
+  }, { snapshot });
+  logIntervention(ctx, { kind: 'integrate', trigger: 'completion', model: null, verdict: result.duplicate ? 'observed' : 'queued', assessment: `Gate-verified candidate ${String(result.candidateSha || row.candidate_sha || '').slice(0, 12)} ${result.duplicate ? 'already has' : 'entered'} integration ${row.id} (${row.stage}). The durable pipeline owns publication, health proof, and rollback.`, message: '', sent: 0 });
+  return { active: true, queued: true, duplicate: !!result.duplicate, integrationId: row.id };
+}
+
+// Monitor the durable release row across ticks and across the self-deploy restart. GREEN is the only
+// release success. Deterministic pre-publication failures and completed rollbacks go back to the builder;
+// an ambiguous/post-publication HELD is an operator boundary because blind repair could compound damage.
+async function maybeMonitorIntegration(ctx, cfg, st) {
+  if (!st.integrationId || typeof ctx.integrationStatus !== 'function') return false;
+  const row = ctx.integrationStatus(st.integrationId);
+  if (!row) {
+    if (st.integrationStage !== 'MISSING') {
+      applySupervisorState(ctx, { integrationStage: 'MISSING' });
+      ctx.notifyOperator('Release tracking lost', `Integration ${st.integrationId} is no longer readable; no further release action was taken.`);
+    }
+    return true;
+  }
+  if (row.stage !== st.integrationStage) {
+    applySupervisorState(ctx, { integrationStage: row.stage });
+    logIntervention(ctx, { kind: 'integrate', trigger: 'release', model: null, verdict: row.stage.toLowerCase(), assessment: `Integration ${row.id} advanced to ${row.stage}${row.failure_code ? ` (${row.failure_code})` : ''}.`, message: '', sent: 0 });
+  }
+  if (row.stage === 'GREEN') {
+    if (st.releaseFinalizedId !== row.id) {
+      applySupervisorState(ctx, { integrationId: null, integrationStage: 'GREEN', releaseFinalizedId: row.id, releaseFinalizedAt: now(), releaseFailure: null });
+      ctx.notifyOperator('✓ Released and verified', clampLine(`${ctx.session()?.title || 'Session'} — ${String(row.candidate_sha || '').slice(0, 12)} is GREEN and serving through integration ${row.id}.`, 150));
+      ctx.emit('review', { verdict: 'released', summary: `integration ${row.id} reached GREEN` });
+    }
+    return true;
+  }
+  if (row.stage === 'HELD') {
+    if (st.releaseHeldNotifiedId !== row.id) {
+      applySupervisorState(ctx, { releaseHeldNotifiedId: row.id });
+      ctx.notifyOperator('Delegated release is HELD', clampLine(`Integration ${row.id}: ${row.failure_code || 'ambiguous state'}. Publication may have started; review is required.`, 150));
+      ctx.emit('review', { verdict: 'release_held', summary: `${row.failure_code || 'ambiguous release state'} — needs operator` });
+    }
+    return true;
+  }
+  if (row.stage === 'REJECTED' || row.stage === 'ROLLED_BACK') {
+    const failure = {
+      id: row.id,
+      stage: row.stage,
+      code: row.failure_code || (row.stage === 'ROLLED_BACK' ? 'post_release_verification_failed' : 'release_gate_rejected'),
+      detail: row.failure_detail || `Integration ${row.id} ended ${row.stage}`,
+      at: now(),
+    };
+    applySupervisorState(ctx, {
+      integrationId: null,
+      integrationStage: row.stage,
+      verifiedWorkFp: null,
+      verifiedGateKey: null,
+      verifiedAt: null,
+      releaseFailure: failure,
+    });
+    ctx.notifyOperator(row.stage === 'ROLLED_BACK' ? 'Release rolled back safely' : 'Release gate rejected the candidate',
+      clampLine(`${failure.code}: ${failure.detail}`, 150));
+    return false; // continue this tick; the releaseFailure correction lane runs after snapshot construction
+  }
+  return true; // QUEUED / active: freeze builder pressure until the durable release reaches a terminal state
+}
+
 export async function onTick(ctx) {
   const s = ctx.session();
   const cfg = ctx.getConfig();
@@ -1913,6 +2042,11 @@ export async function onTick(ctx) {
     st = applySupervisorState(ctx, { baseRef });
   }
   const baseRef = st.baseRef || null;
+
+  // A delegated release is a durable external state machine. While one is in flight, supervise THAT
+  // state instead of continuing to nudge a builder whose candidate is already frozen and queued.
+  if (st.integrationId && await maybeMonitorIntegration(ctx, cfg, st)) return;
+  st = ctx.getState();
 
   // EVENT GATE (v4 Phase 0, event_gate.js): everything below — evidence subprocesses, card/doc
   // maintenance, stance updates, brains — runs only when something observable CHANGED (pane hash,
@@ -2010,7 +2144,30 @@ export async function onTick(ctx) {
   let fp = progressFp(ev);
   let gateKey = cfg.doc && cfg.doc.trim() ? gateScopeKey(cfg.doc) : '';
   let snapshot = snapshotFor(ctx, cfg, ev, st, fp, gateKey, operatorIntent, t);
-  const policyPreview = decideSupervisorAction(snapshot, { allowIdleNudge: false });
+  const policyPreview = decideSupervisorAction(snapshot, { mode: cfg.mode, allowIdleNudge: false });
+  // A deterministic gate/rollback failure is work for Autopilot, not automatically an operator stage:
+  // send the exact durable failure back to the builder once and require a corrected commit. Ambiguous
+  // post-publication HELDs never enter this lane; maybeMonitorIntegration keeps those operator-held.
+  if (st.releaseFailure && cfg.mode === 'autopilot') {
+    const failure = st.releaseFailure;
+    const checked = `integration ${String(failure.id || '').slice(0, 32)} ${failure.stage || 'failed'} ${failure.code || 'unknown'}`;
+    const text = `The gated release did not reach GREEN (${failure.stage || 'failed'} / ${failure.code || 'unknown'}). ${clampLine(failure.detail || 'Inspect the failed gate and correct the candidate.', 360)} Fix the cause, commit the correction, rerun the required tests, and report completion with fresh evidence.`;
+    const allowed = canSend(ctx, cfg, 'challenge');
+    const r = await dispatchSupervisorSend(ctx, {
+      snapshot,
+      ruleId: 'release.correct_failed_candidate',
+      actionType: 'challenge',
+      intent: { name: 'CHALLENGE_TEXT', params: { text, checked } },
+      sendOptions: { guarded: true, blockDecision: false, budgetKey: `release:${failure.id || failure.code}` },
+      allowedSend: allowed,
+      suppressionReason: allowed ? '' : blockedReason(ctx, cfg, 'challenge'),
+      triggeringSignal: triggeringSignal('release_failure', checked, 'integrations'),
+      reasons: ['delegated release failed before a verified final outcome; builder must produce a corrected candidate'],
+    });
+    if (r.sent) applySupervisorState(ctx, { releaseFailure: null, lastActionAt: now() });
+    logIntervention(ctx, { kind: 'challenge', trigger: 'release', model: null, verdict: r.sent ? 'sent' : 'held', assessment: text, message: r.draft || '', sent: r.sent ? 1 : 0, sent_text: r.message || '' });
+    return;
+  }
   // A per-message regex 'wait' must NEVER override an explicit DURABLE autopilot delegation. updateOperatorStance
   // (semantic, LLM-driven) ran one line above; if it still reads autopilot after this very message, the operator
   // did NOT ask to halt — a bare "stop" token (e.g. "do not ever stop") was misread. Deferring to the durable
@@ -2341,8 +2498,19 @@ export async function onTick(ctx) {
     if (complete) {
       logIntervention(ctx, { kind: 'verify', trigger: 'completion', model, verdict: 'complete', score: parsed.score, assessment: parsed.assessment, message: '', sent: 0, screenshot, raw, error });
       applySupervisorState(ctx, { verifiedWorkFp: fp.work, verifiedGateKey: gateKey, challengedWorkFp: null, verifiedAt: now(), signoff: { assessment: tailStr(parsed.assessment, 1200), score: parsed.score ?? null, at: now() } });
-      ctx.notifyOperator('✓ Verified complete', clampLine((ctx.session()?.title || 'Session') + ' — ' + (parsed.assessment || 'meets the plan'), 130));
-      ctx.emit('review', { verdict: 'complete', summary: clampLine(parsed.assessment, 160) });
+      const release = await maybeAutoIntegrate(ctx, cfg, {
+        workFp: fp.work,
+        assessment: parsed.assessment,
+        snapshot,
+      });
+      if (!release.active) {
+        ctx.notifyOperator('✓ Verified complete', clampLine((ctx.session()?.title || 'Session') + ' — ' + (parsed.assessment || 'meets the plan'), 130));
+        ctx.emit('review', { verdict: 'complete', summary: clampLine(parsed.assessment, 160) });
+      } else if (release.queued) {
+        ctx.emit('review', { verdict: 'release_queued', summary: 'verified candidate entered the gated release pipeline' });
+      } else {
+        ctx.emit('review', { verdict: 'release_blocked', summary: clampLine(release.error || 'delegated release could not start', 160) });
+      }
       return;
     }
     // GOAL CONFLICT: the verifier judged the doc's GOAL itself diverges from the authoritative spec (not mere
@@ -2832,6 +3000,7 @@ async function maybeRecoverContextWedge(ctx, cfg, ev, st, t, snapshot = null) {
 function sendCapabilityFor(grant, cfg = {}) {
   const caps = Array.isArray(grant?.caps) ? grant.caps : [];
   const sendInputGranted = caps.includes('send-input');
+  const integrateGranted = caps.includes('integrate');
   const mode = modeOf(cfg);
   const observeOnly = mode === 'observe';
   return {
@@ -2839,6 +3008,7 @@ function sendCapabilityFor(grant, cfg = {}) {
     copilotConfidence: copilotThreshold(cfg),
     canSend: !!grant?.enabled && !observeOnly && sendInputGranted, // "can deliver anything at all" (copilot still gates per message)
     sendInputGranted,
+    integrateGranted,
     observeOnly,
     blockedReason: observeOnly ? 'mode-observe' : sendInputGranted ? '' : 'send-input-not-granted',
   };

@@ -7,8 +7,8 @@ sessions the CLIs forget goals, drift, repeat failed fixes, and collide in the s
 
 Supercalm's agents are the **endurance layer**: they hold the goal, the quality bar, the
 history, and the operator's taste, so the sprinters can keep running at superhuman level for
-the whole project. None of them writes code. None of them picks the CLI's approach. That's the
-point.
+the whole project. The Supervisor does not write product code; it manages the builders that do,
+including correcting their approach when that is necessary to finish the mission.
 
 Each session's right-side panel has one tab per agent. Agents are opt-in per session (the
 Supervisor) or always-on views (Knowledge, Map, Usage).
@@ -34,13 +34,17 @@ What shapes its judgment (each of these is visible in the panel):
 |---|---|
 | **Task contract** (the Supervision Doc today; [task cards](specs/project-memory-plan.md) next) | *What are we trying to accomplish, and how do we know it's done?* The completion gate grills builders against this. |
 | **Doctrine / Learning** | Rules the supervisor *learned from your real replies*. You approve each rule before it goes live — approval **is** deployment. Audit-type rules are actively checked against evidence; violations block sign-off. |
-| **Send authority** (Off · Observe · Co-pilot · Autopilot) | What it may send without you: nothing / only what it's sure of / everything except reserved actions. |
+| **Managerial authority** (Off · Observe · Co-pilot · Autopilot) | Whether it only watches, actively reviews, or owns the in-scope work through verified delivery. |
 | **Attention governor** (hot / warm / stale) | Supervision effort follows *your* engagement: sessions you've touched recently get full care; abandoned ones decay to detection-only instead of burning model calls forever. |
 | **Operator stance & stage awareness** | Reads what you want right now (full-auto vs hold vs answer-only) and stands down while the builder is still planning. |
 | **Decision memory** | Your past answers, retrieved as precedents so it answers like you did before. |
 
-What it will never do: write code, choose implementations, merge, deploy, or approve
-policy-level things on your behalf. Those stay yours.
+The operating contract is in
+[`docs/supervisor-mission-and-autonomy.md`](supervisor-mission-and-autonomy.md). In short:
+Co-pilot sends only high-confidence routine answers and evidence challenges. Autopilot is the
+accountable manager: it may review plans, guide implementation, coordinate work, verify completion,
+and use an operator-enabled gated integration/deployment mechanism. Product-goal changes and actions
+outside standing authority still come to you.
 
 ## Project Knowledge — the descriptive layer
 

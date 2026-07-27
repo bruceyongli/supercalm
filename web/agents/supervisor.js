@@ -32,7 +32,7 @@ function scorePill(rv, compact = false) {
     ? `<span class="sup-hist-score" title="${esc(title)}">conf ${value}</span>`
     : `<span class="sup-score" title="${esc(title)}"><span>Confidence</span><b>${value}</b></span>`;
 }
-const AUTOPILOT_CAPS = ['read-context', 'screenshot', 'model-calls', 'send-input'];
+const SENDING_CAPS = ['read-context', 'screenshot', 'model-calls', 'send-input'];
 
 let P = null; // papi
 let host = null; // root element
@@ -60,9 +60,12 @@ function cfgOf(v) {
   cfg.preview_profiles = normalizePreviewProfiles(cfg);
   return cfg;
 }
-// caps the auto-pilot switch grants when enabled (send-input is the point); write-files only when GOAL.md is on.
+// Co-pilot receives send-input. Autopilot additionally receives the narrowly-scoped integration
+// actuator; it still cannot run shell deploys and the project autoPublish switch remains a separate,
+// explicit standing deployment delegation. write-files is only for the optional GOAL.md projection.
 function autopilotCaps(d) {
-  return d.write_goal_file ? [...AUTOPILOT_CAPS, 'write-files'] : [...AUTOPILOT_CAPS];
+  const caps = [...SENDING_CAPS, ...(d.mode === 'autopilot' ? ['integrate'] : [])];
+  return d.write_goal_file ? [...caps, 'write-files'] : caps;
 }
 
 export const panel = {
@@ -337,8 +340,8 @@ function renderLearn(force = false) {
 const MODE_COPY = {
   off: 'Off — pick a mode to start. Co-pilot is the balanced default.',
   observe: 'Watches and learns. Drafts what it would do — sends nothing.',
-  copilot: 'Sends only what it’s sure of: confident answers and evidence requests. Everything else waits for you.',
-  autopilot: 'Runs the session for you — answers, unsticks, verifies completion. Irreversible calls still come to you.',
+  copilot: 'Active reviewer: sends confident routine answers and evidence requests; holds management and release actions.',
+  autopilot: 'Accountable manager: reviews plans, guides and recovers work, verifies completion, and uses enabled gated release paths.',
 };
 
 function renderHeader() {
@@ -350,7 +353,8 @@ function renderHeader() {
   const on = !!v.grant?.enabled;
   const cur = on ? d.mode : 'off';
   const sendCap = data().sendCapability || {};
-  const capMissing = on && d.mode !== 'observe' && !sendCap.sendInputGranted;
+  const sendMissing = on && d.mode !== 'observe' && !sendCap.sendInputGranted;
+  const integrateMissing = on && d.mode === 'autopilot' && !sendCap.integrateGranted;
   const tmplOpts = '<option value="">Load behavior template…</option>' + templates.map((t) => `<option value="${t.id}">${esc(t.name)}</option>`).join('');
   // Resolved model chain: what the supervisor will ACTUALLY try, in order (custom list wins wholesale,
   // else pinned model + tool-aware default). Primary = chain[0]; "last used" = the latest review's model.
@@ -362,8 +366,8 @@ function renderHeader() {
   const modeSelect = `<select class="sup-mode-select" id="sup-mode" ${busy ? 'disabled' : ''} aria-label="Supervisor send authority">${['off', 'observe', 'copilot', 'autopilot'].map((m) => `<option value="${m}" ${cur === m ? 'selected' : ''}>${MODE_LABEL[m]}</option>`).join('')}</select>`;
   const visionWarn = models.length && chain.length && !chain.some((id) => models.find((mm) => mm.id === id)?.vision)
     ? '<div class="sup-hint sup-warn">Text-only chain: screenshots are captured but not shown to the reviewer.</div>' : '';
-  const capAlert = capMissing
-    ? '<div class="sup-hint sup-cap-alert"><span>This mode needs the <b>send-input</b> capability and it is not granted.</span><button class="btn sm" id="sup-grant-send" type="button">Grant it</button></div>'
+  const capAlert = sendMissing || integrateMissing
+    ? `<div class="sup-hint sup-cap-alert"><span>This mode needs ${[sendMissing ? '<b>send-input</b>' : '', integrateMissing ? '<b>integrate</b>' : ''].filter(Boolean).join(' and ')} and it is not granted.</span><button class="btn sm" id="sup-grant-send" type="button">Grant it</button></div>`
     : '';
   // The supervisor loop runs on the server (launchd daemon), not in this page. Compact: dot + 4 words;
   // hover (title) or click for the full reassurance.

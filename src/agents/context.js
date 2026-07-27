@@ -14,6 +14,8 @@ import { sessionContext, gatherImages, gitHead } from './evidence.js';
 import { gitProbe, urlProbe } from './probes.js';
 import { callProxyModel, isVisionRoute } from './model.js';
 import { activePreviewProfiles, normalizePreviewProfiles } from '../preview_profiles.js';
+import { integrationReadiness, requestSessionIntegration } from '../integration_request.js';
+import * as integrations from '../integrations.js';
 
 // The Context (`ctx`) is the ONLY surface a panel agent may touch — it must never import db/bus/
 // sendText directly. Every acting/observing method is gated by a declared+granted capability. This
@@ -22,8 +24,8 @@ import { activePreviewProfiles, normalizePreviewProfiles } from '../preview_prof
 // Caps an operator must grant EXPLICITLY (they let an agent act on the session/filesystem). The rest
 // (read-context, screenshot, model-calls) are auto-granted when an agent is enabled — observe/think,
 // not act. The Builder's `manage-agents` is high-risk on purpose.
-export const HIGH_RISK_CAPS = new Set(['send-input', 'write-files', 'exec', 'manage-agents']);
-export const ALL_CAPS = ['read-context', 'screenshot', 'model-calls', 'send-input', 'write-files', 'exec', 'manage-agents'];
+export const HIGH_RISK_CAPS = new Set(['send-input', 'integrate', 'write-files', 'exec', 'manage-agents']);
+export const ALL_CAPS = ['read-context', 'screenshot', 'model-calls', 'send-input', 'integrate', 'write-files', 'exec', 'manage-agents'];
 
 export class CapabilityError extends Error {
   constructor(cap, agentId, reason = 'denied') {
@@ -246,6 +248,25 @@ export function makeContext(agent, session_id, extra = {}) {
       requireCap('send-input');
       if (isGlobal) throw new Error('global agent cannot resume a session');
       return await resumeSessionById(session_id, { force });
+    },
+
+    // ---- integrate (operator-enabled autonomous release pipeline) -----------
+    // This is NOT shell execution and never calls bin/deploy directly. It can only enqueue this
+    // session's exact clean worktree HEAD into the existing fenced/gated/health-verified pipeline.
+    integrationReadiness() {
+      requireCap('read-context');
+      if (isGlobal) return { ok: false, code: 'global_scope', error: 'global agent cannot integrate a session' };
+      return integrationReadiness(session_id);
+    },
+    async requestIntegration() {
+      requireCap('integrate');
+      if (isGlobal) return { ok: false, code: 'global_scope', error: 'global agent cannot integrate a session' };
+      return await requestSessionIntegration(session_id);
+    },
+    integrationStatus(integrationId) {
+      requireCap('read-context');
+      const row = integrations.getIntegration(String(integrationId || ''));
+      return row && row.session_id === session_id ? row : null;
     },
 
     // ---- write-files (confined to the session's project cwd) ----------------

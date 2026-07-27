@@ -160,7 +160,7 @@ function registryView(session_id) {
 
 // Apply an enable/caps/config patch with the consent policy: explicit `caps` (from the consent UI)
 // replace the granted set; on a bare enable, auto-grant low-risk declared caps only — high-risk
-// (send-input/write-files/exec/manage-agents) stay off until the operator opts in.
+// (send-input/integrate/write-files/exec/manage-agents) stay off until the operator opts in.
 function applyGrant(gid, rec, body) {
   const declared = rec.meta.capabilities || [];
   const existing = getGrant(gid, rec.meta.id);

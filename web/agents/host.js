@@ -5,12 +5,13 @@ import { $, api, escapeHtml, isInteracting } from '../common.js';
 // Agents-home (recommender + capability-consent UI). Map/Usage stay as "legacy" bridges — their
 // endpoints are unchanged, so the host just toggles their existing DOM and calls their loader.
 
-const HIGH_RISK = new Set(['send-input', 'write-files', 'exec', 'manage-agents']);
+const HIGH_RISK = new Set(['send-input', 'integrate', 'write-files', 'exec', 'manage-agents']);
 const CAP_LABEL = {
   'read-context': 'Read session context (git diff, terminal, messages)',
   screenshot: 'Capture preview screenshots',
   'model-calls': 'Call LLM models (metered to Usage)',
   'send-input': 'Send input INTO the running CLI agent',
+  integrate: 'Submit this session through the gated integration/release pipeline',
   'write-files': 'Write files in the project directory',
   exec: 'Run shell commands',
   'manage-agents': 'Create / edit other agents',

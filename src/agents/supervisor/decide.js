@@ -17,6 +17,7 @@ export const POLICY_RULES = [
   'session.no_doc',
   'session.signed_off',
   'stage.stand_down',
+  'mode.autopilot_review_plan',
   'stance.autopilot_proceed',
   'verification.needs_evidence',
   'completion.no_new_signal',
@@ -80,6 +81,8 @@ export function decideSupervisorAction(snapshot, config = {}) {
 
   // DURABLE OPERATOR STANCE (stance.js) + semantic STAGE (stage.js) — the two axes of the whole policy.
   const stance = resolveStance(snapshot?.stance);
+  const supervisorAutopilot = config.mode === 'autopilot';
+  const delegatedAutopilot = supervisorAutopilot || stance === 'autopilot';
   const stage = snapshot?.stage?.stage || snapshot?.session?.stage || '';
   const standDownStage = isStandDownStage(stage) && session.status === 'waiting'; // planning | awaiting_approval
 
@@ -131,10 +134,18 @@ export function decideSupervisorAction(snapshot, config = {}) {
   if (!doc.raw || !doc.raw.trim()) return base(snapshot, 'session.no_doc', action('wait'), 'no supervision doc', { suppressionReason: 'missing-supervision-doc' });
   if (state.signedOff) return base(snapshot, 'session.signed_off', action('none'), 'signed off unless new evidence reopens it', { suppressionReason: 'signed-off' });
 
-  // 3. STAGE STAND-DOWN — planning / awaiting-plan-approval is the OPERATOR's decision to make, not ours.
-  //    Under `autopilot` the operator has pre-delegated "keep going", so an inter-phase "shall I proceed?"
-  //    pause is a STALL, not a gate — nudge the builder onward instead of parking it. Otherwise stand down.
+  // 3. STAGE CONTROL. Explicit Supervisor Autopilot makes the Supervisor the plan reviewer: a submitted
+  //    plan goes through the answer/review brain (which may accept OR correct it), never a blind "go".
+  //    A builder that is only still forming a plan stays undisturbed. The older chat-derived autopilot
+  //    stance keeps its inter-phase proceed behavior for compatibility.
   if (standDownStage) {
+    const submittedPlan = ['decision', 'action'].includes(session.category);
+    if (supervisorAutopilot && submittedPlan) {
+      return base(snapshot, 'mode.autopilot_review_plan', action('answer', 'agent'), 'Supervisor Autopilot owns review of the submitted builder plan', {
+        allowedSend: true,
+        triggeringSignal: signal('plan_submitted', session.summary || session.question || 'builder submitted a plan for review', snapshot, 'supervisor.mode'),
+      });
+    }
     // A FORMED plan pausing for per-phase approval (awaiting_approval) yields to autopilot — proceed to the
     // next phase. But RAW planning (the plan itself isn't formed yet) always stands down, even under autopilot:
     // there are no phases to proceed into, and forming the plan is still the operator's call.
@@ -169,7 +180,7 @@ export function decideSupervisorAction(snapshot, config = {}) {
   if (session.status === 'waiting' && session.category === 'review') {
     const gateAlreadySent = state.lastGate?.key && state.lastGate.key === doc.gateScopeKey && !terminalSignals.includes('evidence_supplied');
     if (gateAlreadySent) {
-      if (stance === 'autopilot') {
+      if (delegatedAutopilot) {
         return base(snapshot, 'stance.autopilot_advance', action('nudge', 'agent'), 'phase verified and operator wants all phases finished (autopilot) — advance to the next phase', {
           allowedSend: true,
           triggeringSignal: signal('advance_phase', session.summary || 'phase complete — advance to the next phase', snapshot, 'operator.stance'),
@@ -198,7 +209,7 @@ export function decideSupervisorAction(snapshot, config = {}) {
   // 7. Idle wait with no decision/review category. Under autopilot, keep it moving; otherwise a plain nudge
   //    only sends if policy config authorizes idle nudges.
   if (session.status === 'waiting') {
-    if (stance === 'autopilot') {
+    if (delegatedAutopilot) {
       return base(snapshot, 'stance.autopilot_advance', action('nudge', 'agent'), 'agent idled while the operator wants the work carried to completion (autopilot) — nudge it onward', {
         allowedSend: true,
         triggeringSignal: { type: 'idle_waiting', summary: session.summary || 'agent idle while waiting under autopilot', ts: session.updatedAt || snapshot.generatedAt, evidenceRef: 'operator.stance' },

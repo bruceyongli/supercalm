@@ -112,8 +112,10 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
 {
   const { readFileSync } = await import('node:fs');
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
-  // model classifies audience; CODE owns delivery: operator_choice without autopilot stance never delivers
-  assert.match(sup, /audience.{0,20}=== 'operator_choice' && resolveStance\(ctx\.getState\(\)\.operatorStance\) !== 'autopilot'/, 'deterministic audience gate on the model field');
+  // model classifies audience; CODE owns delivery: explicit Supervisor Autopilot OR the legacy
+  // chat-derived stance is delegation. Without either, operator_choice never delivers.
+  assert.match(sup, /audience.{0,20}=== 'operator_choice' && cfg\.mode !== 'autopilot' && resolveStance\(ctx\.getState\(\)\.operatorStance\) !== 'autopilot'/, 'deterministic audience gate on the model field');
+  assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_PLAN_ADDENDUM : STAGE_ADDENDUM/, 'explicit Autopilot reviews submitted plans; other modes preserve planning stand-down');
   assert.match(sup, /audience=\$\{String\(parsed\.audience\)/, 'audience surfaced in intervention rows for forensics + lab grading');
   const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
   assert.match(ap, /"audience":"builder_blocked"/, 'addendum defines the audience field');
