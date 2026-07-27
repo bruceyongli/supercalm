@@ -1,6 +1,6 @@
 import { pendingComposerDraft } from '../../agent_input_ready.js';
 
-export const VERIFY_PROMPT_VERSION = 'supervisor.verify.2026-07-23.2';
+export const VERIFY_PROMPT_VERSION = 'supervisor.verify.2026-07-26.1';
 export const VERIFY_EVIDENCE_VERSION = 'supervisor.evidence.2026-07-23.2';
 
 const VERDICTS = ['on_track', 'needs_attention', 'off_track', 'complete', 'unknown'];
@@ -318,6 +318,445 @@ export function enforceVerificationFacts(result, { operatorInputProvenance = nul
   }
   out.missingEvidence = [...out.unmet];
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// DETERMINISTIC CONTRADICTIONS — the verifier's NARRATIVE vs a fact the system established on its own.
+//
+// enforceVerificationFacts above repairs the parsed RECORD (verdict/unverifiable/assessment) but, by
+// design, never rewrites the model's raw output. That is right for record-keeping and wrong for one
+// narrow class: when the model's own prose asserts the OPPOSITE of a deterministic fact, the repaired
+// record and the visible raw disagree, and the raw is what the operator reads. The only honest repair
+// is to ask the SAME model again with the fact stated — once, bounded, fail-closed.
+//
+// Scope discipline (this seam is generic, its rule set is not):
+//   * exactly ONE rule is enabled — `out_of_band_absence`;
+//   * only the model's own narrative fields are scanned (assessment / unmet / message_to_agent) —
+//     never the prompt, the evidence, or arbitrary JSON;
+//   * verdict and score are never inputs: a low-confidence needs_attention is not a contradiction;
+//   * correct cannot-inspect / out-of-band language is NOT a contradiction — it is the required
+//     behaviour, so verifier-scoped absence ("no screenshot is available HERE", governed by an
+//     inspection limit) is exempt while agent-directed absence ("no screenshot WAS PROVIDED") is not;
+//   * negated / meta absence wording ("do not claim that nothing was rendered") never triggers;
+//   * a re-demand ("attach screenshots", "the render must be produced again") triggers even when it
+//     wears correct scoping — that laundering path is the whole reason scoping alone is not enough;
+//   * the return value is a stable CODE, never a scenario name.
+// ---- trigger vocabulary (audited separately from the correction/fail-closed/audit machinery) ------
+// Deliberately narrow: every arm below is a DIRECT assertion shape, seeded from output real models
+// actually produced. Wide gaps were tried first and measurably admitted double negatives — a
+// `no <up-to-4-words> <kind> … <noun>` arm fired on "There is no reason to doubt the visual evidence",
+// "There is no lack of visual evidence" and "No missing screenshot evidence remains". So a kind term
+// must follow `no` IMMEDIATELY (coordination only), and nothing here is widened without a model-free
+// case pinning both directions.
+const PROOF_KIND = '(?:screenshots?|screen[- ]?captures?|render(?:ed|ing|s)?|visual|image|preview|product[\\s_-]?audit|photo)';
+const PROOF_NOUN = '(?:proofs?|evidence|artifacts?|captures?|screenshots?|renders?|recordings?)';
+const KIND_LIST = PROOF_KIND + '(?:\\s*(?:,|or|and|/)\\s*|\\s+)';
+const GIVEN = '(?:provided|supplied|attached|included|produced|captured|taken|rendered|generated)';
+// The deterministic fact is EXISTENTIAL, and it is the only thing this rule may contradict: rendered
+// proof was produced and served out-of-band. It establishes nothing about test evidence, migrations,
+// benchmark profiles or docs — and, just as importantly, nothing about any NAMED TARGET. So the
+// enabled shapes are GLOBAL absence claims and nothing else.
+//
+// That was learned by expansion and then deliberately reversed. Each precision repair on a broader
+// grammar exposed another dimension of English, and each one cost more parser than a single captured
+// production failure justifies:
+//
+//   right-edge compounds     "no screenshot METADATA was provided"      (11 false positives)
+//   left-edge compounds      "THE MOBILE screenshots are missing"
+//   pre-object qualifiers    "no evidence of THE MOBILE screenshots"
+//   post-predicate scope     "nothing was rendered FOR THE MOBILE VIEWPORT"
+//
+// The last one is decisive: the scope that narrows a claim need not touch the proof object at all, so
+// no amount of closing the object's edges can bound it. Rather than keep parsing, the rule set is now
+// smaller than the paraphrase space — three shapes, each backed by something observed:
+//
+//   1. the captured production sentence, literally, plus a punctuation-ended global family;
+//   2. the global quantifier ("nothing was rendered");
+//   3. one global re-demand — a scoped absence PLUS a demand is the laundering path that scoping
+//      alone cannot catch, which is the whole reason a re-demand is not exempted by scope.
+//
+// Everything else — qualified, actor-attributed, partial — fires nothing, by design. Missing a
+// paraphrase costs one un-corrected review; a false trigger spends the single bounded correction call
+// and then fails closed a review that never contradicted anything.
+//
+//   * VIS_NOUN — inherently visual: the noun IS the rendered artifact.
+//   * GEN_NOUN — proof of SOMETHING: admitted ONLY with a visual kind directly in front of it
+//                ("screenshot evidence", "render proof"), never bare ("API evidence", "test evidence").
+// No bridging words anywhere inside the object — that is what keeps "screenshot metadata", "visual
+// regression tests" and "image alt text" out: different gaps, silent about rendered proof. Compound
+// phrases come FIRST so a compound is taken whole rather than matched down to its first word and then
+// failing its right edge ("screenshot comparison" must not be read as "screenshot" + junk).
+const VIS_NOUN = '(?:(?:screenshot|visual|render(?:ed)?|image)\\s+comparisons?'
+  + '|(?:comparison\\s+)?galler(?:y|ies)|(?:rendered\\s+)?surfaces?'
+  + '|screenshots?|screen[- ]?captures?|screen[- ]?shots?|renders?|renderings?'
+  + '|product[\\s_-]?audits?|images?|previews?)';
+const GEN_NOUN = '(?:proofs?|evidence|artifacts?|captures?|recordings?)';
+const VIS_PROOF = '(?:' + PROOF_KIND + '\\s+' + GEN_NOUN + '|' + VIS_NOUN + ')';
+// Closed determiner run for the re-demand object. The object is reached through THIS list or not at
+// all: "provide test evidence" must not walk over "test" to reach a bare noun.
+const DET = '(?:(?:the|a|an|any|some|new|another|updated|additional|further|fresh|missing|more)\\s+){0,2}';
+// The claim's RIGHT EDGE — and the whole of the "global" test. A global claim ends at sentence
+// punctuation or at the end of the text. It never continues into a preposition, because a preposition
+// is where the narrowing scope lives ("no screenshots OF the mobile viewport", "provide screenshot
+// evidence FOR each page"), and it never continues into another word, because that word is usually the
+// phrase's real head ("no screenshot METADATA"). The single admitted continuation is a route path:
+// only the established channel can be named that way, so "nothing was rendered in /review" does
+// contradict the fact and stays a trigger.
+// A COMMA is deliberately not an end. It is a list separator, and admitting it let a long qualified
+// enumeration match its own first item and stop there — "No screenshots, screen captures, or renders
+// OF THE MOBILE VIEWPORT were provided" fired on "No screenshots". Excluding it closes that whole
+// class structurally, at the cost of "…was provided, so I cannot certify" (a miss, which is the side
+// to fail on).
+const GLOBAL_END = '(?=\\s*(?:[.;:!?)\\]"\'”’]|$)|\\s+(?:in|at|on|to|for)\\s+\\/[\\w./-]+)';
+// The closed passive/existential completion of a global absence: "was provided", "have been
+// captured", "exists". Inside the same regex as the noun phrase on purpose — see arm 1.
+const ABSENT_TAIL = '(?:\\s+(?:was|were|has\\s+been|have\\s+been)\\s+' + GIVEN + '|\\s+exists?)?';
+// "screenshot or product-audit evidence" (the captured coordination) | "screenshots", "render proof"
+const NO_PHRASE = '(?:(?:' + KIND_LIST + '){1,3}' + PROOF_NOUN
+  + '|' + VIS_PROOF + '(?:\\s*(?:,|or|and|/)\\s*' + VIS_PROOF + ')*)';
+
+// Each entry: { rx, redemand }. `redemand` entries are NOT exempted by verifier-scoping (see above).
+const OUT_OF_BAND_ABSENCE_RX = [
+  // THE CAPTURED SENTENCE (glm-5.2, public matrix rep 5), verbatim in shape and tail-agnostic:
+  //
+  //   "No screenshot or product-audit evidence was provided TO CONFIRM THE SIDE-BY-SIDE MATCHING."
+  //
+  // Its tail is a qualifier, so the conservative family below cannot reach it — and generalising the
+  // family to admit "to confirm …" would re-admit every qualified partial gap. This one arm is
+  // therefore literal on BOTH sides: the coordination of the two proof kinds the out-of-band channel
+  // serves, and the observed tail itself. The tail is evidence, not licence — "…was provided FOR THE
+  // MOBILE VIEWPORT" is a partial gap even with both media named, so a tail-agnostic version of this
+  // arm fires on it. Scope still governs the arm (it is an absence, not a re-demand): the captured
+  // Qwen counterpart, "no screenshot or product audit evidence IS AVAILABLE HERE", has no production
+  // verb and never reaches it.
+  {
+    rx: new RegExp('\\bno\\s+screenshots?\\s+or\\s+product[\\s_-]?audits?\\s+(?:evidence|proofs?)'
+      + '\\s+(?:was|were|has\\s+been|have\\s+been)\\s+' + GIVEN
+      + '(?:\\s+to\\s+confirm\\s+(?:the\\s+)?side[-\\s]?by[-\\s]?side\\s+(?:matching|comparisons?))?'
+      + GLOBAL_END, 'gi'),
+  },
+  // The conservative global family: "no screenshots were provided.", "no render proof exists.", "no
+  // visual evidence." The completion is an OPTIONAL tail inside this one regex, never a second arm: as
+  // two arms, a qualified claim would fail the long shape ("…was provided FOR the mobile viewport")
+  // and still match the short one, which is exactly how a partial gap slipped through before.
+  { rx: new RegExp('\\bno\\s+' + NO_PHRASE + ABSENT_TAIL + GLOBAL_END, 'gi') },
+  // "nothing was rendered." — `nothing` is itself the global quantifier, so this is the one shape
+  // that needs no object. Visual verbs only: "nothing was produced" says nothing about rendering.
+  { rx: new RegExp('\\bnothing\\s+(?:was|is|has\\s+been)\\s+(?:rendered|captured|screenshotted)' + GLOBAL_END, 'gi') },
+  // RE-DEMAND: "please attach screenshots.", "re-render the comparison gallery." Unqualified, and on
+  // the established artifact — a demand for one named target is a partial gap like any other.
+  { rx: new RegExp('\\b(?:please\\s+)?(?:re-?)?(?:attach|provide|supply|produce|capture|upload|generate|create|take|render|screenshot)\\s+'
+    + DET + VIS_PROOF + GLOBAL_END, 'gi'), redemand: true },
+];
+
+// The absence is predicated of THIS VERIFIER's view, not of the agent's production. Two ways to show
+// it, both ANCHORED to the absence itself — a bare "this verifier" or "out-of-band" mentioned earlier
+// in the sentence is NOT scope, and treating it as scope suppressed a real contradiction:
+// "This verifier reviewed the out-of-band record, but no screenshot evidence was provided."
+const ACCESS_PRED = '(?:(?:cannot|can\'?t|could\\s+not|couldn\'?t|unable\\s+to|not\\s+(?:able|possible))'
+  + '\\s+(?:be\\s+)?(?:\\w+\\s+){0,2}?(?:inspect|view|open|see|read|access|reach|fetch|render|load)\\w*'
+  + '|(?:un|not\\s+)inspectable)';
+const CONTRAST = '(?:but|however|yet|although|though|whereas|nevertheless|nonetheless|still)';
+// The inability must be about the EVIDENCE CHANNEL, not about anything the verifier happens to be
+// unable to do. "I cannot inspect the code, so no screenshot evidence was provided" is a real
+// contradiction — the inability named has nothing to do with the missing proof — so the object run
+// is a closed vocabulary (proof nouns, channel nouns, a route path, or a bare pronoun/elision), not
+// a free-form gap. Anything outside it ends the run and the tail then fails to reach the anchor.
+const CHANNEL_NOUN = '(?:channels?|routes?|urls?|links?|endpoints?|galler(?:y|ies)|pages?|surfaces?'
+  + '|previews?|payloads?|bundles?|records?|artifacts?|attachments?|uploads?|sites?|apps?|deployments?)';
+const OBJ_TOKEN = '(?:the|this|that|those|these|its|our|any|such|a|an|it|them|anything|either'
+  + '|out-?of-?band|external|remote|linked|committed|underlying|only|agent\'?s?'
+  + '|' + PROOF_KIND + '|' + PROOF_NOUN + '|' + CHANNEL_NOUN + '|\\/[\\w./-]+)';
+const ACCESS_OBJ_RUN = '(?:\\s+' + OBJ_TOKEN + '){0,4}';
+// Only connective filler may follow the object — no free-form characters, so a disallowed object
+// cannot be absorbed as filler.
+const ACCESS_TAIL = '(?:\\s+(?:here|now|directly|myself|remotely|from\\s+here|at\\s+\\/[\\w./-]+'
+  + '|in\\s+(?:this|the)\\s+\\w+))?[\\s,;:—–-]*'
+  + '(?:so|therefore|thus|hence|and|because|meaning|which\\s+means)?[\\s,;:—–-]*$';
+// An access predicate governing the absence: only its own object and connective filler between them,
+// and no contrastive conjunction — "cannot inspect /review, but … and no proof was provided" is a
+// contradiction, not a scoped statement.
+// This is the ONLY scope exemption left. The others (a locative predicate, "…is available HERE" /
+// "…was included IN THIS REVIEW PAYLOAD") are now structural rather than exceptional: a scoped
+// absence carries a locative tail, GLOBAL_END admits no such tail, and so no arm matches it at all.
+const ANCHORED_INSPECTION_RX = new RegExp(ACCESS_PRED + '(?![^]*\\b' + CONTRAST + '\\b)'
+  + ACCESS_OBJ_RUN + ACCESS_TAIL, 'i');
+
+// Absence NAMED in order to reject it. Anchored to the token, like the lab's oracle matchers, so a
+// refutation somewhere else in the paragraph cannot launder a real assertion.
+const META_ABSENCE_PREFIX_RX = new RegExp('(?:'
+  + '\\bnot\\s+(?:because|that)'
+  + '|\\b(?:does\\s+not|doesn\'?t|do\\s+not|don\'?t)\\s+mean(?:\\s+that)?'
+  + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of|avoid)\\s+'
+  + '(?:say|says|saying|said|claim|claims|claiming|claimed|assert|asserts|asserting|asserted'
+  // …the speech verb's complement may be the natural existential bridge — "rather than saying THERE
+  // IS no visual evidence". Anchored like everything else: it must run right up to the match, so a
+  // refutation of one claim cannot launder a different assertion later in the same clause.
+  + '|stat(?:e|es|ing|ed)|report(?:s|ing|ed)?|demand(?:s|ing|ed)?|conclud\\w*)(?:\\s+that)?(?:\\s+there\\s+(?:is|was))?'
+  + '|\\b(?:it\\s+is\\s+)?not\\s+(?:true|correct|accurate)\\s+that'
+  + ')[\\s"\'“”‘’(\\[]*$', 'i');
+const META_ABSENCE_SUFFIX_RX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
+  + '(?:is|are|was|were|would\\s+be)\\s+(?:false|incorrect|wrong|unsupported|inaccurate|not\\s+accurate)\\b'
+  + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
+  + ')', 'i');
+// A demand REFUSED is not a demand. Speech refutation (above) does not cover it: "Do not attach
+// screenshots; open /review" refutes the ACTION, not a claim about it. Anchored — never a nearby
+// window — so a later unrefuted demand in the same breath still fires. The second group is the
+// FULL-PREDICATE forms ("it is not necessary to", "you don't have to"): still anchored, the whole
+// refusing predicate must run right up to the demand, which is what keeps "Do not FAIL to attach
+// screenshots" firing — "fail" is not one of these predicates and cannot be skipped over.
+const DEMAND_REFUTED_PREFIX_RX = new RegExp('(?:\\b(?:'
+  + 'do(?:es)?\\s+not|don\'?t|doesn\'?t|did\\s+not|didn\'?t|will\\s+not|won\'?t|would\\s+not|wouldn\'?t'
+  + '|should\\s+not|shouldn\'?t|must\\s+not|mustn\'?t|need\\s+not|needn\'?t|cannot|can\'?t'
+  + '|no\\s+need\\s+(?:to|for)|never|rather\\s+than|instead\\s+of|in\\s+lieu\\s+of|as\\s+opposed\\s+to'
+  + ')(?:\\s+(?:to|please))?'
+  + '|\\b(?:not|no\\s+longer)\\s+(?:necessary|needed|required|mandatory|expected|useful|helpful)\\s+to'
+  + '|\\bno\\s+(?:need|requirement|obligation|reason|point|call)\\s+(?:to|for)'
+  + '|\\b(?:do(?:es)?\\s+not|don\'?t|doesn\'?t|did\\s+not|didn\'?t)\\s+(?:have|need)\\s+to'
+  + ')[\\s"\'“”‘’(\\[]*$', 'i');
+const CLAUSE_MAX = 320;
+// Clause-LOCAL, not sentence-local: glm-5.2 said "cannot be inspected here" in one sentence and then
+// added "No screenshot or product-audit evidence was provided" as a NEW, stronger sentence — so a
+// paragraph-wide exemption would swallow exactly the contradiction this rule exists to catch. And a
+// semicolon or a contrastive conjunction breaks scope just as hard as a full stop does.
+const CLAUSE_BREAK_RX = new RegExp('[.!?;]["\'”’)\\]]?\\s+|\\n+|,?\\s+' + CONTRAST + '\\s+', 'g');
+function clauseBefore(text, index) {
+  const head = text.slice(Math.max(0, index - CLAUSE_MAX), index);
+  let cut = 0;
+  CLAUSE_BREAK_RX.lastIndex = 0;
+  for (let m = CLAUSE_BREAK_RX.exec(head); m; m = CLAUSE_BREAK_RX.exec(head)) cut = m.index + m[0].length;
+  return head.slice(cut);
+}
+function clauseAfter(text, index) {
+  const tail = text.slice(index, index + CLAUSE_MAX);
+  CLAUSE_BREAK_RX.lastIndex = 0;
+  const m = CLAUSE_BREAK_RX.exec(tail);
+  return m ? tail.slice(0, m.index) : tail;
+}
+
+// The model's own narrative, and nothing else. Accepts either the raw (`message_to_agent`) or the
+// normalized (`message`) field name so the seam works on both sides of normalizeVerificationResult.
+function narrativeFields(parsed) {
+  const out = [];
+  if (parsed?.assessment) out.push(['assessment', String(parsed.assessment)]);
+  const unmet = Array.isArray(parsed?.unmet) ? parsed.unmet : [];
+  for (let i = 0; i < unmet.length; i++) if (unmet[i]) out.push([`unmet[${i}]`, String(unmet[i])]);
+  const msg = parsed?.message_to_agent ?? parsed?.message;
+  if (msg) out.push(['message_to_agent', String(msg)]);
+  return out;
+}
+
+// Every arm's match over one field, in source order. The arms are mutually exclusive on their first
+// token (`no …` / `nothing …` / a demand verb) and each one runs to a closed end, so a position
+// yields at most one hit and there is no shorter overlapping match that could dodge a refutation the
+// longer one would have seen.
+function armMatches(text) {
+  const hits = [];
+  for (const { rx, redemand } of OUT_OF_BAND_ABSENCE_RX) {
+    rx.lastIndex = 0;
+    for (let m = rx.exec(text); m; m = rx.exec(text)) {
+      if (!m[0]) { rx.lastIndex++; continue; }
+      hits.push({ start: m.index, end: m.index + m[0].length, text: m[0], redemand: !!redemand });
+    }
+  }
+  return hits.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
+function outOfBandAbsenceHit(parsed) {
+  for (const [field, text] of narrativeFields(parsed)) {
+    const hits = armMatches(text);
+    for (const h of hits) {
+      const before = clauseBefore(text, h.start);
+      const after = clauseAfter(text, h.end);
+      if (META_ABSENCE_PREFIX_RX.test(before) || META_ABSENCE_SUFFIX_RX.test(after)) continue;
+      // Scoping exempts an ABSENCE report; it never exempts a re-demand, because
+      // "no screenshot evidence is available here, so please attach screenshots" is the exact
+      // misbehaviour wearing correct-sounding scope. A demand is exempt only when REFUSED.
+      if (h.redemand) { if (DEMAND_REFUTED_PREFIX_RX.test(before)) continue; }
+      else if (ANCHORED_INSPECTION_RX.test(before)) continue;
+      return { field, excerpt: h.text.replace(/\s+/g, ' ').trim().slice(0, 160), redemand: h.redemand };
+    }
+  }
+  return null;
+}
+
+/**
+ * Deterministic contradictions between a parsed verifier narrative and facts the system established
+ * itself. Pure: no I/O, no model, no state. Returns [] or one entry per distinct stable code.
+ */
+export function deterministicVerificationContradictions(parsed, facts = {}) {
+  const out = [];
+  if (!parsed) return out;
+  if (facts?.outOfBandProof) {
+    const hit = outOfBandAbsenceHit(parsed);
+    if (hit) out.push({ code: 'out_of_band_absence', field: hit.field, excerpt: hit.excerpt, redemand: hit.redemand });
+  }
+  return out;
+}
+
+/**
+ * The system addendum for the single bounded correction call: the stable code plus the deterministic
+ * fact, and nothing else. The first raw is deliberately NOT quoted back — echoing the bad sentence
+ * invites the model to defend or re-paraphrase it.
+ */
+export function verificationCorrectionAddendum(contradictions, facts = {}) {
+  const codes = [...new Set((contradictions || []).map((c) => c?.code).filter(Boolean))];
+  if (!codes.length) return '';
+  const parts = [`DETERMINISTIC_CORRECTION (${codes.join(', ')}): your previous JSON contradicted a fact this supervising system established independently of you. Re-judge with the fact below and return the complete JSON object again.`];
+  if (codes.includes('out_of_band_absence')) {
+    const chan = line(facts.outOfBandChannel, 80);
+    const corr = line(facts.outOfBandCorroboration, 80);
+    // "not inspectable through this verifier's current inputs" — NOT "from git plus the attached
+    // screenshot". On this path there is usually no attached screenshot at all (that absence is what
+    // made the model claim nothing was rendered), so naming one would invent evidence in the very
+    // correction meant to stop the model inventing an absence.
+    parts.push(`FACT: rendered proof WAS produced and served${chan ? ` in the ${chan} channel` : ''}${corr ? ` (corroborated by ${corr})` : ''}. It exists; it is simply not inspectable through this verifier's current inputs.`);
+    parts.push('Therefore do not state or imply that render/visual/screenshot/product-audit proof is absent, was not provided, or must be produced again. Set "unverifiable" to "out_of_band", name that channel for the operator to open, and judge the remaining criteria on the evidence you do have.');
+  }
+  parts.push('Return exactly one valid json object in the same schema and nothing else.');
+  return parts.join('\n');
+}
+
+/**
+ * Fail-closed record for an unresolved contradiction: needs_attention, no message to the agent.
+ * The deterministic facts are still enforced (so the out-of-band channel is recorded for the
+ * operator), but `message` is cleared afterwards on purpose — enforceVerificationFacts populates it
+ * for other facts, and a review whose own output could not be trusted must not speak to the agent.
+ */
+export function contradictionFailClosedResult(contradictions, { facts = {}, operatorInputProvenance = null, reason = '' } = {}) {
+  const codeList = [...new Set((contradictions || []).map((c) => c?.code).filter(Boolean))];
+  const codes = codeList.join(', ') || 'unknown';
+  const why = line(reason, 160);
+  // Enforced on an EMPTY assessment first, so the deterministic notes (out-of-band channel, operator
+  // provenance) are still recorded — then the hold sentence is put in front, because why this review
+  // was thrown away is the lead fact, not a footnote under a repair note.
+  const base = normalizeVerificationResult({
+    verdict: 'needs_attention', score: null, assessment: '', unmet: [], unverifiable: 'none', message_to_agent: '',
+  });
+  const out = enforceVerificationFacts(base, { operatorInputProvenance, facts });
+  out.assessment = appendAssessment(out.assessment,
+    `Held: this review's own output contradicted a deterministic system fact (${codes}) and one bounded same-model correction did not resolve it${why ? ` (${why})` : ''}. No verdict was accepted — nothing was signed off, and no message was sent to the agent.`);
+  out.verdict = 'needs_attention';
+  out.score = null;
+  out.message = ''; // cleared AFTER enforcement: enforceVerificationFacts populates it for other facts
+  // A hold is not blindness. Leaving `unverifiable: 'out_of_band'` here would make the completion path
+  // count this as a blind episode and escalate "can't verify the work" — the wrong diagnosis, and it
+  // would consume the blind-escalation budget that exists for genuinely uninspectable channels.
+  out.unverifiable = 'none';
+  out.hold = 'verifier_contradiction';
+  // ARRAY of stable codes — one shape, always. A string here would make callers' `.join()` throw at
+  // exactly the moment the system is trying to record why it held.
+  out.contradictions = codeList.length ? codeList : ['unknown'];
+  return out;
+}
+
+// ---- attempt provenance ----------------------------------------------------------------------------
+// supervisor_reviews.raw is written through tailStr(raw, 12000) — the TAIL. An envelope over that
+// budget loses its head and stops being parseable JSON, so both outputs are bounded to fit.
+/**
+ * Is this parsed object actually a COMPLETE verifier verdict? `normalizeVerificationResult` is
+ * lenient by design — it coerces anything into a well-formed record with `verdict:'unknown'` —
+ * which is right for a first answer (an unusable one still becomes a visible `unknown`), but wrong
+ * as the gate on a CORRECTION: `{}` would normalize cleanly, trip no contradiction, and be accepted
+ * as a repair. A verdict-only `{"verdict":"complete"}` is just as bad — it would sign off with no
+ * score, no assessment, no unmet list and no reasoning to audit.
+ *
+ * So acceptance is schema-CLOSED against the exact shape the correction prompt demands: every field,
+ * correctly typed. `'unknown'` is a legitimate verdict — the model saying it cannot tell is a real
+ * answer — but only when the rest of the schema is present to say WHY.
+ */
+export function isVerifierShaped(parsed) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  if (!VERDICTS.includes(parsed.verdict)) return false;
+  // typeof, not Number(): `Number(null)`, `Number('')` and `Number(false)` are all 0, and `'50'` is
+  // 50 — coercion would accept a missing or wrongly-typed field as a confident score. Fractions are
+  // allowed on purpose: the declared field is numeric 0-100 and normalizeVerificationResult rounds
+  // it, so 87.5 is well-formed input rather than a schema violation.
+  if (typeof parsed.score !== 'number' || !Number.isFinite(parsed.score)) return false;
+  if (parsed.score < 0 || parsed.score > 100) return false;
+  if (typeof parsed.assessment !== 'string' || !parsed.assessment.trim()) return false;
+  if (!Array.isArray(parsed.unmet) || parsed.unmet.some((u) => typeof u !== 'string')) return false;
+  if (typeof parsed.goal_conflict !== 'boolean') return false;
+  if (!['none', 'no_git', 'auth_wall', 'out_of_band', 'both'].includes(parsed.unverifiable)) return false;
+  return typeof parsed.message_to_agent === 'string';
+}
+
+export const VERIFY_ATTEMPTS_SCHEMA = 'supervisor.verify-attempts/v1';
+const AUDIT_BUDGET = 12000;
+
+// Model output only ever contains a verdict, but it is still untrusted text: strip anything that looks
+// like an embedded credential or inlined image before it is persisted.
+function scrubForAudit(s) {
+  return String(s || '')
+    .replace(/data:[a-z0-9.+-]{0,40}\/[a-z0-9.+-]{0,40};base64,[A-Za-z0-9+/=]{16,}/gi, '[redacted-data-uri]')
+    .replace(/\b(?:sk|pk|ghp|gho|github_pat)[-_][A-Za-z0-9_-]{16,}/g, '[redacted-key]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, 'Bearer [redacted]');
+}
+
+/**
+ * Bounded provenance envelope for supervisor_reviews.raw. Contains ONLY model outputs and call
+ * metadata — never the prompt, the evidence, the screenshots, or credentials.
+ */
+export function buildVerifyAttemptsAudit({ attempts = [], acceptedAttempt = 0, finalRawAttempt = 0 } = {}) {
+  // Three ids, deliberately not collapsed: what we asked for, what the catalog route was configured
+  // with, and what `ctx.callModel` reported back. NB the third is `env.model || route.model` — an
+  // EFFECTIVE id, not proof the provider exposed one — hence the name. Nothing here may be read as
+  // response-envelope identity.
+  const rows = attempts.map((a, i) => ({
+    n: a?.n ?? i + 1,
+    requested_model: line(a?.requestedModel, 120),
+    route_model: line(a?.routeModel, 120),
+    effective_model: line(a?.returnedModel, 120),
+    status: line(a?.status, 40) || 'unknown',
+    ...(a?.codes?.length ? { codes: a.codes.slice(0, 8).map((c) => line(c, 60)) } : {}),
+    // Transport errors carry upstream text (headers, request fragments), so they go through the same
+    // scrubber as model output — before bounding, so a redaction can't be cut in half.
+    ...(a?.error ? { error: line(scrubForAudit(a.error), 300) } : {}),
+    output: scrubForAudit(a?.output || ''),
+  }));
+  // Two distinct facts, never collapsed: which attempt's verdict was ACCEPTED (0 when the review
+  // failed closed and no verdict was accepted at all), and which attempt's raw is being displayed.
+  // Conflating them would mark a rejected answer "effective" in the permanent audit record.
+  const envelope = () => ({
+    schema: VERIFY_ATTEMPTS_SCHEMA,
+    accepted_effective_attempt: acceptedAttempt,
+    final_raw_attempt: finalRawAttempt,
+    attempts: rows,
+  });
+  let json = JSON.stringify(envelope());
+  if (json.length > AUDIT_BUDGET && rows.length) {
+    // Shrink outputs evenly rather than dropping an attempt: both raws must survive for the audit to
+    // mean anything. tailStr keeps the tail elsewhere; here the HEAD of a verdict is the informative
+    // part (verdict/score/assessment come first in the schema).
+    const overhead = json.length - rows.reduce((n, r) => n + r.output.length, 0);
+    const per = Math.max(200, Math.floor((AUDIT_BUDGET - overhead - 40 * rows.length) / rows.length));
+    for (const r of rows) if (r.output.length > per) r.output = r.output.slice(0, per) + '…[truncated]';
+    json = JSON.stringify(envelope());
+    while (json.length > AUDIT_BUDGET) {
+      const longest = rows.reduce((a, b) => (a.output.length >= b.output.length ? a : b));
+      if (longest.output.length <= 80) break;
+      longest.output = longest.output.slice(0, Math.max(60, longest.output.length - 200)) + '…[truncated]';
+      json = JSON.stringify(envelope());
+    }
+  }
+  return json;
+}
+
+/**
+ * Route-pin check for the correction call. `ctx.callModel` reports `env.model || route.model`, so
+ * what arrives here is an EFFECTIVE id — it proves which route/env answered, NOT that the provider
+ * exposed an id in its response envelope. That is enough for what this guards: the correction must
+ * come from the same pinned route, and any effective id that is neither the requested one nor the
+ * route's configured one fails closed. An absent id is not evidence of a swap, so it passes.
+ */
+export function exposedModelMismatch(requested, returned, routeModel = '') {
+  const norm = (s) => String(s || '').toLowerCase().replace(/^(?:models|model|openai|anthropic|google)\//, '').trim();
+  const got = norm(returned);
+  if (!got) return false; // nothing exposed — nothing to check; the pin is what the caller requested
+  // EXACT equality only. A dated/suffixed-variant tolerance was tried and is wrong here: the whole
+  // point of the pin is that the SAME model corrects itself, and `glm-5.2-preview` answering for
+  // `glm-5.2` is a different model with different behaviour. Anything else fails closed.
+  return ![requested, routeModel].some((cand) => norm(cand) && norm(cand) === got);
 }
 
 export function normalizeVerificationResult(m, { error = '' } = {}) {

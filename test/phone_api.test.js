@@ -49,6 +49,15 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
   assert.equal(unreadBySession().get('s_ph'), undefined, 'session-mode clears the backlog');
 }
 
+// Application traffic is gated until the deterministic feature loader finishes (server.js
+// trafficAllowed) — every route below /healthz and /readyz answers 503 while boot is still walking
+// FEATURE_MODULES. Importing phone_api.js only starts that walk; it does not await it. Under `npm
+// test` the suite shares the box with three other workers, boot outruns any fixed sleep, and the
+// first fetch below took a 503 instead of a 200. Await the same handle session_file_viewer.test.js
+// uses, so the HTTP assertions measure the route rather than the machine's load.
+const { featureReady } = await import('../src/server.js');
+await featureReady;
+
 // ---- the real read route emits one scoped unread patch (no broad reload required) -----------------
 {
   addMessage('s_ph', 'out', 'detect', 'a new unread report for cross-client sync');

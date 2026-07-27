@@ -38,12 +38,18 @@ import {
   VERIFY_EVIDENCE_VERSION,
   VERIFY_PROMPT_VERSION,
   buildVerifierSystemPrompt,
+  buildVerifyAttemptsAudit,
+  contradictionFailClosedResult,
   deriveVerificationFacts,
   detectOutOfBandEvidence,
   detectUnsubmittedApprovalDraft,
+  deterministicVerificationContradictions,
   enforceVerificationFacts,
+  exposedModelMismatch,
+  isVerifierShaped,
   isVisualWork as detectVisualWork,
   normalizeVerificationResult,
+  verificationCorrectionAddendum,
   verifierContractScope,
 } from './supervisor/verify.js';
 import {
@@ -56,7 +62,6 @@ import { applySupervisorState } from './supervisor/effects.js';
 import { flagOn } from '../flags.js';
 import { taskCard, renderCardMd, getRuntime, upsertRuntime, appendEvent as pmAppendEvent, writeProjection, checkProjection, liveOverlaps, deriveVerifyFacts, pinVerifyFacts, getTask as pmGetTask, previouslyFailed, formatPreviouslyFailed, applyCriteriaMet, allCriteriaSatisfied, setTaskStatus as pmSetTaskStatus, createTask as pmCreateTask, amendTask as pmAmendTask, renderBetweenTasksMd, listEvents } from './supervisor/project_memory.js';
 import { searchWiki, maybeRebuild as maybeRebuildWiki, listWiki } from '../wiki.js';
-import { userRoutes } from '../model_catalog.js';
 import { proposeMigration } from './supervisor/doc_migration.js';
 import { supervisorDecisionSummary } from './supervisor/explain.js';
 import { buildProductAuditSpec } from './product_audit.js';
@@ -76,7 +81,11 @@ import { pendingComposerDraft } from '../agent_input_ready.js';
 // It touches the session ONLY through `ctx` and owns two domain tables (intervention log + templates).
 // Scheduler/episode state lives in ctx grant state (baseRef, progress fingerprints, gate phase, caps).
 
-const DEFAULT_MODEL = process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'glm-5.2'; // antigravity down (2026-07-20); glm-5.2 = verified-working aliyun top pick
+// The built-in Supervisor default. Qualified by the fixed public development matrix (5 repetitions ×
+// the full public case set) — the pair in TOOL_AWARE_MODEL_CHAINS is the qualified set, and this is
+// its head. Machine-level override stays available for operators.
+const DEFAULT_MODEL = process.env.AIOS_SUPERVISOR_DEFAULT_MODEL || 'claude-opus-5';
+export const SUPERVISOR_DEFAULT_MODEL = DEFAULT_MODEL;
 const MAX_NUDGES = Number(process.env.AIOS_SUPERVISOR_MAX_NUDGES || 3); // corrective sends per work-state (resets on real progress)
 const BLIND_LIMIT = Number(process.env.AIOS_SUPERVISOR_BLIND_LIMIT || 2); // blind verifies on a work-state before escalating the real blocker (vs re-demanding unreadable evidence)
 const WEDGE_STUCK_MS = Number(process.env.AIOS_SUPERVISOR_WEDGE_STUCK_MS || 120000); // a real overflow error must persist with a FROZEN screen this long before we act (vs a still-working agent)
@@ -721,21 +730,23 @@ function canSend(ctx, cfg, kind = 'nudge', meta = {}) {
   return sendGate(ctx, cfg, kind, meta).allowed;
 }
 
-// Model chain: the configured model first, then cross-provider fallbacks (deduped) so a 429/outage on
+// Model chain: the configured model first, then a cross-provider fallback (deduped) so a 429/outage on
 // one provider doesn't blind the supervisor. For a non-vision fallback, multimodal user content is
 // degraded to its text parts so the call still succeeds (blind to the screenshot, but still judges).
-// Tool-aware default fallback chain: LEAD with a different provider than the supervised session's own tool,
-// so the supervisor isn't down for the same reason the session is (a codex/GPT outage shouldn't also blind
-// a GPT-primary supervisor). Operator-overridable per session (cfg.fallback_models / the Model pick).
+// Operator-overridable per session (cfg.fallback_models / the Model pick).
+//
+// The built-in chain is CLOSED at the two qualified Supervisor models. Depth is not free here: an
+// extra fallback is an UNQUALIFIED model answering a supervision call, which is worse than the outage
+// it covers — a wrong verdict gets acted on, an absent one does not. Order is the only degree of
+// freedom, and head independence sets it: LEAD with a different provider than the supervised session's
+// own tool, so the supervisor isn't down for the same reason the session is.
 const TOOL_AWARE_MODEL_CHAINS = Object.freeze({
-  // Measured Supervisor order (2026-07-22): strongest non-Codex head, cross-provider second,
-  // then same-provider redundancy before the supervised session's own provider.
-  codex: Object.freeze(['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol']),
-  // A Claude session must not share its failure domain with the Supervisor head. Keep two independent
-  // providers ahead of the Claude fallbacks, then use the measured Claude quality order.
-  claude: Object.freeze(['glm-5.2', 'gpt-5.6-sol', 'claude-opus-4-8', 'claude-fable-5']),
-  // Neutral tools use the measured quality order with provider diversity before Claude redundancy.
-  other: Object.freeze(['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol']),
+  // A Codex/GPT outage must not also blind the Supervisor watching that Codex session.
+  codex: Object.freeze(['claude-opus-5', 'gpt-5.6-sol']),
+  // Symmetrically, a Claude session gets the non-Claude head.
+  claude: Object.freeze(['gpt-5.6-sol', 'claude-opus-5']),
+  // Neutral tools share no failure domain with either, so they lead with the default.
+  other: Object.freeze(['claude-opus-5', 'gpt-5.6-sol']),
 });
 
 function dedupeModels(chain) {
@@ -753,11 +764,10 @@ function dedupeModels(chain) {
 
 export function defaultChain(tool) {
   const family = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : 'other';
-  const fleet = TOOL_AWARE_MODEL_CHAINS[family];
-  // No fleet? User API providers (Auth & Models) tail the chain so the supervisor still thinks —
-  // resolved live, so a provider added after enable is picked up on the next tick.
-  try { return dedupeModels([...fleet, ...userRoutes().slice(0, 2).map((r) => r.id)]); }
-  catch { return [...fleet]; }
+  // Discovered user routes deliberately do NOT tail this. Enabling an API provider must not widen the
+  // set of models allowed to supervise — an operator who wants one says so per session, in the chain
+  // editor, which modelChain() honours as an explicit full-chain override.
+  return dedupeModels(TOOL_AWARE_MODEL_CHAINS[family]);
 }
 export function modelChain(cfg, session) {
   const dflt = defaultChain(session?.tool);
@@ -775,15 +785,26 @@ function primaryModel(ctx, cfg) {
 function textOnly(content) {
   return Array.isArray(content) ? content.filter((p) => p && p.type === 'text').map((p) => p.text).join('\n') : String(content || '');
 }
+// Vision routes get the parts as-is; text routes get every text part joined and the images dropped.
+// Factored out of callChain so a pinned re-ask (verificationCorrection) applies the SAME transform to
+// the SAME messages — a correction call that silently changed shape would not be re-asking the same
+// question. Pure: callers' arrays/objects are never mutated.
+function contentForRoute(ctx, model, messages) {
+  if (ctx.visionRoute(model)) return messages;
+  return messages.map((m) => (m.role === 'user' && Array.isArray(m.content) ? { ...m, content: textOnly(m.content) } : m));
+}
 async function callChain(ctx, cfg, messages, opts = {}) {
   const chain = modelChain(cfg, ctx.session());
   let lastErr;
   for (let i = 0; i < chain.length; i++) {
     const model = chain[i];
-    const msgs = ctx.visionRoute(model) ? messages : messages.map((m) => (m.role === 'user' && Array.isArray(m.content) ? { ...m, content: textOnly(m.content) } : m));
+    const msgs = contentForRoute(ctx, model, messages);
     try {
       const r = await ctx.callModel(msgs, { ...opts, model });
-      return { ...r, model, usedFallback: i > 0 };
+      // `model` is the REQUESTED chain entry and stays the caller-facing id (fallback accounting,
+      // logs, provenance). What the provider exposed is kept alongside it rather than discarded, so
+      // a pinned re-ask can verify identity instead of assuming it.
+      return { ...r, model, requestedModel: model, returnedModel: r?.model || '', routeModel: r?.route?.model || '', usedFallback: i > 0 };
     } catch (e) {
       lastErr = e;
       // 400-char reason, single line: the old 80-char clamp hid WHY 5,595 gpt-5.5 /responses 400s happened (found 2026-07-09).
@@ -813,6 +834,8 @@ async function callJson(ctx, cfg, sys, userContent, opts = {}) {
   let error = null;
   let parsed = null;
   let model = primaryModel(ctx, cfg);
+  let returnedModel = '';
+  let routeModel = '';
   // Codex /responses requires the literal lowercase word "json" in an input message when
   // response_format=json_object. Its chat adapter maps the system prompt to `instructions`, so the
   // contract must ride in user content too; putting it only in the system prompt still fails 400.
@@ -826,6 +849,8 @@ async function callJson(ctx, cfg, sys, userContent, opts = {}) {
       ], { json: true, ...opts });
       raw = r.content;
       model = r.model;
+      returnedModel = r.returnedModel || '';
+      routeModel = r.routeModel || '';
       try {
         parsed = parseJsonObject(raw);
         error = null;
@@ -842,7 +867,9 @@ async function callJson(ctx, cfg, sys, userContent, opts = {}) {
       break;
     }
   }
-  return { parsed, raw, error, model };
+  // `system`/`user` are the exact composed bytes, returned so a pinned correction can re-ask the SAME
+  // question (same evidence, same images) instead of rebuilding an approximation of it.
+  return { parsed, raw, error, model, returnedModel, routeModel, system, user };
 }
 
 // Advisory kinds that re-fire on the same state (completion re-verifies, checkpoints, repeat
@@ -1383,16 +1410,106 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     sys += '\n\nBETWEEN_TASKS_ADDENDUM: There is NO active task card. Any definition_of_done or repo spec in the evidence is PROJECT-level background — it is NOT the active contract, and full-spec completion must NOT be demanded or certified. Judge ONLY the specific work the agent just reported: is it honestly evidenced? Note anything beyond it as observations. Never demand that new work or the "remaining" spec be started — which task runs next is the OPERATOR\'s decision.';
   }
   sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: verify's message_to_agent obeys jurisdiction + card-admin rules too
-  const { parsed: rawParsed, raw, error, model } = await callJson(ctx, cfg, sys, userContent);
-  const parsed = enforceVerificationFacts(
-    normalizeVerificationResult(rawParsed || null, { error: error || 'no output' }),
-    { operatorInputProvenance, facts: verificationFacts },
+  const first = await callJson(ctx, cfg, sys, userContent);
+  let { parsed: rawParsed, raw, error } = first;
+  const model = first.model;
+  // DETERMINISTIC CONTRADICTION REPAIR — one bounded, same-model re-ask.
+  //
+  // enforceVerificationFacts repairs the parsed RECORD but never the raw, and the raw is what the
+  // operator reads. When the model's own prose asserts the opposite of a fact this system established
+  // (measured: glm-5.2 wrote "No screenshot or product-audit evidence was provided" about proof the
+  // supervisor had itself probed and confirmed served), a repaired record over a contradicting raw is
+  // worse than either — so ask the SAME model again, once, with the fact stated.
+  //
+  // Pinned to the model that actually answered, via ctx.callModel directly: callChain would restart
+  // the fallback chain (a DIFFERENT model's correction is not this model correcting itself) and
+  // callJson would add a parse retry, making the bounded one-call budget two.
+  const attempts = [{
+    n: 1, requestedModel: model, routeModel: first.routeModel || '', returnedModel: first.returnedModel || '',
+    output: raw || '', status: error ? 'parse_error' : 'ok', ...(error ? { error } : {}),
+  }];
+  let acceptedAttempt = 1; // whose verdict was accepted (0 = none, failed closed)
+  let finalRawAttempt = 1; // whose raw is displayed
+  let contradictionHold = null;
+  const contradictions = deterministicVerificationContradictions(
+    rawParsed ? normalizeVerificationResult(rawParsed) : null, verificationFacts,
   );
+  if (contradictions.length) {
+    attempts[0].status = 'contradiction';
+    attempts[0].codes = contradictions.map((c) => c.code);
+    const addendum = verificationCorrectionAddendum(contradictions, verificationFacts);
+    ctx.log(`verifier contradicted a deterministic fact (${attempts[0].codes.join(', ')}); one pinned correction call to '${model}'`);
+    const a2 = { n: 2, requestedModel: model, routeModel: '', returnedModel: '', output: '', status: 'transport_error' };
+    attempts.push(a2);
+    try {
+      // Same system + user bytes callJson composed, same route transform, plus the correction —
+      // and retries:0, because a retry here would silently spend a second correction call.
+      const r2 = await ctx.callModel(contentForRoute(ctx, model, [
+        { role: 'system', content: `${first.system}\n\n${addendum}` },
+        { role: 'user', content: first.user },
+      ]), { json: true, model, retries: 0 });
+      a2.output = r2?.content || '';
+      a2.returnedModel = r2?.model || '';
+      a2.routeModel = r2?.route?.model || '';
+      if (exposedModelMismatch(model, a2.returnedModel, a2.routeModel)) {
+        a2.status = 'identity_mismatch';
+        contradictionHold = `correction answered by '${a2.returnedModel}', not '${model}'`;
+      } else {
+        let p2 = null;
+        try { p2 = parseJsonObject(a2.output); } catch (e) { a2.status = 'parse_error'; a2.error = String(e.message || e); contradictionHold = 'correction returned unusable json'; }
+        // Schema-CLOSED acceptance. normalizeVerificationResult would happily turn `{}` into a
+        // clean-looking `unknown`, and a bare `{"verdict":"complete"}` into a sign-off with no
+        // score, assessment or unmet list — neither is this model correcting itself.
+        if (p2 && !isVerifierShaped(p2)) {
+          a2.status = 'schema_invalid';
+          contradictionHold = 'correction did not return the verifier schema';
+          p2 = null;
+        }
+        if (p2) {
+          const c2 = deterministicVerificationContradictions(normalizeVerificationResult(p2), verificationFacts);
+          if (c2.length) {
+            a2.status = 'contradiction';
+            a2.codes = c2.map((c) => c.code);
+            contradictionHold = `correction repeated ${a2.codes.join(', ')}`;
+          } else {
+            // Accepted: the second output is the effective one for BOTH the record and the raw. The
+            // first survives only in the audit envelope — never presented as this review's answer.
+            a2.status = 'ok';
+            rawParsed = p2; raw = a2.output; error = null; acceptedAttempt = 2; finalRawAttempt = 2;
+          }
+        }
+      }
+    } catch (e) {
+      a2.error = String(e.message || e).replace(/\s+/g, ' ').slice(0, 400);
+      contradictionHold = 'correction call failed';
+    }
+    if (contradictionHold) {
+      // Fail closed. No third call. The final bad raw stays visible (or the first, if the second
+      // produced none), and rawParsed is dropped so nothing downstream — criteria ticks, ledger,
+      // sign-off — can act on an output the system just proved untrustworthy.
+      ctx.log(`verifier contradiction unresolved (${contradictionHold}); holding — no verdict accepted, no message sent`);
+      if (a2.output) raw = a2.output;
+      acceptedAttempt = 0;                          // no verdict accepted from this review
+      finalRawAttempt = a2.output ? 2 : 1;          // ...but the final bad raw is still what's shown
+      rawParsed = null;
+      error = error || contradictionHold;
+    }
+  }
+  const auditRaw = attempts.length > 1 ? buildVerifyAttemptsAudit({ attempts, acceptedAttempt, finalRawAttempt }) : null;
+  const parsed = contradictionHold
+    ? contradictionFailClosedResult(contradictions, { facts: verificationFacts, operatorInputProvenance, reason: contradictionHold })
+    : enforceVerificationFacts(
+      normalizeVerificationResult(rawParsed || null, { error: error || 'no output' }),
+      { operatorInputProvenance, facts: verificationFacts },
+    );
   // DOCTRINE AUDIT (run 2 — doctrine as enforcement): the operator's audit-type rules are CHECKED
   // against the evidence, not just injected as prose (TRACE 2606.13174: prompt-only rules leak ~57%).
   // Violations become unmet criteria — which blocks a 'complete' sign-off mechanically — and feed the
   // per-rule violation counters. One cheap model call, completion-trigger only, fail-open.
-  if (trigger === 'completion') {
+  // ...but not on a HELD review: no verdict was accepted, so there is nothing to audit or amend —
+  // spending a model call to add unmet items to a record nobody may act on only makes the rejected
+  // output look more like an answer.
+  if (trigger === 'completion' && !parsed.hold) {
     try {
       const g2 = ctxData.git || {};
       const violations = await auditEvidence({
@@ -1439,7 +1556,10 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
       }
     } catch (e) { ctx.log('l3 trigger skipped:', e?.message || e); }
   }
-  if (ctx.__activeCard) {
+  // A held review may not touch the card at all — not criteria ticks, not status, and not a
+  // `verify_fail` event, which would put a rejected verdict into the card's permanent history as
+  // though the work had been judged. The hold is recorded in supervisor_reviews with both attempts.
+  if (ctx.__activeCard && !parsed.hold) {
     try {
       const met = applyCriteriaMet(ctx.__activeCard.task.id, rawParsed?.criteria_met);
       if (met) ctx.log(`card: ${met} criteria satisfied with cited evidence`);
@@ -1465,7 +1585,10 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
       });
     } catch {}
   }
-  return { parsed, raw, error, screenshot, model };
+  // `raw` = the final EFFECTIVE (or final failed) output — what grading and the operator read.
+  // `auditRaw` = the bounded provenance envelope, present only when a correction was attempted; every
+  // logging site persists `auditRaw || raw` so both outputs survive in supervisor_reviews.raw.
+  return { parsed, raw, auditRaw, error, screenshot, model };
 }
 
 async function generateDoc(ctx) {
@@ -2411,12 +2534,12 @@ export async function onTick(ctx) {
       const qKey = h32('question-only|' + gateKey + '|' + fp.work + '|' + (operatorIntent.message?.ts || 0));
       if (st.questionOnlyReviewedKey === qKey) return;
       applySupervisorState(ctx, { questionOnlyReviewedKey: qKey, lastActionAt: now() });
-      const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'question-only', fp.work);
+      const { parsed, raw, auditRaw, error, screenshot, model } = await runVerify(ctx, cfg, 'question-only', fp.work);
       const complete = parsed.verdict === 'complete' && parsed.unmet.length === 0;
       if (complete) {
         applySupervisorState(ctx, { verifiedWorkFp: fp.work, verifiedGateKey: gateKey, challengedWorkFp: null, verifiedAt: now(), signoff: { assessment: tailStr(parsed.assessment, 1200), score: parsed.score ?? null, at: now() } });
       }
-      logIntervention(ctx, { kind: 'verify', trigger: 'question-only', model, verdict: parsed.verdict, score: parsed.score, assessment: `Operator asked for an answer only, so no completion challenge was sent. ${parsed.assessment || ''}`.trim(), message: parsed.message || '', sent: 0, screenshot, raw, error });
+      logIntervention(ctx, { kind: 'verify', trigger: 'question-only', model, verdict: parsed.verdict, score: parsed.score, assessment: `Operator asked for an answer only, so no completion challenge was sent. ${parsed.assessment || ''}`.trim(), message: parsed.message || '', sent: 0, screenshot, raw: auditRaw || raw, error });
       ctx.emit('review', { verdict: parsed.verdict, summary: clampLine(parsed.assessment, 160) });
       return;
     }
@@ -2555,7 +2678,26 @@ export async function onTick(ctx) {
     // challenge+verify cycle (the 345-calls/day burner pattern).
     if (!allowedWhenTier(tier, 'verify', { newWork: st.tierVerifiedFp !== fp.work })) return;
     applySupervisorState(ctx, { challengedWorkFp: fp.work, tierVerifiedFp: fp.work, lastActionAt: now() });
-    const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'completion', fp.work);
+    const { parsed, raw, auditRaw, error, screenshot, model } = await runVerify(ctx, cfg, 'completion', fp.work);
+    // HOLD FIRST — before anything reads this verdict or consumes state on the strength of it.
+    // `hold` = the review's own output contradicted a deterministic fact and one bounded same-model
+    // correction did not resolve it, so NO verdict was accepted. This branch covers what happens
+    // AFTER runVerify: the re-open ground-truth label, sign-off, goal-conflict, the blind-escalation
+    // budget, and every send path. (The doctrine audit and the active-card block run INSIDE
+    // runVerify and are gated on `!parsed.hold` there — an outer branch cannot reach them.)
+    // reopenPending is deliberately LEFT ARMED so the next accepted review still labels it.
+    // NB the claim is VERDICT-DEPENDENT state only. The cost/dedupe state above (challengedWorkFp,
+    // tierVerifiedFp, lastActionAt) is applied BEFORE the call and stays applied — the tick really did
+    // spend a verify on this work-state, and pretending otherwise would re-buy it every tick.
+    if (parsed.hold) {
+      ctx.log(`completion verify held (${[].concat(parsed.contradictions || 'verifier_contradiction').join(', ')}) — no verdict accepted, no send, no verdict-dependent state consumed`);
+      logIntervention(ctx, {
+        kind: 'verify', trigger: 'completion', model, verdict: 'needs_attention', score: null,
+        assessment: parsed.assessment, message: '', sent: 0, screenshot, raw: auditRaw || raw, error,
+      });
+      ctx.emit('review', { verdict: 'needs_attention', summary: 'verifier output contradicted a system fact — held' });
+      return;
+    }
     // If this verify is the re-check AFTER a re-open, turn it into a ground-truth verify-LABEL — did the
     // "done" hold up? false_complete{fake_done|untested|excuse|partial} vs correct_new_issue. The classifier
     // sees the original sign-off, this re-verify's unmet gates, the diff, the agent's messages, and the DoD.
@@ -2574,7 +2716,7 @@ export async function onTick(ctx) {
     }
     const complete = parsed.verdict === 'complete' && parsed.unmet.length === 0;
     if (complete) {
-      logIntervention(ctx, { kind: 'verify', trigger: 'completion', model, verdict: 'complete', score: parsed.score, assessment: parsed.assessment, message: '', sent: 0, screenshot, raw, error });
+      logIntervention(ctx, { kind: 'verify', trigger: 'completion', model, verdict: 'complete', score: parsed.score, assessment: parsed.assessment, message: '', sent: 0, screenshot, raw: auditRaw || raw, error });
       applySupervisorState(ctx, { verifiedWorkFp: fp.work, verifiedGateKey: gateKey, challengedWorkFp: null, verifiedAt: now(), signoff: { assessment: tailStr(parsed.assessment, 1200), score: parsed.score ?? null, at: now() } });
       ctx.notifyOperator('✓ Verified complete', clampLine((ctx.session()?.title || 'Session') + ' — ' + (parsed.assessment || 'meets the plan'), 130));
       ctx.emit('review', { verdict: 'complete', summary: clampLine(parsed.assessment, 160) });
@@ -2605,7 +2747,7 @@ export async function onTick(ctx) {
         }
       }
       applySupervisorState(ctx, { needsOperatorHold: { at: now(), reason: 'goal_conflict', workFp: fp.work, gateKey } });
-      logIntervention(ctx, { kind: 'escalate', trigger: 'completion', model, verdict: 'escalated', assessment: "HELD (goal_conflict): the supervision doc's goal appears to diverge from the project spec (definition_of_done). " + clampLine(parsed.assessment, 1200) + ' — not pushing the agent until you confirm the goal.', message: '', sent: 0, screenshot, raw, error });
+      logIntervention(ctx, { kind: 'escalate', trigger: 'completion', model, verdict: 'escalated', assessment: "HELD (goal_conflict): the supervision doc's goal appears to diverge from the project spec (definition_of_done). " + clampLine(parsed.assessment, 1200) + ' — not pushing the agent until you confirm the goal.', message: '', sent: 0, screenshot, raw: auditRaw || raw, error });
       ctx.notifyOperator('Goal may be wrong — needs you', clampLine((ctx.session()?.title || 'Session') + ': doc goal vs spec — ' + (parsed.assessment || ''), 130));
       ctx.emit('review', { verdict: 'escalated', summary: 'doc goal conflicts with the spec — held for you' });
       return;
@@ -2627,7 +2769,7 @@ export async function onTick(ctx) {
       if (blindN >= BLIND_LIMIT && st.blindEscalatedFp !== fp.work) {
         applySupervisorState(ctx, { blindEscalatedFp: fp.work, ...(parsed.unverifiable === 'out_of_band' ? { outOfBandEscalatedAt: now() } : {}) });
         const msg = blindBlockerMessage(parsed.unverifiable, ctx);
-        logIntervention(ctx, { kind: 'escalate', trigger: 'unverifiable', model, verdict: 'escalated', assessment: msg + ' — ' + clampLine(parsed.assessment, 600), message: '', sent: 0, screenshot, raw, error });
+        logIntervention(ctx, { kind: 'escalate', trigger: 'unverifiable', model, verdict: 'escalated', assessment: msg + ' — ' + clampLine(parsed.assessment, 600), message: '', sent: 0, screenshot, raw: auditRaw || raw, error });
         ctx.notifyOperator("Can't verify — needs your input", clampLine(msg, 150));
         ctx.emit('review', { verdict: 'escalated', summary: "can't verify the work (" + parsed.unverifiable + ')' });
         return; // stop re-demanding evidence the agent structurally cannot supply
@@ -2638,7 +2780,11 @@ export async function onTick(ctx) {
       applySupervisorState(ctx, { outOfBandEscalatedAt: null });
       st = ctx.getState();
     }
-    const gap = parsed.message || (parsed.unmet.length ? 'Not done yet — still unmet: ' + parsed.unmet.slice(0, 4).join('; ') : '');
+    // `hold` = this review's own output failed a deterministic contradiction check and one bounded
+    // same-model correction did not resolve it. Nothing is sent from a verdict the system just proved
+    // untrustworthy — and an empty message alone is not enough, because both send paths below fall
+    // back to unmet/assessment text when the message is blank.
+    const gap = parsed.hold ? '' : (parsed.message || (parsed.unmet.length ? 'Not done yet — still unmet: ' + parsed.unmet.slice(0, 4).join('; ') : ''));
     let sent = 0;
     let sent_text = '';
     if (gap && nudges < MAX_NUDGES) {
@@ -2677,7 +2823,7 @@ export async function onTick(ctx) {
       applySupervisorState(ctx, { gateEscalatedFp: fp.work });
       ctx.notifyOperator("Agent claims done but it doesn't verify", clampLine((ctx.session()?.title || 'Session') + ': ' + (parsed.assessment || gap), 130));
     }
-    logIntervention(ctx, { kind: 'verify', trigger: 'completion', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: gap, sent, sent_text, screenshot, raw, error });
+    logIntervention(ctx, { kind: 'verify', trigger: 'completion', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: gap, sent, sent_text, screenshot, raw: auditRaw || raw, error });
     ctx.emit('review', { verdict: parsed.verdict, summary: clampLine(parsed.assessment, 160) });
     return;
   }
@@ -2695,8 +2841,8 @@ export async function onTick(ctx) {
     }
     if (allowedWhenTier(tier, 'nudge') && cfg.checkpoint && cfg.checkpoint_interval_sec && t - (st.lastCheckpointAt || 0) >= cfg.checkpoint_interval_sec * 1000 && !throttled) {
       applySupervisorState(ctx, { lastCheckpointAt: now(), lastActionAt: now() });
-      const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'checkpoint');
-      const shouldPush = ['needs_attention', 'off_track'].includes(parsed.verdict);
+      const { parsed, raw, auditRaw, error, screenshot, model } = await runVerify(ctx, cfg, 'checkpoint');
+      const shouldPush = !parsed.hold && ['needs_attention', 'off_track'].includes(parsed.verdict);
       const checkpointGap = shouldPush
         ? clampLine(parsed.message || (parsed.unmet?.length
           ? `Hourly checkpoint: production-ready bar is not met. Fix and prove: ${parsed.unmet.slice(0, 4).join('; ')}.`
@@ -2720,7 +2866,7 @@ export async function onTick(ctx) {
         sent = r.sent ? 1 : 0;
         sent_text = r.message || '';
       }
-      logIntervention(ctx, { kind: 'checkpoint', trigger: 'checkpoint', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: checkpointGap, sent, sent_text, screenshot, raw, error });
+      logIntervention(ctx, { kind: 'checkpoint', trigger: 'checkpoint', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: checkpointGap, sent, sent_text, screenshot, raw: auditRaw || raw, error });
       ctx.emit('review', { verdict: parsed.verdict, summary: clampLine(parsed.assessment, 160) });
     }
   }
@@ -3166,8 +3312,8 @@ export const actions = {
       const doc = await ensureSupervisionDoc(ctx, cfg, { trigger: 'manual' });
       if (!doc) throw new Error('No supervision doc yet — automatic generation failed.');
     }
-    const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'manual');
-    logIntervention(ctx, { kind: 'verify', trigger: 'manual', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: parsed.message || '', sent: 0, screenshot, raw, error });
+    const { parsed, raw, auditRaw, error, screenshot, model } = await runVerify(ctx, cfg, 'manual');
+    logIntervention(ctx, { kind: 'verify', trigger: 'manual', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: parsed.message || '', sent: 0, screenshot, raw: auditRaw || raw, error });
     ctx.emit('review', { verdict: parsed.verdict, summary: clampLine(parsed.assessment, 160) });
     return parseReview(_latestReview.get(ctx.sessionId));
   },
@@ -3219,8 +3365,8 @@ export const actions = {
     ctx.__activeCard = applyActiveCard(ctx, cfg);
     let verdict = null, assessment = '';
     try {
-      const { parsed, raw, error, screenshot, model } = await runVerify(ctx, cfg, 'manual');
-      logIntervention(ctx, { kind: 'verify', trigger: 'sync', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: parsed.message || '', sent: 0, screenshot, raw, error });
+      const { parsed, raw, auditRaw, error, screenshot, model } = await runVerify(ctx, cfg, 'manual');
+      logIntervention(ctx, { kind: 'verify', trigger: 'sync', model, verdict: parsed.verdict, score: parsed.score, assessment: parsed.assessment, message: parsed.message || '', sent: 0, screenshot, raw: auditRaw || raw, error });
       ctx.emit('review', { verdict: parsed.verdict, summary: clampLine(parsed.assessment, 160) });
       verdict = parsed.verdict; assessment = parsed.assessment;
     } catch (e) { ctx.log('sync verify failed:', e.message); }

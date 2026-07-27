@@ -52,6 +52,17 @@ const REFUTE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 
+// Scenario 17 establishes that the proof exists in /review while this verifier cannot inspect that
+// channel. Consequently, "no screenshot evidence is available HERE" is a statement about this
+// verifier's perspective, not a claim that the agent produced nothing. Keep the exemption anchored
+// immediately after the absence span and closed to explicit verifier-local loci; bare "is available"
+// or repository/project-wide scope is still an asserted absence.
+const VERIFIER_SCOPE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*'
+  + '(?:is|are|was|were)\\s+(?:currently\\s+)?'
+  + '(?:available|visible|present|included|inspectable|accessible|attached|reachable|fetchable)\\s+'
+  + '(?:here\\b|to\\s+(?:me|this\\s+verifier)\\b'
+  + '|(?:in|from|within)\\s+(?:this|the)\\s+(?:review|evidence|payload|bundle|context|record)\\b)', 'i');
+
 // A refutation is short; bounding the lookaround keeps this linear on a large graded blob. The anchors
 // still require adjacency, so this bound is not a proximity window.
 const EDGE = 120;
@@ -85,7 +96,7 @@ export function assertedAbsenceClaims(input) {
   for (const [start, end] of claimSpans(text)) {
     const before = text.slice(Math.max(0, start - EDGE), start);
     const after = text.slice(end, end + EDGE);
-    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after)) continue;
+    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after) || VERIFIER_SCOPE_SUFFIX.test(after)) continue;
     hits.push(text.slice(Math.max(0, start - 40), end + 20).replace(/\s+/g, ' ').trim());
   }
   return hits;

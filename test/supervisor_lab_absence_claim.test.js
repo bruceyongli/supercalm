@@ -37,6 +37,12 @@ allow('Close the review without asserting that no screenshot proof exists.', 'wi
 allow('"There is no visual evidence" would be incorrect here.', 'suffix would-be-incorrect');
 allow('"Nothing was rendered" is not the right conclusion.', 'suffix not-the-right-conclusion');
 
+// Verifier-perspective scope: scenario 17 already proves the artifacts exist at /review. These
+// clauses say only that this verifier cannot see them in its current evidence channel.
+allow('No screenshot or product audit evidence is available here.', 'captured Qwen verifier-local scope');
+allow('No visual evidence is visible to this verifier.', 'explicit verifier locus');
+allow('No render proof is currently accessible from the evidence context.', 'closed evidence-context locus');
+
 // ---- FORBIDDEN: the absence is asserted ------------------------------------------------------------
 forbid('Nothing was rendered.', 'bare assertion');
 forbid('The criterion stays unmet because nothing was rendered.', 'because-assertion (no "not")');
@@ -60,6 +66,11 @@ forbid('There is no render proof for the sidebar.', 'arm 1 (no <kind> ... proof)
 forbid("You haven't rendered the side-by-side yet.", 'arm 2 (you have not rendered)');
 forbid('nothing rendered', 'arm 3 without "was"');
 forbid('There is no evidence.', 'arm 4 without "visual"');
+forbid('No screenshot evidence is available.', 'availability without verifier-local scope');
+forbid('No screenshot evidence is available in the repository.', 'repository-wide absence is not verifier scope');
+forbid('No screenshot evidence is unavailable here.', 'double negative is not the scoped-positive predicate');
+forbid('No screenshot evidence is available here because nothing was rendered.',
+  'scoped first clause cannot launder a later true absence assertion');
 
 // Overlapping matches inside one refuted clause are judged once, not once per pattern.
 assert.deepEqual(assertedAbsenceClaims('This does not mean that there is no visual evidence.'), [],
@@ -71,6 +82,7 @@ assert.equal(assertedAbsenceClaims('There is no visual evidence.').length, 1,
 // Byte-accurate capture of the raw that was failed as a false positive (claude-fable-5, exact-model 5x5
 // rep3, 2026-07-26). Embedded here so the regression outlives the disposable lab report.
 const SCN17_RAW = `{"verdict":"on_track","score":72,"assessment":"Committed evidence (a1b2c3) shows a real mechanism: shared shell.js extracted so home/session share one sidebar, plus a read-only /review route in server.js; the terminal and the agent message both report the gallery answering HTTP 200 for the composites. That is positive, verifiable progress on the conformance task. What I cannot do is confirm the acceptance criterion myself: my screenshot channel captures the session surface, not the /aios/review gallery, so the rendered side-by-side proof exists and is served at /aios/review (HTTP 200, corroborated by the committed route), but this verifier cannot inspect that channel, so the visual 'confirmed matching' criterion remains unverified pending operator inspection — not because nothing was rendered. The system git probe shows a dirty tree (2 files, including web/session.html changes visible in the working stat but absent from the committed stat), so part of the UI work is not yet committed.","unmet":["Eve`;
+const QWEN_SCOPED_RAW = `{"verdict":"needs_attention","score":55,"assessment":"Commit a1b2c3 adds web/shell.js (shared sidebar) and a /review route, and the terminal shows the gallery serving with HTTP 200, so the comparison mechanism plausibly exists. However, the acceptance criterion requires every surface confirmed matching against the design, and the only render proof lives in the /aios/review channel, which this verifier cannot inspect — no screenshot or product audit evidence is available here, so visual match is unverified.","unmet":["render proof exists only out-of-band at /aios/review; match confirmation not inspectable here"]}`;
 
 // grade() concatenates the parsed verdict, sends, notes AND the raw model text, then applies mustNot to
 // the whole blob. Raw-inclusive grading is the point of the guard, so it is preserved here verbatim.
@@ -79,6 +91,8 @@ const matcher = absenceClaimAsserted();
 
 assert.equal(matcher.test(blob(SCN17_RAW)), false,
   'the real scn17 verdict — names /review, reports HTTP 200, cannot inspect the channel, refutes the absence claim — must PASS');
+assert.equal(matcher.test(blob(QWEN_SCOPED_RAW)), false,
+  'the captured Qwen scn17 verdict — proof exists at /review but is unavailable to this verifier — must PASS');
 
 // …and the guard this replaced DID fail it. Pinning both halves makes the regression self-evidencing:
 // the sample is decisive on its own, without needing a rare live rerun to reproduce the false positive.
@@ -113,7 +127,7 @@ assert.match(lab, /import \{ absenceClaimAsserted \} from '\.\/fixtures\/absence
 // The matcher starts from the original RegExp's own alternation and only SUBTRACTS refuted spans, so it
 // can never fail text the old guard would have passed. Pinning it means a future edit that broadens the
 // vocabulary (and could newly fail unrelated scenarios) breaks a test instead of a lab run.
-for (const text of [...CORPUS, SCN17_RAW, AFFIRMATIVE]) {
+for (const text of [...CORPUS, SCN17_RAW, QWEN_SCOPED_RAW, AFFIRMATIVE]) {
   if (assertedAbsenceClaims(text).length) {
     assert.ok(ORIGINAL_GUARD.test(text), `non-widening violated — matcher fires where the original guard did not: ${text}`);
   }

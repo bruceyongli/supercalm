@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-supervisor-arch-'));
+// The built-in default is part of the contract below (it decides what counts as a "pin"), so the
+// operator's machine-level override must not leak into this suite.
+delete process.env.AIOS_SUPERVISOR_DEFAULT_MODEL;
 
 const { classifyOperatorText, latestOperatorIntentFromSignals, segmentOperatorMessage } = await import('../src/agents/supervisor/interpret.js');
 const { buildCurrentTask } = await import('../src/agents/supervisor/current_task.js');
@@ -14,38 +17,93 @@ const { dispatchSupervisorSend, triggeringSignal, recordSupervisorDecision } = a
 const { guardSupervisorSendContext } = await import('../src/agents/supervisor/context_guard.js');
 const { applySupervisorState } = await import('../src/agents/supervisor/effects.js');
 const { decisionHistory, latestDecision } = await import('../src/agents/supervisor/decision_records.js');
-const { defaultChain, modelChain } = await import('../src/agents/supervisor.js');
+const { defaultChain, modelChain, SUPERVISOR_DEFAULT_MODEL } = await import('../src/agents/supervisor.js');
+const { registerUserRoutes } = await import('../src/model_catalog.js');
 
-// Tool-aware Supervisor model routing: exact measured order, independent provider at the head for
-// Codex/Claude sessions, full-list overrides, and stable dedupe when a primary is pinned.
+// Tool-aware Supervisor model routing. The built-in chain is exactly the TWO qualified Supervisor
+// models, ordered so the head never shares a failure domain with the session it supervises. The
+// membership is the point: a third model in a built-in chain is an UNQUALIFIED model silently
+// answering supervision calls, so the chain is closed and only an explicit operator override opens it.
 {
-  const codex = ['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol'];
-  const claude = ['glm-5.2', 'gpt-5.6-sol', 'claude-opus-4-8', 'claude-fable-5'];
-  const other = ['claude-opus-4-8', 'glm-5.2', 'claude-fable-5', 'gpt-5.6-sol'];
+  const OPUS = 'claude-opus-5';
+  const SOL = 'gpt-5.6-sol';
+  const codex = [OPUS, SOL];
+  const claude = [SOL, OPUS];
+  const other = [OPUS, SOL];
+  assert.equal(SUPERVISOR_DEFAULT_MODEL, OPUS, 'built-in Supervisor default model');
   assert.deepEqual(defaultChain('codex'), codex);
   assert.deepEqual(defaultChain('claude'), claude);
   assert.deepEqual(defaultChain('agy'), other);
   assert.deepEqual(defaultChain('opencode'), other);
+  assert.deepEqual(defaultChain(undefined), other, 'an absent tool resolves to the neutral built-in');
+
+  // Head independence: an outage that stops the supervised session must not also blind its Supervisor.
   assert.doesNotMatch(defaultChain('codex')[0], /^gpt-/i, 'Codex session gets a non-Codex Supervisor head');
   assert.doesNotMatch(defaultChain('claude')[0], /^claude-/i, 'Claude session gets a non-Claude Supervisor head');
-  for (const chain of [codex, claude, other]) {
+  assert.notEqual(defaultChain('codex')[0], defaultChain('claude')[0], 'Codex and Claude heads are independent');
+
+  // Only-two membership, and stable dedupe.
+  for (const [tool, chain] of [['codex', codex], ['claude', claude], ['agy', other]]) {
+    assert.equal(chain.length, 2, `${tool}: built-in chain is exactly the qualified pair`);
+    assert.deepEqual([...chain].sort(), [OPUS, SOL].sort(), `${tool}: no unqualified model in the built-in chain`);
     assert.equal(new Set(chain).size, chain.length, 'built-in chain is deduplicated');
     assert.equal(chain.includes('qwen3.8-max-preview'), false, 'unsafe/slow Qwen preview is excluded');
     assert.equal(chain.some((model) => /gemini/i.test(model)), false, 'unavailable Gemini is excluded');
   }
 
+  // No discovered-route tail. User API providers are pushed in live by model_providers.js; they must
+  // never extend a built-in chain, or enabling a provider would quietly widen the qualified set.
+  registerUserRoutes([
+    { id: 'my-local-llama', providerLabel: 'Local' },
+    { id: 'vendor-preview-model', providerLabel: 'Vendor' },
+  ]);
+  try {
+    assert.deepEqual(defaultChain('codex'), codex, 'discovered user routes do not tail the Codex built-in');
+    assert.deepEqual(defaultChain('claude'), claude, 'discovered user routes do not tail the Claude built-in');
+    assert.deepEqual(defaultChain('agy'), other, 'discovered user routes do not tail the neutral built-in');
+    assert.deepEqual(
+      modelChain({ model: OPUS }, { tool: 'claude' }), claude,
+      'nor do they reach the resolved chain for an unpinned session',
+    );
+  } finally {
+    registerUserRoutes([]);
+  }
+
+  // A pinned primary leads, and its occurrence inside the built-in chain is deduped away.
   assert.deepEqual(
-    modelChain({ model: 'claude-fable-5' }, { tool: 'codex' }),
-    ['claude-fable-5', 'claude-opus-4-8', 'glm-5.2', 'gpt-5.6-sol'],
-    'a selected non-default model is pinned and its default occurrence is deduped',
+    modelChain({ model: SOL }, { tool: 'codex' }), [SOL, OPUS],
+    'a pinned qualified model leads and does not repeat',
   );
   assert.deepEqual(
-    modelChain(
-      { model: 'glm-5.2', fallback_models: ['gpt-5.6-sol', 'glm-5.2', 'gpt-5.6-sol', '', 'claude-opus-4-8'] },
-      { tool: 'claude' },
-    ),
-    ['gpt-5.6-sol', 'glm-5.2', 'claude-opus-4-8'],
+    modelChain({ model: 'claude-fable-5' }, { tool: 'codex' }), ['claude-fable-5', OPUS, SOL],
+    'a selected non-default model is pinned ahead of the built-in pair',
+  );
+  // The framework default is NOT a pin — otherwise every default session would lead with the same
+  // provider and quietly lose the head independence asserted above.
+  assert.deepEqual(
+    modelChain({ model: OPUS }, { tool: 'claude' }), claude,
+    'the built-in default is not a pin; the Claude head stays cross-provider',
+  );
+  assert.deepEqual(modelChain({ model: OPUS }, { tool: 'codex' }), codex, 'and the Codex head stays non-Codex');
+
+  // An explicit full chain still overrides everything, in the operator's own order, deduped.
+  assert.deepEqual(
+    modelChain({ model: OPUS, fallback_models: [SOL, OPUS, SOL, '', 'claude-fable-5'] }, { tool: 'claude' }),
+    [SOL, OPUS, 'claude-fable-5'],
     'an explicit full chain overrides the selected/default order and dedupes exact IDs',
+  );
+
+  // The qualification harness must be able to ROUTE what production supervises with. `npm run lab`
+  // isolates AIOS_DATA and seeds the live scanned catalog — but COPYING that file is inert in-process:
+  // only model_scan.js applies it, at boot. A model that exists solely in the live scan (the built-in
+  // default above is one) then misses ROUTES_BY_ID and routeForModel falls back to the DEFAULT proxy,
+  // so the lab grades another provider's rejection as a Supervisor failure — a qualification verdict
+  // about a model that was never actually called.
+  const lab = readFileSync(new URL('../scripts/supervisor-lab.mjs', import.meta.url), 'utf8');
+  assert.match(lab, /applyCatalog\(saved\.providers/, 'the lab APPLIES the seeded catalog, not just copies it');
+  assert.ok(
+    lab.indexOf('applyCatalog(') < lab.indexOf('routeForModel('),
+    'the seeded catalog is applied before the lab resolves any route',
   );
 }
 
