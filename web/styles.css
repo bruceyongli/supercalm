@@ -323,6 +323,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .composer-options { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .composer-action-spacer { display: none; }
+.composer-settings-popover { min-width: 0; }
+.composer-settings-head { display: none; }
+.composer-settings-toggle {
+  display: none; min-width: 0; height: 36px; padding: 0 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1px solid var(--line2); border-radius: 8px; background: transparent; color: var(--muted);
+  font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer;
+}
+.composer-settings-toggle:hover, .composer-settings-toggle[aria-expanded="true"] { color: var(--ink); background: rgba(255,255,255,.05); }
 /* The composer adapts to ITS OWN width, not the viewport (container query): when the agent drawer is
    dragged wide and squeezes the stream, the composer stacks — actions on their own row — instead of the
    settings colliding with the mic/send (gpt: fix narrow-width composer). Complements the ≤600px mobile
@@ -330,12 +338,15 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .message-box.footer-composer { container-type: inline-size; container-name: composer; }
 @container composer (max-width: 640px) {
   .composer-bottom { flex-direction: column; align-items: stretch; gap: 6px; }
-  .composer-options { order: 2; width: 100%; }
+  .composer-options { display: none; order: 2; width: 100%; }
+  .message-box.settings-open .composer-options { display: flex; }
   .composer-hint { display: none; }
   .composer-actions {
     order: 1; width: 100%; margin-left: 0; gap: 6px;
-    display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, max-content) 40px 40px; align-items: center;
   }
+  .composer-settings-toggle { display: block; grid-column: 1; max-width: 100%; text-align: left; }
+  .composer-action-spacer { display: none; }
   .composer-actions .mic-status { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
   .settings.composer-settings { flex: none; display: flex; flex-wrap: wrap; gap: 5px 8px; }
 }
@@ -464,37 +475,45 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .session-title-input:focus { border-color: var(--blue); outline: none; }
 .session-title-input.error { border-color: var(--red); }
-/* First-run reassurance banner (design: green strip beneath the header). */
-.session-banner { display: flex; align-items: center; gap: 10px; padding: 8px 20px; background: rgba(63, 191, 95, .07); border-bottom: 1px solid #161d27; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; color: #b9c4d4; flex-shrink: 0; }
-.session-banner[hidden] { display: none; }
-.session-banner-ok { color: #4ecb6c; font-weight: 600; white-space: nowrap; }
-.session-banner-msg b { color: #e9eef5; }
-.session-banner-x { margin-left: auto; background: none; border: none; color: #5c6675; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px; }
-.session-banner-x:hover { color: #b9c4d4; }
+.session-actions { position: relative; flex: 0 0 auto; }
+.session-more { min-width: 38px; padding: 0 8px; letter-spacing: 2px; color: var(--muted); }
+.session-actions-menu {
+  position: absolute; z-index: 80; top: calc(100% + 7px); right: 0; width: 244px;
+  padding: 5px; border: 1px solid var(--line2); border-radius: 10px; background: #10161f;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .46);
+}
+.session-actions-menu[hidden] { display: none; }
+.session-actions-menu button {
+  width: 100%; display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+}
+.session-actions-menu button:hover, .session-actions-menu button:focus-visible { background: rgba(255,255,255,.06); outline: 0; }
+.session-actions-menu button span { color: var(--dim); font-size: 10.5px; }
+.session-actions-menu button.danger b { color: var(--red); }
+.session-actions-menu button[hidden] { display: none; }
+@media (min-width: 1195px) {
+  .session-shell > header .brand > a { display: none; }
+}
 
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
-  --dock-rail-w: 44px;    /* compact agent-dock icon rail (the last column) */
+  --dock-rail-w: 58px;    /* one labelled Tools entry (the last column) */
   --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
   --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
   grid-template-columns: minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
-  /* rows: header · first-run banner (0 when hidden) · body. The header + banner live in the content
-     columns (rows 1/2); the sidebar spans all rows (full-height left column) — design: nothing above the
-     Supercalm brand, header belongs to the content area, not a full-width bar. */
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* Header + body; the shared sidebar spans both rows. */
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100dvh;
   padding: 0; /* edge-to-edge (design): full-bleed log/header/rail, no outer gutter */
   gap: 0;
   overflow: hidden;
 }
-/* Sidebar owns the full-height left column. Header + banner sit in the content columns to its right. */
+/* Sidebar owns the full-height left column. The session header sits in the content columns to its right. */
 .session-shell > .dk-side { grid-column: 1; grid-row: 1 / -1; }
 .session-shell > header { grid-column: 1 / -1; grid-row: 1; position: static; z-index: auto; border-radius: 12px 12px 0 0; margin: 0; }
 .session-shell.rail-pinned > header { grid-column: 2 / -1; }
-.session-shell > .session-banner { grid-column: 1 / -1; grid-row: 2; }
-.session-shell.rail-pinned > .session-banner { grid-column: 2 / -1; }
 .session-shell.rail-pinned {
   grid-template-columns: var(--session-rail-width) minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
 }
@@ -523,7 +542,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
    uniform, user-controlled width and the log is full-bleed in every main view. */
 .session-main {
   grid-column: 1;
-  grid-row: 3; /* body row — the header (row 1) + banner (row 2) sit above, sidebar spans all rows */
+  grid-row: 2;
   display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
   min-width: 0; min-height: 0; height: 100%; padding: 0; gap: 8px;
   max-width: none; margin: 0;
@@ -630,7 +649,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-usage-panel {
   /* min-width:0 so the CLOSED drawer collapses to its 0px column instead of overflowing 320px onto the
      rail (gpt: put the min on the OPEN track, not the child — see the dock-open rule in @media ≥1195). */
-  grid-column: 3; grid-row: 3; min-width: 0; min-height: 0; height: 100%; overflow: auto;
+  grid-column: 3; grid-row: 2; min-width: 0; min-height: 0; height: 100%; overflow: auto;
   border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px;
 }
 .session-shell.rail-pinned .session-usage-panel { grid-column: 4; }
@@ -668,11 +687,36 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 /* ---- Agent dock: compact icon rail (always visible) + one slide-over drawer ----------------------- */
 /* minimal dock rail (design): icons float on the right edge — no boxed rail, no boxed glyphs */
 .agent-dock-rail {
-  grid-column: -2 / -1; grid-row: 3; align-self: stretch;
+  position: relative;
+  grid-column: -2 / -1; grid-row: 2; align-self: stretch;
   width: var(--dock-rail-w); min-width: var(--dock-rail-w);
   display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 2px; background: transparent; border: 0; z-index: 6;
 }
+.dock-tools-trigger {
+  width: 54px; min-height: 48px; display: grid; place-items: center; gap: 2px; padding: 5px 2px;
+  border: 0; border-radius: 9px; background: transparent; color: var(--dim); font: inherit; cursor: pointer;
+}
+.dock-tools-trigger svg { width: 19px; height: 19px; }
+.dock-tools-trigger span { font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.dock-tools-trigger:hover, .dock-tools-trigger.on, .dock-tools-trigger[aria-expanded="true"] { color: var(--blue); background: rgba(88,166,255,.1); }
+.dock-tools-menu {
+  position: absolute; z-index: 81; top: 8px; right: calc(100% + 6px); width: 286px;
+  display: grid; gap: 2px; padding: 6px; border: 1px solid var(--line2); border-radius: 11px;
+  background: #10161f; box-shadow: 0 18px 48px rgba(0,0,0,.5);
+}
+.dock-tools-menu[hidden] { display: none; }
+.dock-tool-option, .agent-dock-rail .dock-tool-option.side-agents-btn {
+  position: relative; width: 100%; height: auto; min-height: 46px; display: grid;
+  grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 9px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer;
+}
+.dock-tool-option:hover, .dock-tool-option:focus-visible, .dock-tool-option.on { color: var(--ink); background: rgba(255,255,255,.06); outline: 0; }
+.dock-tool-option svg { width: 20px; height: 20px; justify-self: center; }
+.dock-tool-option > span:not(.side-tab-dot) { min-width: 0; display: grid; gap: 1px; }
+.dock-tool-option b { color: var(--ink); font-size: 12px; }
+.dock-tool-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; }
+.dock-tool-option .side-tab-dot { position: static; margin: 0; }
 .agent-dock-rail .dock-glyphs { gap: 6px; padding: 0; }
 .agent-dock-rail .dock-glyph { position: relative; width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
 .agent-dock-rail .dock-glyph svg { width: 20px; height: 20px; display: block; }
@@ -1454,7 +1498,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 /* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + compact rail +
    overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
 @media (max-width: 600px) {
-  /* Phone session layout: a flex column with EXPLICIT order — header · banner · main · agent bar.
+  /* Phone session layout: a flex column with EXPLICIT order — header · main · tool bar.
      (Was display:block, which let the agent-dock rail and the drawer panel fall into page flow BELOW
      the composer as a loose stack of icons — the "agent panel is dead space on mobile" bug.) */
   .session-shell, .session-shell.rail-pinned {
@@ -1462,20 +1506,21 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     overflow: auto;
   }
   .session-shell > header { order: 0; }
-  .session-shell > .session-banner { order: 1; }
-  .session-shell > .session-main { order: 2; }
-  .session-shell > .agent-dock-rail { order: 3; }
-  .session-shell > .session-usage-panel { order: 4; }
-  /* The dock rail becomes a bottom agent bar: glyphs in a row, gear at the far end, pinned while the
-     page scrolls. Same buttons, same drawer — just a phone-shaped surface. */
+  .session-shell > .session-main { order: 1; }
+  .session-shell > .agent-dock-rail { order: 2; }
+  .session-shell > .session-usage-panel { order: 3; }
+  /* The single Tools entry becomes a pinned bottom bar and opens the same drawer as desktop. */
   .session-shell > .agent-dock-rail {
     position: sticky; bottom: 0; z-index: 30;
     margin-top: auto; /* short content: pin the bar to the viewport bottom, not adrift mid-page */
-    flex-direction: row; align-items: center; width: 100%; min-width: 0;
+    flex-direction: row; align-items: center; justify-content: flex-end; width: 100%; min-width: 0;
     gap: 2px; padding: 2px 8px calc(2px + env(safe-area-inset-bottom)); /* slim: one compact row (operator: the bar ate too much of the screen) */
     background: rgba(10, 14, 20, 0.96); border-top: 1px solid var(--line);
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
+  .dock-tools-trigger { width: auto; min-width: 72px; min-height: 44px; grid-template-columns: 18px auto; gap: 6px; padding: 4px 10px; }
+  .dock-tools-trigger span { font-size: 10px; }
+  .dock-tools-menu { position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(50px + env(safe-area-inset-bottom)); width: auto; max-height: min(68dvh, 520px); overflow: auto; }
   .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 2px; }
   .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; height: 40px; }
   .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { justify-content: center; padding: 0; }
@@ -1520,22 +1565,13 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
      story. Hide it here — the ← back returns to the dashboard's nav. NOTE: the prior rule targeted
      `.session-rail`, but the shared-shell extraction renamed the sidebar to `.dk-side`, so it silently
      stopped applying and the full sidebar had been stacking full-width and pushing the content off-screen
-     (operator-reported). The header/banner span full width on display:block, which is correct here. */
+     (operator-reported). The header spans full width on the phone. */
   .session-shell > .dk-side { display: none; }
-  .session-shell > header, .session-shell.rail-pinned > header,
-  .session-shell > .session-banner, .session-shell.rail-pinned > .session-banner { grid-column: auto; }
+  .session-shell > header, .session-shell.rail-pinned > header { grid-column: auto; }
 }
 
-/* Mobile now defaults to the desktop STORY view (the phone auto-redirect is gone). Optimize for it:
-   make the story the dominant element on phones and slim the first-run banner. The right agent panel
-   keeps its existing stacked-below position — untouched. */
+/* Mobile now defaults to the desktop STORY view (the phone auto-redirect is gone). */
 @media (max-width: 600px) {
-  /* Banner reads as one flowing sentence on a phone. As a flex row, the nowrap "✓ first session
-     running" chip vertically centered against the two-line message and the texts overlapped. */
-  .session-banner { display: block; font-size: 11.5px; padding: 7px 34px 7px 10px; line-height: 1.45; position: relative; }
-  .session-banner-ok { display: inline; margin-right: 6px; white-space: normal; }
-  .session-banner-msg { display: inline; }
-  .session-banner-x { position: absolute; right: 6px; top: 4px; padding: 4px 8px; }
   /* Composer: keep the box inside the viewport (it clipped the send button at the right edge), keep it
      SLIM (operator: the composer + a dead gap ate the screen), and never let a settings select shrink
      into "m…" — the row wraps instead. Forced stacked layout here (media query) because on iOS the
@@ -1543,8 +1579,11 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .message-box { margin: 6px 8px; max-width: calc(100% - 16px); padding: 7px; gap: 5px; }
   .message-box textarea { min-height: 26px; } /* one line empty; auto-grows as you type */
   .composer-bottom { flex-wrap: wrap; gap: 5px; }
-  .composer-options { order: 2; width: 100%; }
-  .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
+  .composer-options { display: none; order: 2; width: 100%; }
+  .message-box.settings-open .composer-options { display: block; }
+  .composer-actions { order: 1; width: 100%; margin-left: 0; display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px 40px; align-items: center; gap: 6px; }
+  .composer-settings-toggle { display: block; grid-column: 2; text-align: left; }
+  .composer-action-spacer, .composer-actions .mic-status { display: none; }
   .composer-hint { display: none; }
   .settings.composer-settings { flex: 1 1 auto; flex-wrap: wrap; gap: 2px 4px; font-size: 11px; } /* smaller type → the 4 controls fit one row (no 4th composer row) */
   .settings.composer-settings .setting { flex: 0 0 auto; padding: 0 5px; }
@@ -1572,8 +1611,16 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 
 @media (max-width: 600px) {
   .session-page { overflow-x: hidden; }
-  header { gap: 7px; padding-left: 10px; padding-right: 10px; }
-  .brand { flex: 1 0 100%; }
+  .session-shell > header {
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-rows: auto auto;
+    gap: 7px 9px; padding-left: 10px; padding-right: 10px;
+  }
+  .session-shell > header .brand { grid-column: 1; grid-row: 1; min-width: 0; }
+  .session-shell > header .title { grid-column: 2; grid-row: 1; min-width: 0; }
+  .session-shell > header .session-actions,
+  .session-shell > header #b-resume { grid-column: 3; grid-row: 1; justify-self: end; }
+  .session-shell > header .status-txt { grid-column: 1; grid-row: 2; align-self: center; }
+  .session-shell > header .story-toggle { grid-column: 2 / 4; grid-row: 2; justify-self: end; }
   header .spacer { display: none; }
   .btn { padding: 5px 10px; min-height: 38px; font-size: 12px; } /* 30px was under every touch-target guideline */
   .clock { display: none; }
@@ -1695,21 +1742,24 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .message-box .attachment-list .asset-card { width: 100%; }
   .composer-bottom { display: flex; flex-direction: column; align-items: stretch; gap: 6px; }
   .composer-options {
-    order: 2; width: 100%; display: block;
+    order: 2; width: 100%;
   }
   .composer-actions {
     order: 1; width: 100%; max-width: 100%; min-width: 0; margin-left: 0; align-self: stretch; gap: 6px;
     /* The controls are 40px wide; 36px tracks made the row overflow and clipped the send button. */
-    display: grid; grid-template-columns: 40px minmax(0, 1fr) minmax(0, max-content) 40px 40px; align-items: center;
+    display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px 40px; align-items: center;
   }
-  .composer-action-spacer { display: block; min-width: 0; }
+  .composer-action-spacer { display: none; }
   .composer-actions .mic-status {
-    min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: none;
   }
   .btn.icon-btn, .send-btn, .mic { width: 40px; min-width: 40px; min-height: 40px; } /* ≥40px touch targets (design) */
   .attach-desktop { display: none !important; }
   .attach-mobile { display: grid !important; }
   .settings.composer-settings { flex: none; min-width: 0; display: flex; flex-wrap: wrap; gap: 5px; }
+  .composer-settings-popover { display: grid; gap: 7px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; background: #10151d; }
+  .composer-settings-head { display: flex; align-items: center; justify-content: space-between; color: var(--muted); font: 700 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .06em; }
+  .composer-settings-head button { width: 30px; height: 30px; border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
   .settings.composer-settings .setting { height: 32px; min-height: 32px; padding: 0 7px; font-size: inherit; }
   .settings.composer-settings select {
     max-width: calc(100vw - 56px); overflow: hidden; text-overflow: ellipsis;
@@ -2819,11 +2869,11 @@ body.map-expanded-open { overflow: hidden; }
 .mini-dot.me { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff55; }
 #mini-dots { display: flex; flex-direction: column; gap: 6px; }
 
-.story-earlier { display: block; width: 100%; margin: 0 0 14px; padding: 8px; background: #0d1219; border: 1px dashed #232c38; border-radius: 9px; color: #5c6675; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; cursor: pointer; }
+.story-earlier { display: inline-flex; width: auto; margin: 0; padding: 5px 9px; background: #0d1219; border: 1px solid #232c38; border-radius: 8px; color: #7b8797; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; cursor: pointer; }
 .story-earlier:hover { color: #8a95a5; border-color: #365a86; }
+.story-earlier.quiet { border-color: transparent; background: transparent; color: #5c6675; }
 /* Two load-earlier controls side by side: ‹ previous round (left) · ↑ show the full story (right). */
-.story-loadbar { display: flex; gap: 10px; }
-.story-loadbar .story-earlier { flex: 1; min-width: 0; }
+.story-loadbar { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 0 0 18px; }
 /* Attachment previews inside a message bubble — reuse the .story-shot thumbnail + lightbox. */
 .story-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .story-imgs .story-shot { margin-top: 0; }

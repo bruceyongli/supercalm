@@ -46,6 +46,16 @@ assert.doesNotMatch(html, />Claude (?:\/|Claude )/, 'Claude is not repeated in o
 const custom = groupedModelOptions(models, { selected: '<custom>' });
 assert.match(custom, /value="&lt;custom&gt;" selected/, 'custom selections are preserved and escaped');
 
+const aliases = groupedModelOptions([
+  ...models,
+  { ...models[1], id: 'claude-opus-subscription' },
+  { ...models[1], id: 'claude-opus-api' },
+], { selected: 'claude-opus-subscription' });
+assert.equal((aliases.match(/>Opus 4\.8 \(vision\)<\/option>/g) || []).length, 1,
+  'provider aliases do not repeat the same visible model');
+assert.match(aliases, /value="claude-opus-subscription" selected/,
+  'deduplication preserves the selected auth-route alias');
+
 const pickerFiles = [
   'web/shell.js',
   'web/app.js',

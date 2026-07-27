@@ -22,5 +22,10 @@ assert.match(reviewPanel, /api\/session\/\$\{P\.sessionId\}\/input/, 'delivery u
 
 assert.doesNotMatch(settings, /id="st-permissions"/, 'Settings does not repeat permission definitions');
 assert.doesNotMatch(session, /permission-impact|permission-scope/, 'the composer permission control stays compact');
+assert.doesNotMatch(session, /titleTags|model · effort · autonomy|first session running/,
+  'the session header does not repeat composer configuration or revive the stale onboarding banner');
+assert.match(session, /session-actions-menu/, 'rare stop and kill controls live in the session overflow menu');
+assert.match(session, /composer-settings-toggle/, 'phone keeps one compact run-settings summary in the composer');
+assert.match(read('web/agents/host.js'), />Tools</, 'the session exposes one named Tools entry instead of an unlabeled glyph strip');
 
 console.log('supercalm_surfaces.test ok');

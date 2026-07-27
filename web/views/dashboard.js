@@ -130,16 +130,14 @@ function renderInbox(home) {
         <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
         ${agentChip(s.tool)}
         <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(fullTitle(s))}</a>
-        <span class="dk-card-meta">${esc(s.model || '')} · ${fmtAgo(s.last_activity)} ago</span>
+        <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
       <div class="dk-attention-preview">
-        <div class="dk-attention-row"><span>Working on</span><p>${esc(preview.doing)}</p></div>
-        ${preview.outcome ? `<div class="dk-attention-row"><span>Latest update</span><p>${esc(preview.outcome)}</p></div>` : ''}
-        <div class="dk-attention-row important"><span>Why it needs you</span><p>${esc(preview.need || 'The session is waiting for your direction.')}</p></div>
-        <div class="dk-attention-row"><span>After you reply</span><p>${esc(preview.next)}</p></div>
+        ${preview.outcome ? `<div class="dk-attention-row"><span>Latest</span><p>${esc(preview.outcome)}</p></div>` : ''}
+        <div class="dk-attention-row important"><span>Needs you</span><p>${esc(preview.need || 'The session is waiting for your direction.')}</p></div>
       </div>
       ${choicesHtml(s, questions)}
-      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}&inspect=1">Why it needs you</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
+      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>` };
   });
