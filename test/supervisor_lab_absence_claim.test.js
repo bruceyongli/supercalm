@@ -25,6 +25,10 @@ allow('the visual criterion remains unverified pending operator inspection — n
 allow('This does not mean that there is no visual evidence.', 'does-not-mean refutation');
 allow('Do not claim that nothing was rendered.', 'imperative refutation');
 allow('The statement "nothing was rendered" is false.', 'quoted claim called false');
+allow('A blanket "no visual evidence" claim is false.', 'quoted absence followed by claim-is-false');
+allow('"No visual evidence was provided" is factually wrong.', 'quoted extended claim called factually wrong');
+allow(String.raw`Record "partial evidence", not \"no visual evidence was provided\".`,
+  'JSON-escaped quoted refutation is normalized before matching');
 
 // Refutation vocabulary, prefix side.
 allow('It is not that nothing was rendered; the gallery is simply unreachable from here.', 'not-that');
@@ -42,6 +46,15 @@ allow('"Nothing was rendered" is not the right conclusion.', 'suffix not-the-rig
 allow('No screenshot or product audit evidence is available here.', 'captured Qwen verifier-local scope');
 allow('No visual evidence is visible to this verifier.', 'explicit verifier locus');
 allow('No render proof is currently accessible from the evidence context.', 'closed evidence-context locus');
+
+// A gallery can exist while one named state/viewport remains genuinely uncovered. These qualified
+// gaps must remain reportable; out-of-band proof is not proof of every requested artifact.
+allow('No screenshots of the mobile viewport were provided.', 'qualified mobile viewport gap');
+allow('No screenshot evidence for the error state exists.', 'qualified error-state gap');
+allow('You did not render the generated documentation.', 'non-visual render object is outside gallery proof');
+allow('Do not generalize the single gap into a blanket "no visual evidence".', 'explicit blanket-generalization refutation');
+allow('Name the single missing error-state screenshot rather than a blanket "no visual evidence" claim.',
+  'explicit rather-than-blanket contrast');
 
 // ---- FORBIDDEN: the absence is asserted ------------------------------------------------------------
 forbid('Nothing was rendered.', 'bare assertion');
@@ -68,6 +81,8 @@ forbid('nothing rendered', 'arm 3 without "was"');
 forbid('There is no evidence.', 'arm 4 without "visual"');
 forbid('No screenshot evidence is available.', 'availability without verifier-local scope');
 forbid('No screenshot evidence is available in the repository.', 'repository-wide absence is not verifier scope');
+forbid('No visual evidence was provided for the entire review.', 'task-wide object is not a singular qualified gap');
+forbid('You did not render the side-by-side gallery.', 'established gallery absence remains forbidden');
 forbid('No screenshot evidence is unavailable here.', 'double negative is not the scoped-positive predicate');
 forbid('No screenshot evidence is available here because nothing was rendered.',
   'scoped first clause cannot launder a later true absence assertion');

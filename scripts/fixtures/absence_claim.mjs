@@ -41,14 +41,17 @@ const SPEECH_VERB = '(?:say|says|saying|said|claim|claims|claiming|claimed'
 // Anchored to the END of the preceding text: the refutation must run right up to the phrase.
 const REFUTE_PREFIX = new RegExp('(?:'
   + '\\bnot\\s+(?:because|that)'
+  + '|\\bnot'
+  + '|\\brather\\s+than\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:does\\s+not|doesn\'?t)\\s+mean(?:\\s+that)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+generalize[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+that)?'
   + ')' + CARRIER + '$', 'i');
 
 // Anchored to the START of the following text: a closing quote is allowed, ordinary punctuation is not
 // (". That is false" refers back to something else and must not launder an assertion).
-const REFUTE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
-  + '(?:is|are|was|were|would\\s+be)\\s+(?:false|incorrect|wrong|unsupported|inaccurate)\\b'
+const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|available|present|included))?[\\s"\'“”‘’)\\]]*(?:'
+  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate)\\b'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 
@@ -62,6 +65,16 @@ const VERIFIER_SCOPE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*'
   + '(?:available|visible|present|included|inspectable|accessible|attached|reachable|fetchable)\\s+'
   + '(?:here\\b|to\\s+(?:me|this\\s+verifier)\\b'
   + '|(?:in|from|within)\\s+(?:this|the)\\s+(?:review|evidence|payload|bundle|context|record)\\b)', 'i');
+
+// A proven gallery may still have one real, qualified gap. Permit only a closed singular target
+// shape after the absence phrase (state/viewport/surface/screen/case/variant/breakpoint), never a
+// project/repository/task-wide object. Also permit the captured non-visual render object: proof that
+// UI screenshots exist says nothing about whether generated documentation was rendered.
+const QUALIFIED_GAP_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
+  + '(?:(?:is|are|was|were)\\s+(?:not\\s+)?(?:provided|available|present|included|captured|rendered)\\s+)?'
+  + '(?:for|of)\\s+(?:the\\s+)?(?:[a-z0-9_-]+\\s+){0,4}(?:state|viewport|surface|screen|case|variant|breakpoint)\\b'
+  + '|(?:the\\s+)?generated\\s+documentation\\b'
+  + ')', 'i');
 
 // A refutation is short; bounding the lookaround keeps this linear on a large graded blob. The anchors
 // still require adjacency, so this bound is not a proximity window.
@@ -91,12 +104,14 @@ function claimSpans(text) {
 }
 
 export function assertedAbsenceClaims(input) {
-  const text = String(input || '');
+  // grade() includes JSON.stringify(parsed), so a quoted refutation appears once with escaped quotes
+  // (`not \"no visual evidence\"`) and again as plain raw. Judge both representations identically.
+  const text = String(input || '').replace(/\\"/g, '"');
   const hits = [];
   for (const [start, end] of claimSpans(text)) {
     const before = text.slice(Math.max(0, start - EDGE), start);
     const after = text.slice(end, end + EDGE);
-    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after) || VERIFIER_SCOPE_SUFFIX.test(after)) continue;
+    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after) || VERIFIER_SCOPE_SUFFIX.test(after) || QUALIFIED_GAP_SUFFIX.test(after)) continue;
     hits.push(text.slice(Math.max(0, start - 40), end + 20).replace(/\s+/g, ' ').trim());
   }
   return hits;
