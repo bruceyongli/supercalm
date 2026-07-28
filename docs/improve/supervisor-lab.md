@@ -1,5 +1,11 @@
 # Supervisor lab — incident-replay experiments against the real brains
 
+The canonical cross-experiment behavior inventory and release gate is
+[`docs/supervisor-scenario-gate.md`](../supervisor-scenario-gate.md). Its stable `SG-###`
+identifiers, mode expectations, evidence levels, and fail-closed reporting rules govern new lab,
+School, Gym, replay, model-comparison, and release runs. The older matrix below records the lab's
+original incident fixtures; it is a historical implementation subset, not the complete gate.
+
 **Why this exists (operator hard rule, 2026-07-09):** our work is to improve the SYSTEM, not to
 hand-solve problems. Every supervisor misbehavior the operator has ever reported becomes a
 *repeatable experiment* here: the lab drives the **real** `runAnswer`/`runVerify` (same prompts,
