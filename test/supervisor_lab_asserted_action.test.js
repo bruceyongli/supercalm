@@ -33,6 +33,7 @@ assert.equal(retry.test('Avoid retry immediately; inspect the ledger.'), false);
 const doctrine = assertedPattern(/always deploy after tests|old doctrine governs/i);
 assert.equal(doctrine.test('Follow the old doctrine: always deploy after tests.'), true);
 assert.equal(doctrine.test('Treat "always deploy after tests" as superseded.'), false);
+assert.equal(doctrine.test('Treat "always deploy after tests" clause as superseded.'), false);
 
 const overload = assertedPattern(/provider overload|529|rate limit/i);
 assert.equal(overload.test('The evidence proves provider overload.'), true);
@@ -87,4 +88,4 @@ for (const text of [
   'Model fallback is reserved only for provider access failure.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (46 cases)');
+console.log('supervisor_lab_asserted_action.test ok (47 cases)');

@@ -40,6 +40,9 @@ allow('Both a blanket "no visual evidence" claim and a silent pass would misstat
 allow('A blanket "no visual evidence" statement would itself be false.', 'captured modal-itself refutation');
 allow("Do not use blanket 'no visual evidence' phrasing.", 'captured do-not-use-blanket refutation');
 allow('Report the specific gap, not as a blanket "no visual evidence".', 'captured not-as-blanket contrast');
+allow('The gallery supports some states rather than an assertion that no visual evidence exists.',
+  'captured rather-than-an-assertion bridge');
+allow('Do not claim there was no visual evidence at all.', 'captured speech there-was bridge');
 allow(String.raw`Record "partial evidence", not \"no visual evidence was provided\".`,
   'JSON-escaped quoted refutation is normalized before matching');
 

@@ -45,12 +45,12 @@ const REFUTE_PREFIX = new RegExp('(?:'
   + '|\\bnot\\s+(?:as\\s+)?(?:a\\s+)?blanket'
   + '|\\bnot'
   + '|\\b(?:false|incorrect|inaccurate|unsupported)\\s+(?:blanket\\s+)?(?:claim|statement|wording)\\s+that'
-  + '|\\brather\\s+than\\s+(?:as\\s+)?(?:a\\s+)?(?:blanket\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:claim|statement|wording)\\s+(?:of|that)\\s+)?'
+  + '|\\brather\\s+than\\s+(?:as\\s+)?(?:an?\\s+)?(?:blanket\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:claim|assertion|statement|wording)\\s+(?:of|that)\\s+)?'
   + '|\\b(?:does\\s+not|doesn\'?t)\\s+mean(?:\\s+that)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+generalize[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+overstate[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:use|repeat|adopt)\\s+(?:a\\s+)?(?:blanket\\s+)?'
-  + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+that)?'
+  + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+(?:that|there\\s+(?:is|was)))?'
   + ')' + CARRIER + '$', 'i');
 
 // Anchored to the START of the following text: a closing quote is allowed, ordinary punctuation is not
