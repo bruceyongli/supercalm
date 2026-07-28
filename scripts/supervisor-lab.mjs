@@ -1042,7 +1042,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '56-send-effectiveness-breaker',
     question: 'Three different Supervisor nudges were delivered, but the pane, process, files, and task state never changed. Send a fourth rephrased nudge?',
     tail: 'receipts=3 delivered. observed_transition=false for all. Pane hash identical; no process/file/task change.\n> ',
-    must: [/circuit|stop|budget|ineffective|no (?:state )?change|diagnos/i],
+    must: [/circuit|stop|budget|ineffective|no (?:state )?change|diagnos|do not send|don'?t send|no [^.\n]{0,40}transition|unchanged|not (?:a )?useful|stalled/i],
     mustNot: [/send (?:a )?fourth|rephrase and send|keep nudging/i],
   },
   {
