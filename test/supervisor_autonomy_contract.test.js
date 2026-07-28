@@ -13,6 +13,8 @@ const { __lab } = await import('../src/agents/supervisor.js');
 const {
   AUTOPILOT_PLAN_ADDENDUM,
   AUTOPILOT_RELEASE_ADDENDUM,
+  AUTOPILOT_RECOVERY_ADDENDUM,
+  COPILOT_RECOVERY_ADDENDUM,
   RESERVED_APPROVAL_ADDENDUM,
 } = await import('../src/agents/answer_prompt.js');
 
@@ -73,12 +75,18 @@ assert.match(AUTOPILOT_PLAN_ADDENDUM, /review it against the mission/i);
 assert.match(AUTOPILOT_PLAN_ADDENDUM, /Never rubber-stamp/i);
 assert.match(AUTOPILOT_RELEASE_ADDENDUM, /Do NOT ask for a per-release approval/i);
 assert.match(AUTOPILOT_RELEASE_ADDENDUM, /Do NOT tell the builder to run a direct deploy command/i);
+assert.match(COPILOT_RECOVERY_ADDENDUM, /takes no recovery actuator action/i);
+assert.match(COPILOT_RECOVERY_ADDENDUM, /inspect reality/i);
+assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /owns bounded recovery/i);
+assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /stop, kill, hold/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
 const supervisor = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
 const context = readFileSync(new URL('../src/agents/context.js', import.meta.url), 'utf8');
 const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
 assert.match(supervisor, /maybeAutoIntegrate\(ctx, cfg/, 'verified completion reaches the integration actuator');
+assert.match(supervisor, /cfg\.mode === 'autopilot' \? AUTOPILOT_RECOVERY_ADDENDUM : COPILOT_RECOVERY_ADDENDUM/,
+  'the answer brain receives the exact mode-specific recovery authority');
 assert.match(supervisor, /maybeMonitorIntegration\(ctx, cfg, st\)/, 'Autopilot monitors the durable release after restart');
 assert.match(supervisor, /row\.stage === 'GREEN'/, 'only GREEN produces released success');
 assert.match(supervisor, /row\.stage === 'HELD'/, 'ambiguous release state remains operator-held');

@@ -1,4 +1,5 @@
 import { pendingComposerDraft } from '../../agent_input_ready.js';
+import { scrubSupervisorText } from './scrub.js';
 
 export const VERIFY_PROMPT_VERSION = 'supervisor.verify.2026-07-26.1';
 export const VERIFY_EVIDENCE_VERSION = 'supervisor.evidence.2026-07-23.2';
@@ -684,15 +685,6 @@ export function isVerifierShaped(parsed) {
 export const VERIFY_ATTEMPTS_SCHEMA = 'supervisor.verify-attempts/v1';
 const AUDIT_BUDGET = 12000;
 
-// Model output only ever contains a verdict, but it is still untrusted text: strip anything that looks
-// like an embedded credential or inlined image before it is persisted.
-function scrubForAudit(s) {
-  return String(s || '')
-    .replace(/data:[a-z0-9.+-]{0,40}\/[a-z0-9.+-]{0,40};base64,[A-Za-z0-9+/=]{16,}/gi, '[redacted-data-uri]')
-    .replace(/\b(?:sk|pk|ghp|gho|github_pat)[-_][A-Za-z0-9_-]{16,}/g, '[redacted-key]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/-]{16,}=*/gi, 'Bearer [redacted]');
-}
-
 /**
  * Bounded provenance envelope for supervisor_reviews.raw. Contains ONLY model outputs and call
  * metadata — never the prompt, the evidence, the screenshots, or credentials.
@@ -711,8 +703,8 @@ export function buildVerifyAttemptsAudit({ attempts = [], acceptedAttempt = 0, f
     ...(a?.codes?.length ? { codes: a.codes.slice(0, 8).map((c) => line(c, 60)) } : {}),
     // Transport errors carry upstream text (headers, request fragments), so they go through the same
     // scrubber as model output — before bounding, so a redaction can't be cut in half.
-    ...(a?.error ? { error: line(scrubForAudit(a.error), 300) } : {}),
-    output: scrubForAudit(a?.output || ''),
+    ...(a?.error ? { error: line(scrubSupervisorText(a.error), 300) } : {}),
+    output: scrubSupervisorText(a?.output || ''),
   }));
   // Two distinct facts, never collapsed: which attempt's verdict was ACCEPTED (0 when the review
   // failed closed and no verdict was accepted at all), and which attempt's raw is being displayed.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 
-const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE, cardLifecycleDirective } = await import('../src/agents/supervisor/send_policy.js');
+const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE, cardLifecycleDirective, copilotRecoveryDirective } = await import('../src/agents/supervisor/send_policy.js');
 const { DELEGATED_HOW_ADDENDUM, detectsPendingPlanApproval, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } = await import('../src/agents/answer_prompt.js');
 
 // Hard reason codes are safety decisions, not advisory labels: a contradictory model action fails closed.
@@ -8,6 +8,16 @@ for (const reason_code of ['integrity', 'goal_conflict', 'human_gate']) {
   const guarded = enforceAnswerSafety({ action: 'answer', answer: 'Proceed anyway', reason_code, reason: 'hard blocker' });
   assert.equal(guarded.action, 'escalate');
   assert.equal(guarded.answer, '');
+}
+
+// ---- Co-pilot recovery cannot hide inside kind=answer ----------------------------------------------
+{
+  assert.equal(copilotRecoveryDirective('In co-pilot mode, likewise resume the builder.'), true);
+  assert.equal(copilotRecoveryDirective('Monitoring/supervisor modes should use the available resume actuator.'), true);
+  assert.equal(copilotRecoveryDirective('Invoke the resume actuator in advisory mode.'), true);
+  assert.equal(copilotRecoveryDirective('Co-pilot must NOT invoke the resume actuator.'), false);
+  assert.equal(copilotRecoveryDirective('Co-pilot verifies the resume actuator is available and drafts a bounded resume recommendation.'), false);
+  assert.equal(copilotRecoveryDirective('Autopilot may invoke the actuator; Co-pilot takes no actuator action.'), false);
 }
 assert.equal(enforceAnswerSafety({ action: 'answer', answer: 'Use strict', reason_code: 'none' }).action, 'answer');
 const planContext = { question: 'Here is my implementation plan. Approve the plan / say go and I will start.' };
@@ -174,6 +184,8 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM/, 'runAnswer selects the mode-specific current-session task-management contract');
   assert.match(sup, /cardLifecycleDirective\(answer\)/, 'deterministic lifecycle guard runs on the drafted answer');
+  assert.match(sup, /cfg\.mode === 'copilot' && copilotRecoveryDirective\(answer\)/,
+    'Co-pilot answer text cannot bypass the state-changing recovery lane');
   assert.match(sup, /BETWEEN TASKS: there is NO active contract/, 'between-tasks answers are restraint-scoped');
   assert.match(sup, /activeTaskId: null, activeCardVersion: null, activeCardHash: null/, 'between-tasks clears stale contract attribution');
   const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');

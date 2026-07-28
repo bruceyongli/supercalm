@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, COPILOT_RECOVERY_ADDENDUM, AUTOPILOT_RECOVERY_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -28,7 +28,8 @@ import { decideSupervisorAction } from './supervisor/decide.js';
 import { filterHardRulesForCurrentTask } from './supervisor/challenge.js';
 import { readSupervisorState, statePatchForStance } from './supervisor/state.js';
 import { STANCE_SYS, buildStanceUserText, classifyStanceFromText, resolveStance, isStance } from './supervisor/stance.js';
-import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective } from './supervisor/send_policy.js';
+import { modeOf, copilotThreshold, sendPolicy, cardLifecycleDirective, copilotRecoveryDirective } from './supervisor/send_policy.js';
+import { scrubSupervisorText } from './supervisor/scrub.js';
 import { readRecentCommits, detectThrash, checkpointRepo } from './supervisor/thrash.js';
 import { tierOf, allowedWhenTier, tierReason } from './supervisor/engagement.js';
 import { tickSignature, gateTick, HEARTBEAT_MS } from './supervisor/event_gate.js';
@@ -880,10 +881,15 @@ async function callJson(ctx, cfg, sys, userContent, opts = {}) {
 // doc-update) and anything actually SENT are always kept as distinct entries.
 const DEDUP_KINDS = new Set(['verify', 'checkpoint', 'escalate']);
 function logIntervention(ctx, o) {
+  const assessment = scrubSupervisorText(o.assessment || '');
+  const message = scrubSupervisorText(o.message || '');
+  const sentText = scrubSupervisorText(o.sent_text || '');
+  const error = scrubSupervisorText(o.error || '');
+  const raw = scrubSupervisorText(o.raw || '');
   if (DEDUP_KINDS.has(o.kind) && !o.sent) {
     const prev = _latestReview.get(ctx.sessionId);
     if (prev && !prev.sent && prev.kind === o.kind && (prev.verdict || '') === (o.verdict || '') && (prev.trigger || '') === (o.trigger || '')) {
-      _bumpReview.run(now(), o.score == null ? null : o.score, (o.assessment || '').slice(0, 2400), (o.message || '').slice(0, 2000), tailStr(o.raw, 12000), prev.id);
+      _bumpReview.run(now(), o.score == null ? null : o.score, assessment.slice(0, 2400), message.slice(0, 2000), tailStr(raw, 12000), prev.id);
       return prev.id;
     }
   }
@@ -898,13 +904,13 @@ function logIntervention(ctx, o) {
     o.model || null,
     o.verdict || null,
     o.score == null ? null : o.score,
-    (o.assessment || '').slice(0, 2400),
-    (o.message || '').slice(0, 2000),
+    assessment.slice(0, 2400),
+    message.slice(0, 2000),
     o.sent ? 1 : 0,
-    (o.sent_text || '').slice(0, 2000),
+    sentText.slice(0, 2000),
     o.screenshot || null,
-    o.error || null,
-    tailStr(o.raw, 12000),
+    error || null,
+    tailStr(raw, 12000),
     taskRef.id,
     taskRef.version
   );
@@ -1131,6 +1137,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     try { delegatedRelease = !!ctx.integrationReadiness()?.ok; } catch {}
   }
   sys += '\n\n' + (delegatedRelease ? AUTOPILOT_RELEASE_ADDENDUM : RESERVED_APPROVAL_ADDENDUM);
+  sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_RECOVERY_ADDENDUM : COPILOT_RECOVERY_ADDENDUM);
   // The cross-session boundary is universal. Co-pilot leaves task transitions with the operator;
   // Autopilot manages this session's internal card itself but never tells the builder to mutate it.
   sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM);
@@ -1149,8 +1156,9 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
       supervisorMode: cfg.mode,
   });
 
-  const answer = clampLine(parsed?.answer, 1500);
+  const answer = scrubSupervisorText(clampLine(parsed?.answer, 1500));
   const lifecycle = cardLifecycleDirective(answer);
+  const copilotRecovery = cfg.mode === 'copilot' && copilotRecoveryDirective(answer);
   const copilotCardReview = cfg.mode === 'copilot' && !lifecycle
     && isNonMutatingCurrentCardReview({ question, summary: s?.summary, answer });
   // Audience gate (self-echo first domino): the model must classify WHO the pending item is for.
@@ -1189,6 +1197,16 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   // ("start/activate/close/abandon the … card", "treat … as done") is operator territory in every
   // mode — force it to the escalate path no matter what action/confidence the model returned.
   if (lifecycle && parsed) { parsed.action = 'escalate'; parsed.reason = `Held: drafted a task-card lifecycle directive ("${clampLine(answer, 120)}") — card administration is the operator's call${parsed.reason ? '. ' + parsed.reason : ''}`; }
+  // A recovery directive is state-changing even when the answer model labels it kind=answer. Keep
+  // Co-pilot useful (diagnosis + recommendation) but force the actual actuator decision to its
+  // operator-facing hold. Autopilot is unaffected and uses the dedicated bounded recovery lane.
+  if (copilotRecovery && parsed) {
+    parsed.action = 'escalate';
+    parsed.answer = '';
+    parsed.recommendation = 'Verify the unexpected exit from current status/log/composer and working-tree evidence, then hand off one bounded recovery; the operator or Autopilot may actuate it. Preserve any explicit stop, kill, hold, abandonment, or sign-off.';
+    parsed.reason_code = 'scope';
+    parsed.reason = 'Co-pilot identified a recovery action but does not hold state-changing recovery authority.';
+  }
   const wantSend = parsed?.action !== 'escalate' && answer;
   if (!wantSend) {
     const conf = Number.isFinite(Number(parsed?.confidence)) ? ` conf ${Number(parsed.confidence).toFixed(2)}` : '';
@@ -1206,21 +1224,22 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     const hardReason = goalDoubtOn(cfg) && HOLD_REASONS.has(parsed?.reason_code) ? parsed.reason_code : null;
     if (hardReason && !st.needsOperatorHold) applySupervisorState(ctx, { needsOperatorHold: { at: now(), reason: hardReason, workFp: progressFp(ev).work, gateKey: gateScopeKey(cfg.doc) } });
     const open = Array.isArray(st.openEscalations) ? st.openEscalations : [];
-    const recommendation = clampLine(parsed?.recommendation || '', 900);
+    const recommendation = scrubSupervisorText(clampLine(parsed?.recommendation || '', 900));
+    const safeQuestion = scrubSupervisorText(clampLine(question || s?.summary || '', 240));
     applySupervisorState(ctx, {
-      openEscalations: [...open.filter((item) => item?.key !== escKey), { key: escKey, at: now(), question: clampLine(question || s?.summary || '', 240), recommendation }].slice(-8),
+      openEscalations: [...open.filter((item) => item?.key !== escKey), { key: escKey, at: now(), question: safeQuestion, recommendation }].slice(-8),
     });
     const holdNote = hardReason ? ` — HELD (${hardReason}): not pushing the agent until you confirm` : '';
     const recommendationNote = recommendation ? ` Recommendation: ${recommendation}` : '';
     logIntervention(ctx, { kind: 'escalate', trigger, model, verdict: dup ? 'escalate-dup' : 'escalated', assessment: (parsed?.reason || error || 'Needs an operator decision') + recommendationNote + note + holdNote, message: '', sent: 0, raw, error });
     if (!dup) {
-      ctx.notifyOperator('Supervisor needs your call', clampLine(`${s?.summary || question || 'A question needs your decision'}${recommendation ? ` — recommendation: ${recommendation}` : ''}`, 180));
+      ctx.notifyOperator('Supervisor needs your call', scrubSupervisorText(clampLine(`${s?.summary || question || 'A question needs your decision'}${recommendation ? ` — recommendation: ${recommendation}` : ''}`, 180)));
       applySupervisorState(ctx, {
         lastEscalateKey: escKey,
         lastEscalateAt: now(),
       });
     }
-    ctx.emit('review', { verdict: 'escalated', summary: clampLine(s?.summary || question, 160) });
+    ctx.emit('review', { verdict: 'escalated', summary: scrubSupervisorText(clampLine(s?.summary || question, 160)) });
     return;
   }
   let sent = 0;

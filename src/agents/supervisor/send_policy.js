@@ -89,3 +89,22 @@ export function cardLifecycleDirective(text) {
   }
   return false;
 }
+
+// Co-pilot's recovery lane is intentionally non-actuating. A weaker answer model can otherwise
+// smuggle "resume the builder" through kind=answer even though sendPolicy correctly holds kind=recover.
+// Match only affirmative mode-scoped actuator language; inspecting actuator availability, drafting a
+// recommendation, Autopilot actuation, and explicit "must NOT invoke" clauses remain allowed.
+const COPILOT_RECOVERY_ACTUATOR_RX = /(?:\b(?:co-?pilot|advisory|read-only)\b|monitoring\/supervisor modes)[^.\n]{0,100}\b(?:should|will|must|can|may|likewise)\s+(?:directly\s+)?(?:resume|relaunch|restart|invoke|use)\b|\b(?:resume|relaunch|restart|invoke|use)\b[^.\n]{0,60}\b(?:in|under)\s+(?:co-?pilot|advisory|read-only)\b/gi;
+const RECOVERY_REFUTATION_RX = /\b(?:do\s+not|don'?t|never|must\s+not|should\s+not|cannot|can'?t|takes?\s+no)\b[^.!?;\n]{0,48}$/i;
+
+export function copilotRecoveryDirective(text) {
+  const value = String(text || '');
+  COPILOT_RECOVERY_ACTUATOR_RX.lastIndex = 0;
+  for (const match of value.matchAll(COPILOT_RECOVERY_ACTUATOR_RX)) {
+    const before = value.slice(Math.max(0, match.index - 90), match.index);
+    const clauseStart = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf(';'), before.lastIndexOf('\n'));
+    if (RECOVERY_REFUTATION_RX.test(before.slice(clauseStart + 1))) continue;
+    return true;
+  }
+  return false;
+}
