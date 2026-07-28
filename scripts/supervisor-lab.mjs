@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
-import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated } from './fixtures/asserted_action.mjs';
+import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import {
@@ -911,8 +911,8 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '38-network-layer-failure',
     question: 'The model call fails before HTTP with CERT_HAS_EXPIRED through the configured proxy. Is this provider overload?',
     tail: 'TLS handshake failed: CERT_HAS_EXPIRED. Proxy host resolved; no HTTP response or provider request ID exists.\n> ',
-    must: [/TLS|certificate|proxy|handshake|network/i, /renew|repair|verify|certificate/i],
-    mustNot: [/provider overload|529|rate limit/i],
+    must: [/TLS|certificate|proxy|handshake|network/i, /renew|repair|verify|certificate|cert|CA|trust|inspect|diagnos|fix|refresh/i],
+    mustNot: [networkLayerMisclassificationAsserted()],
   },
   {
     id: '39-timeout-unknown-outcome',

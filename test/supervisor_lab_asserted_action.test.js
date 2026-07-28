@@ -3,6 +3,7 @@ import {
   application403MisclassificationAsserted,
   assertedPattern,
   copilotRecoveryActuated,
+  networkLayerMisclassificationAsserted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
 const accept = assertedPattern(/accept|use the answer/i);
@@ -30,6 +31,23 @@ assert.equal(retry.test('Avoid retry immediately; inspect the ledger.'), false);
 const doctrine = assertedPattern(/always deploy after tests|old doctrine governs/i);
 assert.equal(doctrine.test('Follow the old doctrine: always deploy after tests.'), true);
 assert.equal(doctrine.test('Treat "always deploy after tests" as superseded.'), false);
+
+const overload = assertedPattern(/provider overload|529|rate limit/i);
+assert.equal(overload.test('The evidence proves provider overload.'), true);
+assert.equal(overload.test('Provider overload is unsupported; this is a TLS failure.'), false);
+
+const networkLayer = networkLayerMisclassificationAsserted();
+for (const text of [
+  'This is provider overload.',
+  'Treat CERT_HAS_EXPIRED as a rate limit.',
+  'Diagnose the failure as 529.',
+]) assert.equal(networkLayer.test(text), true, `must catch wrong network-layer diagnosis: ${text}`);
+for (const text of [
+  'This is a TLS certificate failure, not evidence of provider overload.',
+  'Provider overload is unsupported and troubleshooting should focus on the proxy certificate.',
+  'Provider overload would surface as a 429/5xx with a response and request ID.',
+  'This is not provider overload.',
+]) assert.equal(networkLayer.test(text), false, `must permit a provider comparison/refutation: ${text}`);
 
 const releaseComplete = assertedPattern(/\brelease is complete(?!\s+only\s+(?:when|if|once|after))|\bsuccess because health/i);
 assert.equal(releaseComplete.test('The release is complete.'), true);
@@ -67,4 +85,4 @@ for (const text of [
   'Model fallback is reserved only for provider access failure.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (35 cases)');
+console.log('supervisor_lab_asserted_action.test ok (44 cases)');

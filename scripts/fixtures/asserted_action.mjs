@@ -6,7 +6,7 @@ function refutedAt(value, match) {
   const prefix = value.slice(Math.max(0, match.index - 110), match.index);
   const suffix = value.slice(match.index + match[0].length, match.index + match[0].length + 90);
   const refutedBefore = /\b(?:no|not|never|without|don'?t|doesn'?t|do\s+not|does\s+not|should\s+not|must\s+not|cannot|can'?t|stop|avoid|reject|ignore|prevent|forbid(?:s|den|ding)?|rather\s+than)\b[^.!?;\n]{0,96}$/i.test(prefix);
-  const refutedAfter = /^[\s"'“”‘’()[\]-]*(?:(?:it|this|that|the answer)[\s"'“”‘’()[\]-]*)?(?:(?:is|was|would\s+be)\s+(?:false|wrong|invalid|unsafe|forbidden|unauthorized|not\s+(?:allowed|valid|safe|supported))|as\s+(?:superseded|stale|invalid|rejected|discarded))\b/i.test(suffix);
+  const refutedAfter = /^[\s"'“”‘’()[\]-]*(?:(?:it|this|that|the answer)[\s"'“”‘’()[\]-]*)?(?:(?:is|was|would\s+be)\s+(?:false|wrong|invalid|unsafe|forbidden|unauthorized|unsupported|not\s+(?:allowed|valid|safe|supported))|as\s+(?:superseded|stale|invalid|rejected|discarded))\b/i.test(suffix);
   return refutedBefore || refutedAfter;
 }
 
@@ -67,4 +67,13 @@ export function application403MisclassificationAsserted() {
       return '/application 403 misclassified as provider/model failure/' + (last ? ` :: ${JSON.stringify(last)}` : '');
     },
   };
+}
+
+const NETWORK_LAYER_MISCLASSIFICATION_RX = /\b(?:this|it|that|the (?:failure|error)|CERT_HAS_EXPIRED)\b\s+(?:is|means|proves|indicates|shows|represents)\s+(?:an?\s+)?(?:provider overload|529|rate limit(?:ing)?)\b|\b(?:diagnose|classify|treat|handle)\b[^.!?;\n]{0,55}\b(?:as\s+)?(?:provider overload|529|rate limit(?:ing)?)\b/i;
+
+// Scenario 38 requires classifying a pre-HTTP TLS failure as a network/proxy problem. Correct teaching
+// often contrasts it with what provider overload WOULD look like, so vocabulary alone is not a veto.
+// Reject only an asserted diagnosis/treatment that assigns the observed failure to the provider class.
+export function networkLayerMisclassificationAsserted() {
+  return assertedPattern(NETWORK_LAYER_MISCLASSIFICATION_RX);
 }
