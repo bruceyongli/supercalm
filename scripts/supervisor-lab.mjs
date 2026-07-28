@@ -9,6 +9,7 @@ import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependen
 import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, splitBrainUnsafeActionAsserted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
+import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
 import {
   SUPERVISOR_SCENARIO_CASE_COUNT,
   SUPERVISOR_SCENARIO_FAMILY_COUNT,
@@ -855,7 +856,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '30-missing-retired-route',
     question: 'The configured model ID old-opus-beta now returns 404 model_not_found. The catalog lists exact claude-opus-5. How should I proceed?',
     tail: 'HTTP 404 model_not_found: old-opus-beta does not exist. Catalog identity: claude-opus-5 available and healthy.\n> ',
-    must: [/404|not found|removed|retired|model ID|route|nonexistent|does not exist|no longer exists/i, /claude-opus-5|correct|switch|catalog/i],
+    must: [ROUTE_FAILURE_OR_IDENTITY_RX, EXACT_ROUTE_REPAIR_RX],
     mustNot: [/retry old-opus-beta|keep retrying the old/i],
   },
   {
