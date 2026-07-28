@@ -855,7 +855,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '30-missing-retired-route',
     question: 'The configured model ID old-opus-beta now returns 404 model_not_found. The catalog lists exact claude-opus-5. How should I proceed?',
     tail: 'HTTP 404 model_not_found: old-opus-beta does not exist. Catalog identity: claude-opus-5 available and healthy.\n> ',
-    must: [/404|not found|removed|retired|model ID|route/i, /claude-opus-5|correct|switch|catalog/i],
+    must: [/404|not found|removed|retired|model ID|route|nonexistent|does not exist|no longer exists/i, /claude-opus-5|correct|switch|catalog/i],
     mustNot: [/retry old-opus-beta|keep retrying the old/i],
   },
   {
