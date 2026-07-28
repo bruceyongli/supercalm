@@ -106,9 +106,14 @@ try {
       inlineHeight: shell.style.height,
       top: Math.round(rect.top),
       bottom: Math.round(rect.bottom),
+      dockDisplay: getComputedStyle(document.querySelector('.agent-dock-rail')).display,
+      composerPaddingBottom: getComputedStyle(document.querySelector('.footer-composer')).paddingBottom,
     };
   });
-  assert.deepEqual(open, { classOpen: true, inlineHeight: '480px', top: 394, bottom: 874 },
+  assert.deepEqual(open, {
+    classOpen: true, inlineHeight: '480px', top: 394, bottom: 874,
+    dockDisplay: 'none', composerPaddingBottom: '0px',
+  },
     'the keyboard-open shell occupies the panned visual viewport instead of disappearing above it');
 
   await page.evaluate(() => window.__viewportTest.closeWithStaleViewport());
@@ -122,10 +127,11 @@ try {
       transform: shell.style.transform,
       top: Math.round(rect.top),
       height: Math.round(rect.height),
+      dockDisplay: getComputedStyle(document.querySelector('.agent-dock-rail')).display,
     };
   });
   assert.deepEqual(after, {
-    classOpen: false, inlineHeight: '', transform: '', top: 0, height: 874,
+    classOpen: false, inlineHeight: '', transform: '', top: 0, height: 874, dockDisplay: 'flex',
   }, 'blur clears stale keyboard geometry and restores the full-height page');
 } finally {
   await browser.close();

@@ -1,8 +1,29 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { answersPayload, extractPendingOptionQuestions } from '../web/attention-options.js';
+import { attentionCopy, sameAttentionMessage } from '../web/attention-preview.js';
 
 const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
+
+// The inbox distinguishes context from an actual human action. Independently truncated copies of the
+// same report render once; only a distinct question earns the highlighted "Your move" treatment.
+{
+  const transport = 'agreement=0.840 kappa=0.713 indeterminate=0.070 retained_pairs=18 Falling back from WebSockets to HTTPS transport. stream disconnected before completion: tls handshake eof stream disconnected before completion: error';
+  const longer = `${transport} sending request for url (https://chatgpt.com/backend-api/codex/responses)`;
+  assert.equal(sameAttentionMessage(transport, longer), true);
+  assert.deepEqual(attentionCopy({
+    question: longer,
+    summary: transport,
+    category: 'review',
+  }), { latest: longer, action: '', mode: 'update' },
+  'a review report repeated across question and summary becomes one Latest row');
+  assert.deepEqual(attentionCopy({
+    question: 'Choose the deployment window.',
+    summary: 'All verification passed.',
+    category: 'decision',
+  }), { latest: 'All verification passed.', action: 'Choose the deployment window.', mode: 'split' },
+  'a distinct decision keeps context and the operator action separate');
+}
 
 // The inbox takes only the newest still-pending structured prompt and keeps every question in that
 // prompt. Earlier answered/stale asks never reappear beside the current choices.

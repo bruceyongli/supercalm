@@ -7,6 +7,7 @@ import { api, escapeHtml as esc, fmtAgo, wireMic } from './common.js';
 import { navigate } from './navigation.js';
 import { isStaleSessionPatch, mergeSessionPatch, mergeSessionSnapshot } from './session-state.js';
 import { groupedModelOptions } from './model-select.js';
+import { attentionCopy, cleanAttentionText } from './attention-preview.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -173,10 +174,6 @@ export function dismissedAttention() {
     .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
 }
 
-function cleanPreviewText(value, max = 220) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
-}
-
 // One compact, shared interpretation for attention cards and ⌘K. The home projection contains the
 // task/title, latest curated summary, and current question; do not pretend to know a deeper outcome
 // when those fields do not contain one.
@@ -187,12 +184,17 @@ export function sessionAttentionPreview(s) {
       : status === 'starting' ? 'Starting'
         : status === 'error' ? 'Failed'
           : s?.dismissed ? 'Dismissed' : 'Stopped';
-  const doing = cleanPreviewText(s?.title || s?.project || s?.id, 180);
-  const need = status === 'waiting' ? cleanPreviewText(s?.question || s?.summary, 300) : '';
-  const summary = cleanPreviewText(s?.summary, 220);
-  const comparable = (value) => cleanPreviewText(value, 300).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
-  const outcome = summary && comparable(summary) !== comparable(need) && comparable(summary) !== comparable(doing)
-    ? summary : '';
+  const doing = cleanAttentionText(s?.title || s?.project || s?.id, 180);
+  const copy = status === 'waiting'
+    ? attentionCopy({
+      question: s?.question,
+      summary: s?.summary,
+      fallback: s?.last_key?.text,
+      category: s?.category,
+    })
+    : { latest: '', action: '', mode: 'none' };
+  const need = copy.action;
+  const outcome = copy.latest;
   const next = status === 'waiting'
     ? 'Reply continues the session; Dismiss only clears this report.'
     : status === 'working' || status === 'starting'
@@ -202,7 +204,7 @@ export function sessionAttentionPreview(s) {
         : s?.dismissed
           ? 'It stays out of Needs you until a newer report arrives.'
           : 'Resume the session when you want it to continue.';
-  return { state, doing, outcome, need, next };
+  return { state, doing, outcome, need, attentionMode: copy.mode, next };
 }
 
 // ---- sidebar --------------------------------------------------------------------------------------
@@ -363,9 +365,9 @@ function renderPalette() {
   const previewHtml = preview ? `
     <aside class="dk-pal-preview" aria-live="polite">
       <div class="dk-pal-preview-head"><span class="dk-pal-state ${esc(selected.session.status)}">${esc(preview.state)}</span>${selected.session.project ? `<span>${esc(selected.session.project)}</span>` : ''}</div>
-      ${preview.need ? '' : `<div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>`}
+      ${selected.session.status === 'waiting' ? '' : `<div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>`}
       ${preview.outcome ? `<div class="dk-pal-preview-row"><b>Latest update</b><p>${esc(preview.outcome)}</p></div>` : ''}
-      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Needs you</b><p>${esc(preview.need)}</p></div>` : ''}
+      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Your move</b><p>${esc(preview.need)}</p></div>` : ''}
     </aside>` : `
     <aside class="dk-pal-preview quiet">
       <b>${esc(selected?.label || 'Jump anywhere')}</b>

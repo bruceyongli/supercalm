@@ -134,12 +134,17 @@ try {
   await page.locator('[data-dk-card][data-sid="s_opt"] .dk-card-questions').waitFor();
 
   const optionCard = page.locator('[data-dk-card][data-sid="s_opt"]');
-  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Needs you'],
-    'Needs you leads with the exact attention request without repeating the card title or generic next-step boilerplate');
+  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Your move'],
+    'an actionable decision uses one clearly labelled operator request');
+  const donePreview = page.locator('[data-dk-card][data-sid="s_done"] .dk-attention-preview');
+  assert.deepEqual(await donePreview.locator('.dk-attention-row > span').allTextContents(), ['Latest'],
+    'the same review report in summary and question renders once');
+  assert.equal(await donePreview.locator('.important').count(), 0,
+    'a duplicated review report does not invent a nested action box');
   await page.locator('#dk-cmdk-row').click();
   await page.locator('#dk-palette-q').fill('Configure release');
   await page.locator('.dk-pal-preview-row.important').waitFor();
-  assert.match(await page.locator('.dk-pal-preview').innerText(), /Needs you[\s\S]*Choose the runtime and verification scope/i,
+  assert.match(await page.locator('.dk-pal-preview').innerText(), /Your move[\s\S]*Choose the runtime and verification scope/i,
     '⌘K exposes the selected session attention preview before navigation');
   await page.screenshot({ path: join(outDir, 'command-preview.png') });
   await page.keyboard.press('Escape');
@@ -233,6 +238,10 @@ try {
   await phone.screenshot({ path: join(outDir, 'phone-dismissed-section.png'), fullPage: true });
   await phone.locator('[data-restore-attention="s_done"]').click();
   await phone.locator('.needcard[data-open="s_done"]').waitFor();
+  const restoredPhonePreview = phone.locator('.needcard[data-open="s_done"] .needpreview');
+  assert.deepEqual(await restoredPhonePreview.locator('b').allTextContents(), ['Latest'],
+    'phone also collapses a duplicated review report to one row');
+  assert.equal(await restoredPhonePreview.locator('.important').count(), 0);
   await phone.screenshot({ path: join(outDir, 'phone-needs-you-options.png'), fullPage: true });
   const phoneRequestsBeforeRefresh = homeRequests;
   const phoneRefreshResponse = phone.waitForResponse((response) => response.url().endsWith('/api/phone/home'));

@@ -1518,6 +1518,11 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     background: rgba(10, 14, 20, 0.96); border-top: 1px solid var(--line);
     -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
   }
+  /* The keyboard is the active bottom surface. Hiding the workspace dock while typing prevents it
+     (plus iOS's still-reported safe-area inset) from becoming a second empty row above the keyboard.
+     Blur restores the dock immediately through session-viewport's keyboard-open class. */
+  .session-shell.keyboard-open > .agent-dock-rail { display: none; }
+  .session-shell.keyboard-open .footer-composer { padding-bottom: 0; }
   .dock-tools-trigger { width: auto; min-width: 72px; min-height: 44px; grid-template-columns: 18px auto; gap: 6px; padding: 4px 10px; }
   .dock-tools-trigger span { font-size: 10px; }
   .dock-tools-menu { position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(50px + env(safe-area-inset-bottom)); width: auto; max-height: min(68dvh, 520px); overflow: auto; }

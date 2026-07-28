@@ -34,7 +34,7 @@ import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js'
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
-import { rolloutUuidFromName, codexRolloutFiles } from './codex_rollouts.js';
+import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { deployContract } from './release_monitor.js';
@@ -181,14 +181,48 @@ async function tempFileRoots() {
   return tempFileRootsPromise;
 }
 
-// A session may display absolute artifacts created in the host temp directory, but only after that
-// exact path appeared in the session's own messages/events/terminal. This supports agent-generated
-// screenshots and reports without turning the viewer into a general-purpose host file browser.
-const tempFileGrants = new Map();
-const TEMP_FILE_GRANT_MS = 5 * 60 * 1000;
+// A session may display an artifact outside its assigned worktree only after that exact path appeared
+// in its own messages/events/terminal. The outer scope is still constrained below to host temp or a
+// registered worktree of the same project, so a model cannot turn the viewer into a general-purpose
+// host file browser merely by printing an arbitrary path.
+const sessionFileGrants = new Map();
+const SESSION_FILE_GRANT_MS = 5 * 60 * 1000;
+const SESSION_FILE_EVIDENCE_TAIL_BYTES = 8 * 1024 * 1024;
+
+async function readFileTail(file, maxBytes = SESSION_FILE_EVIDENCE_TAIL_BYTES) {
+  const st = await stat(file);
+  const length = Math.min(st.size, maxBytes);
+  const start = Math.max(0, st.size - length);
+  const fh = await open(file, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await fh.read(buffer, 0, length, start);
+    return buffer.toString('utf8', 0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+async function sessionTranscriptMentionsFile(s, mentions) {
+  const transcripts = [];
+  if (s?.codex_uuid) {
+    try {
+      const rollout = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
+      if (rollout) transcripts.push(rollout);
+    } catch {}
+  }
+  if (s?.claude_transcript) transcripts.push(s.claude_transcript);
+  for (const transcript of new Set(transcripts)) {
+    try {
+      if (mentions(await readFileTail(transcript))) return true;
+    } catch {}
+  }
+  return false;
+}
+
 async function sessionMentionsFile(s, requested, target) {
   const key = `${s.id}\0${target}`;
-  if ((tempFileGrants.get(key) || 0) > Date.now()) return true;
+  if ((sessionFileGrants.get(key) || 0) > Date.now()) return true;
   const needles = [...new Set([
     String(requested || ''),
     normalize(String(requested || '')),
@@ -216,14 +250,41 @@ async function sessionMentionsFile(s, requested, target) {
   if (!found) {
     try { found = mentions((await terminalLogTail(s.id, 4 * 1024 * 1024))?.text); } catch {}
   }
+  // Story reports come from native Codex/Claude transcripts and are not always duplicated into AIOS's
+  // compact messages/events projection. Consult only THIS session's bound transcript identity, tail-
+  // bounded so a large historical rollout cannot make a file click expensive.
+  if (!found) found = await sessionTranscriptMentionsFile(s, mentions);
   if (found) {
-    tempFileGrants.set(key, Date.now() + TEMP_FILE_GRANT_MS);
-    if (tempFileGrants.size > 1000) {
+    sessionFileGrants.set(key, Date.now() + SESSION_FILE_GRANT_MS);
+    if (sessionFileGrants.size > 1000) {
       const t = Date.now();
-      for (const [k, expires] of tempFileGrants) if (expires <= t) tempFileGrants.delete(k);
+      for (const [k, expires] of sessionFileGrants) if (expires <= t) sessionFileGrants.delete(k);
     }
   }
   return found;
+}
+
+// Agents sometimes create a purpose-specific secondary `git worktree` and link its documentation or
+// audit output in the final report. Those files belong to the same project but sit beside, not inside,
+// the session's assigned worktree. Resolve only roots registered by Git for this project; guessed sibling
+// directories and worktrees belonging to another repository remain outside the viewer scope.
+async function registeredProjectWorktreeContaining(s, target) {
+  const project = s?.project_id ? store.getProject(s.project_id) : null;
+  const repo = project?.path;
+  if (!repo) return '';
+  const listed = await gitOut(repo, ['worktree', 'list', '--porcelain'], {
+    maxBuffer: 512 * 1024,
+    timeout: 2500,
+  });
+  if (listed.error) return '';
+  for (const line of listed.text.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const rawRoot = normalize(line.slice('worktree '.length).trim());
+    let worktreeRoot;
+    try { worktreeRoot = normalize(await realpath(rawRoot)); } catch { continue; }
+    if (pathInside(worktreeRoot, target)) return worktreeRoot;
+  }
+  return '';
 }
 
 async function resolveSessionFile(s, requested) {
@@ -251,9 +312,13 @@ async function resolveSessionFile(s, requested) {
     };
   }
 
-  // Only an explicitly absolute temp path can cross the project boundary. A relative symlink in the
-  // project that escapes into /tmp stays denied.
+  // Only an explicitly absolute, evidenced path can cross the assigned-worktree boundary. A relative
+  // symlink that escapes into a sibling worktree or /tmp stays denied.
   if (!isAbsolute(requested)) return null;
+  const projectWorktree = await registeredProjectWorktreeContaining(s, target);
+  if (projectWorktree && await sessionMentionsFile(s, requested, target)) {
+    return { target, displayPath: requested, scope: 'project-worktree' };
+  }
   const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, target));
   if (!inTemp || !(await sessionMentionsFile(s, requested, target))) return null;
   return { target, displayPath: requested, scope: 'temp' };

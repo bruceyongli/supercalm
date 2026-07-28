@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { FILE_REFERENCE_RX, localFilePath } from '../web/file-reference.js';
 import { renderMarkdown } from '../web/common.js';
 
@@ -31,6 +33,9 @@ import { renderMarkdown } from '../web/common.js';
 const scratch = await mkdtemp(join(tmpdir(), 'aios-session-files-'));
 const projectRoot = join(scratch, 'project');
 const artifactRoot = join(scratch, 'artifacts');
+await mkdir(join(process.cwd(), 'test-results'), { recursive: true });
+const linkedParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-worktree-'));
+const linkedRoot = join(linkedParent, 'linked');
 await mkdir(projectRoot);
 await mkdir(artifactRoot);
 await writeFile(join(projectRoot, 'report.md'), '# Project report\n');
@@ -39,14 +44,36 @@ const privateArtifact = join(artifactRoot, 'private.txt');
 await writeFile(artifact, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
 await writeFile(privateArtifact, 'not mentioned by this session');
 await symlink(privateArtifact, join(projectRoot, 'escape.txt'));
+const git = promisify(execFile);
+const runGit = (...args) => git('git', ['-C', projectRoot, ...args], { encoding: 'utf8' });
+await runGit('init', '-b', 'main');
+await runGit('add', 'report.md');
+await runGit('-c', 'user.name=AIOS Test', '-c', 'user.email=aios-test@example.invalid', 'commit', '-m', 'fixture');
+await runGit('worktree', 'add', '-b', 'linked-artifacts', linkedRoot);
+await mkdir(join(linkedRoot, 'docs'));
+const linkedReport = join(linkedRoot, 'docs', 'secondary-report.md');
+const linkedPrivate = join(linkedRoot, 'docs', 'unmentioned.md');
+const transcriptReport = join(linkedRoot, 'docs', 'transcript-report.md');
+await writeFile(linkedReport, '# Secondary worktree report\n');
+await writeFile(linkedPrivate, '# Not granted\n');
+await writeFile(transcriptReport, '# Transcript-only report\n');
+const codexUuid = '12345678-1234-1234-1234-123456789abc';
+const codexSessions = join(scratch, 'codex-sessions', '2026', '07', '27');
+await mkdir(codexSessions, { recursive: true });
+await writeFile(
+  join(codexSessions, `rollout-2026-07-27T10-00-00-${codexUuid}.jsonl`),
+  `${JSON.stringify({ type: 'response_item', payload: { role: 'assistant', content: [{ type: 'output_text', text: `Transcript artifact: ${transcriptReport}` }] } })}\n`,
+);
 
 process.env.AIOS_DATA = join(scratch, 'data');
+process.env.AIOS_CODEX_SESSIONS_DIR = join(scratch, 'codex-sessions');
 const port = 31000 + Math.floor(Math.random() * 7000);
 process.env.AIOS_PORT = String(port);
 
 const store = await import('../src/store.js');
 store.createProject({ id: 'p_files', name: 'files', path: projectRoot });
 store.createSession({ id: 's_files', project_id: 'p_files', tool: 'codex', tmux: 'tmx_files', status: 'exited' });
+store.updateSession('s_files', { codex_uuid: codexUuid });
 store.addMessage('s_files', 'out', 'reply', `Generated image: ${artifact}`);
 const { featureReady } = await import('../src/server.js');
 await featureReady;
@@ -89,6 +116,23 @@ async function waitForRoutes() {
   assert.equal((await fileRequest(missing)).status, 404);
 }
 
+// A full path explicitly reported by this session can be read from another Git-registered worktree of
+// the same project. Merely being in that sibling worktree is insufficient without the exact mention.
+{
+  store.addMessage('s_files', 'out', 'reply', `Documentation: [secondary report](${linkedReport})`);
+  const response = await fileRequest(linkedReport);
+  assert.equal(response.status, 200);
+  const meta = await response.json();
+  assert.equal(meta.path, linkedReport);
+  assert.equal(meta.contentKind, 'text');
+  assert.equal((await fileRequest(linkedPrivate)).status, 403,
+    'unmentioned files in a same-project sibling worktree remain private');
+  const transcriptResponse = await fileRequest(transcriptReport);
+  assert.equal(transcriptResponse.status, 200,
+    'a path in this session’s bound native transcript is accepted even when absent from compact messages');
+  assert.equal((await transcriptResponse.json()).path, transcriptReport);
+}
+
 // Temp files not present in session evidence stay private. Project symlinks cannot escape the project
 // root into that temp area either.
 {
@@ -110,4 +154,6 @@ async function waitForRoutes() {
 }
 
 console.log('session_file_viewer.test ok');
+await runGit('worktree', 'remove', '--force', linkedRoot).catch(() => {});
+await rm(linkedParent, { recursive: true, force: true });
 process.exit(0);

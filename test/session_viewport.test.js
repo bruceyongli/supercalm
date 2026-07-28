@@ -43,6 +43,10 @@ assert.match(styles, /\.message-box textarea \{[^}]*font-size: 16px/s,
   'the phone composer prevents iOS input auto-zoom');
 assert.match(styles, /grid-template-columns: 40px minmax\(0, 1fr\) 40px 40px/,
   'the phone composer keeps attach, one settings summary, mic, and send on one compact row');
+assert.match(styles, /\.session-shell\.keyboard-open > \.agent-dock-rail \{ display: none; \}/,
+  'the workspace Tools dock leaves the keyboard-open viewport instead of doubling the bottom bar');
+assert.match(styles, /\.session-shell\.keyboard-open \.footer-composer \{ padding-bottom: 0; \}/,
+  'the keyboard-open composer does not retain a second iPhone safe-area gap');
 assert.match(session, /composer-settings-toggle/,
   'run configuration stays available from the compact composer instead of repeating in the header');
 
