@@ -468,7 +468,9 @@ const MD_ESC = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;'
 function mdSafeHref(h) {
   const t = String(h || '').trim();
   if (/^(https?:|mailto:|#)/i.test(t)) return t;
-  if (/^[\w./-][\w./?#=&%-]*$/.test(t) && !t.includes(':')) return t; // relative path
+  if (/^file:\/\/(?:localhost)?\//i.test(t)) return t;
+  const path = t.replace(/#L\d+(?:C\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  if (/^[~\w./@+-][~\w./@+?#=&%-]*$/.test(path) && !path.includes(':')) return t;
   return null;
 }
 function mdAutolink(x) {

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FILE_REFERENCE_RX, localFilePath } from '../web/file-reference.js';
@@ -16,9 +16,17 @@ import { renderMarkdown } from '../web/common.js';
   assert.equal(localFilePath(full, host), '/tmp/mo-journey/prod-workflows.png');
   assert.equal(localFilePath('//bb1.taileabe0b.ts.net/tmp/report.md', host), '/tmp/report.md');
   assert.equal(localFilePath('docs/report.md', host), 'docs/report.md');
+  assert.equal(localFilePath('file:///Users/bb1/project/report.md', host), '/Users/bb1/project/report.md');
+  assert.equal(localFilePath('file://localhost/Users/bb1/project/report.md%3A42', host), '/Users/bb1/project/report.md');
+  assert.equal(localFilePath('~/project/report.md:42:7', host), '~/project/report.md');
+  assert.equal(localFilePath('/Users/bb1/project/report.md#L18C4', host), '/Users/bb1/project/report.md');
   assert.equal(localFilePath('https://elsewhere.test/tmp/secret.txt', host), '');
+  assert.equal(localFilePath('file://elsewhere.test/tmp/secret.txt', host), '');
   FILE_REFERENCE_RX.lastIndex = 0;
   assert.equal(FILE_REFERENCE_RX.exec(`result: ${full}`)?.[0], full);
+  FILE_REFERENCE_RX.lastIndex = 0;
+  assert.equal(FILE_REFERENCE_RX.exec('result: file:///Users/bb1/project/report.md:42')?.[0],
+    'file:///Users/bb1/project/report.md:42');
 }
 
 // Story reports autolink ordinary bare URLs into safe new-tab anchors without nesting an existing
@@ -28,6 +36,9 @@ import { renderMarkdown } from '../web/common.js';
   assert.match(html, /href="https:\/\/example\.com\/guide\?q=one&amp;x=two" target="_blank" rel="noopener noreferrer">https:\/\/example\.com\/guide\?q=one&amp;x=two<\/a>\./);
   assert.equal((html.match(/<a /g) || []).length, 2, 'bare URL plus markdown link, with no nested/double link');
   assert.match(html, /<code>https:\/\/code\.example\.com<\/code>/, 'inline-code URLs stay code');
+  const files = renderMarkdown('[local](file:///Users/bb1/project/report.md) [home](~/project/report.md:42)');
+  assert.match(files, /href="file:\/\/\/Users\/bb1\/project\/report\.md"/);
+  assert.match(files, /href="~\/project\/report\.md:42"/);
 }
 
 const scratch = await mkdtemp(join(tmpdir(), 'aios-session-files-'));
@@ -36,8 +47,15 @@ const artifactRoot = join(scratch, 'artifacts');
 await mkdir(join(process.cwd(), 'test-results'), { recursive: true });
 const linkedParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-worktree-'));
 const linkedRoot = join(linkedParent, 'linked');
+const externalParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-external-'));
+const externalRoot = join(externalParent, 'standalone-repo');
+const otherRoot = join(externalParent, 'mentioned-only-repo');
+const writtenRoot = join(externalParent, 'written-output');
 await mkdir(projectRoot);
 await mkdir(artifactRoot);
+await mkdir(join(externalRoot, 'research'), { recursive: true });
+await mkdir(otherRoot);
+await mkdir(writtenRoot);
 await writeFile(join(projectRoot, 'report.md'), '# Project report\n');
 const artifact = join(artifactRoot, 'result.png');
 const privateArtifact = join(artifactRoot, 'private.txt');
@@ -46,6 +64,7 @@ await writeFile(privateArtifact, 'not mentioned by this session');
 await symlink(privateArtifact, join(projectRoot, 'escape.txt'));
 const git = promisify(execFile);
 const runGit = (...args) => git('git', ['-C', projectRoot, ...args], { encoding: 'utf8' });
+const runExternalGit = (...args) => git('git', ['-C', externalRoot, ...args], { encoding: 'utf8' });
 await runGit('init', '-b', 'main');
 await runGit('add', 'report.md');
 await runGit('-c', 'user.name=AIOS Test', '-c', 'user.email=aios-test@example.invalid', 'commit', '-m', 'fixture');
@@ -57,12 +76,73 @@ const transcriptReport = join(linkedRoot, 'docs', 'transcript-report.md');
 await writeFile(linkedReport, '# Secondary worktree report\n');
 await writeFile(linkedPrivate, '# Not granted\n');
 await writeFile(transcriptReport, '# Transcript-only report\n');
+const externalReport = join(externalRoot, 'research', 'result.md');
+const externalRelativeReport = join(externalRoot, 'research', 'relative.md');
+const externalPrivate = join(externalRoot, 'research', 'unmentioned.md');
+const externalMissing = join(externalRoot, 'research', 'moved.md');
+const mentionedOnly = join(otherRoot, 'not-operated.md');
+const writtenOutput = join(writtenRoot, 'patch-result.json');
+const unwrittenOutput = join(writtenRoot, 'private.json');
+await writeFile(externalReport, '# Standalone repository result\n');
+await writeFile(externalRelativeReport, '# Relative standalone result\n');
+await writeFile(externalPrivate, '# Not mentioned\n');
+await writeFile(mentionedOnly, '# Mention alone is insufficient\n');
+await writeFile(writtenOutput, '{"passed":true}\n');
+await writeFile(unwrittenOutput, '{"private":true}\n');
+await runExternalGit('init', '-b', 'main');
+await runExternalGit('add', 'research');
+await runExternalGit('-c', 'user.name=AIOS Test', '-c', 'user.email=aios-test@example.invalid',
+  'commit', '-m', 'standalone fixture');
 const codexUuid = '12345678-1234-1234-1234-123456789abc';
 const codexSessions = join(scratch, 'codex-sessions', '2026', '07', '27');
 await mkdir(codexSessions, { recursive: true });
 await writeFile(
   join(codexSessions, `rollout-2026-07-27T10-00-00-${codexUuid}.jsonl`),
-  `${JSON.stringify({ type: 'response_item', payload: { role: 'assistant', content: [{ type: 'output_text', text: `Transcript artifact: ${transcriptReport}` }] } })}\n`,
+  [
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'exec_command',
+        arguments: JSON.stringify({ cmd: 'git status --short', workdir: externalRoot }),
+      },
+    },
+    {
+      type: 'response_item',
+      payload: {
+        type: 'function_call',
+        name: 'exec_command',
+        arguments: JSON.stringify({ cmd: 'pwd', workdir: '/etc' }),
+      },
+    },
+    {
+      type: 'event_msg',
+      payload: {
+        type: 'patch_apply_end',
+        success: true,
+        changes: { [writtenOutput]: { type: 'add' } },
+      },
+    },
+    {
+      type: 'response_item',
+      payload: {
+        role: 'assistant',
+        content: [{
+          type: 'output_text',
+          text: [
+            `Transcript artifact: ${transcriptReport}`,
+            `Standalone artifact: ${externalReport}`,
+            'Relative standalone artifact: research/relative.md',
+            `Moved standalone artifact: ${externalMissing}`,
+            'Moved relative artifact: research/moved.md',
+            `Mentioned but never operated: ${mentionedOnly}`,
+            `Exact patch receipt: ${writtenOutput}`,
+            'Sensitive mention: /etc/passwd',
+          ].join('\n'),
+        }],
+      },
+    },
+  ].map((row) => JSON.stringify(row)).join('\n') + '\n',
 );
 
 process.env.AIOS_DATA = join(scratch, 'data');
@@ -133,6 +213,33 @@ async function waitForRoutes() {
   assert.equal((await transcriptResponse.json()).path, transcriptReport);
 }
 
+// A bound native transcript can prove that the session operated in a separate standalone repository.
+// Exact absolute and relative report links work; mention alone, an unmentioned sibling, or a broad
+// sensitive workdir remains insufficient.
+{
+  const response = await fileRequest(externalReport);
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).path, externalReport);
+  assert.equal((await fileRequest('research/relative.md')).status, 200);
+  assert.equal((await fileRequest(externalPrivate)).status, 403);
+  assert.equal((await fileRequest(mentionedOnly)).status, 403);
+  assert.equal((await fileRequest('/etc/passwd')).status, 403);
+  assert.equal((await fileRequest(externalMissing)).status, 404);
+  assert.equal((await fileRequest('research/moved.md')).status, 404);
+
+  const fileUrl = `file://${externalReport}`;
+  assert.equal((await fileRequest(fileUrl)).status, 200);
+  const homePath = `~/${relative(homedir(), externalReport)}`;
+  assert.equal((await fileRequest(homePath)).status, 200);
+  assert.equal((await fileRequest(`${externalReport}:42:7`)).status, 200);
+}
+
+// A successful structured patch receipt grants only that exact safe output, not its directory.
+{
+  assert.equal((await fileRequest(writtenOutput)).status, 200);
+  assert.equal((await fileRequest(unwrittenOutput)).status, 403);
+}
+
 // Temp files not present in session evidence stay private. Project symlinks cannot escape the project
 // root into that temp area either.
 {
@@ -156,4 +263,5 @@ async function waitForRoutes() {
 console.log('session_file_viewer.test ok');
 await runGit('worktree', 'remove', '--force', linkedRoot).catch(() => {});
 await rm(linkedParent, { recursive: true, force: true });
+await rm(externalParent, { recursive: true, force: true });
 process.exit(0);
