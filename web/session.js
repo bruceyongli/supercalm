@@ -3049,7 +3049,7 @@ async function openFileViewer(rawPath) {
     const r = await fetch(`api/session/${requestToken.id}/file?path=${encodeURIComponent(rel)}`, { signal: requestToken.signal });
     requestScope.guard(requestToken);
     if (r.ok) meta = await r.json();
-    else errText = r.status === 403 ? 'That file path was not produced by this session.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
+    else errText = r.status === 403 ? 'That file is outside this session’s approved project, worktree, or artifact paths.' : r.status === 404 ? 'File not found (the agent may not have written it yet, or it lives in another repo).' : `Could not open (HTTP ${r.status}).`;
   } catch (error) {
     if (isSessionAbort(error)) return;
     errText = 'Could not reach the server.';

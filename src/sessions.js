@@ -178,14 +178,15 @@ async function tempFileRoots() {
   return tempFileRootsPromise;
 }
 
-// A session may display absolute artifacts created in the host temp directory, but only after that
-// exact path appeared in the session's own messages/events/terminal. This supports agent-generated
-// screenshots and reports without turning the viewer into a general-purpose host file browser.
-const tempFileGrants = new Map();
-const TEMP_FILE_GRANT_MS = 5 * 60 * 1000;
+// A session may display an artifact outside its assigned worktree only after that exact path appeared
+// in its own messages/events/terminal. The outer scope is still constrained below to host temp or a
+// registered worktree of the same project, so a model cannot turn the viewer into a general-purpose
+// host file browser merely by printing an arbitrary path.
+const sessionFileGrants = new Map();
+const SESSION_FILE_GRANT_MS = 5 * 60 * 1000;
 async function sessionMentionsFile(s, requested, target) {
   const key = `${s.id}\0${target}`;
-  if ((tempFileGrants.get(key) || 0) > Date.now()) return true;
+  if ((sessionFileGrants.get(key) || 0) > Date.now()) return true;
   const needles = [...new Set([
     String(requested || ''),
     normalize(String(requested || '')),
@@ -214,13 +215,36 @@ async function sessionMentionsFile(s, requested, target) {
     try { found = mentions((await terminalLogTail(s.id, 4 * 1024 * 1024))?.text); } catch {}
   }
   if (found) {
-    tempFileGrants.set(key, Date.now() + TEMP_FILE_GRANT_MS);
-    if (tempFileGrants.size > 1000) {
+    sessionFileGrants.set(key, Date.now() + SESSION_FILE_GRANT_MS);
+    if (sessionFileGrants.size > 1000) {
       const t = Date.now();
-      for (const [k, expires] of tempFileGrants) if (expires <= t) tempFileGrants.delete(k);
+      for (const [k, expires] of sessionFileGrants) if (expires <= t) sessionFileGrants.delete(k);
     }
   }
   return found;
+}
+
+// Agents sometimes create a purpose-specific secondary `git worktree` and link its documentation or
+// audit output in the final report. Those files belong to the same project but sit beside, not inside,
+// the session's assigned worktree. Resolve only roots registered by Git for this project; guessed sibling
+// directories and worktrees belonging to another repository remain outside the viewer scope.
+async function registeredProjectWorktreeContaining(s, target) {
+  const project = s?.project_id ? store.getProject(s.project_id) : null;
+  const repo = project?.path;
+  if (!repo) return '';
+  const listed = await gitOut(repo, ['worktree', 'list', '--porcelain'], {
+    maxBuffer: 512 * 1024,
+    timeout: 2500,
+  });
+  if (listed.error) return '';
+  for (const line of listed.text.split('\n')) {
+    if (!line.startsWith('worktree ')) continue;
+    const rawRoot = normalize(line.slice('worktree '.length).trim());
+    let worktreeRoot;
+    try { worktreeRoot = normalize(await realpath(rawRoot)); } catch { continue; }
+    if (pathInside(worktreeRoot, target)) return worktreeRoot;
+  }
+  return '';
 }
 
 async function resolveSessionFile(s, requested) {
@@ -248,9 +272,13 @@ async function resolveSessionFile(s, requested) {
     };
   }
 
-  // Only an explicitly absolute temp path can cross the project boundary. A relative symlink in the
-  // project that escapes into /tmp stays denied.
+  // Only an explicitly absolute, evidenced path can cross the assigned-worktree boundary. A relative
+  // symlink that escapes into a sibling worktree or /tmp stays denied.
   if (!isAbsolute(requested)) return null;
+  const projectWorktree = await registeredProjectWorktreeContaining(s, target);
+  if (projectWorktree && await sessionMentionsFile(s, requested, target)) {
+    return { target, displayPath: requested, scope: 'project-worktree' };
+  }
   const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, target));
   if (!inTemp || !(await sessionMentionsFile(s, requested, target))) return null;
   return { target, displayPath: requested, scope: 'temp' };
