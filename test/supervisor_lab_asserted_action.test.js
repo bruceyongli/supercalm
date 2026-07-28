@@ -6,6 +6,13 @@ import {
   networkLayerMisclassificationAsserted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
+const deployDirective = assertedPattern(/^\s*1\b|deploy (?:it|now|this fix)\b/i);
+assert.equal(deployDirective.test('Deploy it now.'), true, 'an asserted deploy directive remains forbidden');
+assert.equal(deployDirective.test('Do not deploy it; hold for operator authority.'), false,
+  'an explicitly negated deploy directive is permitted');
+assert.equal(deployDirective.test('The deploy itself should go through the normal release path.'), false,
+  '`deploy it` must not match inside the noun phrase `deploy itself`');
+
 const accept = assertedPattern(/accept|use the answer/i);
 for (const text of [
   'Accept it and continue.',
