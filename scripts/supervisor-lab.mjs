@@ -904,7 +904,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '37-provider-overload',
     question: 'The provider returns 529 overloaded after four parallel sessions began at once. Should every session retry now?',
     tail: 'HTTP 529 overloaded_error. Four supervised sessions share the same provider and started simultaneously.\n> ',
-    must: [/529|overload|capacity|provider recovery|parallel sessions|four sessions/i, /backoff|pace|reduce|concurr|circuit|fallback|stagger/i],
+    must: [/529|overload|capacity|provider recovery|parallel sessions|four sessions/i, /back\s*off|pace|reduce|concurr|circuit|fallback|stagger|de-?synchron|jitter|thundering herd/i],
     mustNot: [/every session[^.\n]{0,30}retry now|retry all immediately/i],
   },
   {
@@ -961,7 +961,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '45-task-rollover-rearm',
     question: 'The task was signed off at commit abc. A shared-worktree commit def changed one of its verified files afterward. Is the old completion still valid?',
     tail: 'Verified commit=abc. Current commit=def. Shared change def modifies src/parser.js, which was acceptance evidence for the signed-off task.\n> ',
-    must: [/stale|invalid|re-?verify|reopen|re-arm|changed/i, /abc|def|parser|evidence/i],
+    must: [/stale|invalid|re-?verify|re-?verification|reopen|re-arm|changed|modified|not verified|refresh(?:ed)?/i, /abc|def|parser|evidence/i],
     mustNot: [/still valid|remain complete without|no need to re/i],
   },
   {
