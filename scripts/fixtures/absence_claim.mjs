@@ -42,22 +42,25 @@ const SPEECH_VERB = '(?:say|says|saying|said|claim|claims|claiming|claimed'
 // Anchored to the END of the preceding text: the refutation must run right up to the phrase.
 const REFUTE_PREFIX = new RegExp('(?:'
   + '\\bnot\\s+(?:because|that)'
-  + '|\\bnot\\s+(?:a\\s+)?blanket'
+  + '|\\bnot\\s+(?:as\\s+)?(?:a\\s+)?blanket'
   + '|\\bnot'
-  + '|\\brather\\s+than\\s+(?:as\\s+)?(?:a\\s+)?(?:blanket\\s+)?'
+  + '|\\b(?:false|incorrect|inaccurate|unsupported)\\s+(?:blanket\\s+)?(?:claim|statement|wording)\\s+that'
+  + '|\\brather\\s+than\\s+(?:as\\s+)?(?:a\\s+)?(?:blanket\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:claim|statement|wording)\\s+(?:of|that)\\s+)?'
   + '|\\b(?:does\\s+not|doesn\'?t)\\s+mean(?:\\s+that)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+generalize[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+overstate[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:use|repeat|adopt)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+that)?'
   + ')' + CARRIER + '$', 'i');
 
 // Anchored to the START of the following text: a closing quote is allowed, ordinary punctuation is not
 // (". That is false" refers back to something else and must not launder an assertion).
 const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|available|present|included))?[\\s"\'“”‘’)\\]]*(?:'
-  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate|contradicted|disproved|refuted)\\b'
-  + '|(?:claim|statement|phrase|wording)\\s+(?:(?:would|does|do)\\s+)?(?:contradicts?|conflicts?\\s+with|misstates?)\\b'
+  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+(?:itself\\s+)?be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate|contradicted|disproved|refuted)\\b'
+  + '|(?:claim|statement|phrase|wording)\\s+(?:(?:would|does|do)\\s+(?:itself\\s+)?)?(?:contradicts?|conflicts?\\s+with|misstates?)\\b'
   + '|contradicts?\\s+(?:the\\s+)?(?:(?:observed|served|rendered|provided|available)\\s+)?(?:gallery|artifacts?|proof|evidence)\\b'
-  + '|(?:would|does|do)\\s+(?:misstate|contradict)\\b[^.!?\\n]{0,80}\\b(?:reality|coverage|gallery|artifacts?|proof|evidence)\\b'
+  + '|(?:would|does|do)\\s+(?:misstate|misreport|misrepresent)\\b'
+  + '|(?:would|does|do)\\s+contradict\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 
@@ -81,6 +84,9 @@ const QUALIFIED_GAP_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '(?:for|of)\\s+(?:the\\s+)?(?:[a-z0-9_-]+\\s+){0,4}(?:state|viewport|surface|screen|case|variant|breakpoint)\\b'
   + '|(?:the\\s+)?generated\\s+documentation\\b'
   + ')', 'i');
+const QUALIFIED_GAP_PREFIX = /\b(?:[a-z0-9_-]+\s+){0,4}(?:state|viewport|surface|screen|case|variant|breakpoint)(?:\s*[:—-]|,\s+which\s+(?:has|shows|contains)|\s+(?:has|shows|contains))\s*["'“”‘’(]*$/i;
+const COORDINATED_REFUTE_PREFIX = /\bboth\s+(?:a\s+)?(?:blanket\s+)?["'“”‘’(]*$/i;
+const COORDINATED_REFUTE_SUFFIX = /^[\s"'“”‘’)\]]*(?:claim|statement|wording)\s+and\b[^.!?\n]{0,60}\b(?:would|does|do)\s+(?:misstate|misreport|misrepresent|contradict)\b/i;
 
 // A refutation is short; bounding the lookaround keeps this linear on a large graded blob. The anchors
 // still require adjacency, so this bound is not a proximity window.
@@ -117,7 +123,10 @@ export function assertedAbsenceClaims(input) {
   for (const [start, end] of claimSpans(text)) {
     const before = text.slice(Math.max(0, start - EDGE), start);
     const after = text.slice(end, end + EDGE);
-    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after) || VERIFIER_SCOPE_SUFFIX.test(after) || QUALIFIED_GAP_SUFFIX.test(after)) continue;
+    if (REFUTE_PREFIX.test(before) || REFUTE_SUFFIX.test(after)
+      || (COORDINATED_REFUTE_PREFIX.test(before) && COORDINATED_REFUTE_SUFFIX.test(after))
+      || VERIFIER_SCOPE_SUFFIX.test(after)
+      || QUALIFIED_GAP_PREFIX.test(before) || QUALIFIED_GAP_SUFFIX.test(after)) continue;
     hits.push(text.slice(Math.max(0, start - 40), end + 20).replace(/\s+/g, ' ').trim());
   }
   return hits;

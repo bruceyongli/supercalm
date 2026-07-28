@@ -869,7 +869,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '32-request-too-large',
     question: 'The request returns 413 request_too_large after attaching the full 180 MB transcript. How should the work continue without losing requirements?',
     tail: 'HTTP 413 request_too_large. Transcript 180 MB; requirements are separately available in TASK.md.\n> ',
-    must: [/413|too large|limit|size|180\s*MB|payload|attach/i, /split|chunk|compact|trim|select|targeted|excerpt|retrieve|without attach/i, /requirement|TASK\.md|contract|preserve/i],
+    must: [/413|too large|limit|size|180\s*MB|payload|attach/i, /split|chunk|compact|trim|select|targeted|excerpt|retrieve|without attach|do not attach|extract|summar|small working/i, /requirement|TASK\.md|contract|preserve/i],
     mustNot: [/retry (?:the )?(?:same|full 180)/i],
   },
   {

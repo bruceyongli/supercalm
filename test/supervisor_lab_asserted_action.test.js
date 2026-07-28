@@ -18,6 +18,8 @@ for (const text of [
   'Do not accept it.',
   'The hard rule forbids accepting unverified output.',
   'Reject and ignore the answer.',
+  "I won't use the answer.",
+  'I will not accept it.',
   '"Accept it" would be wrong.',
   'Rather than accepting it, retry the exact model.',
 ]) assert.equal(accept.test(text), false, `must permit explicit refutation: ${text}`);
@@ -85,4 +87,4 @@ for (const text of [
   'Model fallback is reserved only for provider access failure.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (44 cases)');
+console.log('supervisor_lab_asserted_action.test ok (46 cases)');
