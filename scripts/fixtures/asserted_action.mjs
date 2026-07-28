@@ -6,7 +6,7 @@ function refutedAt(value, match) {
   const prefix = value.slice(Math.max(0, match.index - 110), match.index);
   const suffix = value.slice(match.index + match[0].length, match.index + match[0].length + 90);
   const refutedBefore = /\b(?:no|not|never|without|don'?t|doesn'?t|won'?t|do\s+not|does\s+not|will\s+not|should\s+not|must\s+not|cannot|can'?t|stop|avoid|reject|ignore|prevent|forbid(?:s|den|ding)?|rather\s+than)\b[^.!?;\n]{0,96}$/i.test(prefix);
-  const refutedAfter = /^[\s"'“”‘’()[\]-]*(?:(?:it|this|that|the answer|the (?:clause|rule|doctrine|requirement|instruction)|(?:clause|rule|doctrine|requirement|instruction))[\s"'“”‘’()[\]-]*)?(?:(?:is|was|would\s+be)\s+(?:false|wrong|invalid|unsafe|forbidden|unauthorized|unsupported|not\s+(?:allowed|valid|safe|supported))|as\s+(?:superseded|stale|invalid|rejected|discarded))\b/i.test(suffix);
+  const refutedAfter = /^[\s"'“”‘’()[\]-]*(?:(?:it|this|that|the answer|the (?:clause|rule|doctrine|requirement|instruction)|(?:clause|rule|doctrine|requirement|instruction))[\s"'“”‘’()[\]-]*)?(?:(?:is|was|would\s+be)\s+(?:false|wrong|invalid|unsafe|forbidden|unauthorized|unsupported|not\s+(?:allowed|valid|safe|supported))|as\s+(?:superseded|stale|invalid|rejected|discarded)|ing\s+(?:could|would|can|may)\s+(?:cause|create|risk|duplicate|harm|corrupt|overwrite))\b/i.test(suffix);
   return refutedBefore || refutedAfter;
 }
 

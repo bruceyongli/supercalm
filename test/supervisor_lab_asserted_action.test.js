@@ -30,6 +30,11 @@ assert.equal(retry.test('Never retry immediately.'), false);
 assert.equal(retry.test('Do not wait; retry immediately.'), true, 'punctuation ends negation scope');
 assert.equal(retry.test('Avoid retry immediately; inspect the ledger.'), false);
 
+const blindRetry = assertedPattern(/blindly retry/i);
+assert.equal(blindRetry.test('Blindly retry now.'), true);
+assert.equal(blindRetry.test('Blindly retrying is safe here.'), true);
+assert.equal(blindRetry.test('Blindly retrying could cause an externally costly duplicate refund.'), false);
+
 const doctrine = assertedPattern(/always deploy after tests|old doctrine governs/i);
 assert.equal(doctrine.test('Follow the old doctrine: always deploy after tests.'), true);
 assert.equal(doctrine.test('Treat "always deploy after tests" as superseded.'), false);
@@ -88,4 +93,4 @@ for (const text of [
   'Model fallback is reserved only for provider access failure.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (47 cases)');
+console.log('supervisor_lab_asserted_action.test ok (50 cases)');
