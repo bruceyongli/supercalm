@@ -147,6 +147,8 @@ await writeFile(
 
 process.env.AIOS_DATA = join(scratch, 'data');
 process.env.AIOS_CODEX_SESSIONS_DIR = join(scratch, 'codex-sessions');
+// Force this small fixture through the same streaming Full History fallback used by 32+ MB rollouts.
+process.env.AIOS_SESSION_FILE_EVIDENCE_TAIL_BYTES = '1024';
 const port = 31000 + Math.floor(Math.random() * 7000);
 process.env.AIOS_PORT = String(port);
 

@@ -1,9 +1,10 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
-import { existsSync, statSync, realpathSync } from 'node:fs';
+import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
@@ -185,10 +186,25 @@ async function tempFileRoots() {
 // browser merely by printing an arbitrary path.
 const sessionFileGrants = new Map();
 const SESSION_FILE_GRANT_MS = 5 * 60 * 1000;
-const SESSION_FILE_EVIDENCE_TAIL_BYTES = 8 * 1024 * 1024;
+// Match Story's recent-history scan ceiling. Anything visible in the normal Story feed should be
+// authorizable without a second whole-transcript pass; Full History uses the streaming fallback below.
+const SESSION_FILE_EVIDENCE_TAIL_BYTES = Math.max(
+  1024,
+  Number(process.env.AIOS_SESSION_FILE_EVIDENCE_TAIL_BYTES || 32 * 1024 * 1024),
+);
 const SESSION_FILE_EVIDENCE_MS = 30 * 1000;
 const sessionTranscriptEvidenceCache = new Map();
 const sessionOperatedRootsCache = new Map();
+const sessionFullExecutionEvidenceCache = new Map();
+
+function cacheSessionFileEvidence(cache, key, value, ttl = SESSION_FILE_EVIDENCE_MS) {
+  cache.set(key, value);
+  const timer = setTimeout(() => {
+    if (cache.get(key) === value) cache.delete(key);
+  }, ttl + 50);
+  timer.unref?.();
+  return value;
+}
 
 async function readFileTail(file, maxBytes = SESSION_FILE_EVIDENCE_TAIL_BYTES) {
   const st = await stat(file);
@@ -257,32 +273,56 @@ function parseTranscriptExecutionEvidence(text, workdirs, writtenPaths) {
 async function sessionTranscriptEvidence(s) {
   const cached = sessionTranscriptEvidenceCache.get(s.id);
   if (cached?.expires > Date.now()) return cached;
-  const evidence = { expires: Date.now() + SESSION_FILE_EVIDENCE_MS, texts: [], workdirs: [], writtenPaths: [] };
+  const evidence = {
+    expires: Date.now() + SESSION_FILE_EVIDENCE_MS,
+    texts: [],
+    files: [],
+    complete: true,
+    workdirs: [],
+    writtenPaths: [],
+  };
   for (const transcript of await sessionTranscriptFiles(s)) {
     try {
+      const transcriptStat = await stat(transcript);
       const text = await readFileTail(transcript);
       evidence.texts.push(text);
+      evidence.files.push(transcript);
+      if (transcriptStat.size > SESSION_FILE_EVIDENCE_TAIL_BYTES) evidence.complete = false;
       parseTranscriptExecutionEvidence(text, evidence.workdirs, evidence.writtenPaths);
     } catch {}
   }
-  sessionTranscriptEvidenceCache.set(s.id, evidence);
-  if (sessionTranscriptEvidenceCache.size > 500) {
-    const t = Date.now();
-    for (const [key, value] of sessionTranscriptEvidenceCache) {
-      if (value.expires <= t) sessionTranscriptEvidenceCache.delete(key);
-    }
-  }
-  return evidence;
+  return cacheSessionFileEvidence(sessionTranscriptEvidenceCache, s.id, evidence);
 }
 
-async function sessionTranscriptMentionsFile(s, mentions) {
+async function streamMentionsFile(file, mentions, overlap) {
+  let carry = '';
+  const stream = createReadStream(file, { encoding: 'utf8', highWaterMark: 256 * 1024 });
+  try {
+    for await (const chunk of stream) {
+      const text = carry + chunk;
+      if (mentions(text)) return true;
+      carry = text.slice(-overlap);
+    }
+  } catch {}
+  return false;
+}
+
+async function sessionTranscriptMentionsFile(s, mentions, overlap) {
   const evidence = await sessionTranscriptEvidence(s);
   for (const text of evidence.texts) {
     if (mentions(text)) return true;
   }
+  // Full History can expose links older than Story's normal 32 MB recent window. Search those bound
+  // transcripts as a stream on demand, retaining only a path-sized overlap rather than a 200 MB string.
+  if (!evidence.complete) {
+    for (const file of evidence.files) {
+      if (await streamMentionsFile(file, mentions, overlap)) return true;
+    }
+  }
   return false;
 }
 
+const SENSITIVE_SESSION_ROOT_NAMES = new Set(['.ssh', '.aws', '.gnupg', '.config', 'Library']);
 function safeSessionOperatedRoot(root) {
   const value = normalize(root);
   const home = normalize(homedir());
@@ -290,7 +330,7 @@ function safeSessionOperatedRoot(root) {
   const homeRelative = relative(home, value);
   if (homeRelative && !homeRelative.startsWith(`..${sep}`) && homeRelative !== '..') {
     const first = homeRelative.split(sep)[0];
-    if (new Set(['.ssh', '.aws', '.gnupg', '.config', 'Library']).has(first)) return false;
+    if (SENSITIVE_SESSION_ROOT_NAMES.has(first)) return false;
   }
   return !['/etc', '/private', '/System', '/Library', '/Applications', '/usr', '/bin', '/sbin', '/var']
     .some((systemRoot) => pathInside(systemRoot, value));
@@ -299,12 +339,9 @@ function safeSessionOperatedRoot(root) {
 // Tool workdirs are the portable provenance signal for secondary repositories. Resolve a Git workdir
 // to its repository top-level; otherwise retain only that exact narrow directory. Broad home/system
 // roots and credential/config areas are always excluded.
-async function sessionOperatedRoots(s) {
-  const cached = sessionOperatedRootsCache.get(s.id);
-  if (cached?.expires > Date.now()) return cached.roots;
-  const evidence = await sessionTranscriptEvidence(s);
+async function resolveSessionOperatedRoots(workdirs) {
   const roots = [];
-  for (const raw of evidence.workdirs) {
+  for (const raw of workdirs) {
     let workdir;
     try { workdir = normalize(await realpath(raw)); } catch { continue; }
     let root = workdir;
@@ -317,7 +354,45 @@ async function sessionOperatedRoots(s) {
     }
     if (safeSessionOperatedRoot(root) && !roots.includes(root)) roots.push(root);
   }
-  sessionOperatedRootsCache.set(s.id, { expires: Date.now() + SESSION_FILE_EVIDENCE_MS, roots });
+  return roots;
+}
+
+async function sessionFullExecutionEvidence(s) {
+  const cached = sessionFullExecutionEvidenceCache.get(s.id);
+  if (cached?.expires > Date.now()) return cached;
+  const evidence = {
+    expires: Date.now() + SESSION_FILE_GRANT_MS,
+    workdirs: [],
+    writtenPaths: [],
+    roots: [],
+  };
+  for (const transcript of await sessionTranscriptFiles(s)) {
+    const lines = createInterface({ input: createReadStream(transcript), crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        parseTranscriptExecutionEvidence(line, evidence.workdirs, evidence.writtenPaths);
+      }
+    } catch {}
+  }
+  evidence.roots = await resolveSessionOperatedRoots(evidence.workdirs);
+  return cacheSessionFileEvidence(
+    sessionFullExecutionEvidenceCache,
+    s.id,
+    evidence,
+    SESSION_FILE_GRANT_MS,
+  );
+}
+
+async function sessionOperatedRoots(s) {
+  const cached = sessionOperatedRootsCache.get(s.id);
+  if (cached?.expires > Date.now()) return cached.roots;
+  const evidence = await sessionTranscriptEvidence(s);
+  const roots = await resolveSessionOperatedRoots(evidence.workdirs);
+  cacheSessionFileEvidence(
+    sessionOperatedRootsCache,
+    s.id,
+    { expires: Date.now() + SESSION_FILE_EVIDENCE_MS, roots },
+  );
   return roots;
 }
 
@@ -361,22 +436,39 @@ async function sessionExternalFileMatch(s, requested, candidate, target = '') {
       return { target: compared, displayPath: requested, scope: 'session-root' };
     }
   }
+  const fullEvidence = await sessionFullExecutionEvidence(s);
+  if (safeSessionOperatedRoot(dirname(candidate))
+      && fullEvidence.writtenPaths.some((path) => normalize(path) === normalize(candidate))) {
+    return { target: target || candidate, displayPath: requested, scope: 'session-write' };
+  }
+  for (const root of fullEvidence.roots) {
+    const compared = target || candidate;
+    if (pathInside(root, compared)) {
+      return { target: compared, displayPath: requested, scope: 'session-root' };
+    }
+  }
   return null;
 }
 
 async function relativeExternalFileMatch(s, requested) {
-  const matches = [];
-  for (const root of await sessionOperatedRoots(s)) {
-    const candidate = resolveInRoot(root, requested);
-    if (!candidate) continue;
-    let target = '';
-    try { target = normalize(await realpath(candidate)); } catch {}
-    if (target && !pathInside(root, target)) continue;
-    if (await sessionMentionsFile(s, requested, target || candidate)) {
-      matches.push({ target: target || candidate, displayPath: requested, scope: 'session-root' });
+  const matchesFor = async (roots) => {
+    const matches = [];
+    for (const root of roots) {
+      const candidate = resolveInRoot(root, requested);
+      if (!candidate) continue;
+      let target = '';
+      try { target = normalize(await realpath(candidate)); } catch {}
+      if (target && !pathInside(root, target)) continue;
+      if (await sessionMentionsFile(s, requested, target || candidate)) {
+        matches.push({ target: target || candidate, displayPath: requested, scope: 'session-root' });
+      }
     }
+    return [...new Map(matches.map((match) => [match.target, match])).values()];
+  };
+  let unique = await matchesFor(await sessionOperatedRoots(s));
+  if (unique.length === 0) {
+    unique = await matchesFor((await sessionFullExecutionEvidence(s)).roots);
   }
-  const unique = [...new Map(matches.map((match) => [match.target, match])).values()];
   return unique.length === 1 ? unique[0] : null;
 }
 
@@ -401,6 +493,7 @@ async function sessionMentionsFile(s, requested, target) {
       return false;
     });
   };
+  const mentionOverlap = Math.max(1024, ...needles.map((needle) => needle.length + 2));
   const evidence = [
     s.title, s.summary, s.question,
     ...store.recentMessagesFor(s.id, 500).map((m) => m.text),
@@ -413,7 +506,7 @@ async function sessionMentionsFile(s, requested, target) {
   // Story reports come from native Codex/Claude transcripts and are not always duplicated into AIOS's
   // compact messages/events projection. Consult only THIS session's bound transcript identity, tail-
   // bounded so a large historical rollout cannot make a file click expensive.
-  if (!found) found = await sessionTranscriptMentionsFile(s, mentions);
+  if (!found) found = await sessionTranscriptMentionsFile(s, mentions, mentionOverlap);
   if (found) {
     sessionFileGrants.set(key, Date.now() + SESSION_FILE_GRANT_MS);
     if (sessionFileGrants.size > 1000) {
