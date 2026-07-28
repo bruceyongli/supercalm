@@ -1,9 +1,10 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
-import { existsSync, statSync, realpathSync } from 'node:fs';
-import { extname, join, basename, normalize, isAbsolute, sep, relative } from 'node:path';
+import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
+import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { createInterface } from 'node:readline';
 import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
@@ -182,12 +183,31 @@ async function tempFileRoots() {
 }
 
 // A session may display an artifact outside its assigned worktree only after that exact path appeared
-// in its own messages/events/terminal. The outer scope is still constrained below to host temp or a
-// registered worktree of the same project, so a model cannot turn the viewer into a general-purpose
-// host file browser merely by printing an arbitrary path.
+// in its own messages/events/terminal. The outer scope is still constrained below to host temp, a
+// registered same-project worktree, or a narrow directory the bound native transcript proves the
+// session actually operated in. A model cannot turn the viewer into a general-purpose host file
+// browser merely by printing an arbitrary path.
 const sessionFileGrants = new Map();
 const SESSION_FILE_GRANT_MS = 5 * 60 * 1000;
-const SESSION_FILE_EVIDENCE_TAIL_BYTES = 8 * 1024 * 1024;
+// Match Story's recent-history scan ceiling. Anything visible in the normal Story feed should be
+// authorizable without a second whole-transcript pass; Full History uses the streaming fallback below.
+const SESSION_FILE_EVIDENCE_TAIL_BYTES = Math.max(
+  1024,
+  Number(process.env.AIOS_SESSION_FILE_EVIDENCE_TAIL_BYTES || 32 * 1024 * 1024),
+);
+const SESSION_FILE_EVIDENCE_MS = 30 * 1000;
+const sessionTranscriptEvidenceCache = new Map();
+const sessionOperatedRootsCache = new Map();
+const sessionFullExecutionEvidenceCache = new Map();
+
+function cacheSessionFileEvidence(cache, key, value, ttl = SESSION_FILE_EVIDENCE_MS) {
+  cache.set(key, value);
+  const timer = setTimeout(() => {
+    if (cache.get(key) === value) cache.delete(key);
+  }, ttl + 50);
+  timer.unref?.();
+  return value;
+}
 
 async function readFileTail(file, maxBytes = SESSION_FILE_EVIDENCE_TAIL_BYTES) {
   const st = await stat(file);
@@ -203,7 +223,7 @@ async function readFileTail(file, maxBytes = SESSION_FILE_EVIDENCE_TAIL_BYTES) {
   }
 }
 
-async function sessionTranscriptMentionsFile(s, mentions) {
+async function sessionTranscriptFiles(s) {
   const transcripts = [];
   if (s?.codex_uuid) {
     try {
@@ -212,12 +232,247 @@ async function sessionTranscriptMentionsFile(s, mentions) {
     } catch {}
   }
   if (s?.claude_transcript) transcripts.push(s.claude_transcript);
-  for (const transcript of new Set(transcripts)) {
+  return [...new Set(transcripts)];
+}
+
+function addAbsoluteEvidencePath(list, value) {
+  if (typeof value !== 'string' || !isAbsolute(value)) return;
+  const path = normalize(value);
+  if (!list.includes(path)) list.push(path);
+}
+
+// Extract only structured execution metadata, never workdir-looking prose. Codex records tool arguments
+// as JSON in response_item/function_call rows; Claude records the effective cwd as a top-level field.
+// Successful patch receipts additionally prove the exact files the session wrote.
+function parseTranscriptExecutionEvidence(text, workdirs, writtenPaths) {
+  for (const line of String(text || '').split('\n')) {
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    addAbsoluteEvidencePath(workdirs, row?.cwd);
+    const payload = row?.payload;
+    if (row?.type === 'response_item' && payload?.type === 'function_call') {
+      let args = payload.arguments;
+      if (typeof args === 'string') {
+        try { args = JSON.parse(args); } catch { args = null; }
+      }
+      if (args && typeof args === 'object') {
+        const pending = [{ value: args, depth: 0 }];
+        while (pending.length) {
+          const { value, depth } = pending.pop();
+          if (!value || typeof value !== 'object' || depth > 6) continue;
+          for (const [key, child] of Object.entries(value)) {
+            if (key === 'workdir' || key === 'cwd') addAbsoluteEvidencePath(workdirs, child);
+            else if (child && typeof child === 'object') pending.push({ value: child, depth: depth + 1 });
+          }
+        }
+      }
+    }
+    if (row?.type === 'event_msg' && payload?.type === 'patch_apply_end' && payload.success === true) {
+      for (const path of Object.keys(payload.changes || {})) addAbsoluteEvidencePath(writtenPaths, path);
+    }
+  }
+}
+
+async function sessionTranscriptEvidence(s) {
+  const cached = sessionTranscriptEvidenceCache.get(s.id);
+  if (cached?.expires > Date.now()) return cached;
+  const evidence = {
+    expires: Date.now() + SESSION_FILE_EVIDENCE_MS,
+    texts: [],
+    files: [],
+    complete: true,
+    workdirs: [],
+    writtenPaths: [],
+  };
+  for (const transcript of await sessionTranscriptFiles(s)) {
     try {
-      if (mentions(await readFileTail(transcript))) return true;
+      const transcriptStat = await stat(transcript);
+      const text = await readFileTail(transcript);
+      evidence.texts.push(text);
+      evidence.files.push(transcript);
+      if (transcriptStat.size > SESSION_FILE_EVIDENCE_TAIL_BYTES) evidence.complete = false;
+      parseTranscriptExecutionEvidence(text, evidence.workdirs, evidence.writtenPaths);
+    } catch {}
+  }
+  return cacheSessionFileEvidence(sessionTranscriptEvidenceCache, s.id, evidence);
+}
+
+async function streamMentionsFile(file, mentions, overlap) {
+  let carry = '';
+  const stream = createReadStream(file, { encoding: 'utf8', highWaterMark: 256 * 1024 });
+  try {
+    for await (const chunk of stream) {
+      const text = carry + chunk;
+      if (mentions(text)) return true;
+      carry = text.slice(-overlap);
+    }
+  } catch {}
+  return false;
+}
+
+async function sessionTranscriptMentionsFile(s, mentions, overlap) {
+  const evidence = await sessionTranscriptEvidence(s);
+  for (const text of evidence.texts) {
+    if (mentions(text)) return true;
+  }
+  // Full History can expose links older than Story's normal 32 MB recent window. Search those bound
+  // transcripts as a stream on demand, retaining only a path-sized overlap rather than a 200 MB string.
+  if (!evidence.complete) {
+    for (const file of evidence.files) {
+      if (await streamMentionsFile(file, mentions, overlap)) return true;
+    }
+  }
+  return false;
+}
+
+const SENSITIVE_SESSION_ROOT_NAMES = new Set(['.ssh', '.aws', '.gnupg', '.config', 'Library']);
+function safeSessionOperatedRoot(root) {
+  const value = normalize(root);
+  const home = normalize(homedir());
+  if (value === '/' || value === home || value === normalize(join(home, '..'))) return false;
+  const homeRelative = relative(home, value);
+  if (homeRelative && !homeRelative.startsWith(`..${sep}`) && homeRelative !== '..') {
+    const first = homeRelative.split(sep)[0];
+    if (SENSITIVE_SESSION_ROOT_NAMES.has(first)) return false;
+  }
+  return !['/etc', '/private', '/System', '/Library', '/Applications', '/usr', '/bin', '/sbin', '/var']
+    .some((systemRoot) => pathInside(systemRoot, value));
+}
+
+// Tool workdirs are the portable provenance signal for secondary repositories. Resolve a Git workdir
+// to its repository top-level; otherwise retain only that exact narrow directory. Broad home/system
+// roots and credential/config areas are always excluded.
+async function resolveSessionOperatedRoots(workdirs) {
+  const roots = [];
+  for (const raw of workdirs) {
+    let workdir;
+    try { workdir = normalize(await realpath(raw)); } catch { continue; }
+    let root = workdir;
+    const gitRoot = await gitOut(workdir, ['rev-parse', '--show-toplevel'], {
+      maxBuffer: 128 * 1024,
+      timeout: 2000,
+    });
+    if (!gitRoot.error && gitRoot.text) {
+      try { root = normalize(await realpath(gitRoot.text.trim())); } catch { continue; }
+    }
+    if (safeSessionOperatedRoot(root) && !roots.includes(root)) roots.push(root);
+  }
+  return roots;
+}
+
+async function sessionFullExecutionEvidence(s) {
+  const cached = sessionFullExecutionEvidenceCache.get(s.id);
+  if (cached?.expires > Date.now()) return cached;
+  const evidence = {
+    expires: Date.now() + SESSION_FILE_GRANT_MS,
+    workdirs: [],
+    writtenPaths: [],
+    roots: [],
+  };
+  for (const transcript of await sessionTranscriptFiles(s)) {
+    const lines = createInterface({ input: createReadStream(transcript), crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        parseTranscriptExecutionEvidence(line, evidence.workdirs, evidence.writtenPaths);
+      }
+    } catch {}
+  }
+  evidence.roots = await resolveSessionOperatedRoots(evidence.workdirs);
+  return cacheSessionFileEvidence(
+    sessionFullExecutionEvidenceCache,
+    s.id,
+    evidence,
+    SESSION_FILE_GRANT_MS,
+  );
+}
+
+async function sessionOperatedRoots(s) {
+  const cached = sessionOperatedRootsCache.get(s.id);
+  if (cached?.expires > Date.now()) return cached.roots;
+  const evidence = await sessionTranscriptEvidence(s);
+  const roots = await resolveSessionOperatedRoots(evidence.workdirs);
+  cacheSessionFileEvidence(
+    sessionOperatedRootsCache,
+    s.id,
+    { expires: Date.now() + SESSION_FILE_EVIDENCE_MS, roots },
+  );
+  return roots;
+}
+
+async function sessionWroteExactFile(s, candidate, target = candidate) {
+  const evidence = await sessionTranscriptEvidence(s);
+  for (const raw of evidence.writtenPaths) {
+    if (normalize(raw) === normalize(candidate)) return true;
+    try {
+      if (normalize(await realpath(raw)) === normalize(target)) return true;
     } catch {}
   }
   return false;
+}
+
+function normalizeSessionFileRequest(requested) {
+  let value = String(requested || '').trim();
+  if (/^file:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost')) return '';
+      value = decodeURIComponent(url.pathname);
+    } catch {
+      return '';
+    }
+  }
+  value = value.replace(/#L\d+(?:C\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
+  if (value === '~') return homedir();
+  if (value.startsWith(`~${sep}`)) return join(homedir(), value.slice(2));
+  return value;
+}
+
+async function sessionExternalFileMatch(s, requested, candidate, target = '') {
+  if (!(await sessionMentionsFile(s, requested, target || candidate))) return null;
+  if (safeSessionOperatedRoot(dirname(candidate))
+      && await sessionWroteExactFile(s, candidate, target || candidate)) {
+    return { target: target || candidate, displayPath: requested, scope: 'session-write' };
+  }
+  for (const root of await sessionOperatedRoots(s)) {
+    const compared = target || candidate;
+    if (pathInside(root, compared)) {
+      return { target: compared, displayPath: requested, scope: 'session-root' };
+    }
+  }
+  const fullEvidence = await sessionFullExecutionEvidence(s);
+  if (safeSessionOperatedRoot(dirname(candidate))
+      && fullEvidence.writtenPaths.some((path) => normalize(path) === normalize(candidate))) {
+    return { target: target || candidate, displayPath: requested, scope: 'session-write' };
+  }
+  for (const root of fullEvidence.roots) {
+    const compared = target || candidate;
+    if (pathInside(root, compared)) {
+      return { target: compared, displayPath: requested, scope: 'session-root' };
+    }
+  }
+  return null;
+}
+
+async function relativeExternalFileMatch(s, requested) {
+  const matchesFor = async (roots) => {
+    const matches = [];
+    for (const root of roots) {
+      const candidate = resolveInRoot(root, requested);
+      if (!candidate) continue;
+      let target = '';
+      try { target = normalize(await realpath(candidate)); } catch {}
+      if (target && !pathInside(root, target)) continue;
+      if (await sessionMentionsFile(s, requested, target || candidate)) {
+        matches.push({ target: target || candidate, displayPath: requested, scope: 'session-root' });
+      }
+    }
+    return [...new Map(matches.map((match) => [match.target, match])).values()];
+  };
+  let unique = await matchesFor(await sessionOperatedRoots(s));
+  if (unique.length === 0) {
+    unique = await matchesFor((await sessionFullExecutionEvidence(s)).roots);
+  }
+  return unique.length === 1 ? unique[0] : null;
 }
 
 async function sessionMentionsFile(s, requested, target) {
@@ -235,12 +490,13 @@ async function sessionMentionsFile(s, requested, target) {
       let at = haystack.indexOf(needle);
       while (at >= 0) {
         const after = haystack[at + needle.length];
-        if (!after || /[\s"'`)\]}>?,;:#]/.test(after)) return true;
+        if (!after || /[\s\\"'`)\]}>?,;:#]/.test(after)) return true;
         at = haystack.indexOf(needle, at + needle.length);
       }
       return false;
     });
   };
+  const mentionOverlap = Math.max(1024, ...needles.map((needle) => needle.length + 2));
   const evidence = [
     s.title, s.summary, s.question,
     ...store.recentMessagesFor(s.id, 500).map((m) => m.text),
@@ -253,7 +509,7 @@ async function sessionMentionsFile(s, requested, target) {
   // Story reports come from native Codex/Claude transcripts and are not always duplicated into AIOS's
   // compact messages/events projection. Consult only THIS session's bound transcript identity, tail-
   // bounded so a large historical rollout cannot make a file click expensive.
-  if (!found) found = await sessionTranscriptMentionsFile(s, mentions);
+  if (!found) found = await sessionTranscriptMentionsFile(s, mentions, mentionOverlap);
   if (found) {
     sessionFileGrants.set(key, Date.now() + SESSION_FILE_GRANT_MS);
     if (sessionFileGrants.size > 1000) {
@@ -287,24 +543,16 @@ async function registeredProjectWorktreeContaining(s, target) {
   return '';
 }
 
-async function resolveSessionFile(s, requested) {
+async function resolveSessionFile(s, rawRequested) {
+  const requested = normalizeSessionFileRequest(rawRequested);
+  if (!requested) return null;
   const root = projectFileRoot(s);
   const candidate = normalize(isAbsolute(requested) ? requested : join(root, requested));
-  let target;
-  try { target = normalize(await realpath(candidate)); } catch {
-    // Preserve the old not-found behavior for plausible project/temp paths without probing arbitrary
-    // host paths. The route's stat() below produces the actual 404.
-    const projectCandidate = resolveInRoot(root, requested);
-    const tempCandidate = isAbsolute(requested)
-      && (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, candidate));
-    return (projectCandidate || tempCandidate)
-      ? { target: candidate, displayPath: requested, scope: projectCandidate ? 'project' : 'temp' }
-      : null;
-  }
-
+  let target = '';
+  try { target = normalize(await realpath(candidate)); } catch {}
   let projectRoot;
   try { projectRoot = normalize(await realpath(root)); } catch { projectRoot = normalize(root); }
-  if (pathInside(projectRoot, target)) {
+  if (target && pathInside(projectRoot, target)) {
     return {
       target,
       displayPath: relative(projectRoot, target) || basename(target),
@@ -312,16 +560,38 @@ async function resolveSessionFile(s, requested) {
     };
   }
 
-  // Only an explicitly absolute, evidenced path can cross the assigned-worktree boundary. A relative
-  // symlink that escapes into a sibling worktree or /tmp stays denied.
-  if (!isAbsolute(requested)) return null;
-  const projectWorktree = await registeredProjectWorktreeContaining(s, target);
-  if (projectWorktree && await sessionMentionsFile(s, requested, target)) {
-    return { target, displayPath: requested, scope: 'project-worktree' };
+  if (!isAbsolute(requested)) {
+    // A report written while operating in a secondary repository may link `research/result.md`
+    // instead of its full path. Prefer the assigned project when that file exists; otherwise resolve
+    // only an unambiguous exact-evidenced match in a transcript-proven root.
+    const external = await relativeExternalFileMatch(s, requested);
+    if (external) return external;
+    // Existing relative symlinks that escape the assigned project stay denied. For an ordinary missing
+    // project path, preserve the viewer's useful "not found yet" response.
+    return target ? null : { target: candidate, displayPath: requested, scope: 'project' };
   }
-  const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, target));
-  if (!inTemp || !(await sessionMentionsFile(s, requested, target))) return null;
-  return { target, displayPath: requested, scope: 'temp' };
+
+  const projectCandidate = resolveInRoot(root, requested);
+  if (!target && projectCandidate) {
+    return { target: candidate, displayPath: requested, scope: 'project' };
+  }
+
+  // Only an explicitly absolute, evidenced path can cross the assigned-worktree boundary. The
+  // same-project worktree and temp checks retain their existing narrow scopes.
+  const compared = target || candidate;
+  const projectWorktree = await registeredProjectWorktreeContaining(s, compared);
+  if (projectWorktree && await sessionMentionsFile(s, requested, compared)) {
+    return { target: compared, displayPath: requested, scope: 'project-worktree' };
+  }
+  const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, compared));
+  if (inTemp) {
+    if (!target || await sessionMentionsFile(s, requested, target)) {
+      return { target: compared, displayPath: requested, scope: 'temp' };
+    }
+    return null;
+  }
+
+  return sessionExternalFileMatch(s, requested, candidate, target);
 }
 
 // A classifier (set by detect.js in Phase C) decides working/waiting + question.

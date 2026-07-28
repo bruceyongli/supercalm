@@ -8,6 +8,16 @@ export function cleanFileReference(value) {
     .trim();
 }
 
+function withoutSourceLocation(value) {
+  return String(value || '')
+    .replace(/#L\d+(?:C\d+)?$/i, '')
+    .replace(/:\d+(?::\d+)?$/, '');
+}
+
+function decodedPathname(url) {
+  try { return withoutSourceLocation(decodeURIComponent(url.pathname)); } catch { return ''; }
+}
+
 export function localFilePath(value, currentHostname = globalThis.location?.hostname || '') {
   const ref = cleanFileReference(value);
   if (!ref) return '';
@@ -15,12 +25,21 @@ export function localFilePath(value, currentHostname = globalThis.location?.host
     try {
       const url = new URL(ref.startsWith('//') ? `https:${ref}` : ref);
       if (!currentHostname || url.hostname !== currentHostname) return '';
-      return decodeURIComponent(url.pathname);
+      return decodedPathname(url);
     } catch {
       return '';
     }
   }
-  return ref.includes('://') ? '' : ref;
+  if (/^file:\/\//i.test(ref)) {
+    try {
+      const url = new URL(ref);
+      if (url.protocol !== 'file:' || (url.hostname && url.hostname !== 'localhost')) return '';
+      return decodedPathname(url);
+    } catch {
+      return '';
+    }
+  }
+  return ref.includes('://') ? '' : withoutSourceLocation(ref);
 }
 
-export const FILE_REFERENCE_RX = /https?:\/\/[^\s<>()"'`]+|[\w./@~+-]*\w\.[A-Za-z0-9]{1,10}/g;
+export const FILE_REFERENCE_RX = /(?:https?|file):\/\/[^\s<>()"'`]+|[\w./@~+-]*\w\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?)?/g;
