@@ -53,16 +53,27 @@ await runGit('worktree', 'add', '-b', 'linked-artifacts', linkedRoot);
 await mkdir(join(linkedRoot, 'docs'));
 const linkedReport = join(linkedRoot, 'docs', 'secondary-report.md');
 const linkedPrivate = join(linkedRoot, 'docs', 'unmentioned.md');
+const transcriptReport = join(linkedRoot, 'docs', 'transcript-report.md');
 await writeFile(linkedReport, '# Secondary worktree report\n');
 await writeFile(linkedPrivate, '# Not granted\n');
+await writeFile(transcriptReport, '# Transcript-only report\n');
+const codexUuid = '12345678-1234-1234-1234-123456789abc';
+const codexSessions = join(scratch, 'codex-sessions', '2026', '07', '27');
+await mkdir(codexSessions, { recursive: true });
+await writeFile(
+  join(codexSessions, `rollout-2026-07-27T10-00-00-${codexUuid}.jsonl`),
+  `${JSON.stringify({ type: 'response_item', payload: { role: 'assistant', content: [{ type: 'output_text', text: `Transcript artifact: ${transcriptReport}` }] } })}\n`,
+);
 
 process.env.AIOS_DATA = join(scratch, 'data');
+process.env.AIOS_CODEX_SESSIONS_DIR = join(scratch, 'codex-sessions');
 const port = 31000 + Math.floor(Math.random() * 7000);
 process.env.AIOS_PORT = String(port);
 
 const store = await import('../src/store.js');
 store.createProject({ id: 'p_files', name: 'files', path: projectRoot });
 store.createSession({ id: 's_files', project_id: 'p_files', tool: 'codex', tmux: 'tmx_files', status: 'exited' });
+store.updateSession('s_files', { codex_uuid: codexUuid });
 store.addMessage('s_files', 'out', 'reply', `Generated image: ${artifact}`);
 const { featureReady } = await import('../src/server.js');
 await featureReady;
@@ -116,6 +127,10 @@ async function waitForRoutes() {
   assert.equal(meta.contentKind, 'text');
   assert.equal((await fileRequest(linkedPrivate)).status, 403,
     'unmentioned files in a same-project sibling worktree remain private');
+  const transcriptResponse = await fileRequest(transcriptReport);
+  assert.equal(transcriptResponse.status, 200,
+    'a path in this session’s bound native transcript is accepted even when absent from compact messages');
+  assert.equal((await transcriptResponse.json()).path, transcriptReport);
 }
 
 // Temp files not present in session evidence stay private. Project symlinks cannot escape the project

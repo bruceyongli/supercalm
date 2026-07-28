@@ -34,7 +34,7 @@ import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js'
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
-import { rolloutUuidFromName, codexRolloutFiles } from './codex_rollouts.js';
+import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { deployContract } from './release_monitor.js';
@@ -184,6 +184,39 @@ async function tempFileRoots() {
 // host file browser merely by printing an arbitrary path.
 const sessionFileGrants = new Map();
 const SESSION_FILE_GRANT_MS = 5 * 60 * 1000;
+const SESSION_FILE_EVIDENCE_TAIL_BYTES = 8 * 1024 * 1024;
+
+async function readFileTail(file, maxBytes = SESSION_FILE_EVIDENCE_TAIL_BYTES) {
+  const st = await stat(file);
+  const length = Math.min(st.size, maxBytes);
+  const start = Math.max(0, st.size - length);
+  const fh = await open(file, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    const { bytesRead } = await fh.read(buffer, 0, length, start);
+    return buffer.toString('utf8', 0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
+async function sessionTranscriptMentionsFile(s, mentions) {
+  const transcripts = [];
+  if (s?.codex_uuid) {
+    try {
+      const rollout = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
+      if (rollout) transcripts.push(rollout);
+    } catch {}
+  }
+  if (s?.claude_transcript) transcripts.push(s.claude_transcript);
+  for (const transcript of new Set(transcripts)) {
+    try {
+      if (mentions(await readFileTail(transcript))) return true;
+    } catch {}
+  }
+  return false;
+}
+
 async function sessionMentionsFile(s, requested, target) {
   const key = `${s.id}\0${target}`;
   if ((sessionFileGrants.get(key) || 0) > Date.now()) return true;
@@ -214,6 +247,10 @@ async function sessionMentionsFile(s, requested, target) {
   if (!found) {
     try { found = mentions((await terminalLogTail(s.id, 4 * 1024 * 1024))?.text); } catch {}
   }
+  // Story reports come from native Codex/Claude transcripts and are not always duplicated into AIOS's
+  // compact messages/events projection. Consult only THIS session's bound transcript identity, tail-
+  // bounded so a large historical rollout cannot make a file click expensive.
+  if (!found) found = await sessionTranscriptMentionsFile(s, mentions);
   if (found) {
     sessionFileGrants.set(key, Date.now() + SESSION_FILE_GRANT_MS);
     if (sessionFileGrants.size > 1000) {
