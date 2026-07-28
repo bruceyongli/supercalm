@@ -74,12 +74,29 @@ Autopilot is the standing delegation to manage the in-scope work; it must not re
 | Integrate a verified candidate | no | propose | yes, through the prescribed gated path |
 | Deploy/release | no | propose | yes only when standing deployment delegation and all hard gates are present |
 
-Co-pilot is an active reviewer, not an autonomous manager. It may send high-confidence routine
-answers and evidence requests, while holding nudges, recovery, plan approval, task transitions, and
-release actions for the operator.
+Co-pilot is an active reviewer, not an autonomous manager. It uses the same reality checks as
+Autopilot: inspect available evidence, verify claims and authority, identify the best next action,
+and give a concrete recommendation. It may send high-confidence routine answers and evidence
+requests. It holds state-changing nudges, recovery, plan approval, task transitions, and release
+actions—but it must never treat “escalate” as a substitute for analysis. The operator receives only
+the smallest decision Co-pilot truly cannot own, together with the evidence and recommendation.
 
 Autopilot is the accountable manager. It owns the sequence and decisions required to finish; the
 operator should normally see the final result, not the stages.
+
+## Response protocol
+
+Every scenario uses one common front half:
+
+1. **Observe reality.** Read the current contract, session, repository, evidence, authority, and
+   relevant external state.
+2. **Verify the material claim.** Do not forward an agent assertion or question as if it were true.
+3. **Diagnose and recommend.** State what is true, what remains, and the best next action.
+
+Co-pilot then answers safe facts, sends evidence challenges, and recommends a decision. It requests
+operator input only for the smallest genuine authority boundary and never mutates reserved state.
+Autopilot decides and acts inside the mission; it requests operator input only when the remaining
+step is outside standing authority, unsafe, or genuinely ambiguous.
 
 ## Operating models
 

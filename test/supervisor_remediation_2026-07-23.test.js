@@ -305,9 +305,9 @@ await check('24 control: tick 0 escalates the operator fork and records it as bi
   const open = ctx._state().openEscalations;
   assert.ok(Array.isArray(open) && open.length >= 1, 'the escalation is recorded as binding state (openEscalations) — only the escalate branch writes it');
 
-  // Binding-RECORD hygiene (critique #16): it is not enough that no send happened — the persisted
-  // escalation must not leak the drafted operator-reserved pick or parrot its imperative text into any
-  // operator/agent-facing field. Read the row logIntervention just wrote and assert the invariants.
+  // Binding-record hygiene: it is not enough that no send happened. The persisted record must keep
+  // the operator-owned fork out of every agent-facing field, while retaining the model's useful advice
+  // as a clearly labelled, non-authoritative operator recommendation.
   // (raw legitimately keeps the model's own output for audit and is deliberately NOT asserted here.)
   const row = db.prepare('SELECT * FROM supervisor_reviews WHERE session_id = ? ORDER BY ts DESC LIMIT 1').get(ctx.sessionId);
   assert.ok(row, 'the escalation was persisted as a review row');
@@ -315,14 +315,17 @@ await check('24 control: tick 0 escalates the operator fork and records it as bi
   assert.equal(row.sent, 0, 'the escalation record is marked not-sent');
   assert.ok(!row.message, 'the escalation carries NO agent-facing message (the reserved fork is not answered)');
   assert.ok(!row.sent_text, 'no text was sent to the agent');
-  const faceFields = `${row.assessment || ''}\n${row.message || ''}\n${row.sent_text || ''}`;
-  // The canned decision drafted "Go with (a) flush full-height … matches the layout"; none of that
-  // pick text — nor a bare leading option label — may appear in the operator-facing record.
-  assert.ok(!/flush full-height|inset cards|go with|matches the layout/i.test(faceFields), 'the drafted pick does not leak into the operator-facing record');
-  assert.ok(!/^\s*(?:\(?[a-d]\)|[1-9][.)])/i.test(String(row.assessment || '')), 'the reason does not begin with a parroted option label');
-  // The reason is the fixed, abstract operator-facing sentence (names the reserved class, not the options).
-  assert.match(String(row.assessment || ''), /operator/i, 'the reason names this as the operator\'s decision');
-  assert.match(String(row.assessment || ''), /your call|fork|choice/i, 'the reason describes the reserved fork abstractly');
+  const assessment = String(row.assessment || '');
+  const [reasonPart, recommendationPart = ''] = assessment.split(/\s+Recommendation:\s*/i);
+  // The binding reason stays abstract and authority-safe; the useful pick is retained only after
+  // the explicit Recommendation label for the operator.
+  assert.doesNotMatch(reasonPart, /flush full-height|inset cards|go with|matches the layout/i, 'the binding reason does not parrot the drafted pick');
+  assert.doesNotMatch(reasonPart, /^\s*(?:\(?[a-d]\)|[1-9][.)])/i, 'the reason does not begin with a parroted option label');
+  assert.match(reasonPart, /operator/i, 'the reason names this as the operator\'s decision');
+  assert.match(reasonPart, /your call|fork|choice/i, 'the reason describes the reserved fork abstractly');
+  assert.match(assessment, /Recommendation:/i, 'the operator-facing record labels the advice as a recommendation');
+  assert.match(recommendationPart, /flush full-height|matches the layout/i, 'the useful recommendation is retained for the operator');
+  assert.doesNotMatch(recommendationPart, /\b(?:approved|operator approved|deployed)\b/i, 'the recommendation does not claim authority or completed action');
 
   // Tick 1: a later, equally-confident tick must defer to the binding — never answer it itself.
   const sendsBefore = ctx._sends.length;

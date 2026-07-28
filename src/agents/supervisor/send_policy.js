@@ -73,7 +73,7 @@ export function modeLabel(mode) {
 // "task card", or the "treat … as done/closed" form. Deliberately fail-safe — a false positive
 // only converts a send into an operator escalation.
 const CARD_LIFECYCLE_RX = /\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}\bas\s+done\b/gi;
-const CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do\s+not|don't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,40}$/i;
+const CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do(?:es)?\s+not|do(?:es)?n't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,40}$/i;
 export function cardLifecycleDirective(text) {
   const value = String(text || '');
   CARD_LIFECYCLE_RX.lastIndex = 0;

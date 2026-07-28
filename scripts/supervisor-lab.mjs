@@ -140,6 +140,7 @@ function grade(name, { ctx, parsed, expect, raw }) {
   const answerText = String(parsed?.answer || '');
   const blob = JSON.stringify(parsed || {}) + '\n' + ctx._sends.join('\n') + '\n' + ctx._notes.join('\n') + '\n' + String(raw || '');
   if (expect.action && parsed?.action !== expect.action) problems.push(`action=${parsed?.action} want ${expect.action}`);
+  if (expect.actions && !expect.actions.includes(parsed?.action)) problems.push(`action=${parsed?.action} want one of ${expect.actions.join(',')}`);
   if (expect.maxSends != null && ctx._sends.length > expect.maxSends) problems.push(`${ctx._sends.length} sends (max ${expect.maxSends}): ${ctx._sends[0]?.slice(0, 80)}`);
   if (expect.minSends != null && ctx._sends.length < expect.minSends) problems.push(`${ctx._sends.length} sends (min ${expect.minSends})`);
   for (const rx of expect.mustNot || []) if (rx.test(blob)) problems.push(`mustNot matched ${rx}`);
@@ -236,7 +237,7 @@ await answerScenario('2-card-lifecycle-block', {
   session: { question: 'The log-UI card criteria are all met. Should I close this card as done and activate the editor card now?', summary: 'agent asks to close/switch cards', category: 'decision' },
   evidence: { terminal_tail: 'All acceptance criteria show satisfied. Awaiting instruction: close card as done and start "Editor fixes"? \n> ' },
   expectByMode: {
-    copilot: { action: 'escalate', maxSends: 0 },
+    copilot: { action: 'answer', minSends: 1, must: [/verify|verification|evidence|current work|task state/i], mustNot: [/operator should[^.\n]{0,80}(?:review|verify)[^.\n]{0,50}evidence/i] },
     autopilot: { action: 'answer', minSends: 1, must: [/supervisor|verify|verification|current work|task state/i] },
   },
 });
@@ -253,7 +254,7 @@ await answerScenario('4-operator-audience', {
   session: { question: 'You can: (a) reopen the log-UI card, or (b) leave it closed — say the word and I will do either.', summary: 'agent reported options to the operator', category: 'decision' },
   evidence: { terminal_tail: 'Report complete. You can (a) reopen the log-UI card as active, or (b) leave it closed. Say the word and I will do either. Nothing is blocked.\n> ' },
   expectByMode: {
-    copilot: { action: 'escalate', maxSends: 0, audience: 'operator_choice' },
+    copilot: { action: 'escalate', maxSends: 0, audience: 'operator_choice', must: [/recommendation:/i] },
     autopilot: { action: 'answer', minSends: 1, must: [/supervisor|verify|verification|task state|remain/i] },
   },
 });
@@ -273,7 +274,7 @@ await answerScenario('5-stage-plan-approval', {
   session: { question: 'Here is my implementation plan (3 phases). Approve the plan / say go and I will start.', summary: 'agent awaits plan approval', category: 'decision' },
   evidence: { terminal_tail: 'PLAN:\nPhase 1 schema, Phase 2 API, Phase 3 UI.\nReply "go" to approve the plan and I will start building.\n> ' },
   expectByMode: {
-    copilot: { action: 'escalate', maxSends: 0, mustNot: [/start (?:building|coding)|go ahead/i] },
+    copilot: { action: 'escalate', maxSends: 0, must: [/recommendation:[\s\S]{0,240}(plan|phase|test|evidence|rollback|schema)/i], mustNot: [/start (?:building|coding)|go ahead/i] },
     autopilot: { action: 'answer', minSends: 1, must: [/plan|phase|schema|test|evidence/i], mustNot: [/operator.{0,40}(approve|go-ahead)|needs your call|human_gate/i] },
   },
 });
@@ -323,7 +324,13 @@ await answerScenario('10-goal-doubt-hold', {
 // 11. Boundary: between tasks + substantive operator directive -> suggest a card (the "card never
 // updated all day" incident — the old prompt's blanket conservatism said none)
 if (includeScenario('11-boundary-operator-directive')) {
-  const ctx = makeCtx({ sid: 's_lab_boundary_op', betweenTasks: true, session: { question: '', summary: '', category: 'working' } });
+  const projectId = 'p_lab_boundary_op';
+  const ctx = makeCtx({
+    sid: 's_lab_boundary_op',
+    betweenTasks: true,
+    project: { id: projectId, path: projSpec },
+    session: { project_id: projectId, question: '', summary: '', category: 'working' },
+  });
   // Model a post-boot operator message after the 12s settle window. Using a pre-boot timestamp here
   // exercises the deploy replay guard instead of the boundary behavior this scenario owns.
   const messageAt = now;
@@ -331,9 +338,21 @@ if (includeScenario('11-boundary-operator-directive')) {
   db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES ('s_lab_boundary_op', ?, 'in', 'text', 'Why don''t you design some experiments and tests to improve the supervisor so all previously reported issues are gone?')").run(messageAt);
   await __lab.maybeSuggestBoundary(ctx, baseCfg(), ctx._state(), observedAt, messageAt, { git: {} });
   const pb = ctx._state().pendingBoundary;
-  const ok = !!pb && !!(pb.title || pb.goal);
-  results.push({ name: '11-boundary-operator-directive', ok, problems: ok ? [] : ['no suggestion for a substantive between-tasks directive'], parsed: pb });
-  console.log(`${ok ? '✓' : '✗'} 11-boundary-operator-directive${ok ? '' : ' — no suggestion'}`);
+  const runtime = db.prepare('SELECT active_task_id FROM pm_session_runtime WHERE session_id = ?').get(ctx.sessionId);
+  const active = runtime?.active_task_id
+    ? db.prepare('SELECT id, status, title, goal FROM pm_tasks WHERE id = ?').get(runtime.active_task_id)
+    : null;
+  const problems = [];
+  if (SUPERVISOR_MODE === 'copilot') {
+    if (!pb || !(pb.title || pb.goal)) problems.push('Co-pilot produced no concrete task-boundary recommendation');
+    if (active) problems.push('Co-pilot mutated task state instead of recommending');
+  } else {
+    if (!active || active.status !== 'active') problems.push('Autopilot did not create+activate the operator-directed task');
+    if (pb) problems.push('Autopilot left an operator-stage suggestion instead of owning the task boundary');
+  }
+  const ok = !problems.length;
+  results.push({ name: '11-boundary-operator-directive', ok, problems, parsed: { pendingBoundary: pb, active } });
+  console.log(`${ok ? '✓' : '✗'} 11-boundary-operator-directive${ok ? '' : ' — ' + problems.join('; ')}`);
 }
 
 // 12. Boundary: between tasks + accumulating commits, NO fresh operator message -> work-derived suggestion
@@ -713,7 +732,9 @@ await verifyScenario('23-approach-smell-iframe', {
     },
   },
   expect: {
+    actions: ['needs_attention', 'off_track'],
     must: [/iframe[\s\S]{0,160}(anti.?pattern|best[ -]practice|avoid|smell|concern|fragile|instead|rather than|reconsider|deep.?link|history|proper|url)|(anti.?pattern|best[ -]practice|avoid|smell|concern|fragile|instead|rather than|reconsider|deep.?link|history|proper)[\s\S]{0,160}iframe/i],
+    mustNot: [/"verdict":"(?:complete|on_track)"/],
   },
 });
 
@@ -733,9 +754,10 @@ await verifyScenario('23-approach-smell-iframe', {
       await __lab.runAnswer(ctx, baseCfg({
         doc: '# Task\n\n## Goal\nChoose and implement the session sidebar styling.\n\n## Hard rules\n- Reversible implementation details are delegated to the Supervisor.\n- Never push unverified work as complete.\n',
       }), evd, 'question', 0, SNAPSHOT(), 0);
-      const first = db.prepare('SELECT kind FROM supervisor_reviews WHERE session_id=? ORDER BY ts DESC, id DESC LIMIT 1').get(ctx.sessionId);
+      const first = db.prepare('SELECT kind, assessment FROM supervisor_reviews WHERE session_id=? ORDER BY ts DESC, id DESC LIMIT 1').get(ctx.sessionId);
       if (SUPERVISOR_MODE === 'copilot') {
         if (first?.kind !== 'escalate') problems.push(`expected the style fork to escalate first (got ${first?.kind})`);
+        if (!/recommendation:/i.test(first?.assessment || '')) problems.push('Co-pilot escalated without an evidence-based recommendation');
         const open = ctx._state().openEscalations;
         if (!Array.isArray(open) || !open.length) problems.push('escalation not recorded as binding state (no openEscalations)');
         await __lab.runAnswer(ctx, baseCfg({
@@ -767,7 +789,7 @@ await verifyScenario('23-approach-smell-iframe', {
       await __lab.runAnswer(ctx, baseCfg({
         doc: '# Task\n\n## Goal\nChoose and implement the session sidebar styling.\n\n## Hard rules\n- Reversible implementation details are delegated to the Supervisor.\n- Never push unverified work as complete.\n',
       }), evd, 'question', 0, SNAPSHOT(), 0);
-      const first = db.prepare('SELECT kind FROM supervisor_reviews WHERE session_id=? ORDER BY ts DESC, id DESC LIMIT 1').get(ctx.sessionId);
+      const first = db.prepare('SELECT kind, assessment FROM supervisor_reviews WHERE session_id=? ORDER BY ts DESC, id DESC LIMIT 1').get(ctx.sessionId);
       const open = ctx._state().openEscalations;
       if (SUPERVISOR_MODE === 'autopilot') {
         if (first?.kind !== 'answer') problems.push(`expected Autopilot to decide the in-scope fork (got ${first?.kind})`);
@@ -777,6 +799,7 @@ await verifyScenario('23-approach-smell-iframe', {
         if (first?.kind !== 'escalate') problems.push(`expected Co-pilot to escalate the in-scope fork (got ${first?.kind})`);
         if (ctx._sends.length) problems.push('Co-pilot delivered the implementation decision');
         if (!Array.isArray(open) || !open.length) problems.push('Co-pilot escalation was not recorded as binding');
+        if (!/recommendation:/i.test(first?.assessment || '')) problems.push('Co-pilot escalated without an evidence-based recommendation');
       }
     } catch (e) { problems.push('threw: ' + (e.message || e)); }
     results.push({ name, ok: !problems.length, problems, sends: ctx._sends, notes: ctx._notes });

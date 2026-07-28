@@ -51,8 +51,10 @@ const plan = {
 }
 {
   const d = decideSupervisorAction(plan, { mode: 'copilot' });
-  assert.equal(d.ruleId, 'stage.stand_down');
-  assert.equal(d.action.type, 'wait', 'Co-pilot leaves plan approval with the operator');
+  assert.equal(d.ruleId, 'mode.copilot_review_plan');
+  assert.equal(d.action.type, 'answer', 'Co-pilot routes the submitted plan through review instead of forwarding it raw');
+  assert.equal(d.action.target, 'operator');
+  assert.equal(d.allowedSend, false, 'Co-pilot recommendation does not approve or send the plan to the builder');
 }
 {
   const d = decideSupervisorAction({ ...plan, stance: 'hold' }, { mode: 'autopilot' });

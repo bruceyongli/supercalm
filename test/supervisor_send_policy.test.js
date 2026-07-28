@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 
 const { MODES, modeOf, copilotThreshold, sendPolicy, DEFAULT_COPILOT_CONFIDENCE, cardLifecycleDirective } = await import('../src/agents/supervisor/send_policy.js');
-const { DELEGATED_HOW_ADDENDUM, detectsPendingPlanApproval, enforceAnswerSafety } = await import('../src/agents/answer_prompt.js');
+const { DELEGATED_HOW_ADDENDUM, detectsPendingPlanApproval, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } = await import('../src/agents/answer_prompt.js');
 
 // Hard reason codes are safety decisions, not advisory labels: a contradictory model action fails closed.
 for (const reason_code of ['integrity', 'goal_conflict', 'human_gate']) {
@@ -12,10 +12,73 @@ for (const reason_code of ['integrity', 'goal_conflict', 'human_gate']) {
 assert.equal(enforceAnswerSafety({ action: 'answer', answer: 'Use strict', reason_code: 'none' }).action, 'answer');
 const planContext = { question: 'Here is my implementation plan. Approve the plan / say go and I will start.' };
 assert.equal(detectsPendingPlanApproval(planContext), true);
-assert.equal(enforceAnswerSafety({ action: 'answer', answer: 'Go', reason_code: 'none' }, planContext).action, 'escalate');
+const reviewedPlan = enforceAnswerSafety({ action: 'answer', answer: 'Add a rollback check, then the plan is ready.', reason_code: 'none' }, planContext);
+assert.equal(reviewedPlan.action, 'escalate');
+assert.equal(reviewedPlan.answer, '');
+assert.match(reviewedPlan.recommendation, /rollback check/, 'Co-pilot plan review survives as an operator recommendation');
 assert.equal(detectsPendingPlanApproval({ question: 'The approved plan is executing; choose the strict parser.' }), false);
 assert.match(DELEGATED_HOW_ADDENDUM, /all listed alternatives satisfy the established goal/i);
 assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|Tier-3)/);
+
+// Co-pilot can do useful reality-check work without acquiring card mutation authority.
+{
+  const currentAsk = { question: 'The criteria are met. Should I close this card and activate the next one?' };
+  assert.equal(isNonMutatingCurrentCardReview({
+    ...currentAsk,
+    answer: 'Do not close or activate either task card. Keep card state unchanged while I verify the current acceptance criteria and test evidence.',
+  }), true);
+  assert.equal(isNonMutatingCurrentCardReview({
+    ...currentAsk,
+    answer: 'Close this card after checking the tests and activate the next task card.',
+  }), false, 'an asserted transition is not a non-mutating review');
+  assert.equal(isNonMutatingCurrentCardReview({
+    question: 'You can reopen the log-UI card or leave it closed — say the word.',
+    answer: 'Leave the card unchanged while checking evidence.',
+  }), false, 'an arbitrary operator option list is not reclassified as current-card review');
+  assert.equal(isNonMutatingCurrentCardReview({
+    ...currentAsk,
+    answer: 'Do not close this card; verify it, then activate the next task card.',
+  }), true, 'the semantic helper recognizes the review clause');
+  assert.equal(cardLifecycleDirective('Do not close this card; verify it, then activate the next task card.'), true,
+    'the independent lifecycle gate still blocks a mixed review-plus-mutation answer');
+
+  const prematureEscalation = {
+    action: 'escalate',
+    answer: '',
+    recommendation: 'Verify the acceptance criteria and tests before deciding whether to close it.',
+    reason_code: 'scope',
+    reserved: true,
+    confidence: 0.9,
+  };
+  const reviewed = enforceCopilotCurrentCardReview(prematureEscalation, {
+    ...currentAsk,
+    supervisorMode: 'copilot',
+  });
+  assert.equal(reviewed.action, 'answer', 'Co-pilot does not escalate before doing its evidence review');
+  assert.match(reviewed.answer, /state unchanged[\s\S]{0,120}(?:acceptance-criteria|test evidence)/i);
+  assert.equal(reviewed.reserved, false);
+  assert.equal(cardLifecycleDirective(reviewed.answer), false, 'the deterministic review response cannot mutate card state');
+  assert.equal(enforceCopilotCurrentCardReview(prematureEscalation, {
+    question: 'Should I close this card in another session?',
+    supervisorMode: 'copilot',
+  }), prematureEscalation, 'cross-session card work stays outside authority');
+  assert.equal(enforceCopilotCurrentCardReview({ ...prematureEscalation, reason_code: 'human_gate' }, {
+    ...currentAsk,
+    supervisorMode: 'copilot',
+  }).action, 'escalate', 'hard gates are never normalized into a send');
+  assert.equal(enforceCopilotCurrentCardReview({
+    ...prematureEscalation,
+    reason: 'The operator must decide whether the product scope should pivot.',
+    recommendation: 'Choose the desired product outcome.',
+  }, {
+    ...currentAsk,
+    supervisorMode: 'copilot',
+  }).action, 'escalate', 'a real product fork is not disguised as an evidence review');
+  assert.equal(enforceCopilotCurrentCardReview(prematureEscalation, {
+    ...currentAsk,
+    supervisorMode: 'autopilot',
+  }), prematureEscalation, 'Autopilot retains its independent task-transition policy');
+}
 
 // ---- modeOf: legacy resolution (mode wins; observe_only only as fallback; NEVER default-merged) ----
 {
@@ -91,6 +154,8 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   // Explicit refutations describe the safety boundary; they are not instructions to mutate state.
   assert.equal(cardLifecycleDirective('Do not create, close, activate, or otherwise mutate Supervisor task cards. Stay on the current work while I verify it.'), false);
   assert.equal(cardLifecycleDirective('The builder must never close the current task card.'), false);
+  assert.equal(cardLifecycleDirective("The builder doesn't open, close, or switch Supervisor task cards. Stay on the current work while I verify it."), false);
+  assert.equal(cardLifecycleDirective('The builder does not open, close, or switch Supervisor task cards.'), false);
   // Refutation scope is clause-local: an asserted lifecycle instruction nearby must still fire.
   assert.equal(cardLifecycleDirective('Do not close the current card; activate the next task card now.'), true);
   assert.equal(cardLifecycleDirective('Never start cards in another project. Close the current task card now.'), true);
@@ -114,6 +179,9 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
   assert.match(ap, /SCOPE & CARD ADMINISTRATION — HARD RULES/, 'addendum text present');
   assert.match(ap, /not your jurisdiction/i, 'subject-matter vs jurisdiction rule present');
+  assert.match(ap, /Co-pilot does not perform the transition[\s\S]{0,180}OWNS the completion-evidence review/, 'Co-pilot reviews current-task evidence instead of forwarding it raw');
+  assert.match(ap, /never ask the operator to perform the evidence review/, 'Co-pilot cannot punt its own reality check to the operator');
+  assert.match(ap, /escalation is the LAST step after checking available reality/, 'Co-pilot escalation is reality-first');
   const pm = readFileSync(new URL('../src/agents/supervisor/project_memory.js', import.meta.url), 'utf8');
   assert.match(pm, /Choosing, starting, or closing/, 'between-tasks contract names card admin as operator territory');
 
@@ -139,7 +207,9 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
     'explicit Supervisor Autopilot and the legacy stance both count as management delegation');
   assert.match(sup, /audience.{0,40}=== 'operator_choice' && !managementDelegated/,
     'deterministic audience gate on the model field');
-  assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_PLAN_ADDENDUM : STAGE_ADDENDUM/, 'explicit Autopilot reviews submitted plans; other modes preserve planning stand-down');
+  assert.match(sup, /!managementDelegated && !copilotCardReview/,
+    'a narrowly non-mutating current-card evidence review is not reduced to a bare Co-pilot escalation');
+  assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_PLAN_ADDENDUM : STAGE_ADDENDUM/, 'Autopilot reviews and acts on submitted plans; Co-pilot reviews and recommends without builder approval');
   assert.match(sup, /audience=\$\{String\(parsed\.audience\)/, 'audience surfaced in intervention rows for forensics + lab grading');
   const ap = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
   assert.match(ap, /"audience":"builder_blocked"/, 'addendum defines the audience field');
@@ -157,7 +227,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.match(sup, /boundaryWorkTs/, 'work-derived recheck spacing state');
   assert.match(sup, /boundaryWorkFp === wfp/, 'work-derived trigger keyed on the commit set, not wall-clock (first live test lockout)');
   assert.match(sup, /Advance the evidence baseline at the close boundary/, 'baseRef advances when a card closes — audits scope to current work');
-  assert.match(sup, /unstickSys \+= '\\n\\n' \+ STAGE_ADDENDUM/, 'unstick carries the phase-gate stand-down');
+  assert.match(sup, /unstickSys \+= '\\n\\n' \+ STAGE_ADDENDUM/, 'unstick carries the Co-pilot plan-review boundary');
   assert.match(sup, /OPERATOR RECORD — HARD RULE/, 'unstick may not invent operator instructions');
   assert.match(sup, /evidence\.operator_messages = lc/, 'unstick evidence includes the operator record');
   assert.match(sup, /BOUNDARY_FRESH_MS/, 'stale pending suggestions supersede instead of freezing card detection');

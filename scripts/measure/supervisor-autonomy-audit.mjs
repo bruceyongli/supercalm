@@ -108,6 +108,30 @@ const supervisorSource = readFileSync(join(ROOT, 'src/agents/supervisor.js'), 'u
 const orchestratorSource = readFileSync(join(ROOT, 'src/deploy_orchestrator.js'), 'utf8');
 const publisherSource = readFileSync(join(ROOT, 'src/publisher.js'), 'utf8');
 
+const copilotPlan = decideSupervisorAction(planSnapshot, { mode: 'copilot' });
+check('Co-pilot', 'Plan review',
+  'review a submitted plan and prepare a recommendation before requesting operator approval',
+  `${copilotPlan.ruleId}/${copilotPlan.action.type}/${copilotPlan.action.target}`,
+  copilotPlan.ruleId === 'mode.copilot_review_plan' && copilotPlan.action.type === 'answer'
+    && copilotPlan.action.target === 'operator' && !copilotPlan.allowedSend);
+
+const recommendationContract =
+  /escalation is the LAST step after checking available reality/.test(answerPrompt)
+  && /Recommendation: \$\{recommendation\}/.test(supervisorSource)
+  && /recommendation: \$\{recommendation\}/.test(supervisorSource);
+check('Co-pilot', 'Useful escalation',
+  'verify/analyze first and attach a concrete recommendation to the smallest remaining operator decision',
+  recommendationContract ? 'reality-first recommendation is persisted and notified' : 'escalation can still discard the analysis',
+  recommendationContract);
+
+const taskModeGate =
+  /const autoManageCards = ON_MSG_CARDS && cfg\.mode === 'autopilot'/.test(supervisorSource)
+  && /pendingBoundary: \{ title, goal/.test(supervisorSource);
+check('Co-pilot', 'Task lifecycle restraint',
+  'classify and recommend task changes without mutating task state',
+  taskModeGate ? 'task mutation is Autopilot-gated; Co-pilot retains a pending recommendation' : 'task mutation is not mode-gated',
+  taskModeGate);
+
 const ownsCardsInternally =
   /task card closed — all criteria satisfied and gate-verified/.test(supervisorSource) &&
   /started a new task card from your message/.test(supervisorSource);

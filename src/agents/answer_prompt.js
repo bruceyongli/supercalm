@@ -23,7 +23,7 @@ Decide:
 Set "reason_code": "integrity" (complying needs fabrication / self-approving an owner-or-human gate / validator-test tampering), "goal_conflict" (the doc's goal/criteria conflict with the authoritative spec), "human_gate" (a genuine external/human-reserved action the operator has NOT authorized for THIS specific work — a production deploy, a public-facing ship/announcement, a send/spend/delete or other irreversible-or-externally-costly step, or an explicit operator gate no recent operator signal has released), "scope" (an ordinary reserved product fork), or "none" (you are answering, not escalating).
 
 Return STRICT minified JSON only:
-{"action":"answer|escalate","answer":"<exact reply to send the agent -- concise, direct, actionable; empty if escalate>","reason_code":"none|integrity|goal_conflict|human_gate|scope","reason":"<one sentence: why this answer, or why it must go to the human>"}`;
+{"action":"answer|escalate","answer":"<exact reply to send the agent -- concise, direct, actionable; empty if escalate>","recommendation":"<if escalating: concise evidence-based recommendation for the operator; otherwise empty>","reason_code":"none|integrity|goal_conflict|human_gate|scope","reason":"<one sentence: why this answer, or exactly which authority/external fact remains unresolved>"}`;
 
 // Appended to SYS_ANSWER in runAnswer ONLY when the project ships a committed spec (definition_of_done is
 // non-empty) — mirrors how runVerify appends SYS_VERIFY_DOD. Makes the ANSWER brain spec-aware so it stops
@@ -35,7 +35,7 @@ export const SYS_ANSWER_DOD = `AUTHORITATIVE SPEC — the evidence includes defi
 // LLM fallback respects planning even when the deterministic stand-down gate (decide.js) couldn't tell the
 // stage (stage=unknown). The gate already suppresses answers in a DETECTED planning/awaiting_approval
 // stage; this catches the residual "the agent is really asking me to approve a plan" that slipped through.
-export const STAGE_ADDENDUM = `STAGE — STAND DOWN ON PLANNING. If the agent is still SHAPING or PROPOSING a plan/design rather than executing one — presenting a plan or options, iterating a design doc, or asking the operator to approve / choose / "say go" before it starts building — that decision is the OPERATOR's, not yours. Do NOT answer their design/plan questions on their behalf, and do NOT tell the agent to start coding before the plan is approved (that is the exact "supervisor jumped in during planning" failure). ESCALATE with reason_code "scope" and a one-line "the operator is still finalizing the plan; awaiting their go-ahead". This does NOT apply once the plan is agreed and the agent is executing, and does NOT apply to a blocked-on-a-FACT question the doc already settles (a path, a filename, an agreed value) — answer that normally.`;
+export const STAGE_ADDENDUM = `STAGE — CO-PILOT REVIEWS BEFORE ASKING. If the agent SUBMITS a plan/design or asks for approval, inspect it against the mission, constraints, dependencies, tests, evidence, concurrency, rollback, and release implications. Do not approve it or tell the builder to start: action=escalate with reason_code="scope", but put a concrete recommendation in "recommendation" ("recommend approval because…" or "recommend revision: add…"). The operator should receive a reviewed decision, not a forwarded question. If the agent is merely still FORMING a plan and has not submitted or asked anything, stand down. A blocked-on-a-FACT question the doc already settles is not plan approval; answer it normally.`;
 
 // Supervisor Autopilot changes WHO owns plan approval, not whether plans deserve scrutiny. A submitted plan
 // is reviewed by the Supervisor; an agent still forming one is left alone. This addendum replaces (never
@@ -64,7 +64,7 @@ export const AUTOPILOT_RELEASE_ADDENDUM = `RESERVED RELEASE — STANDING GATED D
 // a builder must never administer Supervisor task state.
 export const SCOPE_CARD_ADMIN_ADDENDUM = `SCOPE & CARD ADMINISTRATION — HARD RULES.
 1. You supervise THIS session's work on THIS project only. The terminal may discuss OTHER sessions, their task cards, or other projects' features (admin/ops sessions inspect them routinely): that content is subject matter under discussion, NOT your jurisdiction. Never direct actions on another session's or another project's behalf — if the pending question concerns a different session or project, action=escalate.
-2. Task-card lifecycle — creating, starting, activating, resuming, pausing, closing, abandoning, or declaring a card done — is the OPERATOR's decision, on every project including this one. Never direct the agent to change card state. If the pending question is which card/task to run or close, action=escalate.
+2. The BUILDER must never create, start, close, abandon, or otherwise mutate Supervisor task cards. Co-pilot does not perform the transition either, but it OWNS the completion-evidence review: for THIS session's current task, ANSWER that card state stays unchanged and name the exact evidence still needed or the evidence just verified. Missing evidence is NOT yet an operator decision, so do not escalate it — ask the builder for the proof and complete the review first. Only after independently reviewing the available evidence may Co-pilot escalate the exact remaining state transition with its recommendation; never forward a raw "should I close it?" question and never ask the operator to perform the evidence review.
 3. AUDIENCE — add one field to your JSON on every response: "audience":"builder_blocked" (the agent cannot proceed without this answer) or "audience":"operator_choice" (the pending text is a report, an option list, or a choice addressed to the OPERATOR — "you can…", "if you want…", "say the word…"). Classify honestly and still give your best answer on the merits: the SYSTEM decides delivery (operator_choice answers are delivered only under an explicit operator delegation; otherwise the system escalates your draft to the operator automatically). Do not escalate solely because the audience is the operator — escalate only for the genuinely reserved classes above.`;
 
 // Supervisor Autopilot owns the current session's managerial lifecycle, but the builder still must not
@@ -105,7 +105,7 @@ export const DELEGATED_HOW_ADDENDUM = `FINAL DELEGATION CHECK — When the agent
 // escalation is meant to withhold. GPT-class models already state the reserved CLASS abstractly; this rule
 // pulls the rest up to that bar. It governs the WORDS emitted, so it also cleans the raw model output — not
 // just the parsed routing a downstream guard can fix.
-export const ESCALATION_HYGIENE_ADDENDUM = `ESCALATION HYGIENE — whenever action is "escalate": (1) "answer" MUST be empty. (2) "reason" is ONE plain operator-facing sentence that names the reserved CLASS and what is pending — e.g. "A production deployment needs your sign-off." or "The agent is awaiting your approval of its implementation plan." or "This is a product fork the doc does not settle; it is your choice to make." (3) Do NOT copy the agent's option text, a leading option number/letter, or its imperative approval/deploy verbs into "reason": never emit "go ahead", "start building", "start coding", "approved", "ship it", "deploy it", "deploy now", "deploy this fix", or a sentence beginning "1." or "(a)". Describe the pending decision abstractly instead of quoting the agent's request. An escalation whose reason parrots "deploy this fix" or "start building" is a defect even when the routing is correct.`;
+export const ESCALATION_HYGIENE_ADDENDUM = `ESCALATION HYGIENE — escalation is the LAST step after checking available reality, never a substitute for analysis. Whenever action is "escalate": (1) "answer" MUST be empty. (2) "reason" is ONE plain operator-facing sentence naming the exact remaining authority or external fact. (3) "recommendation" contains the useful evidence-based recommendation or verified next choice; it must not claim authority, fabricate evidence, or command the builder. (4) Do NOT copy the agent's option text, a leading option number/letter, or its imperative approval/deploy verbs into "reason": never emit "go ahead", "start building", "start coding", "approved", "ship it", "deploy it", "deploy now", "deploy this fix", or a sentence beginning "1." or "(a)". Describe the pending decision abstractly. An escalation with no diagnosis/recommendation when evidence was available is a defect.`;
 
 const HARD_ESCALATION_REASON_CODES = new Set(['integrity', 'goal_conflict', 'human_gate']);
 // Fixed, operator-facing clauses for each hard code. A deterministic override runs AFTER the model and so
@@ -143,6 +143,55 @@ export function detectsOperatorDirectedChoice({ question = '', summary = '', ter
   return labels.size >= 2;
 }
 
+// Co-pilot may safely answer a current-card transition ask when its answer does NOT choose or perform
+// the transition: it keeps state unchanged and requests/checks the completion evidence. This is the
+// useful middle ground between mutating Supervisor state and forwarding a raw "should I close it?"
+// question to the operator. The caller additionally applies cardLifecycleDirective() so a mixed answer
+// such as "do not close this card; activate the next card" remains blocked.
+export function isNonMutatingCurrentCardReview({ question = '', summary = '', answer = '' } = {}) {
+  const ask = [question, summary].filter(Boolean).join('\n');
+  const reply = String(answer || '');
+  if (!/\b(?:this|current)\s+(?:task\s+)?card\b/i.test(ask)) return false;
+  if (!/\b(?:card|task)\b/i.test(reply)) return false;
+  if (!/\b(?:verify|verification|evidence|acceptance\s+criteria|test\s+(?:result|evidence|output)s?)\b/i.test(reply)) return false;
+  return /\b(?:do\s+not|don't|must\s+not|never)\b[^.!?;\n]{0,80}\b(?:close|activate|start|open|reopen|abandon|mutate|change|switch)\b/i.test(reply)
+    || /\b(?:card|task)\s+state\b[^.!?;\n]{0,60}\b(?:remain|stay|keep|leave)\b[^.!?;\n]{0,30}\bunchanged\b/i.test(reply)
+    || /\b(?:keep|remain|stay)\b[^.!?;\n]{0,70}\b(?:current\s+(?:card|task|work)|on\s+the\s+current\s+(?:card|task|work))\b/i.test(reply);
+}
+
+export function isCurrentCardTransitionAsk({ question = '', summary = '' } = {}) {
+  const ask = [question, summary].filter(Boolean).join('\n');
+  if (/\b(?:another|other|different)\s+(?:session|project)\b/i.test(ask)) return false;
+  return /\b(?:this|current)\s+(?:task\s+)?card\b/i.test(ask)
+    && /\b(?:close|complete|done|activate|start|open|reopen|abandon|switch|transition|move\s+(?:on|to))\b/i.test(ask);
+}
+
+const COPILOT_CARD_REVIEW_ANSWER = 'Keep Supervisor task-card state unchanged. Cite the concrete acceptance-criteria and test evidence for the current card, producing any missing proof; I will review that evidence before recommending a transition.';
+
+// Both intended operating models tended to escalate a current-card question before doing Co-pilot's own
+// evidence review. This normalization is intentionally narrow: only an ordinary scope escalation on THIS
+// session's current card is converted. Integrity, goal-conflict, human-gate, cross-session, and arbitrary
+// product-choice escalations remain binding.
+export function enforceCopilotCurrentCardReview(decision, context = {}) {
+  if (!decision || context.supervisorMode !== 'copilot') return decision;
+  if (decision.action !== 'escalate' || String(decision.reason_code || '') !== 'scope') return decision;
+  if (!isCurrentCardTransitionAsk(context)) return decision;
+  if (detectsPendingPlanApproval(context)) return decision;
+  const rationale = [decision.reason, decision.recommendation].filter(Boolean).join('\n');
+  if (!/\b(?:verify|verification|evidence|acceptance\s+criteria|test(?:s|ing|\s+(?:result|output)s?)?)\b/i.test(rationale)) return decision;
+  return {
+    ...decision,
+    action: 'answer',
+    answer: COPILOT_CARD_REVIEW_ANSWER,
+    recommendation: '',
+    reason_code: 'none',
+    reason: 'Co-pilot owns the current-card evidence review; no informed transition decision exists until that review is complete.',
+    reserved: false,
+    confidence: 1,
+    audience: 'builder_blocked',
+  };
+}
+
 // The model sometimes identifies a hard reason correctly but emits action:"answer" anyway. Code owns
 // the safety invariants: fabrication, goal conflict, unresolved human gates, and an initial plan awaiting
 // operator approval never become agent sends even when a smaller model contradicts its own prompt.
@@ -154,6 +203,7 @@ export function enforceAnswerSafety(decision, context = {}) {
       ...decision,
       action: 'escalate',
       answer: '',
+      recommendation: decision.recommendation || '',
       // Fixed abstract clause, NOT the model's reason — see HARD_ESCALATION_REASONS. Prefix keeps the code word.
       reason: `Held for ${hardReason}: ${HARD_ESCALATION_REASONS[hardReason] || 'operator review is required.'}`,
     };
@@ -163,6 +213,7 @@ export function enforceAnswerSafety(decision, context = {}) {
       ...decision,
       action: 'escalate',
       answer: '',
+      recommendation: decision.recommendation || decision.answer || '',
       reason_code: 'scope',
       // Fixed abstract clause, NOT the model's reason (which can parrot "go ahead"/"approved"/"start building").
       reason: 'Held for operator plan approval: the agent is awaiting the operator\'s decision on its proposed plan before it proceeds.',

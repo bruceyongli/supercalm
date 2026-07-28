@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, enforceAnswerSafety } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -1138,20 +1138,29 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
   const { parsed: modelParsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
-  const parsed = enforceAnswerSafety(modelParsed, {
-    question,
-    summary: s?.summary,
-    terminalTail: ev.terminal_tail,
-    supervisorAutopilot: cfg.mode === 'autopilot',
+  const parsed = enforceCopilotCurrentCardReview(enforceAnswerSafety(modelParsed, {
+      question,
+      summary: s?.summary,
+      terminalTail: ev.terminal_tail,
+      supervisorAutopilot: cfg.mode === 'autopilot',
+  }), {
+      question,
+      summary: s?.summary,
+      supervisorMode: cfg.mode,
   });
 
   const answer = clampLine(parsed?.answer, 1500);
+  const lifecycle = cardLifecycleDirective(answer);
+  const copilotCardReview = cfg.mode === 'copilot' && !lifecycle
+    && isNonMutatingCurrentCardReview({ question, summary: s?.summary, answer });
   // Audience gate (self-echo first domino): the model must classify WHO the pending item is for.
   // A report/option list addressed to the OPERATOR gets answered only under an explicit autopilot
-  // stance (real delegation); otherwise it escalates no matter how confident the model is.
+  // stance (real delegation). A narrowly non-mutating current-card evidence review is safe for
+  // Co-pilot to send: it chooses no transition and merely holds state while checking reality.
   // Deterministic on the model's own JSON field; absent field = legacy playbook, no-op.
   const managementDelegated = cfg.mode === 'autopilot' || resolveStance(ctx.getState().operatorStance) === 'autopilot';
-  if (parsed && parsed.action !== 'escalate' && String(parsed.audience || '') === 'operator_choice' && !managementDelegated) {
+  if (parsed && parsed.action !== 'escalate' && String(parsed.audience || '') === 'operator_choice' && !managementDelegated && !copilotCardReview) {
+    if (!parsed.recommendation && parsed.answer) parsed.recommendation = parsed.answer;
     parsed.action = 'escalate';
     parsed.answer = ''; // hygiene (blocker): an escalation must not carry the operator-reserved pick — it would leak into the parsed binding record / any consumer that renders answer independently of action
     if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
@@ -1166,8 +1175,9 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   // call — say the word") answers it and SENDS. This catches the fork from the ask text itself, independent of
   // the model's audience field. Stance-gated identically to the audience gate: an explicit autopilot stance is
   // real delegation and suppresses it.
-  if (parsed && parsed.action !== 'escalate' && !managementDelegated
+  if (parsed && parsed.action !== 'escalate' && !managementDelegated && !copilotCardReview
       && detectsOperatorDirectedChoice({ question, summary: s?.summary, terminalTail: ev.terminal_tail })) {
+    if (!parsed.recommendation && parsed.answer) parsed.recommendation = parsed.answer;
     parsed.action = 'escalate';
     parsed.answer = ''; // hygiene (blocker): drop the drafted pick so the reserved fork can't leak through the binding record
     if (!parsed.reason_code || parsed.reason_code === 'none') parsed.reason_code = 'scope';
@@ -1178,7 +1188,6 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   // Deterministic backstop (self-echo incident): a drafted answer that DIRECTS task-card lifecycle
   // ("start/activate/close/abandon the … card", "treat … as done") is operator territory in every
   // mode — force it to the escalate path no matter what action/confidence the model returned.
-  const lifecycle = cardLifecycleDirective(answer);
   if (lifecycle && parsed) { parsed.action = 'escalate'; parsed.reason = `Held: drafted a task-card lifecycle directive ("${clampLine(answer, 120)}") — card administration is the operator's call${parsed.reason ? '. ' + parsed.reason : ''}`; }
   const wantSend = parsed?.action !== 'escalate' && answer;
   if (!wantSend) {
@@ -1197,13 +1206,15 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     const hardReason = goalDoubtOn(cfg) && HOLD_REASONS.has(parsed?.reason_code) ? parsed.reason_code : null;
     if (hardReason && !st.needsOperatorHold) applySupervisorState(ctx, { needsOperatorHold: { at: now(), reason: hardReason, workFp: progressFp(ev).work, gateKey: gateScopeKey(cfg.doc) } });
     const open = Array.isArray(st.openEscalations) ? st.openEscalations : [];
+    const recommendation = clampLine(parsed?.recommendation || '', 900);
     applySupervisorState(ctx, {
-      openEscalations: [...open.filter((item) => item?.key !== escKey), { key: escKey, at: now(), question: clampLine(question || s?.summary || '', 240) }].slice(-8),
+      openEscalations: [...open.filter((item) => item?.key !== escKey), { key: escKey, at: now(), question: clampLine(question || s?.summary || '', 240), recommendation }].slice(-8),
     });
     const holdNote = hardReason ? ` — HELD (${hardReason}): not pushing the agent until you confirm` : '';
-    logIntervention(ctx, { kind: 'escalate', trigger, model, verdict: dup ? 'escalate-dup' : 'escalated', assessment: (parsed?.reason || error || 'Needs an operator decision') + note + holdNote, message: '', sent: 0, raw, error });
+    const recommendationNote = recommendation ? ` Recommendation: ${recommendation}` : '';
+    logIntervention(ctx, { kind: 'escalate', trigger, model, verdict: dup ? 'escalate-dup' : 'escalated', assessment: (parsed?.reason || error || 'Needs an operator decision') + recommendationNote + note + holdNote, message: '', sent: 0, raw, error });
     if (!dup) {
-      ctx.notifyOperator('Supervisor needs your call', s?.summary || question || 'A question needs your decision');
+      ctx.notifyOperator('Supervisor needs your call', clampLine(`${s?.summary || question || 'A question needs your decision'}${recommendation ? ` — recommendation: ${recommendation}` : ''}`, 180));
       applySupervisorState(ctx, {
         lastEscalateKey: escKey,
         lastEscalateAt: now(),
@@ -2019,12 +2030,12 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
     }
     const settle = Math.max(60, Number(cfg.doc_settle_sec) || 360) * 1000;
     const cardMd = ctx.__activeCard ? renderCardMd(ctx.__activeCard) : '(no active card — the previous task closed; the session is BETWEEN TASKS)';
-    // Path 1 — a fresh operator message. Operator's choice = FULL AUTO: react PROMPTLY (within ~a tick,
-    // not the long settle — the operator wants the card to track their words) and APPLY the classified
-    // change, because a genuine composer message is authoritative. Full auto is SCOPED to this
-    // operator-message path; Path 2 (work-derived, below) stays suggestion-only, and every non-message
-    // path keeps the operator-reserved guard. Kill-switch AIOS_SUPERVISOR_ON_MESSAGE=0 → legacy suggest.
+    // Path 1 — a fresh operator message. Both modes classify promptly. Co-pilot proposes the task
+    // boundary; Autopilot applies it because the operator's own composer message is authoritative.
+    // Full auto is scoped to this operator-message path; Path 2 (work-derived, below) remains a
+    // suggestion because commits alone cannot authorize a new product mission.
     const opGate = ON_MSG_CARDS ? BOUNDARY_PROMPT_MS : settle;
+    const autoManageCards = ON_MSG_CARDS && cfg.mode === 'autopilot';
     if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= opGate && (!ON_MSG_CARDS || lastOp > SUPERVISOR_BOOT_TS)) {
       applySupervisorState(ctx, { boundaryCheckTs: lastOp }); // one action per operator message (dedup, set before the call so a failure doesn't churn)
       const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
@@ -2037,10 +2048,10 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
         // actor 'operator' = the mutation is operator-authoritative (their composer message drove it; the
         // pm_events.actor CHECK allows only operator/supervisor/maintainer/migration) — provenance rides in
         // the summary. The pm primitives already emit their own 'opened'/'amended' audit events.
-        if (ON_MSG_CARDS && parsed?.fit === 'amend' && ctx.__activeCard) {
+        if (autoManageCards && parsed?.fit === 'amend' && ctx.__activeCard) {
           pmAmendTask(ctx.__activeCard.task.id, { title: title || undefined, goal: goal || undefined }, { actor: 'operator', summary: 'from operator message: ' + clampLine(parsed.reason || goal || latest, 180) });
           ctx.emit('review', { verdict: 'amended', summary: 'updated the task card to fit your message' });
-        } else if (ON_MSG_CARDS && parsed?.fit === 'new' && (title || goal) && projectId) {
+        } else if (autoManageCards && parsed?.fit === 'new' && (title || goal) && projectId) {
           const card = pmCreateTask({ projectId, title: title || 'New task', goal, sessionId: ctx.sessionId, actor: 'operator' });
           const tid = card?.task?.id;
           if (tid) {
@@ -2048,10 +2059,10 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
             upsertRuntime(ctx.sessionId, { project_id: projectId, active_task_id: tid });
             ctx.emit('review', { verdict: 'carded', summary: 'started a new task card from your message' });
           }
-        } else if (parsed?.fit === 'new' && (title || goal)) {
-          // kill-switch off (or no project) → legacy suggestion the operator accepts in the panel
-          applySupervisorState(ctx, { pendingBoundary: { title, goal, reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t } });
-          ctx.emit('review', { verdict: 'suggested', summary: 'looks like a new task — suggestion in the panel' });
+        } else if ((parsed?.fit === 'new' || parsed?.fit === 'amend') && (title || goal)) {
+          // Co-pilot, kill-switch off, or unavailable project mutation → useful reviewed proposal.
+          applySupervisorState(ctx, { pendingBoundary: { title, goal, reason: clampLine(parsed.reason || '', 200), msgTs: lastOp, at: t, fit: parsed.fit } });
+          ctx.emit('review', { verdict: 'suggested', summary: parsed.fit === 'amend' ? 'task amendment suggestion in the panel' : 'looks like a new task — suggestion in the panel' });
         }
         return;
       }

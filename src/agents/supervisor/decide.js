@@ -17,6 +17,7 @@ export const POLICY_RULES = [
   'session.no_doc',
   'session.signed_off',
   'stage.stand_down',
+  'mode.copilot_review_plan',
   'mode.autopilot_review_plan',
   'stance.autopilot_proceed',
   'verification.needs_evidence',
@@ -82,6 +83,7 @@ export function decideSupervisorAction(snapshot, config = {}) {
   // DURABLE OPERATOR STANCE (stance.js) + semantic STAGE (stage.js) — the two axes of the whole policy.
   const stance = resolveStance(snapshot?.stance);
   const supervisorAutopilot = config.mode === 'autopilot';
+  const supervisorCopilot = config.mode === 'copilot';
   const delegatedAutopilot = supervisorAutopilot || stance === 'autopilot';
   const stage = snapshot?.stage?.stage || snapshot?.session?.stage || '';
   const standDownStage = isStandDownStage(stage) && session.status === 'waiting'; // planning | awaiting_approval
@@ -143,6 +145,13 @@ export function decideSupervisorAction(snapshot, config = {}) {
     if (supervisorAutopilot && submittedPlan) {
       return base(snapshot, 'mode.autopilot_review_plan', action('answer', 'agent'), 'Supervisor Autopilot owns review of the submitted builder plan', {
         allowedSend: true,
+        triggeringSignal: signal('plan_submitted', session.summary || session.question || 'builder submitted a plan for review', snapshot, 'supervisor.mode'),
+      });
+    }
+    if (supervisorCopilot && submittedPlan) {
+      return base(snapshot, 'mode.copilot_review_plan', action('answer', 'operator'), 'Supervisor Co-pilot reviews the submitted plan and prepares a recommendation before requesting approval', {
+        allowedSend: false,
+        suppressionReason: 'mode-copilot-recommendation-only',
         triggeringSignal: signal('plan_submitted', session.summary || session.question || 'builder submitted a plan for review', snapshot, 'supervisor.mode'),
       });
     }
