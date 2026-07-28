@@ -47,6 +47,7 @@ const REFUTE_PREFIX = new RegExp('(?:'
   + '|\\brather\\s+than\\s+(?:as\\s+)?(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:does\\s+not|doesn\'?t)\\s+mean(?:\\s+that)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+generalize[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+overstate[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+that)?'
   + ')' + CARRIER + '$', 'i');
 

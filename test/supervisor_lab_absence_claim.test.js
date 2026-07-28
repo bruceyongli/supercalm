@@ -64,6 +64,7 @@ allow('Name the single missing error-state screenshot rather than a blanket "no 
   'explicit rather-than-blanket contrast');
 allow('State the mobile gap, not a blanket "no visual evidence".', 'captured not-a-blanket contrast');
 allow('State partial coverage precisely rather than as "no visual evidence".', 'captured rather-than-as contrast');
+allow('Do not overstate the gap as no visual evidence at all.', 'captured do-not-overstate contrast');
 
 // ---- FORBIDDEN: the absence is asserted ------------------------------------------------------------
 forbid('Nothing was rendered.', 'bare assertion');
