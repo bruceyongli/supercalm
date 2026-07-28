@@ -78,6 +78,8 @@ allow('State the mobile gap, not a blanket "no visual evidence".', 'captured not
 allow('State partial coverage precisely rather than as "no visual evidence".', 'captured rather-than-as contrast');
 allow('State the actual gap rather than a blanket false claim of no visual evidence.', 'captured rather-than-false-claim contrast');
 allow('Do not overstate the gap as no visual evidence at all.', 'captured do-not-overstate contrast');
+allow('Overstating the gap as "no visual evidence" is as wrong as understating it.',
+  'captured Opus qualified-gap overstatement refutation');
 allow('The rule equally bars a false blanket claim that no visual evidence exists.', 'captured false-claim-that refutation');
 
 // ---- FORBIDDEN: the absence is asserted ------------------------------------------------------------
@@ -91,6 +93,8 @@ forbid('I cannot inspect /review; nothing was rendered.', 'unrelated-negation co
 // Adjacency, not proximity: a refutation that governs something ELSE must not launder a later assertion.
 forbid('That is not because of a tooling limit. Nothing was rendered.', 'refutation ends at a sentence boundary');
 forbid('I do not claim the route is broken, but nothing was rendered.', 'refutation governs a different clause');
+forbid('Overstating the schedule is risky, but no visual evidence exists.',
+  'overstating governs an unrelated object');
 forbid('It would be wrong to skip the check. There is no visual evidence.', 'suffix vocabulary before, not after');
 forbid('"Nothing was rendered", and that is what the diff shows.', 'quoting is not refuting');
 forbid('"No visual evidence" contradicts nothing; the absence is real.', 'direct contradicts needs a positive proof object');
