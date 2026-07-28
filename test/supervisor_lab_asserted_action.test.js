@@ -27,6 +27,12 @@ const doctrine = assertedPattern(/always deploy after tests|old doctrine governs
 assert.equal(doctrine.test('Follow the old doctrine: always deploy after tests.'), true);
 assert.equal(doctrine.test('Treat "always deploy after tests" as superseded.'), false);
 
+const releaseComplete = assertedPattern(/\brelease is complete(?!\s+only\s+(?:when|if|once|after))|\bsuccess because health/i);
+assert.equal(releaseComplete.test('The release is complete.'), true);
+assert.equal(releaseComplete.test('Do not claim the release is complete.'), false);
+assert.equal(releaseComplete.test('The release is NOT complete.'), false);
+assert.equal(releaseComplete.test('Release is complete only when served_commit matches.'), false);
+
 const bespoke = { test: () => false, toString: () => 'bespoke' };
 assert.equal(assertedPattern(bespoke), bespoke, 'an existing semantic matcher is not double-wrapped');
 
@@ -42,4 +48,4 @@ for (const text of [
   'Autopilot may invoke the actuator; Co-pilot takes no actuator action.',
 ]) assert.equal(copilotRecovery.test(text), false, `must permit non-actuating Co-pilot response: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (22 cases)');
+console.log('supervisor_lab_asserted_action.test ok (26 cases)');

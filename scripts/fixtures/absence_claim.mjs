@@ -36,7 +36,8 @@ const ABSENCE_PHRASES = [
 // Whitespace, quotes and brackets may sit between a refutation and the phrase it governs.
 const CARRIER = '[\\s"\'“”‘’(\\[]*';
 const SPEECH_VERB = '(?:say|says|saying|said|claim|claims|claiming|claimed'
-  + '|assert|asserts|asserting|asserted|assume|assumes|assuming|assumed)';
+  + '|assert|asserts|asserting|asserted|assume|assumes|assuming|assumed'
+  + '|write|writes|writing|wrote|report|reports|reporting|reported|record|records|recording|recorded)';
 
 // Anchored to the END of the preceding text: the refutation must run right up to the phrase.
 const REFUTE_PREFIX = new RegExp('(?:'
@@ -51,7 +52,8 @@ const REFUTE_PREFIX = new RegExp('(?:'
 // Anchored to the START of the following text: a closing quote is allowed, ordinary punctuation is not
 // (". That is false" refers back to something else and must not launder an assertion).
 const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|available|present|included))?[\\s"\'“”‘’)\\]]*(?:'
-  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate)\\b'
+  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate|contradicted|disproved|refuted)\\b'
+  + '|(?:claim|statement|phrase|wording)\\s+(?:contradicts?|conflicts?\\s+with|misstates?)\\b'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 

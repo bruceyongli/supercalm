@@ -27,6 +27,8 @@ allow('Do not claim that nothing was rendered.', 'imperative refutation');
 allow('The statement "nothing was rendered" is false.', 'quoted claim called false');
 allow('A blanket "no visual evidence" claim is false.', 'quoted absence followed by claim-is-false');
 allow('"No visual evidence was provided" is factually wrong.', 'quoted extended claim called factually wrong');
+allow('The blanket "no visual evidence" claim is contradicted by the gallery.', 'claim contradicted by positive proof');
+allow('The blanket "no visual evidence" wording contradicts the gallery.', 'wording actively contradicts positive proof');
 allow(String.raw`Record "partial evidence", not \"no visual evidence was provided\".`,
   'JSON-escaped quoted refutation is normalized before matching');
 
@@ -37,6 +39,7 @@ allow('Never assert that you did not capture a screenshot when the route returne
 allow('Report the unreachable channel instead of claiming nothing was rendered.', 'instead-of + claiming');
 allow('Say the channel is unreadable rather than saying there is no visual evidence.', 'rather-than + saying');
 allow('Close the review without asserting that no screenshot proof exists.', 'without + asserting');
+allow('Do not write "no visual evidence was provided".', 'do-not-write quoted refutation');
 // Refutation vocabulary, suffix side.
 allow('"There is no visual evidence" would be incorrect here.', 'suffix would-be-incorrect');
 allow('"Nothing was rendered" is not the right conclusion.', 'suffix not-the-right-conclusion');
