@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, COPILOT_RECOVERY_ADDENDUM, AUTOPILOT_RECOVERY_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, COPILOT_RECOVERY_ADDENDUM, AUTOPILOT_RECOVERY_ADDENDUM, TIME_CONTINUITY_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -1138,6 +1138,7 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   }
   sys += '\n\n' + (delegatedRelease ? AUTOPILOT_RELEASE_ADDENDUM : RESERVED_APPROVAL_ADDENDUM);
   sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_RECOVERY_ADDENDUM : COPILOT_RECOVERY_ADDENDUM);
+  sys += '\n\n' + TIME_CONTINUITY_ADDENDUM;
   // The cross-session boundary is universal. Co-pilot leaves task transitions with the operator;
   // Autopilot manages this session's internal card itself but never tells the builder to mutate it.
   sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM);

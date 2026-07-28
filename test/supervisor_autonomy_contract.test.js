@@ -16,6 +16,7 @@ const {
   AUTOPILOT_RECOVERY_ADDENDUM,
   COPILOT_RECOVERY_ADDENDUM,
   RESERVED_APPROVAL_ADDENDUM,
+  TIME_CONTINUITY_ADDENDUM,
 } = await import('../src/agents/answer_prompt.js');
 
 const plan = {
@@ -79,6 +80,9 @@ assert.match(COPILOT_RECOVERY_ADDENDUM, /takes no recovery actuator action/i);
 assert.match(COPILOT_RECOVERY_ADDENDUM, /inspect reality/i);
 assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /owns bounded recovery/i);
 assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /stop, kill, hold/i);
+assert.match(TIME_CONTINUITY_ADDENDUM, /persisted wall-clock deadline does NOT prove/i);
+assert.match(TIME_CONTINUITY_ADDENDUM, /do not retry or fire an action immediately solely because of the clock jump/i);
+assert.match(TIME_CONTINUITY_ADDENDUM, /preserving the original attempt budget and duplicate-action protections/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
 const supervisor = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
@@ -87,6 +91,8 @@ const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.ur
 assert.match(supervisor, /maybeAutoIntegrate\(ctx, cfg/, 'verified completion reaches the integration actuator');
 assert.match(supervisor, /cfg\.mode === 'autopilot' \? AUTOPILOT_RECOVERY_ADDENDUM : COPILOT_RECOVERY_ADDENDUM/,
   'the answer brain receives the exact mode-specific recovery authority');
+assert.match(supervisor, /sys \+= '\\n\\n' \+ TIME_CONTINUITY_ADDENDUM/,
+  'every answer receives the shared clock-discontinuity reliability invariant');
 assert.match(supervisor, /maybeMonitorIntegration\(ctx, cfg, st\)/, 'Autopilot monitors the durable release after restart');
 assert.match(supervisor, /row\.stage === 'GREEN'/, 'only GREEN produces released success');
 assert.match(supervisor, /row\.stage === 'HELD'/, 'ambiguous release state remains operator-held');
