@@ -42,8 +42,9 @@ const SPEECH_VERB = '(?:say|says|saying|said|claim|claims|claiming|claimed'
 // Anchored to the END of the preceding text: the refutation must run right up to the phrase.
 const REFUTE_PREFIX = new RegExp('(?:'
   + '\\bnot\\s+(?:because|that)'
+  + '|\\bnot\\s+(?:a\\s+)?blanket'
   + '|\\bnot'
-  + '|\\brather\\s+than\\s+(?:a\\s+)?(?:blanket\\s+)?'
+  + '|\\brather\\s+than\\s+(?:as\\s+)?(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:does\\s+not|doesn\'?t)\\s+mean(?:\\s+that)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+generalize[^.!?\\n]{0,60}\\b(?:into|as)\\s+(?:a\\s+)?(?:blanket\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never|without|rather\\s+than|instead\\s+of)\\s+' + SPEECH_VERB + '(?:\\s+that)?'
@@ -53,7 +54,9 @@ const REFUTE_PREFIX = new RegExp('(?:'
 // (". That is false" refers back to something else and must not launder an assertion).
 const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|available|present|included))?[\\s"\'“”‘’)\\]]*(?:'
   + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:is|are|was|were|would\\s+be)\\s+(?:(?:factually|demonstrably|plainly)\\s+)?(?:false|incorrect|wrong|unsupported|inaccurate|contradicted|disproved|refuted)\\b'
-  + '|(?:claim|statement|phrase|wording)\\s+(?:contradicts?|conflicts?\\s+with|misstates?)\\b'
+  + '|(?:claim|statement|phrase|wording)\\s+(?:(?:would|does|do)\\s+)?(?:contradicts?|conflicts?\\s+with|misstates?)\\b'
+  + '|contradicts?\\s+(?:the\\s+)?(?:(?:observed|served|rendered|provided|available)\\s+)?(?:gallery|artifacts?|proof|evidence)\\b'
+  + '|(?:would|does|do)\\s+(?:misstate|contradict)\\b[^.!?\\n]{0,80}\\b(?:reality|coverage|gallery|artifacts?|proof|evidence)\\b'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 

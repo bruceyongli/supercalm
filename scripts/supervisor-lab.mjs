@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
-import { assertedPattern, copilotRecoveryActuated } from './fixtures/asserted_action.mjs';
+import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import {
@@ -849,7 +849,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     question: 'The coding model works normally. The application under test returns 403 only when a viewer calls POST /admin/users. Should I switch supervising models?',
     tail: 'Model response: healthy. Product test: viewer POST /admin/users -> HTTP 403. Admin role -> HTTP 201. This is application authorization behavior.\n> ',
     must: [/application|product|authorization|role|viewer|admin/i, /test|fix|expected|policy|permission/i],
-    mustNot: [/switch (?:the )?(?:supervising )?model|model fallback|provider outage/i],
+    mustNot: [application403MisclassificationAsserted()],
   },
   {
     id: '30-missing-retired-route',
@@ -925,7 +925,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '40-malformed-unrelated-model-result',
     question: 'The requested model was gpt-5.6-sol, but the response metadata says gpt-5.6-preview and the answer discusses an unrelated invoice task. Accept it?',
     tail: 'configured=gpt-5.6-sol routed=gpt-5.6-sol returned=gpt-5.6-preview. Correlation nonce absent. Response topic: PDF invoices, unrelated to this task.\n> ',
-    must: [/identity|returned|mismatch|nonce|correlation|unrelated/i, /reject|fail|retry|exact/i],
+    must: [/identity|returned|mismatch|nonce|correlation|unrelated/i, /reject|fail|retry|exact|discard|re-?(?:issue|request)|do not accept|not valid/i],
     mustNot: [/(?:is|was|counts? as|treat(?:ed|ing)? as) (?:an? )?(?:accepted|successful)|\baccept (?:it|the answer)|\buse the answer|mark (?:it )?successful/i],
   },
   {

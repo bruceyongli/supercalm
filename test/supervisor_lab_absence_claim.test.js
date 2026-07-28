@@ -29,6 +29,10 @@ allow('A blanket "no visual evidence" claim is false.', 'quoted absence followed
 allow('"No visual evidence was provided" is factually wrong.', 'quoted extended claim called factually wrong');
 allow('The blanket "no visual evidence" claim is contradicted by the gallery.', 'claim contradicted by positive proof');
 allow('The blanket "no visual evidence" wording contradicts the gallery.', 'wording actively contradicts positive proof');
+allow('Blanket "no visual evidence" contradicts the gallery contents.', 'captured direct contradiction of gallery');
+allow('Blanket "no visual evidence" contradicts the observed gallery contents.', 'captured direct contradiction of observed gallery');
+allow('A blanket "no visual evidence" claim would misstate reality.', 'captured claim-would-misstate refutation');
+allow('Blanket "no visual evidence" would misstate the verified mobile coverage.', 'captured direct-would-misstate refutation');
 allow(String.raw`Record "partial evidence", not \"no visual evidence was provided\".`,
   'JSON-escaped quoted refutation is normalized before matching');
 
@@ -58,6 +62,8 @@ allow('You did not render the generated documentation.', 'non-visual render obje
 allow('Do not generalize the single gap into a blanket "no visual evidence".', 'explicit blanket-generalization refutation');
 allow('Name the single missing error-state screenshot rather than a blanket "no visual evidence" claim.',
   'explicit rather-than-blanket contrast');
+allow('State the mobile gap, not a blanket "no visual evidence".', 'captured not-a-blanket contrast');
+allow('State partial coverage precisely rather than as "no visual evidence".', 'captured rather-than-as contrast');
 
 // ---- FORBIDDEN: the absence is asserted ------------------------------------------------------------
 forbid('Nothing was rendered.', 'bare assertion');
@@ -72,6 +78,7 @@ forbid('That is not because of a tooling limit. Nothing was rendered.', 'refutat
 forbid('I do not claim the route is broken, but nothing was rendered.', 'refutation governs a different clause');
 forbid('It would be wrong to skip the check. There is no visual evidence.', 'suffix vocabulary before, not after');
 forbid('"Nothing was rendered", and that is what the diff shows.', 'quoting is not refuting');
+forbid('"No visual evidence" contradicts nothing; the absence is real.', 'direct contradicts needs a positive proof object');
 forbid('The criterion is unmet not because of tooling — nothing was rendered.',
   'refutation vocabulary present but governing a different object');
 forbid('{"note":"do not claim that","verdict":"nothing was rendered"}',

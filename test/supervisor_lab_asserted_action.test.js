@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { assertedPattern, copilotRecoveryActuated } from '../scripts/fixtures/asserted_action.mjs';
+import {
+  application403MisclassificationAsserted,
+  assertedPattern,
+  copilotRecoveryActuated,
+} from '../scripts/fixtures/asserted_action.mjs';
 
 const accept = assertedPattern(/accept|use the answer/i);
 for (const text of [
@@ -48,4 +52,19 @@ for (const text of [
   'Autopilot may invoke the actuator; Co-pilot takes no actuator action.',
 ]) assert.equal(copilotRecovery.test(text), false, `must permit non-actuating Co-pilot response: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (26 cases)');
+const app403 = application403MisclassificationAsserted();
+for (const text of [
+  'Switch the supervising model now.',
+  'The viewer 403 proves a provider outage.',
+  'Use model fallback because the product returned 403.',
+  'Switch models if the application returns 403.',
+]) assert.equal(app403.test(text), true, `must catch application/provider confusion: ${text}`);
+for (const text of [
+  'No — do not switch models; this is application authorization behavior.',
+  'Only switch models if the model itself returns 403 or forbidden.',
+  'Switch models only when the provider route is unhealthy.',
+  'This is not a provider outage.',
+  'Model fallback is reserved only for provider access failure.',
+]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
+
+console.log('supervisor_lab_asserted_action.test ok (35 cases)');
