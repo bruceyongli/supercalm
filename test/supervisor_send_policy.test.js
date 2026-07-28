@@ -166,9 +166,15 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.equal(cardLifecycleDirective('The builder must never close the current task card.'), false);
   assert.equal(cardLifecycleDirective("The builder doesn't open, close, or switch Supervisor task cards. Stay on the current work while I verify it."), false);
   assert.equal(cardLifecycleDirective('The builder does not open, close, or switch Supervisor task cards.'), false);
+  assert.equal(cardLifecycleDirective("Don't change any card state — builders don't close, open, or activate Supervisor cards, and that stays true here. The log-UI card remains open and the editor card stays inactive while I review the completion evidence."), false,
+    'captured safe Co-pilot review is not converted into card administration');
+  assert.equal(cardLifecycleDirective('The current card is open and the next task card is inactive while evidence is reviewed.'), false,
+    'describing an open card is not an imperative lifecycle action');
   // Refutation scope is clause-local: an asserted lifecycle instruction nearby must still fire.
   assert.equal(cardLifecycleDirective('Do not close the current card; activate the next task card now.'), true);
   assert.equal(cardLifecycleDirective('Never start cards in another project. Close the current task card now.'), true);
+  assert.equal(cardLifecycleDirective('The current card remains open and activate the next task card now.'), true,
+    'a state adjective cannot consume and hide a later asserted transition in the same clause');
   // Ordinary engineering directives must NOT trip it — builders legitimately work ON card UI code
   assert.equal(cardLifecycleDirective('Fix the null deref in renderTaskCard and add a test.'), false);
   assert.equal(cardLifecycleDirective('Add a Dismiss button to the card banner component.'), false);

@@ -72,7 +72,11 @@ export function modeLabel(mode) {
 // but the sharp edge gets a regex, not hope). Scope: imperative lifecycle verb near "card" /
 // "task card", or the "treat … as done/closed" form. Deliberately fail-safe — a false positive
 // only converts a send into an operator escalation.
-const CARD_LIFECYCLE_RX = /\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}\bas\s+done\b/gi;
+// `open` is also a state adjective ("the current card remains open"). Exclude that grammatical
+// shape at the token so a later real imperative in the same clause can still be found independently.
+// A post-match skip would consume "open ... activate the next card" as one match and could hide the
+// asserted `activate`, so keep these fixed-width lookbehinds in the scanner itself.
+const CARD_LIFECYCLE_RX = /(?<!\bis )(?<!\bare )(?<!\bwas )(?<!\bwere )(?<!\bremain )(?<!\bremains )(?<!\bremained )(?<!\bstay )(?<!\bstays )(?<!\bstayed )\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}\bas\s+done\b/gi;
 const CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do(?:es)?\s+not|do(?:es)?n't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,40}$/i;
 export function cardLifecycleDirective(text) {
   const value = String(text || '');
