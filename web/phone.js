@@ -14,6 +14,7 @@ import { api, coalesce, escapeHtml as esc, registerSW, renderMarkdown } from './
 import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
+import { attentionCopy } from './attention-preview.js';
 
 registerSW();
 
@@ -68,13 +69,15 @@ function toast(t) {
 }
 function hhmm(ts) { const d = new Date(Number(ts)); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 function attentionPreview(session) {
-  const clean = (value, max = 300) => String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
-  const need = clean(session.question || session.summary || session.last_key?.text);
-  const summary = clean(session.summary);
-  const comparable = (value) => clean(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ');
+  const copy = attentionCopy({
+    question: session.question,
+    summary: session.summary,
+    fallback: session.last_key?.text,
+    category: session.category,
+  });
   return {
-    need,
-    outcome: summary && comparable(summary) !== comparable(need) ? summary : '',
+    need: copy.action,
+    outcome: copy.latest,
   };
 }
 
@@ -605,7 +608,7 @@ function renderHome() {
       </div>
       <div class="needpreview">
         ${preview.outcome ? `<div><b>Latest</b><p>${esc(preview.outcome)}</p></div>` : ''}
-        <div class="important"><b>Needs you</b><p>${esc(preview.need)}</p></div>
+        ${preview.need ? `<div class="important"><b>Your move</b><p>${esc(preview.need)}</p></div>` : ''}
       </div>
       ${optionList(s, questions)}
       <div class="needacts">

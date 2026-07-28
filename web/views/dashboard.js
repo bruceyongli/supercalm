@@ -134,7 +134,7 @@ function renderInbox(home) {
       </div>
       <div class="dk-attention-preview">
         ${preview.outcome ? `<div class="dk-attention-row"><span>Latest</span><p>${esc(preview.outcome)}</p></div>` : ''}
-        <div class="dk-attention-row important"><span>Needs you</span><p>${esc(preview.need || 'The session is waiting for your direction.')}</p></div>
+        ${preview.need ? `<div class="dk-attention-row important"><span>Your move</span><p>${esc(preview.need)}</p></div>` : ''}
       </div>
       ${choicesHtml(s, questions)}
       <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
