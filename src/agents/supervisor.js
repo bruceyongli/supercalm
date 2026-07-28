@@ -4,7 +4,7 @@ import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
-import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, enforceAnswerSafety } from './answer_prompt.js';
+import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, enforceAnswerSafety } from './answer_prompt.js';
 import { activePlaybook } from './playbook.js';
 import { recordReopenLabel, recentFailurePatterns, formatFailurePatterns } from './verify_labels.js';
 import { recordVerification, recentVerifications, formatLedger } from './verify_ledger.js';
@@ -1131,7 +1131,9 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
     try { delegatedRelease = !!ctx.integrationReadiness()?.ok; } catch {}
   }
   sys += '\n\n' + (delegatedRelease ? AUTOPILOT_RELEASE_ADDENDUM : RESERVED_APPROVAL_ADDENDUM);
-  sys += '\n\n' + SCOPE_CARD_ADMIN_ADDENDUM; // self-echo hardening: other sessions' work is subject matter, not jurisdiction; card lifecycle is the operator's
+  // The cross-session boundary is universal. Co-pilot leaves task transitions with the operator;
+  // Autopilot manages this session's internal card itself but never tells the builder to mutate it.
+  sys += '\n\n' + (cfg.mode === 'autopilot' ? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM);
   sys += '\n\n' + ESCALATION_HYGIENE_ADDENDUM; // escalation-record hygiene: name the reserved CLASS abstractly, never parrot the agent's approval/deploy verbs (cleans raw + reason)
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts

@@ -72,7 +72,20 @@ export function modeLabel(mode) {
 // but the sharp edge gets a regex, not hope). Scope: imperative lifecycle verb near "card" /
 // "task card", or the "treat … as done/closed" form. Deliberately fail-safe — a false positive
 // only converts a send into an operator escalation.
-const CARD_LIFECYCLE_RX = /\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?\n]{0,80}\bas\s+done\b/i;
+const CARD_LIFECYCLE_RX = /\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}\bas\s+done\b/gi;
+const CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do\s+not|don't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,40}$/i;
 export function cardLifecycleDirective(text) {
-  return CARD_LIFECYCLE_RX.test(String(text || ''));
+  const value = String(text || '');
+  CARD_LIFECYCLE_RX.lastIndex = 0;
+  for (const match of value.matchAll(CARD_LIFECYCLE_RX)) {
+    const before = value.slice(Math.max(0, match.index - 80), match.index);
+    const clauseStart = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf(';'), before.lastIndexOf('\n'));
+    const clausePrefix = before.slice(clauseStart + 1);
+    // "Do not close the card" describes the guard; it is the opposite of a lifecycle directive.
+    // Scope the exception to the same punctuation-bounded clause so a nearby, unrelated imperative
+    // remains blocked. The shared dispatcher still rejects every asserted lifecycle instruction.
+    if (CARD_LIFECYCLE_REFUTATION_RX.test(clausePrefix)) continue;
+    return true;
+  }
+  return false;
 }

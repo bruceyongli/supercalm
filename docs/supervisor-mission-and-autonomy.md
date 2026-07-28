@@ -160,8 +160,11 @@ Autopilot meets this contract only when executable checks prove:
 - delegated deployment is gated, audited, health-verified, and recoverable;
 - non-delegated reserved actions fail closed;
 - Co-pilot remains conservative;
-- public Supervisor scenarios and the complete production suite stay green on the operating models.
+- the fixed public inventory stays green on the operating models in both modes: 25 behavior
+  families, 30 executable cases, and therefore 60 Co-pilot/Autopilot mode-case outcomes;
+- the complete production suite stays green.
 
 The rerunnable audit is `node scripts/measure/supervisor-autonomy-audit.mjs`. It intentionally reports
 unmet release requirements as failures; `--strict` exits nonzero whenever the current implementation
-does not satisfy the contract.
+does not satisfy the contract. The canonical scenario count and per-mode responses live in
+`scripts/fixtures/supervisor_scenarios.mjs`; the live model harness refuses incomplete coverage.

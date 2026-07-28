@@ -88,6 +88,12 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   assert.equal(cardLifecycleDirective('Abandon this card; the goal moved.'), true);
   assert.equal(cardLifecycleDirective('Treat the log-UI work as done and move on.'), true);
   assert.equal(cardLifecycleDirective('Resume the paused card for the editor work.'), true);
+  // Explicit refutations describe the safety boundary; they are not instructions to mutate state.
+  assert.equal(cardLifecycleDirective('Do not create, close, activate, or otherwise mutate Supervisor task cards. Stay on the current work while I verify it.'), false);
+  assert.equal(cardLifecycleDirective('The builder must never close the current task card.'), false);
+  // Refutation scope is clause-local: an asserted lifecycle instruction nearby must still fire.
+  assert.equal(cardLifecycleDirective('Do not close the current card; activate the next task card now.'), true);
+  assert.equal(cardLifecycleDirective('Never start cards in another project. Close the current task card now.'), true);
   // Ordinary engineering directives must NOT trip it — builders legitimately work ON card UI code
   assert.equal(cardLifecycleDirective('Fix the null deref in renderTaskCard and add a test.'), false);
   assert.equal(cardLifecycleDirective('Add a Dismiss button to the card banner component.'), false);
@@ -101,7 +107,7 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
 {
   const { readFileSync } = await import('node:fs');
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
-  assert.match(sup, /SCOPE_CARD_ADMIN_ADDENDUM; \/\/ self-echo hardening/, 'scope addendum compiled into runAnswer sys');
+  assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM/, 'runAnswer selects the mode-specific current-session task-management contract');
   assert.match(sup, /cardLifecycleDirective\(answer\)/, 'deterministic lifecycle guard runs on the drafted answer');
   assert.match(sup, /BETWEEN TASKS: there is NO active contract/, 'between-tasks answers are restraint-scoped');
   assert.match(sup, /activeTaskId: null, activeCardVersion: null, activeCardHash: null/, 'between-tasks clears stale contract attribution');

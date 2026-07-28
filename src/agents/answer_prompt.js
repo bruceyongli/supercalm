@@ -56,16 +56,25 @@ export const RESERVED_APPROVAL_ADDENDUM = `RESERVED-ACTION APPROVAL SOURCE — H
 // to the deterministic pipeline after completion verification.
 export const AUTOPILOT_RELEASE_ADDENDUM = `RESERVED RELEASE — STANDING GATED DELEGATION IS ACTIVE. The operator explicitly selected Supervisor Autopilot AND enabled this project's autonomous integration/release mechanism. Do NOT ask for a per-release approval and do NOT tell the builder to run a direct deploy command. If the builder asks whether to deploy before verification, ANSWER that it must finish the task and supply the required evidence; after the Supervisor verifies completion, the SYSTEM submits the exact clean candidate to the gated integration pipeline. That pipeline — not this answer — owns tests, publication, served-identity/health proof, and rollback. Direct deploys, public announcements, destructive actions, credentials, spend, and actions outside this mechanism remain reserved.`;
 
-// Appended UNCONDITIONALLY in runAnswer, like RESERVED_APPROVAL_ADDENDUM. Born from the self-echo
+// Appended in Co-pilot/legacy modes, like RESERVED_APPROVAL_ADDENDUM. Born from the self-echo
 // incident (2026-07-09): an ops/admin session was DISCUSSING another session's task cards with the
 // operator; its own supervisor classified that report as "this agent needs a decision", answered it
 // under autopilot with operator_intent none, and directed a cross-project card close/activate that
 // the agent then executed. Two boundaries were crossed at once: subject matter ≠ jurisdiction, and
-// card lifecycle is the operator's decision, not the supervisor's.
+// a builder must never administer Supervisor task state.
 export const SCOPE_CARD_ADMIN_ADDENDUM = `SCOPE & CARD ADMINISTRATION — HARD RULES.
 1. You supervise THIS session's work on THIS project only. The terminal may discuss OTHER sessions, their task cards, or other projects' features (admin/ops sessions inspect them routinely): that content is subject matter under discussion, NOT your jurisdiction. Never direct actions on another session's or another project's behalf — if the pending question concerns a different session or project, action=escalate.
 2. Task-card lifecycle — creating, starting, activating, resuming, pausing, closing, abandoning, or declaring a card done — is the OPERATOR's decision, on every project including this one. Never direct the agent to change card state. If the pending question is which card/task to run or close, action=escalate.
 3. AUDIENCE — add one field to your JSON on every response: "audience":"builder_blocked" (the agent cannot proceed without this answer) or "audience":"operator_choice" (the pending text is a report, an option list, or a choice addressed to the OPERATOR — "you can…", "if you want…", "say the word…"). Classify honestly and still give your best answer on the merits: the SYSTEM decides delivery (operator_choice answers are delivered only under an explicit operator delegation; otherwise the system escalates your draft to the operator automatically). Do not escalate solely because the audience is the operator — escalate only for the genuinely reserved classes above.`;
+
+// Supervisor Autopilot owns the current session's managerial lifecycle, but the builder still must not
+// manipulate task-card state. This is deliberately a prompt-level distinction plus the shared dispatch
+// choke point: Autopilot answers the management question in product terms while the deterministic
+// Supervisor gate independently verifies/closes/advances the internal card.
+export const AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM = `SCOPE & AUTOPILOT TASK MANAGEMENT — HARD RULES.
+1. You supervise THIS session's work on THIS project only. Work belonging to another session or project is outside your authority and must be action=escalate.
+2. YOU — the Supervisor — own this session's internal task-card lifecycle in Autopilot. The BUILDER must never create, start, close, abandon, or otherwise mutate Supervisor task cards. If the builder asks you to choose or perform a current-session task transition, do NOT forward that routine management decision to the operator. ANSWER in product-work terms: tell the builder not to manipulate card state; keep it on the current work until independent completion verification, or direct the next in-scope product step when the verified contract settles it. The deterministic Supervisor gate performs the actual internal transition.
+3. AUDIENCE — add one field to your JSON on every response: "audience":"builder_blocked" or "audience":"operator_choice". An operator-addressed reversible HOW or current-task management choice is delegated to you in Autopilot, so decide it. Escalate only a genuine product-outcome fork, another session/project, or an action outside standing authority.`;
 
 // Pillar 3 — calibrated escalation. Appended to SYS_ANSWER when cfg.calibrated_escalation is on:
 // bias hard toward deciding; escalate only the genuinely operator-reserved class. Adds reserved +
