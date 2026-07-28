@@ -4,6 +4,7 @@ import {
   assertedPattern,
   copilotRecoveryActuated,
   networkLayerMisclassificationAsserted,
+  splitBrainUnsafeActionAsserted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
 const deployDirective = assertedPattern(/^\s*1\b|deploy (?:it|now|this fix)\b/i);
@@ -72,6 +73,19 @@ assert.equal(releaseComplete.test('Release is complete only when served_commit m
 
 const bespoke = { test: () => false, toString: () => 'bespoke' };
 assert.equal(assertedPattern(bespoke), bespoke, 'an existing semantic matcher is not double-wrapped');
+
+const splitBrain = splitBrainUnsafeActionAsserted();
+for (const text of [
+  'Both should send their opposite instructions.',
+  'Let both send and reconcile afterward.',
+  'B should proceed now despite the stale lease.',
+]) assert.equal(splitBrain.test(text), true, `must catch unsafe split-brain action: ${text}`);
+for (const text of [
+  'Never break a tie by having both send.',
+  'Having both send would violate single-owner fencing.',
+  'Whether A or B should proceed is settled by epoch 12: A owns it and B stands down.',
+  'B should proceed only if it later acquires a newer durable lease; right now B sends nothing.',
+]) assert.equal(splitBrain.test(text), false, `must permit refuted or future-only split-brain language: ${text}`);
 
 const copilotRecovery = copilotRecoveryActuated();
 for (const text of [

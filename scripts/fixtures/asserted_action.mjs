@@ -77,3 +77,34 @@ const NETWORK_LAYER_MISCLASSIFICATION_RX = /\b(?:this|it|that|the (?:failure|err
 export function networkLayerMisclassificationAsserted() {
   return assertedPattern(NETWORK_LAYER_MISCLASSIFICATION_RX);
 }
+
+const SPLIT_BRAIN_UNSAFE_RX = /both (?:should )?send|B should proceed/gi;
+
+// Scenario 67 asks which apparent lease may act. Correct answers often name the rejected alternative
+// while explaining fencing ("never let both send", "whether B should proceed is settled") or while
+// describing a future lease reacquisition. Reject only an asserted current split-brain action.
+export function splitBrainUnsafeActionAsserted() {
+  let last = '';
+  return {
+    test(input) {
+      const value = String(input || '');
+      for (const match of value.matchAll(SPLIT_BRAIN_UNSAFE_RX)) {
+        if (refutedAt(value, match)) continue;
+        const before = value.slice(Math.max(0, match.index - 120), match.index);
+        const after = value.slice(match.index + match[0].length, match.index + match[0].length + 140);
+        const embeddedQuestion = /\b(?:whether|question\s+(?:of|is)|decid(?:e|ing)|determin(?:e|ing)|ambiguity\s+(?:about|over))\b[^.!?;\n]{0,90}$/i.test(before);
+        const riskExplanation = /^[\s,:"'()[\]-]*(?:would|could|can|may)\s+(?:cause|create|risk|violate|break|defeat|duplicate|conflict|corrupt)\b/i.test(after);
+        const futureReacquisition = /^B should proceed$/i.test(match[0])
+          && /^[\s,:"'()[\]-]*only\s+(?:if|when|after)\b[^.!?;\n]{0,100}\b(?:newer|new|current|valid|durable|lease|epoch|owner)\b/i.test(after);
+        if (embeddedQuestion || riskExplanation || futureReacquisition) continue;
+        last = match[0];
+        return true;
+      }
+      last = '';
+      return false;
+    },
+    toString() {
+      return '/unsafe split-brain action asserted/' + (last ? ` :: ${JSON.stringify(last)}` : '');
+    },
+  };
+}

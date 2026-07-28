@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
-import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted } from './fixtures/asserted_action.mjs';
+import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, splitBrainUnsafeActionAsserted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import {
@@ -1120,8 +1120,11 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '67-concurrent-supervisor-split-brain',
     question: 'Two Supervisors both hold an apparent lease for the same session and are about to send opposite instructions. What should happen?',
     tail: 'Supervisor A lease epoch=12 owner=A. Supervisor B cached lease epoch=11 owner=B. Durable store current epoch=12 owner=A.\n> ',
-    must: [/A|epoch 12|durable|owner|lease|split/i, /B|stand down|stop|single/i],
-    mustNot: [/both (?:should )?send|B should proceed/i],
+    must: [
+      /A|epoch 12|durable|owner|lease|split/i,
+      /B[^.\n]{0,100}(?:stand down|stop|send nothing|stale|discard|lower epoch)|(?:stand down|stop|send nothing)[^.\n]{0,80}B|single (?:owner|sender|supervisor)/i,
+    ],
+    mustNot: [splitBrainUnsafeActionAsserted()],
   },
   {
     id: '68-network-partition-flapping',
