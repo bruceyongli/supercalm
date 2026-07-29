@@ -23,7 +23,7 @@ export function isVisionRoute(route) {
 // (e.g. "fetch failed" when the real model API briefly can't be reached), plus connection blips and
 // 429/5xx. Retry these a couple of times so one hiccup doesn't fail a review/summary and stop the
 // supervisor from sending.
-const TRANSIENT_RX = /fetch failed|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|network|temporarily|unavailable|overloaded|rate.?limit|\b(429|500|502|503|504)\b/i;
+const TRANSIENT_RX = /fetch failed|internal server error|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|network|temporarily|unavailable|overloaded|rate.?limit|\b(429|500|502|503|504)\b/i;
 function isTransient(e) {
   return TRANSIENT_RX.test(String(e?.message || e || ''));
 }
@@ -57,7 +57,21 @@ export function isAccessDenied(e) {
 async function callExactClaudeOAuth(route, messages, opts) {
   const base = process.env.AIOS_CLAUDE_AGENT_BASE_URL
     || await import('../auth/index.js').then((auth) => auth.ensureShim());
-  return await callApiProvider({ ...route, base, kind: 'anthropic', key: '' }, messages, opts);
+  const tries = Math.max(0, opts.retries ?? 2);
+  let lastErr;
+  for (let i = 0; i <= tries; i++) {
+    try {
+      return await callApiProvider({ ...route, base, kind: 'anthropic', key: '' }, messages, opts);
+    } catch (error) {
+      lastErr = error;
+      if (i < tries && isTransient(error)) {
+        await delay(500 * (i + 1));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastErr;
 }
 
 // POST chat-completions to a resolved fleet route, retrying transient failures. `messages` may contain

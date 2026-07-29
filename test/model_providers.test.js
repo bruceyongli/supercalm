@@ -50,6 +50,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
 {
   const seen = [];
   let transientDirectCalls = 0;
+  let retriedDirectCalls = 0;
   let deniedDirectCalls = 0;
   const mock = http.createServer((req, res) => {
     let b = '';
@@ -65,6 +66,9 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
           deniedDirectCalls++;
           res.statusCode = 403;
           res.end(JSON.stringify({ error: { message: 'permission denied by direct provider' } }));
+        } else if (body.model === 'claude-transient-retry' && ++retriedDirectCalls === 1) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'Internal server error' } }));
         } else if (body.model === 'claude-transient' && ++transientDirectCalls === 1) {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: { message: 'Internal server error' } }));
@@ -164,6 +168,21 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
     assert.equal(transientDirectCalls, 2, 'a transient direct-path failure remains retryable on a later call');
     assert.equal(deniedCalls, 2, 'the transient exact route probes the denied fleet only once');
 
+    const retriedDirectRoute = {
+      id: 'claude-transient-retry',
+      model: 'claude-transient-retry',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    const retried = await callProxyModel(
+      retriedDirectRoute,
+      [{ role: 'user', content: 'bounded retry stays exact' }],
+      { retries: 1 },
+    );
+    assert.equal(retried.model, 'claude-transient-retry');
+    assert.equal(retriedDirectCalls, 2, 'the exact direct transport honors the caller retry budget');
+    assert.equal(deniedCalls, 3, 'the same-call retry does not revisit the denied fleet');
+
     const deniedDirectRoute = {
       id: 'claude-direct-denied',
       model: 'claude-direct-denied',
@@ -179,7 +198,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
       /cooling down after 403/,
     );
     assert.equal(deniedDirectCalls, 1, 'a direct-path access denial opens the cooldown instead of hammering');
-    assert.equal(deniedCalls, 3, 'the direct-denied exact route also probes the fleet only once');
+    assert.equal(deniedCalls, 4, 'the direct-denied exact route also probes the fleet only once');
   } finally {
     delete process.env.AIOS_CLAUDE_AGENT_BASE_URL;
     await new Promise((ok) => denied.close(ok));
