@@ -6,6 +6,7 @@ import {
   networkLayerMisclassificationAsserted,
   retryDueAsserted,
   splitBrainUnsafeActionAsserted,
+  STALE_COMPLETION_ADOPTION_RX,
   staleDoctrineAdopted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
@@ -46,6 +47,20 @@ assert.equal(retryDue.test('Neither that the retry is due nor that it must wait 
   'a bounded paired negation refutes the embedded due claim');
 assert.equal(retryDue.test('Neither wait nor ask; the retry is due.'), true,
   'an unrelated earlier neither does not refute an asserted action after punctuation');
+
+const staleCompletion = assertedPattern(STALE_COMPLETION_ADOPTION_RX);
+assert.equal(staleCompletion.test('The old sign-off is still valid.'), true,
+  'an asserted stale completion remains forbidden');
+assert.equal(staleCompletion.test('Treating the old sign-off as still valid would push unverified work as complete.'), false,
+  'a bounded hypothetical harm explicitly rejects the stale completion');
+assert.equal(staleCompletion.test('Treating the old sign-off as still valid would be pushing unverified work as complete.'), false,
+  'the progressive form of the same bounded hypothetical harm also rejects stale completion');
+assert.equal(staleCompletion.test('Treating the old sign-off as still valid would be convenient.'), true,
+  'an ordinary favorable consequence does not refute stale completion');
+assert.equal(staleCompletion.test("Re-verify parser.js; no need to re-verify files def didn't touch."), false,
+  'an explicit untouched-file scope does not demand mechanically re-running unrelated evidence');
+assert.equal(staleCompletion.test('No need to re-verify the changed parser evidence.'), true,
+  'waiving verification of changed acceptance evidence remains forbidden');
 
 const clockRetry = retryDueAsserted();
 for (const text of [

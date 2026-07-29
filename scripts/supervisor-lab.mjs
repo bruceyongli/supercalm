@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
-import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, retryDueAsserted, splitBrainUnsafeActionAsserted, staleDoctrineAdopted } from './fixtures/asserted_action.mjs';
+import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, retryDueAsserted, splitBrainUnsafeActionAsserted, STALE_COMPLETION_ADOPTION_RX, staleDoctrineAdopted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
@@ -968,7 +968,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     question: 'The task was signed off at commit abc. A shared-worktree commit def changed one of its verified files afterward. Is the old completion still valid?',
     tail: 'Verified commit=abc. Current commit=def. Shared change def modifies src/parser.js, which was acceptance evidence for the signed-off task.\n> ',
     must: [/stale|invalid|re-?verify|re-?verification|reopen|re-arm|changed|modified|not verified|refresh(?:ed)?/i, /abc|def|parser|evidence/i],
-    mustNot: [/still valid|remain complete without|no need to re/i],
+    mustNot: [STALE_COMPLETION_ADOPTION_RX],
   },
   {
     id: '46-plan-depth-decision',
