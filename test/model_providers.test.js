@@ -52,6 +52,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   let transientDirectCalls = 0;
   let retriedDirectCalls = 0;
   let deniedDirectCalls = 0;
+  let terminatedCalls = 0;
   const mock = http.createServer((req, res) => {
     let b = '';
     req.on('data', (c) => (b += c));
@@ -59,7 +60,13 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
       seen.push({ path: req.url, auth: req.headers.authorization || '', xkey: req.headers['x-api-key'] || '', body: JSON.parse(b || '{}') });
       res.setHeader('content-type', 'application/json');
       if (req.url === '/v1/chat/completions') {
-        res.end(JSON.stringify({ model: 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
+        const body = b ? JSON.parse(b) : {};
+        if (body.model === 'm-terminated' && ++terminatedCalls === 1) {
+          res.statusCode = 502;
+          res.end(JSON.stringify({ error: { message: 'terminated' } }));
+        } else {
+          res.end(JSON.stringify({ model: body.model || 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
+        }
       } else if (req.url === '/v1/messages') {
         const body = b ? JSON.parse(b) : {};
         if (body.model === 'claude-direct-denied') {
@@ -92,6 +99,15 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const out = await callProxyModel(routeForModel('m-one'), [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }]);
   assert.equal(out.content, 'openai-style reply');
   assert.equal(seen[0].auth, 'Bearer sk-secret-123', 'openai kind sends the provider key as bearer');
+  const recoveredTermination = await callProxyModel({
+    id: 'm-terminated',
+    model: 'm-terminated',
+    proxy: 'api',
+    kind: 'openai',
+    base: 'http://127.0.0.1:9999',
+  }, [{ role: 'user', content: 'retry a terminated transport' }], { retries: 1 });
+  assert.equal(recoveredTermination.model, 'm-terminated');
+  assert.equal(terminatedCalls, 2, 'a terminated model transport receives one bounded exact retry');
 
   upsertProvider({ name: 'AnthTest', kind: 'anthropic', base_url: 'http://127.0.0.1:9999', api_key: 'sk-ant-9', models: ['claude-x'] });
   const r2 = routeForModel('claude-x');

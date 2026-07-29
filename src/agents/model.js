@@ -23,7 +23,7 @@ export function isVisionRoute(route) {
 // (e.g. "fetch failed" when the real model API briefly can't be reached), plus connection blips and
 // 429/5xx. Retry these a couple of times so one hiccup doesn't fail a review/summary and stop the
 // supervisor from sending.
-const TRANSIENT_RX = /fetch failed|internal server error|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|network|temporarily|unavailable|overloaded|rate.?limit|\b(429|500|502|503|504)\b/i;
+const TRANSIENT_RX = /fetch failed|internal server error|\bterminated\b|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|network|temporarily|unavailable|overloaded|rate.?limit|\b(429|500|502|503|504)\b/i;
 function isTransient(e) {
   return TRANSIENT_RX.test(String(e?.message || e || ''));
 }
