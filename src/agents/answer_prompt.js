@@ -176,7 +176,7 @@ export function isNonMutatingCurrentCardReview({ question = '', summary = '', an
   const reply = String(answer || '');
   if (!/\b(?:this|current)\s+(?:task\s+)?card\b/i.test(ask)) return false;
   if (!/\b(?:card|task)\b/i.test(reply)) return false;
-  if (!/\b(?:verify|verification|evidence|acceptance\s+criteria|test\s+(?:result|evidence|output)s?)\b/i.test(reply)) return false;
+  if (!/\b(?:verif(?:y|ied|ication)|evidence|acceptance[-\s]+criteria|test\s+(?:result|evidence|output)s?)\b/i.test(reply)) return false;
   return /\b(?:do\s+not|don't|must\s+not|never)\b[^.!?;\n]{0,80}\b(?:close|activate|start|open|reopen|abandon|mutate|change|switch)\b/i.test(reply)
     || /\b(?:card|task)\s+state\b[^.!?;\n]{0,60}\b(?:remain|stay|keep|leave)\b[^.!?;\n]{0,30}\bunchanged\b/i.test(reply)
     || /\b(?:keep|remain|stay)\b[^.!?;\n]{0,70}\b(?:current\s+(?:card|task|work)|on\s+the\s+current\s+(?:card|task|work))\b/i.test(reply);

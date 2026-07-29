@@ -39,6 +39,10 @@ assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|T
   }), true);
   assert.equal(isNonMutatingCurrentCardReview({
     ...currentAsk,
+    answer: 'Do not close this card or activate the editor card; builders must not mutate Supervisor task-card state. Keep the card unchanged and provide the acceptance-criteria checklist with test outputs so completion can be independently verified.',
+  }), true, 'hyphenated criteria and verified evidence preserve the captured non-mutating Co-pilot review');
+  assert.equal(isNonMutatingCurrentCardReview({
+    ...currentAsk,
     answer: 'Close this card after checking the tests and activate the next task card.',
   }), false, 'an asserted transition is not a non-mutating review');
   assert.equal(isNonMutatingCurrentCardReview({
@@ -60,6 +64,12 @@ assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|T
   assert.equal(cardLifecycleDirective(
     'Do not close the log-UI card. Activate the editor card after this message.',
   ), true, 'sentence punctuation ends lifecycle refutation scope');
+  assert.equal(cardLifecycleDirective(
+    "Don't touch card state — you never create, close, or activate Supervisor task cards, and nothing gets marked done on an unverified claim. Leave the log-UI card open and the editor card inactive.",
+  ), false, 'open after a card noun is a state adjective, not an instruction to open a later card');
+  assert.equal(cardLifecycleDirective(
+    'Leave the log-UI card open. Activate the editor card after the review.',
+  ), true, 'an adjectival open state does not hide a later asserted lifecycle mutation');
 
   const prematureEscalation = {
     action: 'escalate',
