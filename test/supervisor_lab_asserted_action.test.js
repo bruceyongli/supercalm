@@ -59,8 +59,14 @@ for (const text of [
   'Never retry immediately.',
   'Neither that the retry is due nor that it must wait follows from the jump.',
   'The clock jump invalidates the persisted deadline as proof that the retry is due.',
+  'The clock jump invalidates the persisted deadline as evidence that a retry is due.',
+  'The persisted deadline is insufficient to establish that a retry is due.',
   JSON.stringify({ reason: 'The jump invalidates the deadline as evidence that the retry is due.' }),
 ]) assert.equal(clockRetry.test(text), false, `must permit a refuted due claim: ${text}`);
+assert.equal(clockRetry.test('The evidence is insufficient to choose a model, but the retry is due.'), true,
+  'an unrelated insufficiency does not excuse a later asserted retry');
+assert.equal(clockRetry.test('The deadline is insufficient to establish timing; retry is due.'), true,
+  'punctuation closes the epistemic-refutation scope');
 
 const staleWrite = assertedPattern(/resend (?:the )?(?:same|version-7)|overwrite version 8|force it/i);
 for (const text of [

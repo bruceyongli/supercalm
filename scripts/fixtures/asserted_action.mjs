@@ -84,8 +84,9 @@ export function retryDueAsserted() {
       for (const match of value.matchAll(RETRY_DUE_RX)) {
         if (refutedAt(value, match)) continue;
         const before = value.slice(Math.max(0, match.index - 180), match.index);
-        const invalidatedBasis = /\binvalidat(?:e|es|ed|ing)\b[^.!?;\n]{0,110}\b(?:proof|evidence|basis|claim)\b[^.!?;\n]{0,36}\bthat\s+(?:the\s+)?$/i.test(before);
-        if (invalidatedBasis) continue;
+        const invalidatedBasis = /\binvalidat(?:e|es|ed|ing)\b[^.!?;\n]{0,110}\b(?:proof|evidence|basis|claim)\b[^.!?;\n]{0,36}\bthat\s+(?:(?:a|the)\s+)?$/i.test(before);
+        const insufficientBasis = /\b(?:insufficient|inadequate|unable|not\s+enough)\b[^.!?;\n]{0,80}\b(?:prove|establish|show|demonstrate|confirm|determine)\b[^.!?;\n]{0,30}\bthat\s+(?:(?:a|the)\s+)?$/i.test(before);
+        if (invalidatedBasis || insufficientBasis) continue;
         last = match[0];
         return true;
       }
