@@ -68,7 +68,10 @@ export async function callProxyModel(route, messages, opts = {}) {
     try {
       return await callExactClaudeOAuth(route, messages, opts);
     } catch (error) {
-      exactClaudeRoutes.delete(key); // let the next call re-check the fleet after a direct-path failure
+      if (isAccessDenied(error)) {
+        exactClaudeRoutes.delete(key);
+        markRouteDenied(key);
+      }
       throw error;
     }
   }
@@ -86,12 +89,16 @@ export async function callProxyModel(route, messages, opts = {}) {
         // Preserve model identity and use AIOS's credential-injecting localhost shim; the caller
         // receives the real returned model ID and still fails closed on alias/substitution.
         if (route?.proxy === 'claude') {
+          // Remember the fleet transport decision before awaiting the direct request. A transient
+          // direct-path failure must not strand this exact model behind the fleet's 403 cooldown,
+          // and concurrent callers that arrive after the denial must take the repaired path too.
+          exactClaudeRoutes.add(key);
+          markRouteDenied(key);
           try {
-            const result = await callExactClaudeOAuth(route, messages, opts);
-            exactClaudeRoutes.add(key);
-            return result;
+            return await callExactClaudeOAuth(route, messages, opts);
           } catch (fallbackError) {
-            lastErr = fallbackError;
+            if (isAccessDenied(fallbackError)) exactClaudeRoutes.delete(key);
+            throw fallbackError;
           }
         }
         markRouteDenied(key);

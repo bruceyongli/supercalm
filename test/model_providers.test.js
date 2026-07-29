@@ -49,6 +49,8 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
 // ---- transport: openai-compatible + anthropic-native against a local mock --------------------------
 {
   const seen = [];
+  let transientDirectCalls = 0;
+  let deniedDirectCalls = 0;
   const mock = http.createServer((req, res) => {
     let b = '';
     req.on('data', (c) => (b += c));
@@ -58,11 +60,19 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
       if (req.url === '/v1/chat/completions') {
         res.end(JSON.stringify({ model: 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
       } else if (req.url === '/v1/messages') {
-        if (b && JSON.parse(b).model === 'claude-opus-5' && 'temperature' in JSON.parse(b)) {
+        const body = b ? JSON.parse(b) : {};
+        if (body.model === 'claude-direct-denied') {
+          deniedDirectCalls++;
+          res.statusCode = 403;
+          res.end(JSON.stringify({ error: { message: 'permission denied by direct provider' } }));
+        } else if (body.model === 'claude-transient' && ++transientDirectCalls === 1) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'Internal server error' } }));
+        } else if (body.model === 'claude-opus-5' && 'temperature' in body) {
           res.statusCode = 400;
           res.end(JSON.stringify({ error: { message: '`temperature` is deprecated for this model.' } }));
         } else {
-          const model = b ? JSON.parse(b).model : 'claude-x';
+          const model = body.model || 'claude-x';
           res.end(JSON.stringify({ model, content: [{ type: 'text', text: 'anthropic-style reply' }], usage: { input_tokens: 7, output_tokens: 2 } }));
         }
       } else if (req.url === '/v1/models') {
@@ -134,6 +144,42 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
     }, [{ role: 'user', content: 'identity preflight again' }], { retries: 0 });
     assert.equal(exactAgain.model, 'claude-x');
     assert.equal(deniedCalls, 1, 'the denied fleet route is attempted exactly once before the exact transport repair');
+
+    const transientRoute = {
+      id: 'claude-transient',
+      model: 'claude-transient',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    await assert.rejects(
+      callProxyModel(transientRoute, [{ role: 'user', content: 'first direct attempt fails' }], { retries: 0 }),
+      /Internal server error/,
+    );
+    const recovered = await callProxyModel(
+      transientRoute,
+      [{ role: 'user', content: 'next call stays on the repaired exact transport' }],
+      { retries: 0 },
+    );
+    assert.equal(recovered.model, 'claude-transient');
+    assert.equal(transientDirectCalls, 2, 'a transient direct-path failure remains retryable on a later call');
+    assert.equal(deniedCalls, 2, 'the transient exact route probes the denied fleet only once');
+
+    const deniedDirectRoute = {
+      id: 'claude-direct-denied',
+      model: 'claude-direct-denied',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    await assert.rejects(
+      callProxyModel(deniedDirectRoute, [{ role: 'user', content: 'direct denial' }], { retries: 0 }),
+      /permission denied by direct provider/,
+    );
+    await assert.rejects(
+      callProxyModel(deniedDirectRoute, [{ role: 'user', content: 'must cool down' }], { retries: 0 }),
+      /cooling down after 403/,
+    );
+    assert.equal(deniedDirectCalls, 1, 'a direct-path access denial opens the cooldown instead of hammering');
+    assert.equal(deniedCalls, 3, 'the direct-denied exact route also probes the fleet only once');
   } finally {
     delete process.env.AIOS_CLAUDE_AGENT_BASE_URL;
     await new Promise((ok) => denied.close(ok));
