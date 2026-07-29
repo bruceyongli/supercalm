@@ -58,7 +58,13 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
       if (req.url === '/v1/chat/completions') {
         res.end(JSON.stringify({ model: 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
       } else if (req.url === '/v1/messages') {
-        res.end(JSON.stringify({ model: 'claude-x', content: [{ type: 'text', text: 'anthropic-style reply' }], usage: { input_tokens: 7, output_tokens: 2 } }));
+        if (b && JSON.parse(b).model === 'claude-opus-5' && 'temperature' in JSON.parse(b)) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: '`temperature` is deprecated for this model.' } }));
+        } else {
+          const model = b ? JSON.parse(b).model : 'claude-x';
+          res.end(JSON.stringify({ model, content: [{ type: 'text', text: 'anthropic-style reply' }], usage: { input_tokens: 7, output_tokens: 2 } }));
+        }
       } else if (req.url === '/v1/models') {
         res.end(JSON.stringify({ data: [{ id: 'm-one' }, { id: 'm-two' }] }));
       } else {
@@ -87,6 +93,45 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.equal(call.body.messages[0].content, 'multimodal', 'multimodal flattened to text (v1 transport)');
   assert.equal(out2.usage.prompt_tokens, 7, 'anthropic usage translated');
 
+  const opus = await callProxyModel({
+    id: 'claude-opus-5',
+    model: 'claude-opus-5',
+    proxy: 'api',
+    kind: 'anthropic',
+    base: 'http://127.0.0.1:9999',
+  }, [{ role: 'user', content: 'request compatibility' }], { retries: 0 });
+  assert.equal(opus.model, 'claude-opus-5', 'temperature repair preserves exact model identity');
+  const opusCalls = seen.filter((x) => x.path === '/v1/messages' && x.body.model === 'claude-opus-5');
+  assert.equal(opusCalls.length, 2, 'temperature incompatibility gets one bounded same-model retry');
+  assert.equal('temperature' in opusCalls[0].body, true);
+  assert.equal('temperature' in opusCalls[1].body, false, 'the repaired request removes only the rejected field');
+
+  // A Claude fleet organization-policy denial falls back to the credential-injecting AIOS
+  // Anthropic transport without changing the requested or returned exact model identity.
+  let deniedCalls = 0;
+  const denied = http.createServer((req, res) => {
+    deniedCalls++;
+    res.statusCode = 403;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: { message: 'OAuth authentication is currently not allowed for this organization.' } }));
+  });
+  await new Promise((ok) => denied.listen(0, '127.0.0.1', ok));
+  process.env.AIOS_CLAUDE_AGENT_BASE_URL = 'http://127.0.0.1:9999';
+  try {
+    const exact = await callProxyModel({
+      id: 'claude-x',
+      model: 'claude-x',
+      proxy: 'claude',
+      port: denied.address().port,
+    }, [{ role: 'user', content: 'identity preflight' }], { retries: 0 });
+    assert.equal(exact.model, 'claude-x');
+    assert.equal(exact.content, 'anthropic-style reply');
+    assert.equal(deniedCalls, 1, 'the denied fleet route is attempted exactly once before the exact transport repair');
+  } finally {
+    delete process.env.AIOS_CLAUDE_AGENT_BASE_URL;
+    await new Promise((ok) => denied.close(ok));
+  }
+
   // probe uses the provider's own protocol
   const probe = await probeProvider({ kind: 'openai', base_url: 'http://127.0.0.1:9999', api_key: 'k' });
   assert.equal(probe.ok, true);
@@ -114,6 +159,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(am, /ANTHROPIC_API_KEY: prov\.api_key/, 'provider key reaches the claude env');
   const mj = readFileSync(new URL('../src/agents/model.js', import.meta.url), 'utf8');
   assert.match(mj, /if \(route\?\.base\) return callApiProvider/, 'base-URL routes bypass the fleet transport');
+  assert.match(mj, /route\?\.proxy === 'claude'[\s\S]{0,500}kind: 'anthropic'/, 'Claude access denial retains an exact OAuth transport repair');
   const api = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(api, /api\/models\/providers/, 'provider routes exist');
   assert.ok(api.indexOf("'/api/models/providers'") < api.indexOf('/api/models/providers/:id'), 'specific before :id (registration order)');

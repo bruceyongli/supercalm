@@ -48,7 +48,7 @@ export function markRouteDenied(key) {
   if (!deniedRoutes.has(key)) console.error(`[aios] model route ${key} returned 403 — cooling down ${Math.round(DENIED_COOLDOWN_MS / 60000)}m (access change, not an error to retry)`);
   deniedRoutes.set(key, Date.now());
 }
-const DENIED_RX = /\b403\b|forbidden|permission[_ ]denied|access denied/i;
+const DENIED_RX = /\b403\b|forbidden|permission[_ ]denied|access denied|not allowed for (?:this|the) organization/i;
 export function isAccessDenied(e) {
   return DENIED_RX.test(String(e?.message || e || ''));
 }
@@ -65,7 +65,27 @@ export async function callProxyModel(route, messages, opts = {}) {
       return await callOnce(route, messages, opts);
     } catch (e) {
       lastErr = e;
-      if (isAccessDenied(e)) { markRouteDenied(key); throw e; }
+      if (isAccessDenied(e)) {
+        // The shared Claude fleet transport can reject a valid Supercalm OAuth account at its
+        // organization-policy layer even though Anthropic accepts the same exact model directly.
+        // Preserve model identity and use AIOS's credential-injecting localhost shim; the caller
+        // receives the real returned model ID and still fails closed on alias/substitution.
+        if (route?.proxy === 'claude') {
+          try {
+            const base = process.env.AIOS_CLAUDE_AGENT_BASE_URL
+              || await import('../auth/index.js').then((auth) => auth.ensureShim());
+            return await callApiProvider(
+              { ...route, base, kind: 'anthropic', key: '' },
+              messages,
+              opts,
+            );
+          } catch (fallbackError) {
+            lastErr = fallbackError;
+          }
+        }
+        markRouteDenied(key);
+        throw lastErr;
+      }
       if (i < tries && isTransient(e)) {
         await delay(500 * (i + 1));
         continue;
@@ -111,7 +131,18 @@ async function callApiProvider(route, messages, { temperature = 0.1, maxTokens =
     const system = messages.filter((m) => m.role === 'system').map((m) => flattenContent(m.content)).join('\n\n');
     const rest = messages.filter((m) => m.role !== 'system').map((m) => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: flattenContent(m.content) }));
     const body = { model: route.model, max_tokens: maxTokens, temperature, ...(system ? { system } : {}), messages: rest.length ? rest : [{ role: 'user', content: '' }] };
-    const { status, json: env, raw } = await postJson(route.base, '/v1/messages', { ...(route.key ? { 'x-api-key': route.key } : {}), 'anthropic-version': '2023-06-01' }, body, CHAT_TIMEOUT_MS);
+    const headers = { ...(route.key ? { 'x-api-key': route.key } : {}), 'anthropic-version': '2023-06-01' };
+    let response = await postJson(route.base, '/v1/messages', headers, body, CHAT_TIMEOUT_MS);
+    // Some exact Claude models reject the otherwise-valid sampling field. Repair the request once
+    // on the same model/transport; never turn a request-shape incompatibility into a model fallback.
+    if (
+      (response.json?.error || response.status >= 400)
+      && /temperature.*(?:deprecated|unsupported|not (?:allowed|supported))/i.test(String(response.json?.error?.message || ''))
+    ) {
+      delete body.temperature;
+      response = await postJson(route.base, '/v1/messages', headers, body, CHAT_TIMEOUT_MS);
+    }
+    const { status, json: env, raw } = response;
     if (env?.error || status >= 400) throw new Error(env?.error?.message || `HTTP ${status}`);
     const content = (env.content || []).map((b) => b.text || '').join('');
     const usage = env.usage ? { prompt_tokens: env.usage.input_tokens, completion_tokens: env.usage.output_tokens } : null;
