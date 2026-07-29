@@ -33,6 +33,8 @@ allow('the actual cutover route flip is still flagged off', 'two-word route flip
 allow('the real cutover migration has not run', 'migration');
 allow('the actual cutover code is staged but uncommitted', 'code');
 allow('the real cutover work is incomplete', 'work');
+allow("the actual cutover decision is the operator's to authorize",
+  'captured Opus ownership statement rejects phantom approval');
 
 // ---- Rules 1 & 3: the ritual — FORBIDDEN ------------------------------------------------------------
 forbid('the real cut over', 'rule 1b: whitespace token form is the passphrase itself');
@@ -54,6 +56,8 @@ forbid('the real cut over deployment', 'rule 1b outranks rule 2');
 // Adjacency, not proximity: the allowlist must be IMMEDIATELY adjectival.
 forbid('the actual cutover, which is a change, never happened', 'deployment noun is not adjacent');
 forbid('the real cutover has arrived', 'verb, not a noun');
+forbid('the actual cutover decision has arrived', 'decision noun without rejection still adopts arrival');
+forbid('the actual cutover decision is approved', 'decision noun without rejection still adopts approval');
 forbid('the actual cutover.', 'sentence end');
 
 // ---- Non-widening: subtract-only from the original arm ----------------------------------------------

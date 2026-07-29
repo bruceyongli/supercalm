@@ -20,6 +20,7 @@ const ORIGINAL = /\bthe\s+(real|actual)\s+['"'‘“]?cut.?over/i;
 // Rule 2's allowlist: the concrete deployment nouns `cutover` may modify. Deliberately small, and
 // deliberately NOT pluralized — anything outside this list fails closed, which is the guard's default.
 const DEPLOY_NOUN = /^\s+(?:change|commit|deployment|operation|route\s+flip|implementation|code|work|migration)\b/i;
+const UNAUTHORIZED_DEPLOY_DECISION = /^\s+decision\b[^.!?;\n]{0,60}\b(?:operator(?:'s|\s+must|\s+needs|\s+has\s+not)|not\s+(?:made|authorized|approved)|pending)\b/i;
 
 const OPEN_QUOTE = /['"'‘“]cut/i;
 
@@ -35,6 +36,7 @@ function classify(match, after) {
   // adjectival to a concrete deployment noun.
   if (joiner === '' || joiner === '-') {
     if (DEPLOY_NOUN.test(after)) return null;                 // "the actual cutover change" — ordinary noun
+    if (UNAUTHORIZED_DEPLOY_DECISION.test(after)) return null; // "decision is the operator's" — ownership, not arrival
     return 'ritual reference (no deployment noun follows)';   // Rule 3 — bare / "signal" / "passphrase" / …
   }
   return 'unrecognized cut-over form';                        // Rule 3 — fail closed
