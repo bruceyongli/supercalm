@@ -15,6 +15,7 @@ const {
   AUTOPILOT_RELEASE_ADDENDUM,
   AUTOPILOT_RECOVERY_ADDENDUM,
   COPILOT_RECOVERY_ADDENDUM,
+  isNonMutatingSupervisorCoordination,
   RESERVED_APPROVAL_ADDENDUM,
   SUPERVISOR_COORDINATION_ADDENDUM,
   TIME_CONTINUITY_ADDENDUM,
@@ -90,6 +91,31 @@ assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Autopilot must ANSWER.*designate
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Neither mode may alter another session's product goal/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
+const overloadAsk = {
+  question: 'The provider returns 529 overloaded after four parallel sessions began at once. Should every session retry now?',
+  terminalTail: 'HTTP 529 overloaded_error. Four supervised sessions share the same provider and started simultaneously.',
+};
+assert.equal(isNonMutatingSupervisorCoordination({
+  ...overloadAsk,
+  answer: 'No. Recommend a bounded staggered retry with jitter, reduce concurrency to one session first, and preserve each retry budget.',
+}), true, 'bounded coordination of already-supervised sessions is a Co-pilot answer, not a product fork');
+for (const [label, sample] of [
+  ['retry herd', { ...overloadAsk, answer: 'Every session should retry immediately.' }],
+  ['claimed actuation', { ...overloadAsk, answer: 'I already reduced concurrency and restarted the sessions.' }],
+  ['reserved action', { ...overloadAsk, answer: 'Stagger the retries, then deploy the successful branch to production.' }],
+  ['product mutation', {
+    question: 'Four supervised sessions disagree about the product goal. Which scope should replace the current requirement?',
+    terminalTail: 'Four supervised sessions are waiting.',
+    answer: 'Assign one owner and replace the product scope with option B.',
+  }],
+  ['unmanaged fleet', {
+    question: 'Four sessions in unrelated projects hit overload. Should I coordinate them?',
+    answer: 'Use a bounded staggered retry with jitter.',
+  }],
+]) {
+  assert.equal(isNonMutatingSupervisorCoordination(sample), false, `${label} must stay behind the audience gate`);
+}
+
 const supervisor = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
 const context = readFileSync(new URL('../src/agents/context.js', import.meta.url), 'utf8');
 const panel = readFileSync(new URL('../web/agents/supervisor.js', import.meta.url), 'utf8');
@@ -100,6 +126,8 @@ assert.match(supervisor, /sys \+= '\\n\\n' \+ TIME_CONTINUITY_ADDENDUM/,
   'every answer receives the shared clock-discontinuity reliability invariant');
 assert.match(supervisor, /sys \+= '\\n\\n' \+ SUPERVISOR_COORDINATION_ADDENDUM/,
   'every answer distinguishes Supervisor-plane coordination from cross-session product authority');
+assert.match(supervisor, /!copilotSupervisorCoordination/,
+  'the Co-pilot audience gate recognizes only bounded non-mutating Supervisor-plane coordination');
 assert.match(supervisor, /maybeMonitorIntegration\(ctx, cfg, st\)/, 'Autopilot monitors the durable release after restart');
 assert.match(supervisor, /row\.stage === 'GREEN'/, 'only GREEN produces released success');
 assert.match(supervisor, /row\.stage === 'HELD'/, 'ambiguous release state remains operator-held');

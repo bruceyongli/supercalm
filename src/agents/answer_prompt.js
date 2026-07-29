@@ -177,6 +177,28 @@ export function isNonMutatingCurrentCardReview({ question = '', summary = '', an
     || /\b(?:keep|remain|stay)\b[^.!?;\n]{0,70}\b(?:current\s+(?:card|task|work)|on\s+the\s+current\s+(?:card|task|work))\b/i.test(reply);
 }
 
+// Co-pilot's audience gate normally binds operator-addressed choices to the operator. A bounded
+// control-plane recommendation for an already-supervised fleet is not such a choice: pacing shared
+// retries is the Supervisor's job. Keep this exception deliberately narrower than the prompt doctrine:
+// it needs explicit multi-session supervision + a coordination incident + a bounded recommendation,
+// and rejects product/card/reserved-action changes, retry herds, and claims that Co-pilot already acted.
+const SUPERVISED_FLEET_RX = /\b(?:supervised\s+sessions?|(?:two|three|four|five|multiple|several|parallel|all|\d+)\s+(?:already[-\s]+)?supervised\s+sessions?|sessions?\s+(?:already\s+)?(?:managed|supervised)\s+by\s+(?:this|the)\s+supervisor)\b/i;
+const SUPERVISOR_CONTROL_PLANE_RX = /\b(?:retry|back[\s-]*off|pace|pacing|concurr|fallback|ownership|owner|handoff|overload|capacity|circuit|throttl|queue|stagger|jitter|split[-\s]*brain)\b/i;
+const BOUNDED_COORDINATION_RX = /\b(?:bounded|stagger|jitter|back[\s-]*off|pace|serial|queue|circuit|retry\s+budget|idempoten|reduce[^.!?;\n]{0,35}concurr|(?:one|single)\s+session|one\s+at\s+a\s+time|exclusive\s+owner|designated\s+owner)\b/i;
+const PRODUCT_OR_RESERVED_COORDINATION_RX = /\b(?:task\s+card|product\s+(?:goal|scope|requirement)|user[-\s]*visible\s+(?:goal|scope|feature|requirement)|deploy(?:ment)?|release|publish|production|delete|spend|payment|credential|secret|public\s+announcement|customer\s+data)\b/i;
+const RETRY_HERD_RX = /\b(?:every|all)\s+sessions?\b[^.!?;\n]{0,40}\bretry\b[^.!?;\n]{0,20}\b(?:now|immediately|simultaneously)\b|\bretry\s+(?:every|all)\s+sessions?\b[^.!?;\n]{0,20}\b(?:now|immediately|simultaneously)\b/i;
+const CLAIMED_COORDINATION_ACTUATION_RX = /\b(?:i|we|co-?pilot)\s+(?:have\s+|already\s+|have\s+already\s+)?(?:retried|resumed|relaunched|restarted|switched|assigned|transferred|reduced|staggered|queued)\b/i;
+
+export function isNonMutatingSupervisorCoordination({ question = '', summary = '', terminalTail = '', answer = '' } = {}) {
+  const ask = [question, summary, terminalTail].filter(Boolean).join('\n');
+  const reply = String(answer || '');
+  if (!SUPERVISED_FLEET_RX.test(ask) || !SUPERVISOR_CONTROL_PLANE_RX.test(ask)) return false;
+  if (!SUPERVISOR_CONTROL_PLANE_RX.test(reply) || !BOUNDED_COORDINATION_RX.test(reply)) return false;
+  if (PRODUCT_OR_RESERVED_COORDINATION_RX.test([ask, reply].join('\n'))) return false;
+  if (RETRY_HERD_RX.test(reply) || CLAIMED_COORDINATION_ACTUATION_RX.test(reply)) return false;
+  return true;
+}
+
 export function isCurrentCardTransitionAsk({ question = '', summary = '' } = {}) {
   const ask = [question, summary].filter(Boolean).join('\n');
   if (/\b(?:another|other|different)\s+(?:session|project)\b/i.test(ask)) return false;
