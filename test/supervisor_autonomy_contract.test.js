@@ -16,6 +16,7 @@ const {
   AUTOPILOT_RECOVERY_ADDENDUM,
   COPILOT_RECOVERY_ADDENDUM,
   RESERVED_APPROVAL_ADDENDUM,
+  SUPERVISOR_COORDINATION_ADDENDUM,
   TIME_CONTINUITY_ADDENDUM,
 } = await import('../src/agents/answer_prompt.js');
 
@@ -83,6 +84,10 @@ assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /stop, kill, hold/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /persisted wall-clock deadline does NOT prove/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /do not retry or fire an action immediately solely because of the clock jump/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /preserving the original attempt budget and duplicate-action protections/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /routine supervisory control-plane work/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Co-pilot must inspect.*ANSWER with a concrete bounded coordination recommendation/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Autopilot must ANSWER.*designated Supervisor-plane actuators/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Neither mode may alter another session's product goal/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
 const supervisor = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
@@ -93,6 +98,8 @@ assert.match(supervisor, /cfg\.mode === 'autopilot' \? AUTOPILOT_RECOVERY_ADDEND
   'the answer brain receives the exact mode-specific recovery authority');
 assert.match(supervisor, /sys \+= '\\n\\n' \+ TIME_CONTINUITY_ADDENDUM/,
   'every answer receives the shared clock-discontinuity reliability invariant');
+assert.match(supervisor, /sys \+= '\\n\\n' \+ SUPERVISOR_COORDINATION_ADDENDUM/,
+  'every answer distinguishes Supervisor-plane coordination from cross-session product authority');
 assert.match(supervisor, /maybeMonitorIntegration\(ctx, cfg, st\)/, 'Autopilot monitors the durable release after restart');
 assert.match(supervisor, /row\.stage === 'GREEN'/, 'only GREEN produces released success');
 assert.match(supervisor, /row\.stage === 'HELD'/, 'ambiguous release state remains operator-held');
