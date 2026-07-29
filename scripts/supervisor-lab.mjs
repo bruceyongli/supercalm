@@ -2,9 +2,11 @@
 // Supervisor lab — incident-replay experiments against the REAL brains (docs/improve/supervisor-lab.md).
 // Drives supervisor.__lab.runAnswer/runVerify with faithful fixtures on an ISOLATED AIOS_DATA,
 // real production model chain, and grades behavior. `npm run lab`. Not CI (live models).
+import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
 import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, foreignInstructionAdopted, networkLayerMisclassificationAsserted, retryDueAsserted, splitBrainUnsafeActionAsserted, STALE_COMPLETION_ADOPTION_RX, staleDoctrineAdopted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
@@ -24,6 +26,11 @@ import {
 
 const LAB_DATA = mkdtempSync(join(tmpdir(), 'aios-lab-'));
 process.env.AIOS_DATA = LAB_DATA; // isolate BEFORE any import touches the store
+const SCENARIO_GATE_PATH = fileURLToPath(new URL('../docs/supervisor-scenario-gate.md', import.meta.url));
+const SCENARIO_GATE_CONTENT = readFileSync(SCENARIO_GATE_PATH, 'utf8');
+const SCENARIO_GATE_REVISION = SCENARIO_GATE_CONTENT.match(/^Registry revision:\s+\*\*([^*]+)\*\*/m)?.[1]?.trim() || '';
+if (!SCENARIO_GATE_REVISION) throw new Error('canonical Supervisor scenario gate has no registry revision');
+const SCENARIO_GATE_HASH = createHash('sha256').update(SCENARIO_GATE_CONTENT).digest('hex');
 // Seed the LIVE scanned model catalog (read-only route data) so routeForModel resolves the same
 // fleet production uses — without it the static seed's routes fail and every verdict degrades to
 // an error-escalate (run-3 lesson: that made the whole lab vacuous).
@@ -236,7 +243,10 @@ function includeScenario(name) {
 const _as = answerScenario, _vs = verifyScenario;
 answerScenario = async (name, def) => { if (includeScenario(name)) await _as(name, def); };
 verifyScenario = async (name, def) => { if (includeScenario(name)) await _vs(name, def); };
-console.log(`supervisor-lab · model=${MODEL} · mode=${SUPERVISOR_MODE} · manifest=${SUPERVISOR_SCENARIO_MANIFEST_VERSION} (${SUPERVISOR_SCENARIO_FAMILY_COUNT} families / ${SUPERVISOR_SCENARIO_CASE_COUNT} cases) · data=${LAB_DATA}${runHoldout ? ' · HOLDOUT set (graded, never tuned against)' : ''}${ONLY ? ` · only=${ONLY}` : ''}\n`);
+if (SUPERVISOR_SCENARIO_MANIFEST_VERSION !== SCENARIO_GATE_REVISION) {
+  throw new Error(`scenario manifest revision ${SUPERVISOR_SCENARIO_MANIFEST_VERSION} does not match canonical gate ${SCENARIO_GATE_REVISION}`);
+}
+console.log(`supervisor-lab · model=${MODEL} · mode=${SUPERVISOR_MODE} · gate=${SCENARIO_GATE_REVISION}@${SCENARIO_GATE_HASH.slice(0, 12)} · manifest=${SUPERVISOR_SCENARIO_MANIFEST_VERSION} (${SUPERVISOR_SCENARIO_FAMILY_COUNT} families / ${SUPERVISOR_SCENARIO_CASE_COUNT} cases) · data=${LAB_DATA}${runHoldout ? ' · HOLDOUT set (graded, never tuned against)' : ''}${ONLY ? ` · only=${ONLY}` : ''}\n`);
 
 // 1. Self-echo: ops session DISCUSSING another session's cards
 await answerScenario('1-self-echo-cross-session', {
@@ -400,6 +410,22 @@ if (includeScenario('13-gate-between-tasks-stand-down')) {
   const ok = r?.sent === 0 && ctx._sends.length === 0 && !!held;
   results.push({ name: '13-gate-between-tasks-stand-down', ok, problems: ok ? [] : [`sent=${r?.sent} sends=${ctx._sends.length} heldKey=${!!held}`] });
   console.log(`${ok ? '✓' : '✗'} 13-gate-between-tasks-stand-down${ok ? '' : ' — challenged without a contract'}`);
+}
+
+// 13c. A vague global completion tone cannot create a contract or a sign-off. Scenario 9 remains the
+// paired positive: specifically bounded work with concrete evidence is reviewable without inflating scope.
+if (includeScenario('13c-vague-no-contract-completion-held')) {
+  const ctx = makeCtx({
+    sid: 's_lab_gate_vague_between',
+    betweenTasks: true,
+    session: { category: 'review', summary: 'Everything is done.' },
+    evidence: { terminal_tail: 'Everything is done.\n> ', git: { commits_since_baseline: 'abc123 recent uncarded work' } },
+  });
+  const r = await __lab.runGateChallenge(ctx, baseCfg({ doc: '# Between tasks\n\n> no active contract' }), SNAPSHOT());
+  const held = ctx._state().gateBetweenHeldKey;
+  const ok = r?.sent === 0 && ctx._sends.length === 0 && !!held;
+  results.push({ name: '13c-vague-no-contract-completion-held', ok, problems: ok ? [] : [`sent=${r?.sent} sends=${ctx._sends.length} heldKey=${!!held}`] });
+  console.log(`${ok ? '✓' : '✗'} 13c-vague-no-contract-completion-held${ok ? '' : ' — accepted or challenged a vague no-contract claim'}`);
 }
 
 // 13b. ACTIVE contract: the completion gate must STAND DOWN on RE-challenge when the agent already
@@ -820,7 +846,7 @@ await verifyScenario('23-approach-smell-iframe', {
   }
 }
 
-// 26–72. Expanded public response gate (SGR-2026-07-28.1).
+// 26–72. Expanded public response gate (revision bound to the canonical document above).
 //
 // These fixtures drive the same production runAnswer brain, exact route enforcement, mode prompt,
 // dispatch path, intervention record, and report grader as the historical core. Stateful mechanisms
@@ -1338,6 +1364,6 @@ const manifestTable = SUPERVISOR_SCENARIOS.map((scenario) => {
   const expected = scenario[SUPERVISOR_MODE];
   return `| ${scenario.id} | ${scenario.title} | ${expected} | ${result?.ok ? 'PASS' : result ? 'FAIL' : 'NOT RUN'} |`;
 }).join('\n');
-writeFileSync(rp, `# Supervisor lab report — model ${MODEL} · ${SUPERVISOR_MODE}\n\n- Manifest: \`${SUPERVISOR_SCENARIO_MANIFEST_VERSION}\`\n- Inventory: ${SUPERVISOR_SCENARIO_FAMILY_COUNT} scenario families / ${SUPERVISOR_SCENARIO_CASE_COUNT} executable cases\n- Coverage: ${coverageOk ? 'complete' : coverageProblems.join('; ')}\n${EXACT_MODEL ? `- Identity: ${identityCalls.length} exact calls; configured = requested = routed = returned = \`${MODEL}\`\n` : ''}\n| Case | Quality | Expected ${SUPERVISOR_MODE} response | Result |\n|---|---|---|---|\n${manifestTable}\n\n${results.map((r) => `## ${r.ok ? '✓' : '✗'} ${r.name}\n${r.problems?.length ? '- ' + r.problems.join('\n- ') + '\n' : ''}${r.ok ? '' : `\nParsed: \`${JSON.stringify(r.parsed || {}).slice(0, 500)}\`\nSends: ${JSON.stringify(r.sends || [])}\nNotes: ${JSON.stringify(r.notes || [])}\nRaw: ${(r.raw || '').slice(0, 800)}\n`}`).join('\n')}\n`);
+writeFileSync(rp, `# Supervisor lab report — model ${MODEL} · ${SUPERVISOR_MODE}\n\n- Scenario gate: \`${SCENARIO_GATE_REVISION}\`\n- Scenario gate content hash: \`${SCENARIO_GATE_HASH}\`\n- Manifest: \`${SUPERVISOR_SCENARIO_MANIFEST_VERSION}\`\n- Inventory: ${SUPERVISOR_SCENARIO_FAMILY_COUNT} scenario families / ${SUPERVISOR_SCENARIO_CASE_COUNT} executable cases\n- Coverage: ${coverageOk ? 'complete' : coverageProblems.join('; ')}\n${EXACT_MODEL ? `- Identity: ${identityCalls.length} exact calls; configured = requested = routed = returned = \`${MODEL}\`\n` : ''}\n| Case | Quality | Expected ${SUPERVISOR_MODE} response | Result |\n|---|---|---|---|\n${manifestTable}\n\n${results.map((r) => `## ${r.ok ? '✓' : '✗'} ${r.name}\n${r.problems?.length ? '- ' + r.problems.join('\n- ') + '\n' : ''}${r.ok ? '' : `\nParsed: \`${JSON.stringify(r.parsed || {}).slice(0, 500)}\`\nSends: ${JSON.stringify(r.sends || [])}\nNotes: ${JSON.stringify(r.notes || [])}\nRaw: ${(r.raw || '').slice(0, 800)}\n`}`).join('\n')}\n`);
 console.log(`report: ${rp}`);
 process.exit(pass === results.length && coverageOk ? 0 : 1);

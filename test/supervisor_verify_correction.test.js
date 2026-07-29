@@ -740,13 +740,13 @@ await check('the correction is pinned via ctx.callModel — never callChain/call
 console.log('\n10. prompt version contract');
 
 await check('VERIFY_PROMPT_VERSION was bumped for the correction addendum', async () => {
-  assert.equal(VERIFY_PROMPT_VERSION, 'supervisor.verify.2026-07-26.1',
+  assert.equal(VERIFY_PROMPT_VERSION, 'supervisor.verify.2026-07-29.1',
     'the addendum changes verifier prompt behaviour, so the prompt revision moves (package version untouched)');
   const replay = readFileSync(join(ROOT, 'test', 'supervisor_replay.test.js'), 'utf8');
-  assert.match(replay, /VERIFY_PROMPT_VERSION, 'supervisor\.verify\.2026-07-26\.1'/,
+  assert.match(replay, /VERIFY_PROMPT_VERSION, 'supervisor\.verify\.2026-07-29\.1'/,
     'the replay contract must pin the same revision');
-  assert.match(replay, /VERIFY_EVIDENCE_VERSION, 'supervisor\.evidence\.2026-07-23\.2'/,
-    'evidence composition is unchanged, so the evidence version must NOT move');
+  assert.match(replay, /VERIFY_EVIDENCE_VERSION, 'supervisor\.evidence\.2026-07-29\.1'/,
+    'the operator clause ledger and completion-report facts change evidence composition');
 });
 
 console.log('\n11. hermeticity');

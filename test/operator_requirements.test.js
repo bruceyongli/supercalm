@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { currentOperatorRequirements, formatOperatorRequirements } from '../src/agents/operator_requirements.js';
+import { atomicRequirementClauses, currentOperatorRequirements, formatOperatorRequirements } from '../src/agents/operator_requirements.js';
 
 const req = currentOperatorRequirements({
   messages: [
@@ -50,5 +50,44 @@ assert(columnReq.acceptance.some((x) => /Admin Devices column\/layout issue/i.te
 assert(columnReq.acceptance.some((x) => /left\/middle\/optional-right/i.test(x)));
 assert(columnReq.acceptance.some((x) => /DOM column counts/i.test(x)));
 assert(columnReq.acceptance.some((x) => /Deploy the corrected Admin Devices layout/i.test(x)));
+
+const atomic = atomicRequirementClauses(
+  'Before sign-off, also Create OPERATOR_RELEASE_CHECKLIST.md, show its diff, and provide a successful full python -m pytest run.',
+);
+assert.deepEqual(atomic.map((clause) => clause.text), [
+  'Create OPERATOR_RELEASE_CHECKLIST.md',
+  'show its diff',
+  'provide a successful full python -m pytest run',
+]);
+assert.equal(new Set(atomic.map((clause) => clause.id)).size, 3, 'every operator clause has a stable distinct id');
+
+const generalReq = currentOperatorRequirements({
+  messages: [{
+    ts: Date.now(),
+    text: 'Before sign-off, also Create OPERATOR_RELEASE_CHECKLIST.md, show its diff, and provide a successful full python -m pytest run.',
+  }],
+});
+assert.deepEqual(generalReq.clauses.map((clause) => clause.text), atomic.map((clause) => clause.text));
+assert.match(formatOperatorRequirements(generalReq), /gate opreq_[a-f0-9]{12}: Create OPERATOR_RELEASE_CHECKLIST\.md/);
+assert.equal(
+  currentOperatorRequirements({
+    messages: [{
+      ts: Date.now(),
+      text: 'Codex reported: Before sign-off, create OPERATOR_RELEASE_CHECKLIST.md, show its diff, and run full pytest.',
+    }],
+  }),
+  null,
+  'forwarded builder requirements do not become operator-authored clauses',
+);
+assert.equal(
+  currentOperatorRequirements({
+    messages: [{
+      ts: Date.now(),
+      text: "What is the status? Please don't change anything; just answer my question.",
+    }],
+  }),
+  null,
+  'answer-only and status questions do not become completion requirements',
+);
 
 console.log('operator_requirements.test ok');

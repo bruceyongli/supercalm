@@ -6,6 +6,7 @@ import {
   detectOutOfBandEvidence,
   detectUnsubmittedApprovalDraft,
   enforceVerificationFacts,
+  isVagueCompletionReport,
   normalizeVerificationResult,
 } from '../src/agents/supervisor/verify.js';
 import { STAGE_ADDENDUM } from '../src/agents/answer_prompt.js';
@@ -25,6 +26,7 @@ assert.match(SYS_VERIFY, /terminal screen text is NEVER a submitted operator ins
 assert.match(SYS_VERIFY, /Do not use phrases such as "no visual evidence"/);
 assert.match(SYS_VERIFY, /iframe used as an application shell/);
 assert.match(buildVerifierSystemPrompt().systemPrompt, /INTERACTION PROOF/);
+assert.match(buildVerifierSystemPrompt().systemPrompt, /OPERATOR CLAUSE LEDGER/);
 assert.match(STAGE_ADDENDUM, /SUBMITS a plan\/design or asks for approval/);
 assert.match(STAGE_ADDENDUM, /inspect it against the mission[\s\S]{0,180}tests, evidence[\s\S]{0,80}rollback/);
 assert.match(STAGE_ADDENDUM, /action=escalate with reason_code="scope"[\s\S]{0,120}recommendation/);
@@ -171,5 +173,50 @@ const iframeGuarded = enforceVerificationFacts(
   { facts: iframeFacts },
 );
 assert.match(iframeGuarded.assessment, /iframe[\s\S]{0,180}(?:history|deep-linking|accessibility|focus|cross-frame|routing)/i);
+
+assert.equal(isVagueCompletionReport('Everything is done.'), true);
+assert.equal(isVagueCompletionReport('Parser fix complete: parser.js changed and 42/42 tests passed.'), false);
+const vagueFacts = deriveVerificationFacts({
+  betweenTasks: true,
+  reportedWorkText: 'Everything is done.',
+});
+assert.equal(vagueFacts.vagueNoContractCompletion, true);
+const vagueGuarded = enforceVerificationFacts(baseResult, { facts: vagueFacts });
+assert.equal(vagueGuarded.verdict, 'needs_attention');
+assert.match(vagueGuarded.unmet.join('\n'), /bounded completion report/i);
+
+const operatorRequirements = {
+  clauses: [
+    { id: 'opreq_checklist', text: 'Create OPERATOR_RELEASE_CHECKLIST.md' },
+    { id: 'opreq_diff', text: 'Show its diff' },
+    { id: 'opreq_full_pytest', text: 'Provide a successful full python -m pytest run' },
+  ],
+};
+const omittedClause = enforceVerificationFacts(
+  normalizeVerificationResult({
+    ...baseResult,
+    operator_requirement_results: [
+      { id: 'opreq_checklist', status: 'met', evidence: 'committed file in git diff' },
+      { id: 'opreq_diff', status: 'met', evidence: 'committed diff shows the file' },
+    ],
+  }),
+  { operatorRequirements },
+);
+assert.equal(omittedClause.verdict, 'needs_attention');
+assert.match(omittedClause.unmet.join('\n'), /opreq_full_pytest/);
+
+const allClauses = enforceVerificationFacts(
+  normalizeVerificationResult({
+    ...baseResult,
+    operator_requirement_results: [
+      { id: 'opreq_checklist', status: 'met', evidence: 'committed file in git diff' },
+      { id: 'opreq_diff', status: 'met', evidence: 'committed diff shows the file' },
+      { id: 'opreq_full_pytest', status: 'met', evidence: 'terminal: python -m pytest — 218 passed' },
+    ],
+  }),
+  { operatorRequirements },
+);
+assert.equal(allClauses.verdict, 'complete');
+assert.deepEqual(allClauses.unmet, []);
 
 console.log('supervisor_verifier_provenance.test ok');

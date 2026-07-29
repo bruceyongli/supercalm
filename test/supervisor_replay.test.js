@@ -13,11 +13,9 @@ const {
   verifierContractScope,
 } = await import('../src/agents/supervisor/verify.js');
 
-// Bumped for the bounded contradiction-correction addendum (the verifier system prompt gained the
-// DETERMINISTIC_CORRECTION block). The EVIDENCE version is deliberately unchanged: what the verifier
-// is shown did not move, only what it can be re-asked afterwards.
-assert.equal(VERIFY_PROMPT_VERSION, 'supervisor.verify.2026-07-26.1');
-assert.equal(VERIFY_EVIDENCE_VERSION, 'supervisor.evidence.2026-07-23.2');
+// Bumped for the atomic operator-clause ledger and vague-completion evidence controls.
+assert.equal(VERIFY_PROMPT_VERSION, 'supervisor.verify.2026-07-29.1');
+assert.equal(VERIFY_EVIDENCE_VERSION, 'supervisor.evidence.2026-07-29.1');
 
 function merge(a, b) {
   if (Array.isArray(a) || Array.isArray(b)) return b ?? a;

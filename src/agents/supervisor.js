@@ -1393,6 +1393,12 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     ctxData,
     productAudits,
     outOfBandEvidence,
+    betweenTasks: !!ctx.__betweenTasks,
+    reportedWorkText: [
+      sess?.summary,
+      sess?.question,
+      ...(ctxData.recent_messages || []).filter((message) => message?.dir !== 'in').slice(-3).map((message) => message?.text || ''),
+    ].filter(Boolean).join('\n'),
   });
   const visual = detectVisualWork(ctxData, contractScope.definitionOfDone + ' ' + (cfg.doc || '')); // #1: UI/visual work?
   const hasVisualProof = canSee && sendable.length > 0; // the model can actually SEE a rendered screenshot
@@ -1559,7 +1565,11 @@ async function runVerify(ctx, cfg, trigger, workFp = null) {
     ? contradictionFailClosedResult(contradictions, { facts: verificationFacts, operatorInputProvenance, reason: contradictionHold })
     : enforceVerificationFacts(
       normalizeVerificationResult(rawParsed || null, { error: error || 'no output' }),
-      { operatorInputProvenance, facts: verificationFacts },
+      {
+        operatorInputProvenance,
+        operatorRequirements: contractScope.currentOperatorRequirements,
+        facts: verificationFacts,
+      },
     );
   let verifiedGitSha = null;
   if (parsed.verdict === 'complete' && evidenceGitSha) {

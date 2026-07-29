@@ -1,8 +1,8 @@
 import { pendingComposerDraft } from '../../agent_input_ready.js';
 import { scrubSupervisorText } from './scrub.js';
 
-export const VERIFY_PROMPT_VERSION = 'supervisor.verify.2026-07-26.1';
-export const VERIFY_EVIDENCE_VERSION = 'supervisor.evidence.2026-07-23.2';
+export const VERIFY_PROMPT_VERSION = 'supervisor.verify.2026-07-29.1';
+export const VERIFY_EVIDENCE_VERSION = 'supervisor.evidence.2026-07-29.1';
 
 const VERDICTS = ['on_track', 'needs_attention', 'off_track', 'complete', 'unknown'];
 
@@ -50,7 +50,7 @@ The supervision document is the contract. The agent cannot be trusted to grade i
 Evidence you may receive:
 - SUPERVISION DOC: markdown with the goal, the CURRENT task (## Now) and its acceptance criteria (the bar to judge NOW), hard rules, agreed decisions, a ## Timeline of already-completed work, and verification notes.
 - REVIEW_BEHAVIOR_TEMPLATE: optional standing reviewer behavior/rubric. Use it only to shape how skeptical, broad, or evidence-oriented the review should be. It is NOT session scope, NOT a source of acceptance criteria, and must not resurrect completed or unrelated work.
-- CURRENT_OPERATOR_REQUIREMENTS: optional structured requirements extracted directly from the operator's latest correction/scope messages. These are current sign-off gates even when ## Now is stale or the doc-maintainer only archived them into Timeline.
+- CURRENT_OPERATOR_REQUIREMENTS: optional structured requirements extracted directly from the operator's latest correction/scope messages. Each clause has a stable id and is a separate current sign-off gate even when ## Now is stale or the doc-maintainer only archived it into Timeline.
 - GIT: working-tree status/stat/diff AND committed work since the supervisor's baseline (commits_since_baseline, committed_stat, committed_diff). IMPORTANT: an empty working diff does NOT mean nothing happened -- the agent may have committed. Read the committed work too before claiming there is no evidence. If git.multi_repo is present, the project path is a WORKSPACE of several repos and the evidence is aggregated across the active ones, each section prefixed "### <repo>/" (commits_since_baseline there is each repo's recent commits, not a single baseline diff) -- treat it as one body of work. Only report "unverifiable":"no_git" when there is genuinely NO readable git here at all.
 - SCREENSHOT: optional preview screenshot when a preview URL is configured.
 - PRODUCT_AUDIT: structured headless-browser walkthrough evidence when the task is UI/product work. It names pages/surfaces visited, scroll behavior, visible buttons/actions, whether target actions are disabled/covered, and whether the preview was still an auth wall. Treat this like the operator manually clicking around: if it says a target button is missing/disabled/covered or page scroll moved instead of the intended panel, the UI criterion is not met.
@@ -69,7 +69,7 @@ Rules:
 - CURRENT FOCUS ONLY: judge against ## Now + ## Acceptance criteria (the current task). Anything in ## Timeline is completed HISTORY — use it for context/trajectory and to understand HOW the work got here, but do NOT re-demand its proof or block on those finished milestones. The session moves task-by-task; never challenge a task the doc has already moved past.
 - CHECKBOX LIFECYCLE: checked acceptance items (- [x]) and sections such as Timeline, Resolved, or Archived context are historical/proven context. Do not list them as unmet current gates unless the latest operator words or current_operator_requirements explicitly reopen them.
 - TEMPLATE SEPARATION: never treat REVIEW_BEHAVIOR_TEMPLATE as the supervision document. If it conflicts with the session doc or latest operator words about task scope, use it only as review style and judge scope from the session doc plus latest operator requirements.
-- OPERATOR LATEST WORDS WIN: when CURRENT_OPERATOR_REQUIREMENTS is present, judge those gates as part of the current task even if ## Now says something narrower. A "complete" verdict requires every operator requirement acceptance item to be met with inspectable evidence.
+- OPERATOR LATEST WORDS WIN: when CURRENT_OPERATOR_REQUIREMENTS is present, judge those gates as part of the current task even if ## Now says something narrower. Return one operator_requirement_results entry for EVERY clause id, with status met|unmet|unverifiable and concrete evidence. A "complete" verdict requires every clause to be present, met, and evidence-bound; never collapse several clauses into one prose bucket.
 - PROGRESSIVE SEQUENCING: "future", "later", "when ready", "phase 2", "next phase", or "after Goal 1" means after prerequisites, not never and not contradiction. If prerequisites are accepted, in Timeline, already verified, or the operator says continue/move on/go ahead, that sequenced work is now current. Do not set goal_conflict or block merely because an older doc/spec called it future; ask for evidence on the next unblocked work instead.
 - UI QUALITY: if the work produces a user interface, judge whether it is genuinely usable and presentable, not merely that it renders. With a screenshot, flag raw/unstyled output, dumped text, broken/cramped layout, unreadable density. With NO screenshot AND no corroborated out_of_band_evidence you CANNOT verify appearance: treat every "looks good/polished/clean" UI claim as UNVERIFIED, say so, and recommend a preview URL. When corroborated out_of_band_evidence exists, follow that channel-specific rule instead: the render exists but remains uninspected. Never certify UI you haven't seen.
 - PRODUCT WALKTHROUGH: for UI/admin/product claims, require representative surface coverage, not one happy-path screenshot. If the operator named pages such as Devices/Audit/Users or interactions such as "Start delete session", require evidence for those specific surfaces/actions. A single login-wall or overview screenshot cannot prove multi-page UI quality.
@@ -86,7 +86,7 @@ Rules:
   - "none" — you had enough evidence (git and/or a usable screenshot, or the task needs neither) to judge normally.
 
 Return STRICT minified JSON only:
-{"verdict":"on_track|needs_attention|off_track|complete|unknown","score":0-100,"assessment":"<2-4 evidence-based sentences>","unmet":["<unmet criterion/rule/decision>"],"goal_conflict":true|false,"unverifiable":"none|no_git|auth_wall|out_of_band|both","message_to_agent":"<short corrective message, or empty>"}
+{"verdict":"on_track|needs_attention|off_track|complete|unknown","score":0-100,"assessment":"<2-4 evidence-based sentences>","unmet":["<unmet criterion/rule/decision>"],"operator_requirement_results":[{"id":"<exact gate id>","status":"met|unmet|unverifiable","evidence":"<specific diff, command output, artifact, or missing-proof reason>"}],"goal_conflict":true|false,"unverifiable":"none|no_git|auth_wall|out_of_band|both","message_to_agent":"<short corrective message, or empty>"}
 score = verifier confidence in the verdict, not percent completion (0 no confidence, 100 fully verified).`;
 
 export const SYS_VERIFY_VISUAL = `VISUAL PROOF REQUIRED — this work touches UI/visual surfaces but you were given NO visual evidence (no screenshot). Code that compiles is NOT code that renders correctly, so you CANNOT certify any UI / visual / layout / styling / rendering gate from the diff alone — mark every such gate UNVERIFIED in "unmet". In message_to_agent, DEMAND visual proof before any sign-off: the agent must capture a screenshot of the ACTUAL rendered result (run a headless screenshot of the running app / the affected screen) and confirm it matches each visual gate — or a preview URL must be set so the supervisor can capture one. "Looks done" / "the UI is clean" without a rendered screenshot is exactly the untested-UI failure; never sign off on it. BUT distinguish "never rendered" from "rendered out-of-band": if the evidence shows the agent DID capture the renders and they are merely in a channel you can't fetch (served at a URL/route/gallery such as /review, committed as PNG/PDF artifacts, or posted in chat), that is unverifiable:"out_of_band" — report that channel for the operator to open; do NOT keep re-demanding a screenshot the agent has already produced, and do NOT call already-rendered UI "untested".`;
@@ -106,6 +106,7 @@ export const SYS_VERIFY_LEDGER = `PRIOR VERIFICATIONS (memory) — the evidence 
 
 export const SYS_VERIFY_DECISIVE_CHECKS = `DECISIVE EVIDENCE CHECKS — perform this final pass before choosing a verdict:
 - DETERMINISTIC REVIEW FLAGS: evidence.deterministic_review_flags contains facts derived by the supervising system from the contract and inspectable evidence. Address every flag explicitly; do not silently sign off past one.
+- OPERATOR CLAUSE LEDGER: when current_operator_requirements.clauses exists, copy every exact clause id into operator_requirement_results and decide it separately. One omitted, merged, or evidence-free clause blocks completion.
 - OPERATOR INPUT: an unsubmitted composer draft is display state, not operator approval. State explicitly that no operator message or approval was submitted, and never act as if it arrived.
 - INTERACTION PROOF: a still screenshot or text visible in a composer proves only that pixels rendered. It does NOT prove that typing, clicking, submitting, dispatching, navigation, or delivery reached the intended handler/agent. For an interaction acceptance criterion, require a driven walkthrough, structured product-audit interaction, or named end-to-end/integration test result; otherwise verdict cannot be complete/on_track and the missing driven proof must be named.
 - APPROACH HAZARDS: when committed evidence uses an iframe as the application shell or primary session-navigation mechanism, explicitly flag the history/deep-linking, accessibility/focus, and cross-frame coordination concern and recommend normal in-page routing/composition.`;
@@ -168,6 +169,8 @@ export function buildVerifierSystemPrompt({ hasDefinitionOfDone = false, visualW
 
 const INTERACTION_SCOPE_RX = /\b(?:typ(?:e|ing|ed)|keystrokes?|click(?:ing|ed)?|submit(?:ting|ted)?|dispatch(?:ing|ed)?|drag(?:ging|ged)?|drop(?:ping|ped)?|keyboard|interaction|switch(?:ing|ed)?\s+sessions?|full[- ]page reload|reach(?:es|ed|ing)?\s+(?:the\s+)?(?:agent\s+)?pane)\b/i;
 const DRIVEN_TEST_RX = /\b(?:playwright|puppeteer|cypress|selenium|webdriver|browser[- ]test|e2e|end[- ]to[- ]end|integration[- ]test)\b[\s\S]{0,320}\b(?:pass(?:ed)?|green|ok|succeed(?:ed)?)\b/i;
+const VAGUE_COMPLETION_RX = /^(?:(?:the )?agent\s+)?(?:(?:reports?|says?|claims?)\s+(?:that\s+)?)?(?:everything|all(?:\s+of\s+it)?|it)?\s*(?:is\s+|has\s+been\s+)?(?:done|complete|completed|finished|all set)\s*[.!]*$/i;
+const BOUNDED_REPORT_RX = /\b(?:[\w./-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|md|json|html|css)|commit|sha|diff|patch|tests?|checks?|suite|build|deploy(?:ed|ment)?|release|screenshot|artifact|url|https?:\/\/|\d+\s*\/\s*\d+|\d+\s+(?:tests?|checks?)\b|changed|added|removed|fixed|implemented)\b/i;
 
 // Which MODALITY the in-scope criterion demands. A click and a keystroke are not interchangeable
 // proof: "typing reaches the agent pane" is not demonstrated by having clicked something.
@@ -229,7 +232,19 @@ function productAuditDroveInteraction(productAudits, { wantTyping = false, contr
   ));
 }
 
-export function deriveVerificationFacts({ contractText = '', ctxData = {}, productAudits = [], outOfBandEvidence = null } = {}) {
+export function isVagueCompletionReport(text) {
+  const report = line(text, 500);
+  return !!report && report.length <= 120 && VAGUE_COMPLETION_RX.test(report) && !BOUNDED_REPORT_RX.test(report);
+}
+
+export function deriveVerificationFacts({
+  contractText = '',
+  ctxData = {},
+  productAudits = [],
+  outOfBandEvidence = null,
+  betweenTasks = false,
+  reportedWorkText = '',
+} = {}) {
   const contract = String(contractText || '');
   const git = ctxData?.git || {};
   const gitText = [git.diff, git.committed_diff, git.stat, git.committed_stat, git.commits_since_baseline].filter(Boolean).join('\n');
@@ -250,11 +265,24 @@ export function deriveVerificationFacts({ contractText = '', ctxData = {}, produ
   // describes only the provenance detectOutOfBandEvidence established — never asserting committed evidence
   // for a probe-only corroboration (that would fabricate a stronger evidence record than exists).
   const outOfBandCorroboration = outOfBandProof ? String(outOfBandEvidence.corroboration || '') : '';
+  const vagueNoContractCompletion = !!betweenTasks && isVagueCompletionReport(reportedWorkText);
   const flags = [];
   if (interactionProofGap) flags.push('interaction_requires_driven_proof');
   if (iframeShellHazard) flags.push('iframe_application_shell_hazard');
   if (outOfBandProof) flags.push('out_of_band_render_channel');
-  return { interactionProofRequired, interactionTypingRequired, interactionProofPresent, interactionProofGap, iframeShellHazard, outOfBandProof, outOfBandChannel, outOfBandCorroboration, flags };
+  if (vagueNoContractCompletion) flags.push('vague_no_contract_completion');
+  return {
+    interactionProofRequired,
+    interactionTypingRequired,
+    interactionProofPresent,
+    interactionProofGap,
+    iframeShellHazard,
+    outOfBandProof,
+    outOfBandChannel,
+    outOfBandCorroboration,
+    vagueNoContractCompletion,
+    flags,
+  };
 }
 
 function appendAssessment(current, sentence) {
@@ -268,12 +296,29 @@ function appendUnmet(current, item) {
   return values.slice(0, 12);
 }
 
-export function enforceVerificationFacts(result, { operatorInputProvenance = null, facts = {} } = {}) {
+export function enforceVerificationFacts(result, { operatorInputProvenance = null, operatorRequirements = null, facts = {} } = {}) {
   const out = {
     ...result,
     unmet: [...(result?.unmet || [])],
     missingEvidence: [...(result?.missingEvidence || result?.unmet || [])],
   };
+  const clauses = Array.isArray(operatorRequirements?.clauses) ? operatorRequirements.clauses : [];
+  if (clauses.length) {
+    const results = new Map((out.operatorRequirementResults || []).map((item) => [item.id, item]));
+    for (const clause of clauses) {
+      const item = results.get(clause.id);
+      if (!item) {
+        out.unmet = appendUnmet(out.unmet, `Operator requirement was not evaluated (${clause.id}): ${clause.text}`);
+        continue;
+      }
+      if (item.status !== 'met') {
+        out.unmet = appendUnmet(out.unmet, `Operator requirement ${item.status} (${clause.id}): ${clause.text}`);
+      } else if (!item.evidence) {
+        out.unmet = appendUnmet(out.unmet, `Operator requirement lacks inspectable evidence (${clause.id}): ${clause.text}`);
+      }
+    }
+    if (out.unmet.length && ['complete', 'on_track'].includes(out.verdict)) out.verdict = 'needs_attention';
+  }
   if (operatorInputProvenance?.submitted === false) {
     const sentence = 'No operator message or approval was submitted; the visible composer draft is display-only, not operator input.';
     if (!/(?:unsubmitted|no operator (?:message|approval)|operator (?:message|approval).{0,30}not submitted)/i.test(out.assessment || '')) {
@@ -288,6 +333,13 @@ export function enforceVerificationFacts(result, { operatorInputProvenance = nul
     out.unmet = appendUnmet(out.unmet, 'Missing driven interaction proof (structured walkthrough or named end-to-end/integration test result).');
     if (['complete', 'on_track'].includes(out.verdict)) out.verdict = 'needs_attention';
     if (!out.message) out.message = 'Provide driven interaction evidence showing the input/action reached the intended handler or agent.';
+  }
+  if (facts.vagueNoContractCompletion) {
+    const sentence = 'There is no active task contract, and the completion report is only a vague “everything is done” claim; it does not name the bounded work, itemized outcomes, or degree of evidence.';
+    out.assessment = appendAssessment(out.assessment, sentence);
+    out.unmet = appendUnmet(out.unmet, 'Provide a bounded completion report that names each completed item, its result, and inspectable evidence.');
+    if (['complete', 'on_track'].includes(out.verdict)) out.verdict = 'needs_attention';
+    if (!out.message) out.message = 'Do not claim global completion; name the bounded work and give item-by-item evidence and results.';
   }
   if (facts.iframeShellHazard) {
     const sentence = 'Using an iframe as the application shell or primary session-navigation mechanism is an architectural concern for history/deep-linking, accessibility/focus, and cross-frame coordination; prefer normal in-page routing and composition.';
@@ -761,6 +813,13 @@ export function normalizeVerificationResult(m, { error = '' } = {}) {
   const verdict = VERDICTS.includes(m?.verdict) ? m.verdict : 'unknown';
   const score = Number.isFinite(Number(m?.score)) ? clampNum(Math.round(Number(m.score)), 0, 100) : null;
   const unmet = Array.isArray(m?.unmet) ? m.unmet.map((x) => line(x, 200)).filter(Boolean).slice(0, 12) : [];
+  const operatorRequirementResults = Array.isArray(m?.operator_requirement_results)
+    ? m.operator_requirement_results.map((item) => ({
+      id: line(item?.id, 80),
+      status: ['met', 'unmet', 'unverifiable'].includes(item?.status) ? item.status : 'unverifiable',
+      evidence: line(item?.evidence, 500),
+    })).filter((item) => item.id).slice(0, 16)
+    : [];
   return {
     schema: 'supervisor.verify_result',
     promptVersion: VERIFY_PROMPT_VERSION,
@@ -770,6 +829,7 @@ export function normalizeVerificationResult(m, { error = '' } = {}) {
     assessment: String(m?.assessment || (error ? 'Supervisor review failed: ' + error : '')).slice(0, 2400),
     unmet,
     missingEvidence: unmet,
+    operatorRequirementResults,
     goal_conflict: m?.goal_conflict === true,
     unverifiable: ['no_git', 'auth_wall', 'out_of_band', 'both'].includes(m?.unverifiable) ? m.unverifiable : 'none',
     message: String(m?.message_to_agent || m?.message || '').slice(0, 2000),
