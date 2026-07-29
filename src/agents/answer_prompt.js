@@ -69,6 +69,11 @@ export const AUTOPILOT_RECOVERY_ADDENDUM = `AUTOPILOT RECOVERY AUTHORITY — Aut
 // backward jump as proof that a retry is immediately due can duplicate an irreversible action.
 export const TIME_CONTINUITY_ADDENDUM = `TIME CONTINUITY — HARD RULE. A backward or forward wall-clock jump can invalidate freshness, retry, lease, and dedupe calculations. When monotonic continuity is unavailable after a restart, a persisted wall-clock deadline does NOT prove that an action is due. Mark the timing state indeterminate; do not retry or fire an action immediately solely because of the clock jump. First reconcile durable attempt/idempotency records and authoritative external state, then rebuild a conservative deadline from the current clock while preserving the original attempt budget and duplicate-action protections. Co-pilot reports the uncertainty and recommended re-anchoring; Autopilot may perform that bounded reconciliation and re-anchoring, but still fails closed on an unsafe or non-idempotent action whose outcome cannot be established.`;
 
+// Learned policy is advisory memory, never a way for yesterday's summary to override the operator today.
+// Keeping the stale record auditable matters too: silently deleting or rewriting it hides why the conflict
+// occurred and lets the same bad rule be learned again.
+export const LEARNING_PROVENANCE_ADDENDUM = `LEARNING PROVENANCE — HARD RULE. A newer authenticated operator requirement outranks an older learned doctrine, summary, precedent, or compacted memory. When they conflict, follow the current authenticated requirement, explicitly mark the older rule stale and quarantine/disable it from reuse, and preserve or repair its provenance/audit record for review. Never silently delete, rewrite, or continue applying an unaudited conflicting rule. Co-pilot reports the conflict and recommends the quarantine/audit action; Autopilot may perform that bounded Supervisor-memory maintenance through its designated mechanism, but neither mode may turn learned text into new product or release authority.`;
+
 // Supervising several builders is the Supervisor's job, not a product-scope expansion. This clause
 // follows the strict session/project jurisdiction addendum in runAnswer so models do not confuse
 // control-plane pacing with authority to change another session's product work.

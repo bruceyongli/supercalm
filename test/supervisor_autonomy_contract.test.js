@@ -16,6 +16,7 @@ const {
   AUTOPILOT_RECOVERY_ADDENDUM,
   COPILOT_RECOVERY_ADDENDUM,
   isNonMutatingSupervisorCoordination,
+  LEARNING_PROVENANCE_ADDENDUM,
   RESERVED_APPROVAL_ADDENDUM,
   SUPERVISOR_COORDINATION_ADDENDUM,
   TIME_CONTINUITY_ADDENDUM,
@@ -85,6 +86,10 @@ assert.match(AUTOPILOT_RECOVERY_ADDENDUM, /stop, kill, hold/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /persisted wall-clock deadline does NOT prove/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /do not retry or fire an action immediately solely because of the clock jump/i);
 assert.match(TIME_CONTINUITY_ADDENDUM, /preserving the original attempt budget and duplicate-action protections/i);
+assert.match(LEARNING_PROVENANCE_ADDENDUM, /newer authenticated operator requirement outranks/i);
+assert.match(LEARNING_PROVENANCE_ADDENDUM, /mark the older rule stale and quarantine\/disable it from reuse/i);
+assert.match(LEARNING_PROVENANCE_ADDENDUM, /preserve or repair its provenance\/audit record/i);
+assert.match(LEARNING_PROVENANCE_ADDENDUM, /neither mode may turn learned text into new product or release authority/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /routine supervisory control-plane work/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Co-pilot must inspect.*ANSWER with a concrete bounded coordination recommendation/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Autopilot must ANSWER.*designated Supervisor-plane actuators/i);
@@ -124,6 +129,8 @@ assert.match(supervisor, /cfg\.mode === 'autopilot' \? AUTOPILOT_RECOVERY_ADDEND
   'the answer brain receives the exact mode-specific recovery authority');
 assert.match(supervisor, /sys \+= '\\n\\n' \+ TIME_CONTINUITY_ADDENDUM/,
   'every answer receives the shared clock-discontinuity reliability invariant');
+assert.match(supervisor, /sys \+= '\\n\\n' \+ LEARNING_PROVENANCE_ADDENDUM/,
+  'every answer preserves current operator authority and learned-rule audit provenance');
 assert.match(supervisor, /sys \+= '\\n\\n' \+ SUPERVISOR_COORDINATION_ADDENDUM/,
   'every answer distinguishes Supervisor-plane coordination from cross-session product authority');
 assert.match(supervisor, /!copilotSupervisorCoordination/,
