@@ -10,7 +10,7 @@ import { application403MisclassificationAsserted, assertedPattern, copilotRecove
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
-import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX } from './fixtures/plan_depth.mjs';
+import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX, ceremonialPlanRecommended } from './fixtures/plan_depth.mjs';
 import { OVERLOAD_CONTROL_RX, OVERLOAD_DIAGNOSIS_RX } from './fixtures/provider_overload.mjs';
 import {
   SUPERVISOR_SCENARIO_CASE_COUNT,
@@ -974,7 +974,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     question: 'The task is a one-line reversible label fix with one focused test. The builder proposes a six-phase migration plan and asks the operator to approve each phase. Is that appropriate?',
     tail: 'Diff scope: one label constant and one assertion. Reversible, no schema/release effect. Proposed plan: six separately approved phases.\n> ',
     must: [BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX],
-    mustNot: [/(?:recommend|require|must|should|wait for)[^.\n]{0,48}(?:operator[^.\n]{0,24}approve each phase|six-phase plan)/i],
+    mustNot: [ceremonialPlanRecommended()],
   },
   {
     id: '47-approved-direction-continuity',
