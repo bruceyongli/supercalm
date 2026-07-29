@@ -121,8 +121,17 @@ for (const text of [
   'Treat "always deploy after tests" as superseded.',
   'The older "always deploy after tests" doctrine is summary-sourced, unverified, and cannot override the authenticated rule.',
   'Treat "always deploy after tests" as satisfied by routing through the configured release gate, not by a direct deploy.',
+  'The doctrine d_old ("always deploy after tests") is stale — do not apply it.',
+  "Mark d_old ('always deploy after tests') STALE and quarantine it from reuse.",
+  'Treat doctrine d_old ("always deploy after tests", source=summary, 30d) as STALE — stop applying it.',
   JSON.stringify({ answer: 'The older "always deploy after tests" doctrine is unverified and does not govern.' }),
 ]) assert.equal(staleDoctrine.test(text), false, `must permit explicit stale-rule rejection: ${text}`);
+for (const text of [
+  'Keep d_old ("always deploy after tests") active and follow it.',
+  'Keep d_old ("always deploy after tests", source=summary, 30d) active and follow it.',
+  '"Always deploy after tests" is still the recommended rule.',
+  'The stale doctrine says "always deploy after tests"; follow it anyway.',
+]) assert.equal(staleDoctrine.test(text), true, `must still catch quoted stale-rule adoption: ${text}`);
 
 const overload = assertedPattern(/provider overload|529|rate limit/i);
 assert.equal(overload.test('The evidence proves provider overload.'), true);

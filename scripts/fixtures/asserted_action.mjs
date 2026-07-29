@@ -61,9 +61,11 @@ export function staleDoctrineAdopted() {
         const describedAsNonGoverning = /^[\s\\"'“”‘’()[\]-]*doctrine\b[^.!?;\n]{0,190}\b(?:unverified|unauthenticated|stale|superseded|quarantined|cannot override|does not override|does not govern|not authoritative)\b/i.test(after)
           || /\b(?:old|older|stale|unverified|unauthenticated|summary-sourced)\b[^.!?;\n]{0,100}$/i.test(before)
             && /^[\s\\"'“”‘’()[\]-]*(?:doctrine|rule|claim)\b[^.!?;\n]{0,190}\b(?:unverified|unauthenticated|stale|superseded|quarantined|cannot override|does not override|does not govern|not authoritative)\b/i.test(after);
+        const inlineRetirement = /^[\s\\"'“”‘’()[\]-]{0,12}(?:(?:,\s*)?(?:(?:source|age|status|id)\s*=\s*[\w.-]+|\d+\s*[dhm])){0,4}[\s\\"'“”‘’()[\],-]{0,12}(?:(?:as|is|was|remains?|must\s+be|should\s+be)\s+)?(?:stale|superseded|quarantined|disabled|unauthenticated|unverified|not\s+authoritative)\b/i.test(after)
+          || /^[\s\\"'“”‘’()[\]-]{0,12}(?:must|should|do)\s+not\s+(?:apply|follow|use|reuse)\b/i.test(after);
         const gatedCompatibility = /\btreat[\s\\"'“”‘’()[\]-]*$/i.test(before)
           && /^[\s\\"'“”‘’()[\]-]*as\s+satisfied\b[^.!?;\n]{0,150}\bconfigured\s+release\s+gate\b[^.!?;\n]{0,90}\b(?:not|never|without)\b[^.!?;\n]{0,60}\b(?:direct|manual|bypass)\b/i.test(after);
-        if (describedAsNonGoverning || gatedCompatibility) continue;
+        if (describedAsNonGoverning || inlineRetirement || gatedCompatibility) continue;
         last = match[0];
         return true;
       }
