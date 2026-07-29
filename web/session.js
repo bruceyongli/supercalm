@@ -674,7 +674,7 @@ $('#scrollback-latest')?.addEventListener('click', () => {
 });
 
 function workspacePreviewable(path) {
-  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg)$/i.test(String(path || ''));
+  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|mp4|m4v|mov|webm|ogv)$/i.test(String(path || ''));
 }
 
 function workspaceStatusLabel(status) {
@@ -699,6 +699,10 @@ async function renderWorkspaceDocument(file, target, { preview = false } = {}) {
       </div>`;
     if (meta.contentKind === 'image') {
       target.innerHTML = `${toolbar}<div class="workspace-document image"><img src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" /></div>`;
+      return;
+    }
+    if (meta.contentKind === 'video') {
+      target.innerHTML = `${toolbar}<div class="workspace-document video"><video controls playsinline preload="metadata" src="${escapeHtml(meta.viewUrl)}" aria-label="Preview ${escapeHtml(meta.path)}"></video></div>`;
       return;
     }
     if (meta.contentKind === 'pdf') {
@@ -3011,7 +3015,7 @@ function openComposerAttachmentDetail(a) {
 // path-like tokens in the terminal clickable -> a viewer modal backed by the session-scoped
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
 // it's rendered as escaped text (never HTML). Also drives the Knowledge "Files" list via the same viewer.
-const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf']);
+const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf','mp4','m4v','mov','webm','ogv']);
 function hasKnownFileExtension(raw) {
   const path = String(raw || '').split(/[?#]/)[0];
   const ext = (path.split('.').pop() || '').toLowerCase();
@@ -3060,11 +3064,12 @@ async function openFileViewer(rawPath) {
   // through common.js renderMarkdown (escape-first, safe hrefs only), raw stays escaped <pre>.
   let body;
   let text = '';
-  const isText = meta && !meta.binary && meta.contentKind !== 'image' && meta.contentKind !== 'pdf';
+  const isText = meta && !meta.binary && !['image', 'video', 'pdf'].includes(meta.contentKind);
   const isMd = isText && /\.(md|markdown)$/i.test(meta.path || rel);
   const truncNote = meta?.truncated ? '\n\n… (truncated at 2 MB — download for the full file)' : '';
   if (!meta) body = `<pre class="asset-detail-text">${escapeHtml(errText)}</pre>`;
   else if (meta.contentKind === 'image') body = `<img class="asset-detail-image" src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" />`;
+  else if (meta.contentKind === 'video') body = `<div class="asset-detail-media"><video class="asset-detail-video" controls playsinline preload="metadata" src="${escapeHtml(meta.viewUrl)}" aria-label="Preview ${escapeHtml(meta.path)}">Your browser cannot preview this video. Use Open tab or Download.</video></div>`;
   else if (meta.contentKind === 'pdf') body = `<div class="asset-detail-file"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open PDF</a> · <a href="${escapeHtml(meta.downloadUrl)}" download>Download</a></div>`;
   else if (meta.binary) body = `<div class="asset-detail-file">Binary file — <a href="${escapeHtml(meta.downloadUrl)}" download>Download ${escapeHtml(meta.name)}</a></div>`;
   else {
@@ -3132,6 +3137,15 @@ window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileV
 // Story markdown normally opens links in a new browser tab. A file path — including a full URL to
 // this same host such as https://bb1…/tmp/report.png — belongs in the session viewer instead.
 document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
+  const fileButton = e.target.closest?.('[data-story-file]');
+  if (fileButton) {
+    const path = fileButton.dataset.storyFile;
+    if (!path) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFileViewer(path);
+    return;
+  }
   const link = e.target.closest?.('.story-body.md a[href]');
   if (!link) return;
   const href = link.getAttribute('href');

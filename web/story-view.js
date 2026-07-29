@@ -2,6 +2,7 @@
 // against the raw terminal. DOM contract + exact tokens from the handoff's spec.tokens.json;
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
 import { api, renderMarkdown } from './common.js';
+import { localFilePath } from './file-reference.js';
 import { unlockAudio, newPlayback, speakSmart, cycleRate, currentRate } from './tts-player.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
@@ -22,6 +23,7 @@ let liveStatus = null; // the CLI's OWN status line while working: {verb, detail
 let openSteps = new Set(); // indices with the steps expander open
 let learnedEvidence = new Set(); // event timestamps whose exception produced a saved project rule
 let learnedListenerWired = false;
+const storyVideoState = new Map(); // path -> playback state preserved across live Story re-renders
 // Client-side memory of asks the operator has already answered here, keyed stably per question. The story
 // re-renders wholesale on every SSE 'changed' tick; without this, an answered question bounces back to its
 // selection UI on the next refresh because the server story still reports it pending until the transcript
@@ -124,6 +126,77 @@ function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const STORY_VIDEO_EXT_RX = /\.(?:mp4|m4v|mov|webm|ogv)$/i;
+
+function storyVideoReferences(markdown) {
+  let text = String(markdown || '').replace(/```[\s\S]*?```/g, '');
+  const candidates = [];
+  text = text.replace(/`([^`\r\n]+)`/g, (match, code) => {
+    if (!/\s/.test(code)) candidates.push(code);
+    return ' ';
+  });
+  text = text.replace(/\[[^\]]*\]\(([^)\s]+)\)/g, (match, href) => {
+    candidates.push(href);
+    return ' ';
+  });
+  for (const match of text.matchAll(/(?:file:\/\/|https?:\/\/|~\/|\/|\.{1,2}\/)?[\w@.+~-]+(?:\/[\w@.+~-]+)*\.(?:mp4|m4v|mov|webm|ogv)(?:[?#][^\s<>"'`)]+)?/gi)) {
+    candidates.push(match[0]);
+  }
+  const paths = [];
+  for (const candidate of candidates) {
+    const path = localFilePath(candidate);
+    const extensionPath = String(path || '').split(/[?#]/)[0];
+    if (!path || !STORY_VIDEO_EXT_RX.test(extensionPath) || paths.includes(path)) continue;
+    paths.push(path);
+    if (paths.length >= 3) break;
+  }
+  return paths;
+}
+
+function storyVideoPreviews(markdown) {
+  return storyVideoReferences(markdown).map((path) => {
+    const src = `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(path)}&raw=1`;
+    const name = path.split('/').filter(Boolean).pop() || path;
+    return `
+      <figure class="story-video-preview">
+        <div class="story-video-frame">
+          <video data-story-video="${esc(path)}" controls playsinline preload="metadata" src="${esc(src)}" aria-label="Preview ${esc(name)}">Your browser cannot preview this video.</video>
+        </div>
+        <figcaption>
+          <button type="button" data-story-file="${esc(path)}" title="Open video viewer">${esc(name)}</button>
+          <span>Video preview</span>
+        </figcaption>
+      </figure>`;
+  }).join('');
+}
+
+function captureStoryVideoState() {
+  for (const video of panelEl?.querySelectorAll('[data-story-video]') || []) {
+    storyVideoState.set(video.dataset.storyVideo, {
+      currentTime: Number(video.currentTime) || 0,
+      paused: video.paused,
+      muted: video.muted,
+      volume: video.volume,
+      playbackRate: video.playbackRate,
+    });
+  }
+}
+
+function restoreStoryVideoState() {
+  for (const video of panelEl?.querySelectorAll('[data-story-video]') || []) {
+    const state = storyVideoState.get(video.dataset.storyVideo);
+    if (!state) continue;
+    video.muted = state.muted;
+    video.volume = state.volume;
+    video.playbackRate = state.playbackRate;
+    const restore = () => {
+      try { if (state.currentTime > 0) video.currentTime = state.currentTime; } catch {}
+      if (!state.paused) video.play().catch(() => {});
+    };
+    if (video.readyState >= 1) restore();
+    else video.addEventListener('loadedmetadata', restore, { once: true });
+  }
+}
 
 function fmtClock(ts) {
   if (!ts) return '';
@@ -365,6 +438,7 @@ function eventHtml(ev, i) {
   // renderMarkdown escapes first, so this stays XSS-safe); everything else stays escaped plain text.
   const bodyText = ev.body || ev.text || '';
   const rich = ev.kind === 'report' || ev.kind === 'note';
+  const videosHtml = rich ? storyVideoPreviews(bodyText) : '';
   // Attachment previews render INSIDE the operator's bubble — one send, one bubble (operator: the
   // image "should be previewed in the story view with the user request"). Basenames come from the
   // parser; the attachment route serves only this session's own upload dir.
@@ -372,7 +446,7 @@ function eventHtml(ev, i) {
     ? `<div class="story-imgs">${ev.images.map((f) => `<img class="story-shot" data-story-shot loading="lazy" src="api/session/${sid}/attachment/${encodeURIComponent(f)}" alt="${esc(f)}" title="${esc(f)}" />`).join('')}</div>`
     : '';
   const body = (bodyText || imgsHtml) ? (rich
-    ? `<div class="story-body md">${renderMarkdown(bodyText)}${imgsHtml}</div>`
+    ? `<div class="story-body md">${renderMarkdown(bodyText)}${imgsHtml}${videosHtml}</div>`
     : `<div class="story-body">${esc(bodyText)}${imgsHtml}</div>`) : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
@@ -465,6 +539,7 @@ function feedList() {
 
 function render() {
   if (!panelEl) return;
+  captureStoryVideoState();
   const workingHtml = renderWorking();
   panelEl.innerHTML = `
     <div class="story-head">
@@ -475,6 +550,7 @@ function render() {
     <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
     ${workingHtml}`;
   wire();
+  restoreStoryVideoState();
   const feed = panelEl.querySelector('.story-feed');
   if (feed) {
     // PRESERVE the user's position across this wholesale re-render (the .story-feed node is recreated by the
@@ -642,7 +718,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

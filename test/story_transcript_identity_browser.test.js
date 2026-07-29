@@ -7,6 +7,7 @@ const root = new URL('../', import.meta.url);
 const assets = new Map([
   ['/story-view.js', readFileSync(new URL('web/story-view.js', root))],
   ['/common.js', readFileSync(new URL('web/common.js', root))],
+  ['/file-reference.js', readFileSync(new URL('web/file-reference.js', root))],
   ['/tts-player.js', readFileSync(new URL('web/tts-player.js', root))],
 ]);
 let version = 0;
@@ -24,7 +25,10 @@ const server = createServer((req, res) => {
   if (path === '/api/session/s_concurrent/story') {
     const body = version
       ? { ok: true, status: 'working', events: [{ kind: 'you', ts: 2, body: 'FRESH SESSION TASK' }], meta: { source: 'transcript', file: '/rollouts/fresh.jsonl' } }
-      : { ok: true, status: 'working', events: [{ kind: 'you', ts: 1, body: 'OLDER SIBLING SECRET' }], meta: { source: 'transcript', file: '/rollouts/older.jsonl' } };
+      : { ok: true, status: 'working', events: [
+        { kind: 'you', ts: 1, body: 'OLDER SIBLING SECRET' },
+        { kind: 'report', ts: 1.5, body: 'Episode finished — `out/ep01/final.mp4`.' },
+      ], meta: { source: 'transcript', file: '/rollouts/older.jsonl' } };
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); return;
   }
   res.writeHead(200, { 'content-type': 'text/html' }); res.end(fixture);
@@ -36,6 +40,11 @@ try {
   const page = await browser.newPage();
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => window.__storyReady && document.body.textContent.includes('OLDER SIBLING SECRET'));
+  const video = page.locator('video[data-story-video="out/ep01/final.mp4"]');
+  await video.waitFor();
+  assert.equal(await video.getAttribute('preload'), 'metadata');
+  assert.notEqual(await video.getAttribute('playsinline'), null);
+  assert.notEqual(await video.getAttribute('controls'), null);
   await page.evaluate(async () => {
     await fetch('/advance');
     await window.__story.refreshStory({ quiet: false });

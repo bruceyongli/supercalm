@@ -7,6 +7,7 @@ const root = new URL('../', import.meta.url);
 const assets = new Map([
   ['/story-view.js', readFileSync(new URL('web/story-view.js', root))],
   ['/common.js', readFileSync(new URL('web/common.js', root))],
+  ['/file-reference.js', readFileSync(new URL('web/file-reference.js', root))],
   ['/tts-player.js', readFileSync(new URL('web/tts-player.js', root))],
 ]);
 

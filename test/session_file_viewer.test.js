@@ -57,6 +57,9 @@ await mkdir(join(externalRoot, 'research'), { recursive: true });
 await mkdir(otherRoot);
 await mkdir(writtenRoot);
 await writeFile(join(projectRoot, 'report.md'), '# Project report\n');
+const projectVideo = join(projectRoot, 'preview.mp4');
+const videoBytes = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
+await writeFile(projectVideo, videoBytes);
 const artifact = join(artifactRoot, 'result.png');
 const privateArtifact = join(artifactRoot, 'private.txt');
 await writeFile(artifact, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
@@ -66,7 +69,7 @@ const git = promisify(execFile);
 const runGit = (...args) => git('git', ['-C', projectRoot, ...args], { encoding: 'utf8' });
 const runExternalGit = (...args) => git('git', ['-C', externalRoot, ...args], { encoding: 'utf8' });
 await runGit('init', '-b', 'main');
-await runGit('add', 'report.md');
+await runGit('add', 'report.md', 'preview.mp4');
 await runGit('-c', 'user.name=AIOS Test', '-c', 'user.email=aios-test@example.invalid', 'commit', '-m', 'fixture');
 await runGit('worktree', 'add', '-b', 'linked-artifacts', linkedRoot);
 await mkdir(join(linkedRoot, 'docs'));
@@ -182,6 +185,30 @@ async function waitForRoutes() {
   assert.equal(meta.contentKind, 'text');
 }
 
+// Videos are identified as previewable media and streamed with byte-range support. Range responses
+// are essential for Safari/iOS seeking and avoid buffering a large generated movie in server memory.
+{
+  const response = await fileRequest('preview.mp4');
+  assert.equal(response.status, 200);
+  const meta = await response.json();
+  assert.equal(meta.contentKind, 'video');
+  assert.equal(meta.binary, false);
+  const rawUrl = `${base}/${meta.viewUrl}`;
+  const range = await fetch(rawUrl, { headers: { range: 'bytes=2-5' } });
+  assert.equal(range.status, 206);
+  assert.equal(range.headers.get('content-type'), 'video/mp4');
+  assert.equal(range.headers.get('accept-ranges'), 'bytes');
+  assert.equal(range.headers.get('content-range'), `bytes 2-5/${videoBytes.length}`);
+  assert.equal(range.headers.get('content-length'), '4');
+  assert.deepEqual(Buffer.from(await range.arrayBuffer()), videoBytes.subarray(2, 6));
+  const suffix = await fetch(rawUrl, { headers: { range: 'bytes=-3' } });
+  assert.equal(suffix.status, 206);
+  assert.deepEqual(Buffer.from(await suffix.arrayBuffer()), videoBytes.subarray(-3));
+  const invalid = await fetch(rawUrl, { headers: { range: 'bytes=99-' } });
+  assert.equal(invalid.status, 416);
+  assert.equal(invalid.headers.get('content-range'), `bytes */${videoBytes.length}`);
+}
+
 // A session-mentioned temp artifact can be previewed and served raw.
 {
   const response = await fileRequest(artifact);
@@ -258,6 +285,9 @@ async function waitForRoutes() {
   assert.match(src, /const path = localFilePath\(href\)/);
   assert.match(src, /shouldUseFileViewer\(href, path\)/);
   assert.match(src, /openFileViewer\(path\)/);
+  assert.match(src, /meta\.contentKind === 'video'/);
+  assert.match(src, /<video class="asset-detail-video" controls playsinline preload="metadata"/);
+  assert.match(src, /data-story-file/);
   assert.match(src, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/, 'terminal web URLs open in a safe new tab');
   assert.match(src, /target="_blank" rel="noopener">Open tab ↗<\/a>/, 'file viewer offers a new-tab action');
 }
