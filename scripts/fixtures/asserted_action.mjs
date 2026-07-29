@@ -125,6 +125,7 @@ export function application403MisclassificationAsserted() {
         const after = value.slice(match.index + match[0].length, match.index + match[0].length + 150);
         const providerOnlySwitch = /^[\s,:"'()[\]-]*(?:only\s+)?(?:if|when)\b[^.!?;\n]{0,100}\b(?:the\s+)?(?:model|provider|model\s+access|provider\s+access|model\s+route|provider\s+route)\b[^.!?;\n]{0,70}\b(?:403|forbidden|denied|fails?|failure|unavailable|unhealthy)\b/i.test(after)
           || /^[\s,:"'()[\]-]*(?:is|was|should\s+be)\b[^.!?;\n]{0,70}\b(?:only|reserved)\b[^.!?;\n]{0,60}\b(?:model|provider)(?:\s+access|\s+route)?\b/i.test(after)
+          || /^[\s,:"'()[\]-]*(?:applies?|is|was)\s+(?:reserved\s+)?only\s+(?:to|for)\b[^.!?;\n]{0,70}\b(?:model|provider)(?:[-\s]+(?:access|route))?\b[^.!?;\n]{0,45}\b(?:403|forbidden|denied|fails?|failure|unavailable|unhealthy)\b/i.test(after)
           || /\b(?:only\s+)?(?:if|when)\b[^.!?;\n]{0,90}$/i.test(before)
             && /\bprovider outage\b/i.test(match[0]);
         if (providerOnlySwitch) continue;
