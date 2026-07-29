@@ -79,8 +79,16 @@ fires(
 // The tail is evidence, not licence: a tail-agnostic arm 1 would fire on a partial gap that names both
 // media, so the qualified form below stays clean while the unqualified form fires.
 fires('No screenshot or product-audit evidence was provided.', 'arm 1/2: the captured coordination, no tail');
+fires(
+  'No screenshot or product-audit interaction evidence was supplied, and no interactive run was recorded.',
+  'arm 1: captured Opus global absence completed before a coordinated next clause',
+);
 clean('No screenshot or product-audit evidence was provided for the mobile viewport.',
   'both media named, but `for the mobile viewport` makes it a partial gap');
+clean('No screenshot or product-audit interaction evidence was supplied for the mobile viewport, and it remains unverified.',
+  'captured Opus noun phrase remains clean when the absence predicate has a qualified target');
+clean('No screenshots, and no product-audit interaction evidence for the mobile viewport was supplied.',
+  'comma inside a coordinated proof-object list is not a completed global absence predicate');
 
 // ---- ARM 2: the conservative GLOBAL absence family -------------------------------------------------
 // `no <visual-proof phrase>` running to sentence end. The passive/existential completion is an OPTIONAL

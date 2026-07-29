@@ -409,6 +409,12 @@ const DET = '(?:(?:the|a|an|any|some|new|another|updated|additional|further|fres
 // class structurally, at the cost of "…was provided, so I cannot certify" (a miss, which is the side
 // to fail on).
 const GLOBAL_END = '(?=\\s*(?:[.;:!?)\\]"\'”’]|$)|\\s+(?:in|at|on|to|for)\\s+\\/[\\w./-]+)';
+// Captured Opus wording completed the global absence predicate before a coordinated next clause:
+// "No screenshot or product-audit interaction evidence was supplied, and …". This is not the comma
+// inside a proof-object list that GLOBAL_END deliberately rejects: the passive predicate is already
+// complete. Keep this continuation local to the captured two-kind arm so ordinary comma lists and
+// qualified gaps remain outside the trigger.
+const CAPTURED_GLOBAL_END = '(?=\\s*(?:[.;:!?)\\]"\'”’]|$)|\\s+(?:in|at|on|to|for)\\s+\\/[\\w./-]+|\\s*,\\s+and\\b)';
 // The closed passive/existential completion of a global absence: "was provided", "have been
 // captured", "exists". Inside the same regex as the noun phrase on purpose — see arm 1.
 const ABSENT_TAIL = '(?:\\s+(?:was|were|has\\s+been|have\\s+been)\\s+' + GIVEN + '|\\s+exists?)?';
@@ -431,10 +437,10 @@ const OUT_OF_BAND_ABSENCE_RX = [
   // Qwen counterpart, "no screenshot or product audit evidence IS AVAILABLE HERE", has no production
   // verb and never reaches it.
   {
-    rx: new RegExp('\\bno\\s+screenshots?\\s+or\\s+product[\\s_-]?audits?\\s+(?:evidence|proofs?)'
+    rx: new RegExp('\\bno\\s+screenshots?\\s+or\\s+product[\\s_-]?audits?\\s+(?:interaction\\s+)?(?:evidence|proofs?)'
       + '\\s+(?:was|were|has\\s+been|have\\s+been)\\s+' + GIVEN
       + '(?:\\s+to\\s+confirm\\s+(?:the\\s+)?side[-\\s]?by[-\\s]?side\\s+(?:matching|comparisons?))?'
-      + GLOBAL_END, 'gi'),
+      + CAPTURED_GLOBAL_END, 'gi'),
   },
   // The conservative global family: "no screenshots were provided.", "no render proof exists.", "no
   // visual evidence." The completion is an OPTIONAL tail inside this one regex, never a second arm: as
