@@ -9,6 +9,9 @@ const accepted = [
   'Switch the configuration to the exact available model ID claude-opus-5.',
   'The unavailable old-opus-beta ID should be replaced with the catalog-listed ID.',
   'The unavailable model identifier needs an exact replacement from the catalog.',
+  'This model-availability error requires switching to exact claude-opus-5 from the catalog.',
+  'This is a model-availability issue; switch the configured model to the exact catalog ID.',
+  'A model-access failure requires updating the config to claude-opus-5.',
 ];
 const rejected = [
   'The screenshot is unavailable. Switch to claude-opus-5.',
@@ -16,6 +19,9 @@ const rejected = [
   'The route is available and healthy.',
   'The model ID is healthy.',
   'The route was selected from the catalog and is healthy.',
+  'Model availability is healthy; switch providers.',
+  'A provider outage is a model-availability issue; switch providers.',
+  'A model-access failure occurred; retry later.',
   'The screenshot is missing.',
   'Switch to the catalog-listed replacement.',
   'The old route was retired.',
