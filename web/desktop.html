@@ -15,7 +15,13 @@
       let dashDesktop = false;
       try { dashDesktop = localStorage.getItem('aios_dash') === 'desktop'; } catch {}
       if (dashDesktop) return;
-      if (Math.min(screen.width, innerWidth || 1e4) <= 720) location.replace('phone');
+      if (Math.min(screen.width, innerWidth || 1e4) <= 720) {
+        const carry = new URLSearchParams();
+        if (q.get('ride') === '1') carry.set('ride', '1');
+        if (q.get('focus')) carry.set('focus', q.get('focus'));
+        const query = carry.toString();
+        location.replace(`phone${query ? `?${query}` : ''}#home`);
+      }
     })();
   </script>
   <meta charset="utf-8" />
@@ -59,6 +65,7 @@
           <div class="dk-page-actions">
             <button class="dk-refresh" id="dk-needs-refresh" title="Refresh Needs you from the server">↻ Refresh</button>
             <button class="dk-voice" id="dk-voice" title="Hands-free pass over the needs-you queue">● Voice</button>
+            <button class="dk-ride" id="dk-ride" type="button" aria-pressed="false" title="Announce new Needs You reports while this PWA is open; notify when backgrounded"><span></span> Ride mode</button>
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>

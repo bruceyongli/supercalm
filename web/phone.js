@@ -15,6 +15,7 @@ import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
+import { observeRideNeeds, rideModeState, setRideVoiceAdapter, subscribeRideMode, toggleRideMode } from './ride-mode.js';
 
 registerSW();
 
@@ -79,6 +80,14 @@ function attentionPreview(session) {
     need: copy.action,
     outcome: copy.latest,
   };
+}
+function phoneNeeds() {
+  return (S.home?.sessions || []).filter((session) =>
+    !session.dismissed
+    && session.unread > 0
+    && session.status === 'waiting'
+    && session.category
+    && session.category !== 'working');
 }
 
 // unread = agent messages newer than the operator's last reply, not yet marked read (server truth)
@@ -153,6 +162,7 @@ async function loadHome() {
       next.sessions = [...newcomers, ...retained, ...next.sessions.filter((session) => !placed.has(session.id))];
     }
     S.home = next;
+    observeRideNeeds(phoneNeeds());
     ok = true;
   } catch { /* keep stale */ }
   if (S.screen === 'home') renderSoft();
@@ -185,6 +195,7 @@ function patchSession(payload) {
     live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
     dismissed: sessions.filter((s) => s.dismissed).length,
   };
+  observeRideNeeds(phoneNeeds());
   if (S.detail?.id === payload.session) S.detail = { ...S.detail, ...patch };
   if (S.screen === 'home' || S.sid === payload.session) renderSoft();
 }
@@ -271,15 +282,30 @@ async function playQueue(items, scope) {
 // silence) → STT → /api/voice/turn → confirm-before-send brain (questions answered from session log +
 // project knowledge + supervisor notes) → next item, until done or "stop". One tap in, zero after.
 const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false };
+let rideState = rideModeState();
+setRideVoiceAdapter({
+  active: () => V.on,
+  start: ({ focusSessionId = null } = {}) => voiceModeStart(focusSessionId),
+  stop: () => voiceModeEnd('ride-off'),
+});
+subscribeRideMode((state) => {
+  rideState = state;
+  if (S.home && S.screen === 'home') renderSoft();
+});
 
-async function voiceModeStart() {
+async function voiceModeStart(focusSessionId = null) {
+  if (V.on) return;
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
   V.on = true; V.state = 'starting'; V.stopFlag = false; S.sheet = 'voicemode';
   render();
   try {
-    const r = await api('api/voice/start', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    const r = await api('api/voice/start', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ focusSessionId, source: focusSessionId ? 'ride-update' : 'manual' }),
+    });
     V.voiceId = r.voiceId; V.current = r.current || null;
     await voiceSay(r.say);
     if (r.done) return voiceModeEnd('done');
@@ -563,7 +589,7 @@ function renderHome() {
   const sessions = S.home?.sessions || [];
   const counts = S.home?.counts || { waiting: 0, working: 0, live: 0 };
   const live = sessions.filter((s) => ['working', 'waiting'].includes(s.status) && !s.parked);
-  const needs = live.filter((s) => !s.dismissed && s.unread > 0 && s.status === 'waiting');
+  const needs = phoneNeeds();
   const dismissed = sessions.filter((s) => s.dismissed)
     .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
   const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
@@ -652,7 +678,13 @@ function renderHome() {
         <span class="pill work">${counts.working} working</span>
         <span class="pill">${counts.live} live</span>
       </div>
-      <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
+      <div class="ph-voicebar">
+        <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
+        <button class="ridebig ${rideState.enabled ? 'on' : ''}" id="ride-mode" type="button" aria-pressed="${rideState.enabled ? 'true' : 'false'}" title="${esc(rideState.detail || '')}">
+          <span></span>${rideState.talking ? 'Talking…' : rideState.enabled ? 'Ride mode on' : 'Ride mode'}
+        </button>
+      </div>
+      ${rideState.enabled ? `<div class="ride-note">${esc(rideState.detail)}</div>` : ''}
     </div>
     <div class="scroll home-scroll">
       <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span><button class="ph-needs-refresh" id="refresh-needs" aria-label="Refresh Needs you from the server">↻ Refresh</button></div>
@@ -907,6 +939,12 @@ function wire() {
   $('#play-home')?.addEventListener('click', () => {
     if (V.on) return voiceModeEnd('user');
     voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
+  });
+  $('#ride-mode')?.addEventListener('click', async () => {
+    const button = $('#ride-mode');
+    if (button) button.disabled = true;
+    await toggleRideMode();
+    if (S.screen === 'home') renderSoft();
   });
   // A session tap opens the DESKTOP story view (operator: desktop story is the mobile default for sessions);
   // the phone triage stays the mobile dashboard. ?phone=1 on a session still returns to the phone view.

@@ -41,7 +41,16 @@ async function pushAll(payload) {
   await Promise.all(
     subs.map(async (sub) => {
       try {
-        await webpush.sendNotification(sub, JSON.stringify(payload), { TTL: 600, urgency: 'high' });
+        const ride = !!sub.aios?.ride;
+        const targeted = {
+          ...payload,
+          ...(ride && payload.rideUrl ? {
+            url: payload.rideUrl,
+            ride: true,
+            body: `${String(payload.body || '').replace(/\s+/g, ' ').slice(0, 112)} Tap to hear and reply.`,
+          } : {}),
+        };
+        await webpush.sendNotification(sub, JSON.stringify(targeted), { TTL: 600, urgency: 'high' });
       } catch (e) {
         if (e.statusCode === 404 || e.statusCode === 410) store.removeSub(sub.endpoint); // gone
         else console.error('[aios] push error', e.statusCode || e.message);
@@ -73,6 +82,7 @@ bus.on('waiting', ({ session, summary, category }) => {
     title: `${project ? project.name : s.tool} · ${CAT_TAG[category] || 'needs you'}`,
     body: String(summary || s.summary || s.title || 'Waiting for input').replace(/\s+/g, ' ').slice(0, 140),
     url: `session?id=${session}`, // relative — the SW resolves it against its scope (/aios/)
+    rideUrl: `./?ride=1&focus=${encodeURIComponent(session)}`,
     tag: session,
   }).catch(() => {});
 });

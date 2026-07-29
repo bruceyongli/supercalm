@@ -166,6 +166,16 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-voice { background: none; border: 1px solid #2ea043; color: #4ecb6c; border-radius: 10px; padding: 7px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .dk-voice:hover { background: rgba(63, 191, 95, .08); }
 .dk-voice.listening { border-color: #f2554d; color: #f2554d; animation: dkpulse 1.4s ease-in-out infinite; }
+.dk-ride {
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border: 1px solid var(--line2);
+  border-radius: 10px; background: none; color: var(--muted); font: 600 12px/1 'JetBrains Mono', monospace;
+  cursor: pointer; white-space: nowrap;
+}
+.dk-ride > span { width: 8px; height: 8px; border-radius: 999px; background: var(--dim); box-shadow: 0 0 0 3px rgba(138,149,165,.1); }
+.dk-ride:hover { color: var(--ink); background: rgba(255,255,255,.04); }
+.dk-ride.on { color: #79b8ff; border-color: rgba(88,166,255,.52); background: rgba(88,166,255,.08); }
+.dk-ride.on > span { background: #58a6ff; box-shadow: 0 0 0 4px rgba(88,166,255,.14); animation: dkpulse 2.4s ease-in-out infinite; }
+.dk-ride:disabled { opacity: .65; cursor: wait; }
 .dk-card { position: relative; background: #10151d; border: 1px solid #1d2632; border-radius: 13px; padding: 14px 16px 14px 19px; margin-bottom: 12px; }
 .dk-card > * { max-width: 940px; }
 .dk-card::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--strip, #4ecb6c); }
@@ -175,6 +185,10 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 @media (max-width: 720px) {
   /* identification beats density on phones: titles wrap to two lines instead of ellipsizing to fragments */
   .dk-card-name, .dk-row-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .dk-page-head { align-items: stretch; flex-direction: column; }
+  .dk-page-actions { display: grid; grid-template-columns: 1fr 1fr; }
+  .dk-page-actions > button { justify-content: center; min-height: 38px; }
+  .dk-page-actions .dk-ride { grid-column: 1 / -1; }
 }
 .dk-card-meta { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #5c6675; }
 .dk-card-msg { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.62; color: #dde5ee; margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }

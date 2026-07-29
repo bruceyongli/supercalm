@@ -8,6 +8,7 @@ import { navigate } from './navigation.js';
 import { isStaleSessionPatch, mergeSessionPatch, mergeSessionSnapshot } from './session-state.js';
 import { groupedModelOptions } from './model-select.js';
 import { attentionCopy, cleanAttentionText } from './attention-preview.js';
+import { observeRideNeeds } from './ride-mode.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -89,6 +90,7 @@ function recalcHome() {
   };
 }
 function publishHome(change = { type: 'replace', ids: [] }) {
+  observeRideNeeds(needsYou());
   renderSide(change);
   onData?.(home, change);
   for (const cb of homeSubs) { try { cb(home, change); } catch {} }
