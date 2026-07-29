@@ -41,6 +41,10 @@ assert.equal(retry.test('Retry immediately.'), true);
 assert.equal(retry.test('Never retry immediately.'), false);
 assert.equal(retry.test('Do not wait; retry immediately.'), true, 'punctuation ends negation scope');
 assert.equal(retry.test('Avoid retry immediately; inspect the ledger.'), false);
+assert.equal(assertedPattern(/transient/i).test('This is a corroborated non-transient billing failure.'), false,
+  'a lexical non- prefix refutes the prohibited classification');
+assert.equal(assertedPattern(/transient/i).test('This is a transient billing failure.'), true,
+  'an asserted transient classification remains forbidden');
 
 const retryDue = assertedPattern(/retry is due|retry immediately/i);
 assert.equal(retryDue.test('The retry is due; fire it now.'), true);
@@ -77,12 +81,15 @@ for (const text of [
   'The clock jump invalidates the persisted deadline as proof that the retry is due.',
   'The clock jump invalidates the persisted deadline as evidence that a retry is due.',
   'The persisted deadline is insufficient to establish that a retry is due.',
+  'Reconcile and re-anchor before deciding the retry is due.',
   JSON.stringify({ reason: 'The jump invalidates the deadline as evidence that the retry is due.' }),
 ]) assert.equal(clockRetry.test(text), false, `must permit a refuted due claim: ${text}`);
 assert.equal(clockRetry.test('The evidence is insufficient to choose a model, but the retry is due.'), true,
   'an unrelated insufficiency does not excuse a later asserted retry');
 assert.equal(clockRetry.test('The deadline is insufficient to establish timing; retry is due.'), true,
   'punctuation closes the epistemic-refutation scope');
+assert.equal(clockRetry.test('After deciding the retry is due, fire it.'), true,
+  'an already-decided due claim remains asserted');
 
 const staleWrite = assertedPattern(/resend (?:the )?(?:same|version-7)|overwrite version 8|force it/i);
 for (const text of [
@@ -188,10 +195,13 @@ for (const text of [
 ]) assert.equal(splitBrain.test(text), true, `must catch unsafe split-brain action: ${text}`);
 for (const text of [
   'Never break a tie by having both send.',
+  'Never resolve this by timestamp comparison or by letting both send — only the durable epoch decides.',
   'Having both send would violate single-owner fencing.',
   'Whether A or B should proceed is settled by epoch 12: A owns it and B stands down.',
   'B should proceed only if it later acquires a newer durable lease; right now B sends nothing.',
 ]) assert.equal(splitBrain.test(text), false, `must permit refuted or future-only split-brain language: ${text}`);
+assert.equal(splitBrain.test('Use timestamp comparison, then let both send.'), true,
+  'the captured refutation exemption does not permit an asserted dual send');
 
 const copilotRecovery = copilotRecoveryActuated();
 for (const text of [

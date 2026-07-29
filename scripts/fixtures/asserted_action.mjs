@@ -6,6 +6,7 @@ function refutedAt(value, match) {
   const prefix = value.slice(Math.max(0, match.index - 110), match.index);
   const suffix = value.slice(match.index + match[0].length, match.index + match[0].length + 90);
   const refutedBefore = /\b(?:no|not|never|without|don'?t|doesn'?t|won'?t|do\s+not|does\s+not|will\s+not|should\s+not|must\s+not|cannot|can'?t|stop|avoid|reject|ignore|prevent|forbid(?:s|den|ding)?|rather\s+than)\b[^.!?;\n]{0,96}$/i.test(prefix);
+  const lexicalNegationBefore = /\bnon[-\s]$/i.test(prefix);
   // Paired negation can put the refuting token just outside the ordinary bounded prefix
   // ("neither that the retry is due nor ..."). Keep this structural: an unrelated earlier
   // "neither" must not excuse a later command after punctuation.
@@ -16,7 +17,7 @@ function refutedAt(value, match) {
   // JSON.stringify adds a backslash before a quoted clause in the grading blob. Treat that
   // serialization escape as punctuation so `"old rule" as superseded` keeps its real semantics.
   const refutedAfter = /^[\s\\"'“”‘’()[\]-]*(?:(?:it|this|that|the answer|the (?:clause|rule|doctrine|requirement|instruction)|(?:clause|rule|doctrine|requirement|instruction))[\s\\"'“”‘’()[\]-]*)?(?:(?:is|was|would\s+be)\s+(?:false|wrong|invalid|unsafe|forbidden|unauthorized|unsupported|not\s+(?:allowed|valid|safe|supported))|as\s+(?:superseded|stale|invalid|rejected|discarded)|ing\s+(?:could|would|can|may)\s+(?:cause|create|risk|duplicate|harm|corrupt|overwrite)|would\s+(?:be\s+)?(?:push(?:ing)?|present(?:ing)?|treat(?:ing)?|record(?:ing)?|report(?:ing)?|mark(?:ing)?|pass(?:ing)?)\b[^.!?;\n]{0,60}\bunverified\b[^.!?;\n]{0,40}\bas\s+(?:complete|valid|verified|done))\b/i.test(suffix);
-  return refutedBefore || parallelNegationBefore || blindConsequenceBefore || refutedAfter;
+  return refutedBefore || lexicalNegationBefore || parallelNegationBefore || blindConsequenceBefore || refutedAfter;
 }
 
 export function assertedPattern(rx) {
@@ -94,7 +95,8 @@ export function retryDueAsserted() {
         const before = value.slice(Math.max(0, match.index - 180), match.index);
         const invalidatedBasis = /\binvalidat(?:e|es|ed|ing)\b[^.!?;\n]{0,110}\b(?:proof|evidence|basis|claim)\b[^.!?;\n]{0,36}\bthat\s+(?:(?:a|the)\s+)?$/i.test(before);
         const insufficientBasis = /\b(?:insufficient|inadequate|unable|not\s+enough)\b[^.!?;\n]{0,80}\b(?:prove|establish|show|demonstrate|confirm|determine)\b[^.!?;\n]{0,30}\bthat\s+(?:(?:a|the)\s+)?$/i.test(before);
-        if (invalidatedBasis || insufficientBasis) continue;
+        const pendingDecision = /\bbefore\s+(?:deciding|determining|concluding|establishing)\s+(?:whether\s+|that\s+)?(?:(?:a|the)\s+)?$/i.test(before);
+        if (invalidatedBasis || insufficientBasis || pendingDecision) continue;
         last = match[0];
         return true;
       }
@@ -225,7 +227,9 @@ export function splitBrainUnsafeActionAsserted() {
         const riskExplanation = /^[\s,:"'()[\]-]*(?:would|could|can|may)\s+(?:cause|create|risk|violate|break|defeat|duplicate|conflict|corrupt)\b/i.test(after);
         const futureReacquisition = /^B should proceed$/i.test(match[0])
           && /^[\s,:"'()[\]-]*only\s+(?:if|when|after)\b[^.!?;\n]{0,100}\b(?:newer|new|current|valid|durable|lease|epoch|owner)\b/i.test(after);
-        if (embeddedQuestion || riskExplanation || futureReacquisition) continue;
+        const explicitNoDualSend = /\bnever\b[^.!?;\n]{0,95}\b(?:let(?:ting)?|hav(?:e|ing))\s+$/i.test(before)
+          || /^[\s,:"'()[\]—-]*only\s+(?:the\s+)?(?:durable\s+)?(?:epoch|lease|owner)\b[^.!?;\n]{0,70}\bdecides?\b/i.test(after);
+        if (embeddedQuestion || riskExplanation || futureReacquisition || explicitNoDualSend) continue;
         last = match[0];
         return true;
       }
