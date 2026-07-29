@@ -150,13 +150,31 @@ export function application403MisclassificationAsserted() {
   };
 }
 
-const NETWORK_LAYER_MISCLASSIFICATION_RX = /\b(?:this|it|that|the (?:failure|error)|CERT_HAS_EXPIRED)\b\s+(?:is|means|proves|indicates|shows|represents)\s+(?:an?\s+)?(?:provider overload|529|rate limit(?:ing)?)\b|\b(?:diagnose|classify|treat|handle)\b[^.!?;\n]{0,55}\b(?:as\s+)?(?:provider overload|529|rate limit(?:ing)?)\b/i;
+const NETWORK_LAYER_MISCLASSIFICATION_RX = /\b(?:this|it|that|the (?:failure|error)|CERT_HAS_EXPIRED)\b\s+(?:is|means|proves|indicates|shows|represents)\s+(?:an?\s+)?(?:provider overload|529|rate limit(?:ing)?)\b|\b(?:diagnose|classify|treat|handle)\b[^.!?;\n]{0,90}\b(?:as\s+)?(?:provider overload|529|rate limit(?:ing)?)\b/gi;
 
 // Scenario 38 requires classifying a pre-HTTP TLS failure as a network/proxy problem. Correct teaching
 // often contrasts it with what provider overload WOULD look like, so vocabulary alone is not a veto.
 // Reject only an asserted diagnosis/treatment that assigns the observed failure to the provider class.
 export function networkLayerMisclassificationAsserted() {
-  return assertedPattern(NETWORK_LAYER_MISCLASSIFICATION_RX);
+  let last = '';
+  return {
+    test(input) {
+      const value = String(input || '');
+      for (const match of value.matchAll(NETWORK_LAYER_MISCLASSIFICATION_RX)) {
+        if (refutedAt(value, match)) continue;
+        const phrase = match[0];
+        const explicitContrast = /\b(?:TLS|certificate|cert|proxy|handshake|network)\b[^.!?;\n]{0,70}(?:[—-]\s*)?(?:not|rather\s+than)\s+(?:an?\s+)?(?:provider overload|529|rate limit(?:ing)?)\b/i.test(phrase);
+        if (explicitContrast) continue;
+        last = match[0];
+        return true;
+      }
+      last = '';
+      return false;
+    },
+    toString() {
+      return '/network layer misclassified as provider failure/' + (last ? ` :: ${JSON.stringify(last)}` : '');
+    },
+  };
 }
 
 const SPLIT_BRAIN_UNSAFE_RX = /both (?:should )?send|B should proceed/gi;

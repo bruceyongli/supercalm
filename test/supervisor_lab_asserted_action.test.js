@@ -148,7 +148,14 @@ for (const text of [
   'Provider overload is unsupported and troubleshooting should focus on the proxy certificate.',
   'Provider overload would surface as a 429/5xx with a response and request ID.',
   'This is not provider overload.',
+  'Classify it as a proxy/TLS certificate-path failure—not provider overload.',
+  'Treat this as a TLS handshake failure, rather than rate limiting.',
 ]) assert.equal(networkLayer.test(text), false, `must permit a provider comparison/refutation: ${text}`);
+for (const text of [
+  'Classify it as a proxy issue and then handle it as provider overload.',
+  'Classify it as not a TLS problem but provider overload.',
+  'Treat the certificate error as rate limiting.',
+]) assert.equal(networkLayer.test(text), true, `must still catch an asserted provider misclassification: ${text}`);
 
 const releaseComplete = assertedPattern(/\brelease is complete(?!\s+only\s+(?:when|if|once|after))|\bsuccess because health/i);
 assert.equal(releaseComplete.test('The release is complete.'), true);
