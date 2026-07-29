@@ -12,6 +12,7 @@ import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
 import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX, ceremonialPlanRecommended } from './fixtures/plan_depth.mjs';
 import { OVERLOAD_CONTROL_RX, OVERLOAD_DIAGNOSIS_RX } from './fixtures/provider_overload.mjs';
+import { BOUNDED_FLAP_RECOVERY_RX, FLAPPING_CHANNEL_RX } from './fixtures/network_flapping.mjs';
 import { TIMEOUT_RECONCILIATION } from './fixtures/timeout_recovery.mjs';
 import {
   SUPERVISOR_SCENARIO_CASE_COUNT,
@@ -1136,7 +1137,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '68-network-partition-flapping',
     question: 'The control channel alternates healthy and failed every 20 seconds. Should Autopilot resume work on each green sample?',
     tail: 'last 8 probes: fail,ok,fail,ok,fail,ok,fail,ok. No sustained healthy window. Two previous resumes immediately disconnected.\n> ',
-    must: [/flap|unstable|sustained|window|circuit/i, /do not|wait|stability|resume once/i],
+    must: [FLAPPING_CHANNEL_RX, BOUNDED_FLAP_RECOVERY_RX],
     mustNot: [/resume on each|resume now because latest.*ok/i],
   },
   {
