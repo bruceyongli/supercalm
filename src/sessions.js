@@ -936,7 +936,9 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
     await tmux('set-option', '-t', name, 'history-limit', '200000').catch(() => {});
     await tmux('pipe-pane', '-t', name, `cat >> "${logFile}"`);
 
-  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy };
+  // A Git worktree chooses the checkout; `isolated` also tells capable CLIs to enforce that checkout
+  // as their filesystem write boundary. Full autonomy still means no approval prompts inside it.
+  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, isolated };
   // Launch-path features — ALL flag-gated (default OFF) + precondition-checked. When a flag is off or a
   // precondition fails, the corresponding opt stays undefined and the launch line is byte-identical to
   // before. This is the "default-inert" boundary that keeps the live fleet safe.
@@ -977,8 +979,9 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const envMap = typeof baseEnv === 'function' ? baseEnv({ model, effort, autonomy, fastMode, resume, viaProxy }) : baseEnv;
   const toolEnv = Object.entries(envMap).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
-  // canonical main checkout). A speed-bump, not a sandbox: the agent could `cd ~/aios && unset` it — real
-  // enforcement needs separate unix users/containers (out of scope). Integration is an operator-gated action.
+  // canonical main checkout). This is defense in depth: capable CLIs (currently Codex) also receive an
+  // actual workspace-write boundary above; wrappers alone remain a speed-bump for tools without one.
+  // Integration is an operator-gated action.
   const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
   // Deploy-source contract (release_targets, set in the Projects UI): injected so both Claude's hook
   // and the cross-tool command wrappers can block a DIRECT deploy from the wrong tree/branch.

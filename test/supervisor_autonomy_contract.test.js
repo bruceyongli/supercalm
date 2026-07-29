@@ -94,6 +94,9 @@ assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /routine supervisory control-plan
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Co-pilot must inspect.*ANSWER with a concrete bounded coordination recommendation/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Autopilot must ANSWER.*designated Supervisor-plane actuators/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Neither mode may alter another session's product goal/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Git worktree selects checkout\/branch provenance[\s\S]{0,220}filesystem write boundary/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /no-approval workspace-write sandbox\/confinement/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /without resetting or cleaning possibly unrelated work/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
 const overloadAsk = {

@@ -9,9 +9,9 @@ import {
   validateSupervisorScenarioManifest,
 } from '../scripts/fixtures/supervisor_scenarios.mjs';
 
-assert.equal(SUPERVISOR_SCENARIO_MANIFEST_VERSION, 'SGR-2026-07-29.1');
+assert.equal(SUPERVISOR_SCENARIO_MANIFEST_VERSION, 'SGR-2026-07-29.2');
 assert.equal(SUPERVISOR_SCENARIO_FAMILY_COUNT, 72);
-assert.equal(SUPERVISOR_SCENARIO_CASE_COUNT, 78);
+assert.equal(SUPERVISOR_SCENARIO_CASE_COUNT, 79);
 assert.deepEqual(validateSupervisorScenarioManifest(), []);
 assert.match(SUPERVISOR_RESPONSE_PROTOCOL.shared, /OBSERVE reality.*VERIFY.*diagnosis/);
 assert.match(SUPERVISOR_RESPONSE_PROTOCOL.copilot, /ANSWER safe facts.*RECOMMEND.*smallest true authority boundary/);
@@ -19,7 +19,7 @@ assert.match(SUPERVISOR_RESPONSE_PROTOCOL.autopilot, /DECIDE and ACT.*outside-au
 
 const families = new Set(SUPERVISOR_SCENARIOS.map((scenario) => scenario.family));
 assert.deepEqual([...families].sort((a, b) => a - b), Array.from({ length: 72 }, (_, i) => i + 1));
-assert.equal(new Set(SUPERVISOR_SCENARIOS.map((scenario) => scenario.id)).size, 78);
+assert.equal(new Set(SUPERVISOR_SCENARIOS.map((scenario) => scenario.id)).size, 79);
 for (const scenario of SUPERVISOR_SCENARIOS) {
   assert.ok(scenario.copilot, `${scenario.id} lacks a Co-pilot response`);
   assert.ok(scenario.autopilot, `${scenario.id} lacks an Autopilot response`);
@@ -48,4 +48,4 @@ assert.match(prompt, /escalation is the LAST step after checking available reali
 assert.match(supervisor, /cfg\.mode === 'autopilot' \? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM/);
 assert.match(supervisor, /const autoManageCards = ON_MSG_CARDS && cfg\.mode === 'autopilot'/);
 
-console.log('supervisor_scenario_manifest.test ok (72 families / 78 cases / 2 mode responses)');
+console.log('supervisor_scenario_manifest.test ok (72 families / 79 cases / 2 mode responses)');

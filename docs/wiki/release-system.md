@@ -84,9 +84,11 @@ report it as broken.** SSH is NOT on GitHub (only gitlab, the retired pre-scrub 
 ## 5. Multi-session deploy safety
 With per-session worktree isolation ([[design-decisions]], `src/worktrees.js`), an isolated agent session
 edits its own worktree+branch and **can't** deploy the canonical checkout: `bin/deploy` refuses from a
-linked worktree, isolated launches carry `AIOS_NO_DEPLOY=1` (a speed-bump, not a sandbox), and a
-`store.js` boot guard refuses to open the canonical 11 GB DB from a worktree. Integration to `main` is
-therefore the deliberate seam where parallel work converges — the subject of the autonomous pipeline.
+linked worktree, isolated launches carry `AIOS_NO_DEPLOY=1`, and a `store.js` boot guard refuses to open
+the canonical 11 GB DB from a worktree. For Codex, isolated full autonomy also remains no-approval while
+using `workspace-write`; this is the filesystem boundary that blocks absolute-path writes into the
+canonical checkout. Integration to `main` is therefore the deliberate seam where parallel work converges
+— the subject of the autonomous pipeline.
 
 ## 6. 🟢 Autonomous integrate-&-deploy (BUILT — v0.3.152, off by default)
 **Any agent session ships its branch to `main` without a human doing the merge**, the human gate replaced
