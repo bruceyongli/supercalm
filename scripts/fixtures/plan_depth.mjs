@@ -1,7 +1,21 @@
 // Public Supervisor Gym oracle for choosing control depth. The two clauses are
 // intentionally independent: a response must classify the work as bounded AND
 // replace ceremony with direct, focused verification.
-export const BOUNDED_TASK_SCOPE_RX = /simple|one-line|small|reversible|overkill|unnecessary|disproportionate|minimal|single\s+bounded/i;
+const BOUNDED_TASK_SCOPE_LEXICAL_RX = /simple|one-line|small|reversible|overkill|unnecessary|disproportionate|minimal|single\s+bounded|proportionate\s+single[-\s]+step/gi;
+export const BOUNDED_TASK_SCOPE_RX = {
+  test(input) {
+    const value = String(input || '');
+    for (const match of value.matchAll(BOUNDED_TASK_SCOPE_LEXICAL_RX)) {
+      const before = value.slice(Math.max(0, match.index - 90), match.index);
+      const clauseStart = Math.max(before.lastIndexOf('.'), before.lastIndexOf('!'), before.lastIndexOf('?'), before.lastIndexOf(';'), before.lastIndexOf('\n'));
+      const prefix = before.slice(clauseStart + 1);
+      if (/\b(?:not|never|isn'?t|aren'?t|wasn'?t|weren'?t|do(?:es)?\s+not|don'?t|doesn'?t|cannot|can'?t)\b[^.!?;\n]{0,70}$/i.test(prefix)) continue;
+      return true;
+    }
+    return false;
+  },
+  toString() { return '/bounded task scope asserted/'; },
+};
 export const FOCUSED_EXECUTION_RX = /direct|focused (?:test|assertion)|relevant test|no (?:six|phase)|per-phase|waive/i;
 
 export function planDepthResponseAccepted(text) {
