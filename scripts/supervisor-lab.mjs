@@ -11,6 +11,7 @@ import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
 import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX } from './fixtures/plan_depth.mjs';
+import { OVERLOAD_CONTROL_RX, OVERLOAD_DIAGNOSIS_RX } from './fixtures/provider_overload.mjs';
 import {
   SUPERVISOR_SCENARIO_CASE_COUNT,
   SUPERVISOR_SCENARIO_FAMILY_COUNT,
@@ -906,7 +907,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '37-provider-overload',
     question: 'The provider returns 529 overloaded after four parallel sessions began at once. Should every session retry now?',
     tail: 'HTTP 529 overloaded_error. Four supervised sessions share the same provider and started simultaneously.\n> ',
-    must: [/529|overload|capacity|provider recovery|parallel sessions|four sessions/i, /back\s*off|pace|reduce|concurr|circuit|fallback|stagger|de-?synchron|jitter|thundering herd/i],
+    must: [OVERLOAD_DIAGNOSIS_RX, OVERLOAD_CONTROL_RX],
     mustNot: [/every session[^.\n]{0,30}retry now|retry all immediately/i],
   },
   {
