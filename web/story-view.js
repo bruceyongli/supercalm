@@ -421,7 +421,7 @@ async function onListenTap(key, level = 'full') {
   }
 }
 
-function eventHtml(ev, i) {
+function eventHtml(ev, i, previewVideo = false) {
   if (Number.isInteger(ev._sourceIndex)) i = ev._sourceIndex;
   if (ev.kind === 'gap') {
     const mins = Math.max(1, Math.round((ev.durationMs || 0) / 60000));
@@ -438,7 +438,7 @@ function eventHtml(ev, i) {
   // renderMarkdown escapes first, so this stays XSS-safe); everything else stays escaped plain text.
   const bodyText = ev.body || ev.text || '';
   const rich = ev.kind === 'report' || ev.kind === 'note';
-  const videosHtml = rich ? storyVideoPreviews(bodyText) : '';
+  const videosHtml = previewVideo ? storyVideoPreviews(bodyText) : '';
   // Attachment previews render INSIDE the operator's bubble — one send, one bubble (operator: the
   // image "should be previewed in the story view with the user request"). Basenames come from the
   // parser; the attachment route serves only this session's own upload dir.
@@ -541,13 +541,16 @@ function render() {
   if (!panelEl) return;
   captureStoryVideoState();
   const workingHtml = renderWorking();
+  const feedEvents = feedList();
+  const latestReport = feedEvents.findLast((ev) => ev.kind === 'report');
+  const latestReportKey = latestReport ? evKey(latestReport) : '';
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
       <span class="story-rollup" data-story-rollup>${esc(rollup(calmEvents(events)))}</span>
       <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedList().map(eventHtml).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
+    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedEvents.map((ev, i) => eventHtml(ev, i, evKey(ev) === latestReportKey)).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
     ${workingHtml}`;
   wire();
   restoreStoryVideoState();
