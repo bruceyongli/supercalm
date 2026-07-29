@@ -46,11 +46,19 @@ function answeredElsewhereSince(sessionId, sinceTs) {
   } catch { return false; }
 }
 
-function buildItems() {
+function buildItems(focusSessionId = '') {
   const live = store
     .listLiveSessions()
     .filter((s) => s.status === 'waiting' && s.category !== 'working')
-    .sort((a, b) => (a.last_activity || 0) - (b.last_activity || 0)); // oldest waiting first
+    .sort((a, b) => {
+      // A Ride notification names the report that just arrived. Present that project first instead
+      // of making a cyclist listen through an older queue before hearing the update that alerted them.
+      if (focusSessionId) {
+        if (a.id === focusSessionId && b.id !== focusSessionId) return -1;
+        if (b.id === focusSessionId && a.id !== focusSessionId) return 1;
+      }
+      return (a.last_activity || 0) - (b.last_activity || 0);
+    }); // otherwise oldest waiting first
   return live.map((s) => ({
     sessionId: s.id,
     tmux: s.tmux,
@@ -206,7 +214,9 @@ async function brainReply(vs, userText) {
 
 route('POST', '/api/voice/start', async (req, res) => {
   gcVoiceSessions();
-  const items = buildItems();
+  const b = await readJson(req).catch(() => ({}));
+  const focusSessionId = String(b.focusSessionId || '').slice(0, 80);
+  const items = buildItems(focusSessionId);
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
   const vs = { id: id('v'), items, pointer: 0, history: [], createdAt: now(), lastTouch: now() };
   voiceSessions.set(vs.id, vs);

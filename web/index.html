@@ -14,7 +14,13 @@
       let dashDesktop = false;
       try { dashDesktop = localStorage.getItem('aios_dash') === 'desktop'; } catch {}
       if (dashDesktop) return;
-      if (Math.min(screen.width, innerWidth || 1e4) <= 720) location.replace('phone');
+      if (Math.min(screen.width, innerWidth || 1e4) <= 720) {
+        const carry = new URLSearchParams();
+        if (q.get('ride') === '1') carry.set('ride', '1');
+        if (q.get('focus')) carry.set('focus', q.get('focus'));
+        const query = carry.toString();
+        location.replace(`phone${query ? `?${query}` : ''}#home`);
+      }
     })();
   </script>
 

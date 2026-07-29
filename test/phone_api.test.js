@@ -154,7 +154,7 @@ await featureReady;
   // the desktop dashboard via ?desktop=1 → aios_dash); the SPA session route defaults to the desktop STORY
   // view at every width, with ?phone=1 opening the phone session.
   for (const page of ['../web/index.html', '../web/desktop.html']) {
-    assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\('phone'\)/, page + ' redirects a phone to the phone triage dashboard');
+    assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\(`phone/, page + ' redirects a phone to the phone triage dashboard');
   }
   const router = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
   assert.match(router, /get\('phone'\)[\s\S]*?phone.*#s\//, 'the canonical session route sends ?phone=1 to the phone session');

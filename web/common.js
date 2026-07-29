@@ -433,13 +433,32 @@ function urlB64ToUint8(b64) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
-export async function enablePush() {
+function pushSubscriptionBody(sub, { ride = false } = {}) {
+  const body = typeof sub?.toJSON === 'function' ? sub.toJSON() : {
+    endpoint: sub?.endpoint,
+    expirationTime: sub?.expirationTime,
+    keys: sub?.keys,
+  };
+  return { ...body, aios: { ride: !!ride } };
+}
+
+export async function enablePush({ ride = false } = {}) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('Push not supported here. On iPhone/iPad, add Supercalm to your Home Screen first.');
     return false;
   }
-  const reg = await navigator.serviceWorker.ready;
-  const perm = await Notification.requestPermission();
+  // Start the permission request before awaiting service-worker readiness. WebKit requires this call
+  // to happen directly inside the Ride/Notifications button's user activation; awaiting first can
+  // consume that activation and make an installed iPhone/iPad PWA silently fail to prompt.
+  const permission = Notification.permission === 'granted'
+    ? Promise.resolve('granted')
+    : Notification.requestPermission();
+  const registration = (async () => {
+    const existing = await navigator.serviceWorker.getRegistration();
+    if (!existing) await registerSW();
+    return navigator.serviceWorker.ready;
+  })();
+  const [reg, perm] = await Promise.all([registration, permission]);
   if (perm !== 'granted') {
     alert('Notifications were not granted.');
     return false;
@@ -447,7 +466,24 @@ export async function enablePush() {
   const { key } = await api('api/vapidPublicKey');
   let sub = await reg.pushManager.getSubscription();
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlB64ToUint8(key) });
-  await api('api/subscribe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(sub) });
+  await api('api/subscribe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(pushSubscriptionBody(sub, { ride })),
+  });
+  return true;
+}
+
+export async function setPushPreferences({ ride = false } = {}) {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = reg && await reg.pushManager.getSubscription();
+  if (!sub) return ride ? enablePush({ ride }) : false;
+  await api('api/subscribe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(pushSubscriptionBody(sub, { ride })),
+  });
   return true;
 }
 

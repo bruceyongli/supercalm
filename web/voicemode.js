@@ -29,14 +29,39 @@ function unlockAudio() {
   } catch {}
 }
 
-export async function startVoiceMode() {
+// Ride mode calls this directly inside the operator's enable tap. That one gesture unlocks audio,
+// starts the notification permission prompt in parallel, and obtains microphone permission before a
+// future Needs You update arrives. The stream is released immediately; the real conversation opens a
+// fresh stream only while listening.
+export async function prepareVoiceMode({ requestMic = true } = {}) {
+  unlockAudio();
+  if (!requestMic) return { audio: true, mic: null };
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia(microphoneConstraints());
+    stream.getTracks().forEach((track) => track.stop());
+    return { audio: true, mic: true };
+  } catch (error) {
+    return { audio: true, mic: false, error: error?.name || error?.message || 'microphone unavailable' };
+  }
+}
+
+export function isVoiceModeActive() {
+  return active;
+}
+
+export function stopVoiceMode() {
+  if (!active) return;
+  end('external');
+}
+
+export async function startVoiceMode({ focusSessionId = null, source = 'manual' } = {}) {
   if (active) return;
   active = true;
   stopFlag = false;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
   ui = buildOverlay();
   try {
-    let state = await post('api/voice/start', {});
+    let state = await post('api/voice/start', { focusSessionId, source });
     voiceId = state.voiceId;
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
@@ -82,7 +107,7 @@ export async function startVoiceMode() {
     setState('error', 'Voice mode error: ' + (e.message || e));
     await sleep(1800);
   } finally {
-    end();
+    end('complete');
   }
 }
 
@@ -92,7 +117,8 @@ function post(path, body, ms = 30000) {
   return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }).finally(() => clearTimeout(t));
 }
 
-function end() {
+function end(reason = 'complete') {
+  const wasActive = active;
   stopFlag = true;
   active = false;
   if (voiceId) post('api/voice/stop', { voiceId }).catch(() => {});
@@ -100,6 +126,7 @@ function end() {
   try { handle?.stop(); } catch {}
   try { stopAllPlayback(); } catch {} // halt any tts-player playback (belt for the shared element)
   if (ui) { ui.root.remove(); ui = null; }
+  if (wasActive) window.dispatchEvent(new CustomEvent('aios:voice-mode-end', { detail: { reason } }));
 }
 
 // ---- TTS: two modes ----
