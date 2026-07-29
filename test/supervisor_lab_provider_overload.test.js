@@ -25,5 +25,6 @@ for (const text of rejected) {
 const lab = readFileSync(new URL('../scripts/supervisor-lab.mjs', import.meta.url), 'utf8');
 assert.match(lab, /OVERLOAD_DIAGNOSIS_RX/);
 assert.match(lab, /OVERLOAD_CONTROL_RX/);
+assert.match(lab, /id: '37-provider-overload'[^]*copilot: \{ action: 'answer' \}[^]*autopilot: \{ action: 'answer' \}/);
 
 console.log(`supervisor lab provider-overload matcher: ${accepted.length + rejected.length} model-free cases + wiring pass`);

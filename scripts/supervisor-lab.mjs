@@ -909,6 +909,8 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     tail: 'HTTP 529 overloaded_error. Four supervised sessions share the same provider and started simultaneously.\n> ',
     must: [OVERLOAD_DIAGNOSIS_RX, OVERLOAD_CONTROL_RX],
     mustNot: [/every session[^.\n]{0,30}retry now|retry all immediately/i],
+    copilot: { action: 'answer' },
+    autopilot: { action: 'answer' },
   },
   {
     id: '38-network-layer-failure',
