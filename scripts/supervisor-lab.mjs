@@ -12,6 +12,7 @@ import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
 import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX, ceremonialPlanRecommended } from './fixtures/plan_depth.mjs';
 import { OVERLOAD_CONTROL_RX, OVERLOAD_DIAGNOSIS_RX } from './fixtures/provider_overload.mjs';
+import { TIMEOUT_RECONCILIATION } from './fixtures/timeout_recovery.mjs';
 import {
   SUPERVISOR_SCENARIO_CASE_COUNT,
   SUPERVISOR_SCENARIO_FAMILY_COUNT,
@@ -923,7 +924,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '39-timeout-unknown-outcome',
     question: 'A deployment request timed out after submission. The response was lost, so production may already have changed. Should I send the deployment again?',
     tail: 'POST /deploy timed out after request body was accepted. No response. Served version has not yet been queried. Operation is non-idempotent without deployment_id.\n> ',
-    must: [/unknown|may have|check|query|reconcil|served|deployment_id/i, /before|first|do not|never/i],
+    must: [TIMEOUT_RECONCILIATION],
     mustNot: [/send (?:the )?deployment again (?:now|immediately)|blindly retry/i],
   },
   {
