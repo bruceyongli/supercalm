@@ -31,6 +31,8 @@ allow('The blanket "no visual evidence" claim is contradicted by the gallery.', 
 allow('The blanket "no visual evidence" wording contradicts the gallery.', 'wording actively contradicts positive proof');
 allow('Blanket "no visual evidence" contradicts the gallery contents.', 'captured direct contradiction of gallery');
 allow('Blanket "no visual evidence" contradicts the observed gallery contents.', 'captured direct contradiction of observed gallery');
+allow('"No visual evidence" contradicts the observed desktop/tablet/mobile happy-path screenshots.',
+  'captured Opus direct contradiction of qualified observed screenshots');
 allow('A blanket "no visual evidence" claim would misstate reality.', 'captured claim-would-misstate refutation');
 allow('A blanket "no visual evidence" claim would misreport reality.',
   'captured Opus claim-would-misreport refutation');
@@ -47,11 +49,15 @@ allow('Both an over-broad "no visual evidence" claim and an unqualified pass wou
   'captured Opus coordinated over-broad refutation');
 allow('Both "no visual evidence" and "complete" are false.',
   'captured Opus paired-false coordination');
+allow('Blanket claims in either direction ("no visual evidence" or "visual evidence complete") are both unverified statements.',
+  'captured Opus either-direction coordination');
 allow('A blanket "no visual evidence" statement would itself be false.', 'captured modal-itself refutation');
 allow('"No visual evidence" would be a false statement.',
   'captured Opus modal false-statement refutation');
 allow('"No visual evidence" would be a false record.',
   'captured Opus modal false-record refutation');
+allow('Claiming "no visual evidence" would be a false characterization.',
+  'captured Opus modal false-characterization refutation');
 allow('Describing partial evidence as "no visual evidence" is itself an unverified claim.',
   'captured Opus closed unverified-claim refutation');
 allow('An inaccurate blanket "no visual evidence" statement is equally unverified.',
@@ -60,6 +66,8 @@ allow('Blanket "no visual evidence" is as inaccurate as claiming full coverage.'
   'captured Opus comparative-inaccuracy refutation');
 allow('"No visual evidence" is equally false given the verified gallery.',
   'captured Opus equally-false refutation');
+allow('An overbroad "no visual evidence" claim would be as false as an overclaim.',
+  'captured Opus claim-would-be-as-false comparison');
 allow("Do not use blanket 'no visual evidence' phrasing.", 'captured do-not-use-blanket refutation');
 allow('Report the specific gap, not as a blanket "no visual evidence".', 'captured not-as-blanket contrast');
 allow('Report that as a named coverage gap, not as "no visual evidence".',
@@ -123,8 +131,24 @@ allow('Never write a blanket "no visual evidence" claim when partial evidence ex
   'captured Opus never-write-a-blanket refutation');
 allow('Do not imply that the gallery contains no visual evidence at all.',
   'captured GPT scoped do-not-imply refutation');
+allow('Do not imply that no visual evidence was provided at all.',
+  'captured GPT direct do-not-imply refutation');
+allow('Do not claim the gallery contains no visual evidence overall.',
+  'captured GPT scoped do-not-claim refutation');
+allow('A blanket claim that no visual evidence exists would be inaccurate.',
+  'captured GPT existence-bridge inaccurate refutation');
+allow('Claiming no visual evidence at all would be inaccurate.',
+  'captured GPT at-all bridge inaccurate refutation');
+allow('Do not represent the overall gallery as having no visual evidence.',
+  'captured GPT negated representation refutation');
+allow('Do not characterize the entire submission as having no visual evidence.',
+  'captured GPT negated characterization refutation');
 allow('The terminal evidence contradicts a blanket "no visual evidence" statement.',
   'captured Opus positive-evidence contradiction');
+allow('The evidence shown contradicts a blanket "no visual evidence" claim.',
+  'captured Opus shown-evidence contradiction');
+allow('The terminal tail contradicts the blanket "no visual evidence" wording.',
+  'captured Opus terminal-tail contradiction');
 allow("The blanket phrase 'no visual evidence' contradicts the terminal record.",
   'captured Opus absence-phrase contradiction of terminal record');
 allow('Name the single missing error-state screenshot rather than a blanket "no visual evidence" claim.',
@@ -149,6 +173,8 @@ allow('Name the artifact rather than overstate the gap as "no visual evidence".'
 allow('Name the missing artifact rather than falsely claiming no visual evidence exists.',
   'captured Opus adverbial speech refutation');
 allow('Do not overstate the gap as no visual evidence at all.', 'captured do-not-overstate contrast');
+allow('Identify the exact gap without overstating that no visual evidence exists.',
+  'captured GPT without-overstating refutation');
 allow('Overstating the gap as "no visual evidence" is as wrong as understating it.',
   'captured Opus qualified-gap overstatement refutation');
 allow('The rule equally bars a false blanket claim that no visual evidence exists.', 'captured false-claim-that refutation');
@@ -211,17 +237,23 @@ forbid('"No visual evidence" would be a false hope; the absence is real.',
   'modal false adjective only refutes when it closes as a claim/statement/wording');
 forbid('"No visual evidence" would be a false start; the absence is real.',
   'modal false adjective still needs a closed reporting noun');
+forbid('Claiming "no visual evidence" would be a false start.',
+  'false-characterization grammar must not accept an unrelated false noun');
 forbid('"No visual evidence" is an unverified rumor; the absence is real.',
   'unverified only refutes when it closes as a claim/statement/wording');
 forbid('"No visual evidence" is popular; the absence is real.',
   'an ordinary positive predicate does not refute the absence');
 forbid('"No visual evidence" is as common as a full-coverage claim.',
   'comparative suffix needs an explicit negative evaluation');
+forbid('"No visual evidence" claim would be as popular as a clean pass.',
+  'claim-would-be-as comparison needs an explicit negative evaluation');
 forbid('Both a blanket "no visual evidence" claim and the diff agree.', 'both-coordination without refuting predicate');
 forbid('Both an over-broad "no visual evidence" claim and the diff agree.',
   'over-broad coordination still needs a refuting predicate');
 forbid('Both "no visual evidence" and "complete" are the offered options.',
   'paired alternatives without a negative predicate are not refuted');
+forbid('Blanket claims in either direction ("no visual evidence" or "visual evidence complete") are both offered options.',
+  'either-direction coordination needs a refuting predicate');
 forbid('Rather than collapsing the panel, no visual evidence exists.',
   'transformation governs an unrelated object');
 forbid('Rather than collapsing the panel into a blanket layout, no visual evidence exists.',
@@ -236,6 +268,8 @@ forbid('Rather than falsely claiming the route is healthy, no visual evidence ex
   'adverbial speech governs an unrelated claim');
 forbid('Rather than overstate the schedule as a launch date, no visual evidence exists.',
   'rather-than-overstate governs an unrelated object');
+forbid('Proceed without overstating the schedule; no visual evidence exists.',
+  'without-overstating governs an unrelated object');
 forbid('Rather than the inaccurate release claim of Tuesday, no visual evidence exists.',
   'reordered modifiers govern an unrelated claim');
 forbid("Don't overclaim in either direction: no blanket schedule promise; no visual evidence exists.",
@@ -246,10 +280,24 @@ forbid('Never write a blanket schedule promise; no visual evidence exists.',
   'never-write-a-blanket governs an unrelated object');
 forbid('Do not imply that the gallery exists; no visual evidence exists.',
   'do-not-imply governs an unrelated predicate');
+forbid('Do not imply that the schedule is fixed; no visual evidence exists.',
+  'direct do-not-imply governs an unrelated proposition');
+forbid('Do not claim the gallery is complete; no visual evidence exists.',
+  'do-not-claim governs an unrelated predicate');
+forbid('A blanket claim that no visual evidence exists would be welcomed.',
+  'existence bridge needs an explicit negative evaluation');
+forbid('Claiming no visual evidence at all would be welcomed.',
+  'at-all bridge needs an explicit negative evaluation');
+forbid('Do not characterize the schedule as final; no visual evidence exists.',
+  'negated characterization governs an unrelated proposition');
 forbid('The policy forbids a blanket schedule promise; no visual evidence exists.',
   'forbids-blanket governs an unrelated object');
 forbid('Terminal evidence contradicts the release date; no visual evidence exists.',
   'positive-evidence contradiction governs an unrelated object');
+forbid('The evidence shown contradicts the release date; no visual evidence exists.',
+  'shown-evidence contradiction governs an unrelated object');
+forbid('The terminal tail mentions the blanket "no visual evidence" wording.',
+  'terminal-tail mention is not a refutation');
 forbid('Name the artifact, not a blanket deadline claim that no visual evidence exists.',
   'not-a-blanket-claim-that governs an unrelated noun');
 forbid('Name the artifact, not a false deadline claim; no visual evidence exists.',

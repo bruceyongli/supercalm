@@ -59,9 +59,13 @@ const REFUTE_PREFIX = new RegExp('(?:'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+overclaim[^.!?\\n]{0,60}\\bno\\s+(?:blanket|over[-\\s]*broad)'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:underclaim|overclaim)'
   + '|\\bnor\\s+(?:overstat(?:e|ing)|understat(?:e|ing)|overclaim(?:ing)?|underclaim(?:ing)?)'
-  + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:imply|suggest)\\s+that\\s+(?:the\\s+)?(?:gallery|review|record|artifacts?)\\s+(?:contains?|has|shows?)'
+  + '|\\bwithout\\s+(?:overstat(?:e|ing)|understat(?:e|ing)|overclaim(?:ing)?|underclaim(?:ing)?)\\s+(?:that\\s+)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:represent|characterize|describe|label|frame|portray|treat)\\b[^.!?\\n]{0,60}\\bas(?:\\s+having)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:imply|suggest)\\s+(?:that\\s+)?'
+  + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:imply|suggest|claim|assert|say|report)\\s+(?:that\\s+)?(?:the\\s+)?(?:gallery|review|record|artifacts?)\\s+(?:contains?|has|shows?)'
   + '|\\b(?:forbids?|bars?|rejects?)\\s+(?:an?\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:blanket|over[-\\s]*broad)\\s+)?'
-  + '|\\b(?:(?:terminal|served|rendered|provided|available)\\s+)?(?:record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\s+contradicts?\\s+(?:an?\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:blanket|over[-\\s]*broad)\\s+)?'
+  + '|\\bterminal\\s+(?:tail|output)\\s+contradicts?\\s+(?:(?:an?|the)\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:blanket|over[-\\s]*broad)\\s+)?'
+  + '|\\b(?:(?:terminal|served|rendered|provided|available)\\s+)?(?:record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)(?:\\s+(?:shown|presented|provided|available))?\\s+contradicts?\\s+(?:an?\\s+)?(?:(?:false|incorrect|inaccurate|unsupported)\\s+)?(?:(?:blanket|over[-\\s]*broad)\\s+)?'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+understate[^.!?\\n]{0,60}\\b(?:by\\s+)?' + SPEECH_VERB
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+round[^.!?\\n]{0,60}\\b(?:down|up)\\s+to'
   + '|\\b(?:do\\s+not|don\'?t|never)\\s+(?:flatten|collapse|convert|turn|reduce|downgrade|broaden)[^.!?\\n]{0,60}\\b(?:into|as|to)\\s+(?:(?:an?|the)\\s+)?(?:(?:blanket|over[-\\s]*broad)\\s+)?'
@@ -76,11 +80,14 @@ const REFUTE_PREFIX = new RegExp('(?:'
 // Anchored to the START of the following text: a closing quote is allowed, ordinary punctuation is not
 // (". That is false" refers back to something else and must not launder an assertion).
 const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|available|present|included))?[\\s"\'“”‘’)\\]]*(?:'
-  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)(?:\\s+itself)?|would\\s+(?:itself\\s+)?be)\\s+(?:an?\\s+)(?:(?:factually|demonstrably|plainly|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate|contradicted|disproved|refuted)\\s+(?:claim|statement|phrase|wording|description|conclusion|record|report|summary|finding|verdict)\\b'
+  + '(?:exists?|existed|at\\s+all)\\s+(?:would\\s+(?:itself\\s+)?be|is|are|was|were)\\s+(?:(?:factually|demonstrably|plainly|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate|contradicted|disproved|refuted)\\b'
+  + '|'
+  + '(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)(?:\\s+itself)?|would\\s+(?:itself\\s+)?be)\\s+(?:an?\\s+)(?:(?:factually|demonstrably|plainly|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate|contradicted|disproved|refuted)\\s+(?:claim|statement|phrase|wording|description|characterization|representation|denial|conclusion|record|report|summary|finding|verdict)\\b'
   + '|(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)(?:\\s+itself)?|would\\s+(?:itself\\s+)?be)\\s+(?:(?:factually|demonstrably|plainly|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate|contradicted|disproved|refuted)\\b'
+  + '|(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)|would\\s+be)\\s+as\\s+(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate)\\s+as\\b'
   + '|(?:is|are|was|were)\\s+as\\s+(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate)\\s+as\\b'
   + '|(?:claim|statement|phrase|wording)\\s+(?:(?:would|does|do)\\s+(?:itself\\s+)?)?(?:contradicts?|conflicts?\\s+with|misstates?|misreports?|misrepresents?)\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
-  + '|contradicts?\\s+(?:the\\s+)?(?:(?:terminal|observed|served|rendered|provided|available)\\s+)?(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
+  + '|contradicts?\\s+(?:the\\s+)?(?:(?:terminal|observed|served|rendered|provided|available)\\s+)?(?:[a-z0-9_/-]+\\s+){0,4}(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:would|does|do)\\s+(?:(?:equally|factually|demonstrably|plainly)\\s+)?(?:misstate|misreport|misrepresent)\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:misstates?|misreports?|misrepresents?)\\b[^.!?\\n]{0,80}\\b(?:record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:would|does|do)\\s+contradict\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
@@ -108,10 +115,14 @@ const QUALIFIED_GAP_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '|(?:the\\s+)?generated\\s+documentation\\b'
   + ')', 'i');
 const QUALIFIED_GAP_PREFIX = /\b(?:[a-z0-9_-]+\s+){0,4}(?:state|viewport|surface|screen|case|variant|breakpoint)(?:\s*[:—-]|,\s+which\s+(?:has|shows|contains)|\s+(?:has|shows|contains))\s*["'“”‘’(]*$/i;
-const COORDINATED_REFUTE_PREFIX = /\bboth\s+(?:an?\s+)?(?:(?:blanket|over[-\s]*broad)\s+)?["'“”‘’(]*$/i;
+const COORDINATED_REFUTE_PREFIX = /(?:\bboth\s+(?:an?\s+)?(?:(?:blanket|over[-\s]*broad)\s+)?|\bblanket\s+claims?\s+in\s+either\s+direction\s*\()["'“”‘’(]*$/i;
 const COORDINATED_REFUTE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '(?:claim|statement|wording)\\s+and\\b[^.!?\\n]{0,60}\\b(?:would|does|do)\\s+(?:misstate|misreport|misrepresent|contradict)\\b'
   + '|and\\s+["\'“”‘’][^"\'“”‘’\\n]{1,40}["\'“”‘’]\\s+(?:are|were|would\\s+be)\\s+(?:(?:both|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
+  + '|or\\s+["\'“”‘’][^"\'“”‘’\\n]{1,40}["\'“”‘’]\\s*\\)\\s*(?:are|were|would\\s+be)\\s+(?:(?:both|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
+  // The original absence span is intentionally broad and can consume `or "visual evidence`
+  // in this paired form. Accept the same coordination when only its closing predicate remains.
+  + '|(?:complete|provided|present|verified)["\'“”‘’]\\s*\\)\\s*(?:are|were|would\\s+be)\\s+(?:(?:both|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
   + ')', 'i');
 
 // A refutation is short; bounding the lookaround keeps this linear on a large graded blob. The anchors
