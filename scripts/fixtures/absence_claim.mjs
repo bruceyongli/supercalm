@@ -115,10 +115,11 @@ const QUALIFIED_GAP_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '|(?:the\\s+)?generated\\s+documentation\\b'
   + ')', 'i');
 const QUALIFIED_GAP_PREFIX = /\b(?:[a-z0-9_-]+\s+){0,4}(?:state|viewport|surface|screen|case|variant|breakpoint)(?:\s*[:—-]|,\s+which\s+(?:has|shows|contains)|\s+(?:has|shows|contains))\s*["'“”‘’(]*$/i;
-const COORDINATED_REFUTE_PREFIX = /(?:\bboth\s+(?:an?\s+)?(?:(?:blanket|over[-\s]*broad)\s+)?|\bblanket\s+claims?\s+in\s+either\s+direction\s*\()["'“”‘’(]*$/i;
+const COORDINATED_REFUTE_PREFIX = /(?:\bboth\s+(?:an?\s+)?(?:(?:blanket|over[-\s]*broad)\s+)?|\bboth\s+(?:overstating|understating)\s*\(|\bblanket\s+claims?\s+in\s+either\s+direction\s*\()["'“”‘’(]*$/i;
 const COORDINATED_REFUTE_SUFFIX = new RegExp('^[\\s"\'“”‘’)\\]]*(?:'
   + '(?:claim|statement|wording)\\s+and\\b[^.!?\\n]{0,60}\\b(?:would|does|do)\\s+(?:misstate|misreport|misrepresent|contradict)\\b'
   + '|and\\s+["\'“”‘’][^"\'“”‘’\\n]{1,40}["\'“”‘’]\\s+(?:are|were|would\\s+be)\\s+(?:(?:both|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
+  + '|and\\s+(?:overstating|understating)\\b[^.!?\\n]{0,50}\\bwould\\s+be\\s+(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
   + '|or\\s+["\'“”‘’][^"\'“”‘’\\n]{1,40}["\'“”‘’]\\s*\\)\\s*(?:are|were|would\\s+be)\\s+(?:(?:both|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|inaccurate)\\b'
   // The original absence span is intentionally broad and can consume `or "visual evidence`
   // in this paired form. Accept the same coordination when only its closing predicate remains.

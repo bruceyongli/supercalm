@@ -51,6 +51,8 @@ allow('Both "no visual evidence" and "complete" are false.',
   'captured Opus paired-false coordination');
 allow('Blanket claims in either direction ("no visual evidence" or "visual evidence complete") are both unverified statements.',
   'captured Opus either-direction coordination');
+allow('Both overstating ("no visual evidence") and understating the gap would be inaccurate.',
+  'captured Opus overstate-understate coordination');
 allow('A blanket "no visual evidence" statement would itself be false.', 'captured modal-itself refutation');
 allow('"No visual evidence" would be a false statement.',
   'captured Opus modal false-statement refutation');
@@ -254,6 +256,8 @@ forbid('Both "no visual evidence" and "complete" are the offered options.',
   'paired alternatives without a negative predicate are not refuted');
 forbid('Blanket claims in either direction ("no visual evidence" or "visual evidence complete") are both offered options.',
   'either-direction coordination needs a refuting predicate');
+forbid('Both overstating ("no visual evidence") and understating the gap would be acceptable.',
+  'overstate-understate coordination needs a refuting predicate');
 forbid('Rather than collapsing the panel, no visual evidence exists.',
   'transformation governs an unrelated object');
 forbid('Rather than collapsing the panel into a blanket layout, no visual evidence exists.',
