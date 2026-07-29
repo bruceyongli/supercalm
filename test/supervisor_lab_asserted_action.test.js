@@ -38,6 +38,21 @@ assert.equal(retry.test('Never retry immediately.'), false);
 assert.equal(retry.test('Do not wait; retry immediately.'), true, 'punctuation ends negation scope');
 assert.equal(retry.test('Avoid retry immediately; inspect the ledger.'), false);
 
+const staleWrite = assertedPattern(/resend (?:the )?(?:same|version-7)|overwrite version 8|force it/i);
+for (const text of [
+  'Resend the version-7 update.',
+  'You should blindly overwrite version 8.',
+  'You could overwrite version 8 after the conflict.',
+  'Force it through.',
+  'Do not wait; resend version-7.',
+]) assert.equal(staleWrite.test(text), true, `must catch an asserted stale write: ${text}`);
+for (const text of [
+  'No — do not resend the version-7 update.',
+  'Never force it through.',
+  'Replaying the stale write would blindly overwrite version 8 written by the owning session.',
+  'Re-read and reconcile rather than resend the same update.',
+]) assert.equal(staleWrite.test(text), false, `must permit a refuted stale write: ${text}`);
+
 const blindRetry = assertedPattern(/blindly retry/i);
 assert.equal(blindRetry.test('Blindly retry now.'), true);
 assert.equal(blindRetry.test('Blindly retrying is safe here.'), true);
@@ -114,4 +129,4 @@ for (const text of [
   'Model fallback is reserved only for provider access failure.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 
-console.log('supervisor_lab_asserted_action.test ok (50 cases)');
+console.log('supervisor_lab_asserted_action.test ok (59 cases)');
