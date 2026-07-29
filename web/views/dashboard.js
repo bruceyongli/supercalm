@@ -6,7 +6,7 @@ import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTit
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
 import { startVoiceMode } from '../voicemode.js';
-import { subscribeRideMode, toggleRideMode } from '../ride-mode.js';
+import { subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
@@ -38,7 +38,7 @@ const STOPPED_SHOWN = 10;
 let stoppedExpanded = false;
 let dismissedExpanded = false;
 let unsub = null;
-let unsubRide = null;
+let unsubOnTheGo = null;
 let host = null;
 const choiceSelections = new Map(); // sid -> { reportKey, questions: Map<questionIndex, Set<optionIndex>> }
 
@@ -354,7 +354,7 @@ export function init(el) {
           <div class="dk-page-actions">
             <button class="dk-refresh" id="dk-needs-refresh" title="Refresh Needs you from the server">↻ Refresh</button>
             <button class="dk-voice" id="dk-voice" title="Hands-free pass over the needs-you queue">● Voice</button>
-            <button class="dk-ride" id="dk-ride" type="button" aria-pressed="false" title="Announce new Needs You reports while this PWA is open; notify when backgrounded"><span></span> Ride mode</button>
+            <button class="dk-ongo" id="dk-on-the-go" type="button" aria-pressed="false" title="Talk through new Needs You updates while you are on the go"><span></span> On the go</button>
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
@@ -370,18 +370,18 @@ export function init(el) {
     </div>`;
   const voice = $('#dk-voice');
   if (voice) voice.onclick = () => startVoiceMode();
-  const ride = $('#dk-ride');
-  if (ride) ride.onclick = async () => {
-    ride.disabled = true;
-    await toggleRideMode();
-    if (host) ride.disabled = false;
+  const onTheGo = $('#dk-on-the-go');
+  if (onTheGo) onTheGo.onclick = async () => {
+    onTheGo.disabled = true;
+    await toggleOnTheGo();
+    if (host) onTheGo.disabled = false;
   };
-  unsubRide = subscribeRideMode((state) => {
-    const button = $('#dk-ride');
+  unsubOnTheGo = subscribeOnTheGo((state) => {
+    const button = $('#dk-on-the-go');
     if (!button) return;
     button.classList.toggle('on', state.enabled);
     button.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
-    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'Ride mode on' : 'Ride mode'}`;
+    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'On the go · on' : 'On the go'}`;
     button.title = state.detail;
   });
   const refresh = $('#dk-needs-refresh');
@@ -400,6 +400,6 @@ export function init(el) {
 
 export function teardown() {
   try { unsub?.(); } catch {}
-  try { unsubRide?.(); } catch {}
-  unsub = null; unsubRide = null; host = null; choiceSelections.clear();
+  try { unsubOnTheGo?.(); } catch {}
+  unsub = null; unsubOnTheGo = null; host = null; choiceSelections.clear();
 }

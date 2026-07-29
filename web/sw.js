@@ -14,17 +14,17 @@ self.addEventListener('push', (event) => {
   // the app's path prefix. The server sends RELATIVE payload urls ("session?id=X" or ".").
   const base = self.registration.scope;
   const url = new URL(d.url || '.', base).href;
-  const rideUrl = d.rideUrl ? new URL(d.rideUrl, base).href : '';
+  const onTheGoUrl = d.onTheGoUrl ? new URL(d.onTheGoUrl, base).href : '';
   event.waitUntil(
     self.registration.showNotification(d.title || 'Supercalm', {
       body: d.body || '',
       tag: d.tag || 'aios',
-      data: { url, rideUrl },
+      data: { url, onTheGoUrl },
       icon: new URL('icon.svg', base).href,
       badge: new URL('icon.svg', base).href,
       silent: false,
       renotify: true,
-      actions: rideUrl ? [
+      actions: onTheGoUrl ? [
         { action: 'talk', title: 'Talk now' },
         { action: 'open', title: 'Open' },
       ] : [],
@@ -35,7 +35,7 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const data = event.notification.data || {};
-  const url = (event.action === 'talk' && data.rideUrl) ? data.rideUrl : (data.url || self.registration.scope);
+  const url = (event.action === 'talk' && data.onTheGoUrl) ? data.onTheGoUrl : (data.url || self.registration.scope);
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
       for (const w of wins) {

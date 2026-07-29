@@ -29,7 +29,7 @@ function unlockAudio() {
   } catch {}
 }
 
-// Ride mode calls this directly inside the operator's enable tap. That one gesture unlocks audio,
+// The on-the-go assistant calls this directly inside the operator's enable tap. That one gesture unlocks audio,
 // starts the notification permission prompt in parallel, and obtains microphone permission before a
 // future Needs You update arrives. The stream is released immediately; the real conversation opens a
 // fresh stream only while listening.
@@ -59,7 +59,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
   active = true;
   stopFlag = false;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
-  ui = buildOverlay();
+  ui = buildOverlay({ onTheGo: String(source).startsWith('on-the-go') });
   try {
     let state = await post('api/voice/start', { focusSessionId, source });
     voiceId = state.voiceId;
@@ -377,24 +377,32 @@ async function recordUntilSilence({ maxMs = 90000, silenceMs = 1800, graceMs = 8
 }
 
 // ---- overlay UI ----
-function buildOverlay() {
+function buildOverlay({ onTheGo = false } = {}) {
   const root = document.createElement('div');
-  root.className = 'vm';
-  root.innerHTML =
-    '<div class="vm-box">' +
-    '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
-    '<div class="vm-orb"></div>' +
-    '<div class="vm-state">Starting…</div>' +
-    '<div class="vm-said"></div>' +
-    '<div class="vm-heard"></div>' +
-    '<div class="vm-controls">' +
-    '<span class="vm-mode"></span>' +
-    '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
-    '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button>' +
-    '</div>' +
-    '<div class="vm-tts-notice" hidden></div>' +
-    '<button class="btn danger vm-stop">Stop</button>' +
-    '</div>';
+  root.className = onTheGo ? 'vm vm-ongo' : 'vm';
+  root.innerHTML = onTheGo
+    ? '<div class="ongo-shell">' +
+      '<div class="ongo-head"><div><span class="ongo-kicker">ON THE GO</span><h2>Live project update</h2></div>' +
+      '<div class="ongo-live"><i></i><span class="vm-state">Starting…</span></div></div>' +
+      '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
+      '<section class="ongo-report"><span class="ongo-label">WHAT HAPPENED</span><div class="vm-said"></div></section>' +
+      '<section class="ongo-heard"><span class="ongo-label">YOU</span><div class="vm-heard"></div></section>' +
+      '<div class="vm-controls"><span class="vm-mode"></span>' +
+      '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
+      '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
+      '<div class="vm-tts-notice" hidden></div>' +
+      '<button class="btn danger vm-stop">End on-the-go assistant</button></div>'
+    : '<div class="vm-box">' +
+      '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
+      '<div class="vm-orb"></div>' +
+      '<div class="vm-state">Starting…</div>' +
+      '<div class="vm-said"></div>' +
+      '<div class="vm-heard"></div>' +
+      '<div class="vm-controls"><span class="vm-mode"></span>' +
+      '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
+      '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
+      '<div class="vm-tts-notice" hidden></div>' +
+      '<button class="btn danger vm-stop">Stop</button></div>';
   document.body.appendChild(root);
   const o = {
     root,
@@ -408,6 +416,7 @@ function buildOverlay() {
     speed: root.querySelector('.vm-speed'),
     deviceVoice: root.querySelector('.vm-device-voice'),
     ttsNotice: root.querySelector('.vm-tts-notice'),
+    onTheGo,
   };
   root.querySelector('.vm-stop').onclick = end;
   o.deviceVoice.onclick = () => {
@@ -425,7 +434,7 @@ function buildOverlay() {
 }
 function updateProgress(cur) {
   if (!ui || !cur || !cur.total) return;
-  ui.prog.textContent = `Item ${cur.n} of ${cur.total}`;
+  ui.prog.textContent = ui.onTheGo ? `Needs You · ${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round(((cur.n - 1) / cur.total) * 100) + '%';
 }
 function setState(s, said) {

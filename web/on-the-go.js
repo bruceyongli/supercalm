@@ -1,25 +1,33 @@
 import { enablePush, setPushPreferences } from './common.js';
 import { isVoiceModeActive, prepareVoiceMode, startVoiceMode, stopVoiceMode } from './voicemode.js';
-import { nextRideAttention, rideAttentionKey } from './ride-state.js';
-export { nextRideAttention, rideAttentionKey } from './ride-state.js';
+import { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
+export { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 
-// Ride mode connects three existing reliable paths:
+// The on-the-go assistant connects three existing reliable paths:
 //   foreground Needs You update -> chime -> hands-free voice concierge
 //   background/suspended PWA     -> Web Push -> notification tap -> focused concierge
 //   spoken reply                 -> the concierge's existing confirm + deliverReply flow
 // It deliberately does not pretend a suspended iOS web app can start arbitrary background audio or
 // keep a hot microphone. Web Push is the background bridge; automatic speech is a foreground feature.
 
-const ENABLED_KEY = 'aios.ride.enabled';
-const ANNOUNCED_KEY = 'aios.ride.announced';
+const ENABLED_KEY = 'aios.on-the-go.enabled';
+const ANNOUNCED_KEY = 'aios.on-the-go.announced';
 const ANNOUNCED_MAX = 120;
 
 function readEnabled() {
-  try { return localStorage.getItem(ENABLED_KEY) === '1'; } catch { return false; }
+  try {
+    const current = localStorage.getItem(ENABLED_KEY);
+    if (current != null) return current === '1';
+    // One-release migration for devices that enabled the original bicycle-specific label.
+    const legacy = localStorage.getItem('aios.ride.enabled');
+    if (legacy != null) localStorage.setItem(ENABLED_KEY, legacy);
+    return legacy === '1';
+  } catch { return false; }
 }
 function readAnnounced() {
   try {
-    const values = JSON.parse(localStorage.getItem(ANNOUNCED_KEY) || '[]');
+    const raw = localStorage.getItem(ANNOUNCED_KEY) ?? localStorage.getItem('aios.ride.announced') ?? '[]';
+    const values = JSON.parse(raw);
     return new Set(Array.isArray(values) ? values.slice(-ANNOUNCED_MAX) : []);
   } catch { return new Set(); }
 }
@@ -38,8 +46,9 @@ let listeners = new Set();
 let chimeContext = null;
 
 const launchParams = new URLSearchParams(location.search);
-let pendingFocus = launchParams.get('ride') === '1' ? String(launchParams.get('focus') || '') : '';
-if (launchParams.get('ride') === '1') {
+const notificationLaunch = launchParams.get('on-the-go') === '1' || launchParams.get('ride') === '1';
+let pendingFocus = notificationLaunch ? String(launchParams.get('focus') || '') : '';
+if (notificationLaunch) {
   enabled = true;
   try { localStorage.setItem(ENABLED_KEY, '1'); } catch {}
 }
@@ -51,32 +60,32 @@ let voiceAdapter = {
   stop: stopVoiceMode,
 };
 
-export function setRideVoiceAdapter(adapter = {}) {
+export function setOnTheGoVoiceAdapter(adapter = {}) {
   voiceAdapter = { ...voiceAdapter, ...adapter };
 }
 
-export function rideModeState() {
+export function onTheGoState() {
   return { enabled, talking, push, detail };
 }
 
 function emit() {
-  const state = rideModeState();
-  document.documentElement.classList.toggle('ride-mode-on', enabled);
+  const state = onTheGoState();
+  document.documentElement.classList.toggle('on-the-go-on', enabled);
   for (const listener of listeners) {
     try { listener(state); } catch {}
   }
-  window.dispatchEvent(new CustomEvent('aios:ride-mode', { detail: state }));
+  window.dispatchEvent(new CustomEvent('aios:on-the-go', { detail: state }));
 }
 
-export function subscribeRideMode(listener) {
+export function subscribeOnTheGo(listener) {
   listeners.add(listener);
-  try { listener(rideModeState()); } catch {}
+  try { listener(onTheGoState()); } catch {}
   return () => listeners.delete(listener);
 }
 
 function markAnnounced(needs) {
   for (const session of needs || []) {
-    const key = rideAttentionKey(session);
+    const key = onTheGoAttentionKey(session);
     if (key) announced.add(key);
   }
   while (announced.size > ANNOUNCED_MAX) announced.delete(announced.values().next().value);
@@ -114,7 +123,7 @@ async function speakNeeds(session, { manual = false } = {}) {
   emit();
   if (!manual) await chime();
   try {
-    await voiceAdapter.start?.({ focusSessionId: session.id, source: manual ? 'ride-enable' : 'ride-update' });
+    await voiceAdapter.start?.({ focusSessionId: session.id, source: manual ? 'on-the-go-enable' : 'on-the-go-update' });
   } catch (error) {
     detail = `Voice could not start · ${error?.message || error}`;
   } finally {
@@ -133,11 +142,11 @@ function scan({ manual = false } = {}) {
     next = currentNeeds.find((session) => session.id === pendingFocus) || null;
     if (next) pendingFocus = '';
   }
-  if (!next) next = manual ? currentNeeds[0] || null : nextRideAttention(currentNeeds, announced);
+  if (!next) next = manual ? currentNeeds[0] || null : nextOnTheGoAttention(currentNeeds, announced);
   if (next) speakNeeds(next, { manual });
 }
 
-export function observeRideNeeds(needs) {
+export function observeOnTheGoNeeds(needs) {
   currentNeeds = (needs || []).filter(Boolean);
   try {
     if ('setAppBadge' in navigator) {
@@ -148,7 +157,7 @@ export function observeRideNeeds(needs) {
   if (!initialObserved) {
     initialObserved = true;
     // A normal app launch establishes a baseline instead of suddenly reading yesterday's queue.
-    // Once Ride mode is enabled, its persisted report keys survive reloads so a report that arrived
+    // Once the on-the-go assistant is enabled, persisted report keys survive reloads so an update
     // while this page was gone is still announced. A notification launch carries `focus`, so that
     // exact report is always allowed through as well.
     if (!enabled && !pendingFocus) markAnnounced(currentNeeds);
@@ -156,16 +165,16 @@ export function observeRideNeeds(needs) {
   scan();
 }
 
-export async function toggleRideMode() {
+export async function toggleOnTheGo() {
   if (enabled) {
     enabled = false;
     talking = false;
     detail = 'Off';
     try { localStorage.setItem(ENABLED_KEY, '0'); } catch {}
     try { voiceAdapter.stop?.(); } catch {}
-    setPushPreferences({ ride: false }).catch(() => {});
+    setPushPreferences({ onTheGo: false }).catch(() => {});
     emit();
-    return rideModeState();
+    return onTheGoState();
   }
 
   enabled = true;
@@ -177,7 +186,7 @@ export async function toggleRideMode() {
   // microphone access after the notification prompt settles so iOS never has two system permission
   // sheets competing at once (getUserMedia permission does not require the same transient activation).
   const audioPrime = voiceAdapter.prepare?.({ requestMic: false }).catch(() => null);
-  const pushOn = await enablePush({ ride: true }).catch(() => false);
+  const pushOn = await enablePush({ onTheGo: true }).catch(() => false);
   await audioPrime;
   const voice = await voiceAdapter.prepare?.({ requestMic: true })
     .catch((error) => ({ mic: false, error: error?.message || error }));
@@ -189,12 +198,14 @@ export async function toggleRideMode() {
       : 'On in foreground · install the PWA to enable background notifications';
   emit();
   scan({ manual: true });
-  return rideModeState();
+  return onTheGoState();
 }
 
 // A normal interaction after restoring the PWA re-unlocks Web Audio without showing a permission
-// prompt. This makes a previously enabled Ride mode resilient across page reloads on iOS.
+// prompt. This makes a previously enabled on-the-go assistant resilient across page reloads on iOS.
 if (enabled) {
+  // Refresh an existing subscription's preference after a renamed release without showing prompts.
+  setPushPreferences({ onTheGo: true }).catch(() => {});
   window.addEventListener('pointerdown', () => voiceAdapter.prepare?.({ requestMic: false }).catch(() => {}), { once: true, capture: true });
 }
 window.addEventListener('visibilitychange', () => { if (!document.hidden) scan(); });

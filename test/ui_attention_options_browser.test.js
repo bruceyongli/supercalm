@@ -132,8 +132,8 @@ try {
   await page.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.locator('[data-dk-card][data-sid="s_opt"] .dk-card-questions').waitFor();
-  assert.equal(await page.locator('#dk-ride').getAttribute('aria-pressed'), 'false',
-    'Needs You exposes an explicit opt-in Ride mode switch');
+  assert.equal(await page.locator('#dk-on-the-go').getAttribute('aria-pressed'), 'false',
+    'Needs You exposes an explicit opt-in on-the-go assistant switch');
 
   const optionCard = page.locator('[data-dk-card][data-sid="s_opt"]');
   assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Your move'],
@@ -234,11 +234,11 @@ try {
   await phone.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
   await phone.goto(base + 'phone', { waitUntil: 'domcontentloaded' });
   await phone.locator('.needcard[data-open="s_opt"] .needqs').waitFor();
-  const rideButton = phone.locator('#ride-mode');
-  assert.equal(await rideButton.getAttribute('aria-pressed'), 'false', 'phone companion exposes the same opt-in Ride mode');
-  const rideBox = await rideButton.boundingBox();
-  assert.ok(rideBox && rideBox.x >= 0 && rideBox.x + rideBox.width <= 390,
-    'the Ride switch stays inside the iPhone viewport');
+  const onTheGoButton = phone.locator('#on-the-go-mode');
+  assert.equal(await onTheGoButton.getAttribute('aria-pressed'), 'false', 'phone companion exposes the same opt-in assistant');
+  const onTheGoBox = await onTheGoButton.boundingBox();
+  assert.ok(onTheGoBox && onTheGoBox.x >= 0 && onTheGoBox.x + onTheGoBox.width <= 390,
+    'the on-the-go switch stays inside the iPhone viewport');
   assert.equal(await phone.locator('.needcard[data-open="s_done"]').count(), 0, 'a second device respects the server-side dismissal');
   await phone.locator('#toggle-dismissed').click();
   assert.equal(await phone.locator('.ph-dismissed-row[data-open="s_done"]').count(), 1, 'the second device can find the dismissed session');

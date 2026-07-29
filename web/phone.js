@@ -15,7 +15,7 @@ import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
-import { observeRideNeeds, rideModeState, setRideVoiceAdapter, subscribeRideMode, toggleRideMode } from './ride-mode.js';
+import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 
 registerSW();
 
@@ -162,7 +162,7 @@ async function loadHome() {
       next.sessions = [...newcomers, ...retained, ...next.sessions.filter((session) => !placed.has(session.id))];
     }
     S.home = next;
-    observeRideNeeds(phoneNeeds());
+    observeOnTheGoNeeds(phoneNeeds());
     ok = true;
   } catch { /* keep stale */ }
   if (S.screen === 'home') renderSoft();
@@ -195,7 +195,7 @@ function patchSession(payload) {
     live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
     dismissed: sessions.filter((s) => s.dismissed).length,
   };
-  observeRideNeeds(phoneNeeds());
+  observeOnTheGoNeeds(phoneNeeds());
   if (S.detail?.id === payload.session) S.detail = { ...S.detail, ...patch };
   if (S.screen === 'home' || S.sid === payload.session) renderSoft();
 }
@@ -281,30 +281,30 @@ async function playQueue(items, scope) {
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
 // silence) → STT → /api/voice/turn → confirm-before-send brain (questions answered from session log +
 // project knowledge + supervisor notes) → next item, until done or "stop". One tap in, zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false };
-let rideState = rideModeState();
-setRideVoiceAdapter({
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '' };
+let onTheGoUi = onTheGoState();
+setOnTheGoVoiceAdapter({
   active: () => V.on,
-  start: ({ focusSessionId = null } = {}) => voiceModeStart(focusSessionId),
-  stop: () => voiceModeEnd('ride-off'),
+  start: ({ focusSessionId = null } = {}) => voiceModeStart(focusSessionId, { onTheGo: true }),
+  stop: () => voiceModeEnd('on-the-go-off'),
 });
-subscribeRideMode((state) => {
-  rideState = state;
+subscribeOnTheGo((state) => {
+  onTheGoUi = state;
   if (S.home && S.screen === 'home') renderSoft();
 });
 
-async function voiceModeStart(focusSessionId = null) {
+async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
   if (V.on) return;
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; S.sheet = 'voicemode';
+  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; S.sheet = 'voicemode';
   render();
   try {
     const r = await api('api/voice/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ focusSessionId, source: focusSessionId ? 'ride-update' : 'manual' }),
+      body: JSON.stringify({ focusSessionId, source: onTheGo ? 'on-the-go-update' : 'manual' }),
     });
     V.voiceId = r.voiceId; V.current = r.current || null;
     await voiceSay(r.say);
@@ -314,7 +314,7 @@ async function voiceModeStart(focusSessionId = null) {
 }
 async function voiceSay(text) {
   if (!text || V.stopFlag) return;
-  V.state = 'speaking'; render();
+  V.state = 'speaking'; V.said = text; render();
   await speakOne(text);
 }
 async function voiceLoopListen() {
@@ -350,7 +350,7 @@ async function voiceLoopListen() {
   } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
 }
 function voiceModeEnd(why) {
-  V.stopFlag = true; V.on = false; V.state = 'idle';
+  V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = '';
   try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
   V.stream = null;
   if (V.voiceId) api('api/voice/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) }).catch(() => {});
@@ -680,11 +680,11 @@ function renderHome() {
       </div>
       <div class="ph-voicebar">
         <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
-        <button class="ridebig ${rideState.enabled ? 'on' : ''}" id="ride-mode" type="button" aria-pressed="${rideState.enabled ? 'true' : 'false'}" title="${esc(rideState.detail || '')}">
-          <span></span>${rideState.talking ? 'Talking…' : rideState.enabled ? 'Ride mode on' : 'Ride mode'}
+        <button class="ongobig ${onTheGoUi.enabled ? 'on' : ''}" id="on-the-go-mode" type="button" aria-pressed="${onTheGoUi.enabled ? 'true' : 'false'}" title="${esc(onTheGoUi.detail || '')}">
+          <span></span>${onTheGoUi.talking ? 'Talking…' : onTheGoUi.enabled ? 'On the go · on' : 'On the go'}
         </button>
       </div>
-      ${rideState.enabled ? `<div class="ride-note">${esc(rideState.detail)}</div>` : ''}
+      ${onTheGoUi.enabled ? `<div class="ongo-note">${esc(onTheGoUi.detail)}</div>` : ''}
     </div>
     <div class="scroll home-scroll">
       <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span><button class="ph-needs-refresh" id="refresh-needs" aria-label="Refresh Needs you from the server">↻ Refresh</button></div>
@@ -832,6 +832,23 @@ function renderSheet() {
     const st = V.state;
     const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
     const cur = V.current ? `${V.current.project || ''} · ${V.current.category || ''} · ${V.current.n}/${V.current.total}` : '';
+    if (V.onTheGo) return `
+    <button class="scrim" data-voice-end aria-label="end"></button>
+    <div class="sheet ongoing-sheet">
+      <div class="ongo-sheet-head">
+        <div><span class="ongo-sheet-kicker">ON THE GO</span><div class="ongo-sheet-title">Live project update</div></div>
+        <div class="ongo-sheet-live"><i></i>${esc(label)}</div>
+      </div>
+      ${cur ? `<div class="ongo-sheet-progress">Needs You · ${esc(cur)}</div>` : ''}
+      <div class="ongo-sheet-report">
+        <span>WHAT HAPPENED</span>
+        <p>${esc(V.said || 'Preparing a clear update…')}</p>
+      </div>
+      ${V.lastHeard ? `<div class="ongo-sheet-heard"><b>YOU</b><span>“${esc(V.lastHeard.slice(0, 220))}”</span></div>` : ''}
+      <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
+      <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
+      <div class="footnote">reply naturally · say “skip” to move on · ask for all session statuses only when you want them</div>
+    </div>`;
     return `
     <button class="scrim" data-voice-end aria-label="end"></button>
     <div class="sheet">
@@ -940,10 +957,10 @@ function wire() {
     if (V.on) return voiceModeEnd('user');
     voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
   });
-  $('#ride-mode')?.addEventListener('click', async () => {
-    const button = $('#ride-mode');
+  $('#on-the-go-mode')?.addEventListener('click', async () => {
+    const button = $('#on-the-go-mode');
     if (button) button.disabled = true;
-    await toggleRideMode();
+    await toggleOnTheGo();
     if (S.screen === 'home') renderSoft();
   });
   // A session tap opens the DESKTOP story view (operator: desktop story is the mobile default for sessions);

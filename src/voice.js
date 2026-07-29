@@ -3,14 +3,16 @@ import * as store from './store.js';
 import * as sessions from './sessions.js';
 import { chatJson } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
-import { buildVoiceBrief, speakBrief, sanitizeForSpeech } from './voice_brief.js';
+import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } from './voice_brief.js';
 import { searchWiki } from './wiki.js';
+import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
+import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
 // the llm.js fallback chain. The browser handles TTS playback + STT (with VAD).
 
-const SYS = `You are Supercalm Voice, a hands-free voice concierge. You help the user clear a queue of CLI coding-agent sessions waiting on them; you SPEAK (text-to-speech) and they reply by voice. Be warm and VERY brief: at most 2 short spoken sentences, ~25 words total — this is read aloud by a neural voice, so every extra word adds delay before you start speaking. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase for the ear.
+const SYS = `You are Supercalm Voice, a hands-free voice concierge. You help the user clear a queue of CLI coding-agent sessions waiting on them; you SPEAK (text-to-speech) and they reply by voice. Be warm and VERY brief: normally at most 2 short spoken sentences, ~25 words total — this is read aloud by a neural voice, so every extra word adds delay before you start speaking. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase for the ear.
 For the user's reply about the CURRENT item:
 - an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await").
 - a confirmation (yes/go/send/correct) -> action "send", with "message" = a clear actionable instruction that captures their intent.
@@ -21,6 +23,7 @@ For the user's reply about the CURRENT item:
 Default to "await" for any NEW instruction — confirm before acting. Only use "send" once the user confirms (yes / go / correct / send it) OR gives an explicit do-it directive (e.g. "just do it", "go ahead and send"). When unsure between await and send, choose await.
 On "send" or "next", briefly confirm and say you're moving on — do NOT describe or invent the next item; the system presents it on the next turn.
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
+Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
 Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...only when action=send..."}`;
 
 const voiceSessions = new Map();
@@ -46,27 +49,53 @@ function answeredElsewhereSince(sessionId, sinceTs) {
   } catch { return false; }
 }
 
-function buildItems(focusSessionId = '') {
+function attentionState(session) {
+  const unread = attentionUnreadCount(session.id);
+  const dismissal = getAttentionDismissal(session.id);
+  return { unread, dismissed: !!dismissal };
+}
+
+function stillNeedsAttention(sessionId) {
+  const session = store.getSession(sessionId);
+  return isNeedsYouSession(session, session ? attentionState(session) : {});
+}
+
+function latestReportFor(session) {
+  const summary = String(session?.summary || '').trim();
+  const question = String(session?.question || '').trim();
+  if (!summary) return question;
+  if (!question || summary === question || question.includes(summary)) return question || summary;
+  if (summary.includes(question)) return summary;
+  return `${summary}. ${question}`;
+}
+
+export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
   const live = store
     .listLiveSessions()
-    .filter((s) => s.status === 'waiting' && s.category !== 'working')
+    .filter((s) => isNeedsYouSession(s, attentionState(s)))
     .sort((a, b) => {
-      // A Ride notification names the report that just arrived. Present that project first instead
-      // of making a cyclist listen through an older queue before hearing the update that alerted them.
+      // An on-the-go notification names the report that just arrived. Present that project first
+      // instead of making the operator listen through an older queue before hearing the new update.
       if (focusSessionId) {
         if (a.id === focusSessionId && b.id !== focusSessionId) return -1;
         if (b.id === focusSessionId && a.id !== focusSessionId) return 1;
       }
       return (a.last_activity || 0) - (b.last_activity || 0);
     }); // otherwise oldest waiting first
-  return live.map((s) => ({
-    sessionId: s.id,
-    tmux: s.tmux,
-    tool: s.tool,
-    project: s.project_id ? store.getProject(s.project_id)?.name || 'adhoc' : 'adhoc',
-    summary: s.summary || s.title || '',
-    category: s.category || 'review',
-  }));
+  return live.map((s) => {
+    const messages = store.messagesFor(s.id, 200);
+    return {
+      sessionId: s.id,
+      tmux: s.tmux,
+      tool: s.tool,
+      project: s.project_id ? store.getProject(s.project_id)?.name || 'adhoc' : 'adhoc',
+      originalRequest: originalRequestFrom(messages, s.title || ''),
+      latestReport: latestReportFor(s),
+      summary: s.summary || s.question || '',
+      category: s.category || 'review',
+      onTheGo,
+    };
+  });
 }
 
 function supervisorNoteFor(sessionId) {
@@ -89,7 +118,9 @@ async function stateContext(vs, userText = '') {
   const it = vs.items[vs.pointer];
   const lines = [`You are on item ${vs.pointer + 1} of ${vs.items.length}.`];
   if (it) {
-    lines.push(`CURRENT: ${it.project} (${it.tool}), ${it.category}. ${it.summary}`);
+    lines.push(`CURRENT: ${it.project} (${it.tool}), ${it.category}.`);
+    if (it.originalRequest) lines.push(`ORIGINAL REQUEST: ${sanitizeForSpeech(it.originalRequest).slice(0, 1200)}`);
+    if (it.latestReport) lines.push(`LATEST REPORT: ${sanitizeForSpeech(it.latestReport).slice(0, 1200)}`);
     const msgs = store.messagesFor(it.sessionId, 200).slice(-4);
     if (msgs.length) {
       lines.push('Recent:');
@@ -114,6 +145,21 @@ async function stateContext(vs, userText = '') {
       } catch {}
     }
   }
+  // A broad status dump is distracting during an attention pass. Add it to the LLM context only
+  // when the operator actually asks for all/other/new session status.
+  if (asksForSessionOverview(userText)) {
+    lines.push('SESSION OVERVIEW (included only because the operator explicitly asked):');
+    for (const session of store.listSessions().slice(0, 24)) {
+      const state = attentionState(session);
+      const status = isNeedsYouSession(session, state)
+        ? 'Needs You'
+        : state.dismissed
+          ? 'dismissed from Needs You'
+          : session.status;
+      const project = session.project_id ? store.getProject(session.project_id)?.name || 'adhoc' : 'adhoc';
+      lines.push(`  ${project}, ${session.tool}: ${status}. ${sanitizeForSpeech(session.title || '').slice(0, 100)}`);
+    }
+  }
   return lines.join('\n');
 }
 
@@ -125,12 +171,12 @@ async function briefFor(it) {
   if (!it) return null;
   if (it._brief) return it._brief;
   try {
-    let screen = '';
-    try { screen = await sessions.snapshot(it.sessionId); } catch {}
     const s2 = store.getSession(it.sessionId);
     it._brief = await buildVoiceBrief({
       sessionId: it.sessionId, project: it.project, tool: it.tool, category: it.category,
-      summary: it.summary, ask: s2?.question || '', screen, supervisorNote: supervisorNoteFor(it.sessionId),
+      originalRequest: it.originalRequest,
+      latestReport: it.latestReport || latestReportFor(s2),
+      summary: it.summary, ask: s2?.question || '', screen: '', supervisorNote: supervisorNoteFor(it.sessionId),
     });
   } catch { it._brief = null; }
   return it._brief;
@@ -147,17 +193,26 @@ async function present(vs, greet) {
   } else {
     const n = vs.items.length;
     const where = it.project && it.project !== 'adhoc' ? `${it.project} ${it.tool}` : it.tool;
-    const lead = greet ? `You have ${n} ${n > 1 ? 'items' : 'item'} waiting. First up, ${where}.` : `Next, ${where}.`;
+    const lead = greet
+      ? vs.onTheGo
+        ? `There ${n === 1 ? 'is' : 'are'} ${n} ${n === 1 ? 'update' : 'updates'} in Needs You. First, ${where}.`
+        : `You have ${n} ${n > 1 ? 'items' : 'item'} in Needs You. First up, ${where}.`
+      : `Next, ${where}.`;
     // spoken brief (gpt-5.5) with a hard latency budget; sanitized template if it isn't ready
     const brief = await Promise.race([briefFor(it), new Promise((r) => setTimeout(() => r(null), 4000))]);
     if (brief) {
-      say = `${lead} ${speakBrief(brief, { level: 'standard' })} ${brief.needs ? '' : 'What would you like to do?'}`.trim();
-      if (brief.needs && !brief.options?.length) say += ` ${brief.needs}`;
+      if (vs.onTheGo) {
+        say = `${lead} ${speakOnTheGoBrief(brief)} ${brief.needs ? '' : 'What would you like to do?'}`.trim();
+      } else {
+        say = `${lead} ${speakBrief(brief, { level: 'standard' })} ${brief.needs ? '' : 'What would you like to do?'}`.trim();
+        if (brief.needs && !brief.options?.length) say += ` ${brief.needs}`;
+      }
     } else {
-      const cat = ['action', 'decision', 'review'].includes(it.category) ? it.category : 'response';
-      let gist = sanitizeForSpeech(String(it.summary || '')).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-      if (gist.length > 120) gist = gist.slice(0, 120).replace(/\s+\S*$/, '') + '…';
-      say = `${lead} A ${cat}. ${gist ? gist + '.' : ''} What would you like to do?`;
+      let request = sanitizeForSpeech(it.originalRequest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      let latest = sanitizeForSpeech(it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      if (request.length > 150) request = request.slice(0, 150).replace(/\s+\S*$/, '') + '…';
+      if (latest.length > 180) latest = latest.slice(0, 180).replace(/\s+\S*$/, '') + '…';
+      say = `${lead} Here's what happened. ${request ? `You originally asked: ${request}.` : ''} ${latest ? `The latest report says: ${latest}.` : ''} What would you like to do?`;
     }
   }
   return say;
@@ -171,13 +226,13 @@ async function present(vs, greet) {
 async function presentNext(vs, greet) {
   let skipped = 0;
   for (;;) {
-    while (vs.pointer < vs.items.length && store.getSession(vs.items[vs.pointer].sessionId)?.status !== 'waiting') {
+    while (vs.pointer < vs.items.length && !stillNeedsAttention(vs.items[vs.pointer].sessionId)) {
       vs.pointer++; skipped++;
     }
     if (vs.pointer >= vs.items.length) return { ended: true, skipped };
     const it = vs.items[vs.pointer];
     const say = await present(vs, greet);
-    if (store.getSession(it.sessionId)?.status === 'waiting') {
+    if (stillNeedsAttention(it.sessionId)) {
       it.presentedAt = now();
       const lead = skipped ? (skipped === 1 ? 'One item got handled in the meantime. ' : `${skipped} items got handled in the meantime. `) : '';
       const full = lead + say;
@@ -203,7 +258,11 @@ async function brainReply(vs, userText) {
       { temperature: 0.3, max_tokens: 650, timeout_ms: 10000, signal: ac.signal }
     );
     const action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
-    return { say: String(obj.say || '').trim() || 'Okay.', action, message: obj.message ? String(obj.message) : '' };
+    return {
+      say: sanitizeForSpeech(String(obj.say || '')).trim() || 'Okay.',
+      action,
+      message: obj.message ? String(obj.message) : '',
+    };
   } catch (e) {
     console.error('[aios] voice reply failed:', e.message);
     return { say: 'Sorry, I had trouble understanding. Could you say that again?', action: 'await', message: '' };
@@ -216,9 +275,11 @@ route('POST', '/api/voice/start', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
   const focusSessionId = String(b.focusSessionId || '').slice(0, 80);
-  const items = buildItems(focusSessionId);
+  const source = String(b.source || 'manual').slice(0, 40);
+  const onTheGo = source.startsWith('on-the-go');
+  const items = buildVoiceItems(focusSessionId, { onTheGo });
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
-  const vs = { id: id('v'), items, pointer: 0, history: [], createdAt: now(), lastTouch: now() };
+  const vs = { id: id('v'), items, pointer: 0, history: [], onTheGo, createdAt: now(), lastTouch: now() };
   voiceSessions.set(vs.id, vs);
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
@@ -315,7 +376,7 @@ route('POST', '/api/voice/continue', async (req, res) => {
     voiceSessions.delete(vs.id);
     // Recount from the LIVE store — sent items are now 'working' (gone), but skipped items
     // are still 'waiting', so don't claim "all caught up" when the queue isn't actually empty.
-    const remaining = buildItems().length;
+    const remaining = buildVoiceItems().length;
     const say = remaining
       ? `That's the end of this pass. ${remaining} ${remaining > 1 ? 'items' : 'item'} still need you${vs.skipped ? ' — including the ones you skipped' : ''}. Tap voice again to go through them, or open the dashboard.`
       : "That's everything that needed you. You're all caught up — talk soon.";
@@ -335,14 +396,15 @@ route('POST', '/api/voice/stop', async (req, res) => {
 route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
   const s2 = store.getSession(sid);
   if (!s2) return json(res, 404, { error: 'no such session' });
-  let screen = '';
-  try { screen = await sessions.snapshot(sid); } catch {}
+  const messages = store.messagesFor(sid, 200);
   const brief = await buildVoiceBrief({
     sessionId: sid,
     project: s2.project_id ? store.getProject(s2.project_id)?.name || 'adhoc' : 'adhoc',
     tool: s2.tool, category: s2.category || 'review',
+    originalRequest: originalRequestFrom(messages, s2.title || ''),
+    latestReport: latestReportFor(s2),
     summary: s2.summary || s2.title || '', ask: s2.question || '',
-    screen, supervisorNote: supervisorNoteFor(sid),
+    screen: '', supervisorNote: supervisorNoteFor(sid),
   });
   json(res, 200, { ok: true, brief });
 });

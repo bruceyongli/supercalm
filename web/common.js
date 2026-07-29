@@ -433,22 +433,22 @@ function urlB64ToUint8(b64) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
-function pushSubscriptionBody(sub, { ride = false } = {}) {
+function pushSubscriptionBody(sub, { onTheGo = false } = {}) {
   const body = typeof sub?.toJSON === 'function' ? sub.toJSON() : {
     endpoint: sub?.endpoint,
     expirationTime: sub?.expirationTime,
     keys: sub?.keys,
   };
-  return { ...body, aios: { ride: !!ride } };
+  return { ...body, aios: { onTheGo: !!onTheGo } };
 }
 
-export async function enablePush({ ride = false } = {}) {
+export async function enablePush({ onTheGo = false } = {}) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('Push not supported here. On iPhone/iPad, add Supercalm to your Home Screen first.');
     return false;
   }
   // Start the permission request before awaiting service-worker readiness. WebKit requires this call
-  // to happen directly inside the Ride/Notifications button's user activation; awaiting first can
+  // to happen directly inside the On-the-go/Notifications button's user activation; awaiting first can
   // consume that activation and make an installed iPhone/iPad PWA silently fail to prompt.
   const permission = Notification.permission === 'granted'
     ? Promise.resolve('granted')
@@ -469,20 +469,20 @@ export async function enablePush({ ride = false } = {}) {
   await api('api/subscribe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(pushSubscriptionBody(sub, { ride })),
+    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo })),
   });
   return true;
 }
 
-export async function setPushPreferences({ ride = false } = {}) {
+export async function setPushPreferences({ onTheGo = false } = {}) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
   const reg = await navigator.serviceWorker.getRegistration();
   const sub = reg && await reg.pushManager.getSubscription();
-  if (!sub) return ride ? enablePush({ ride }) : false;
+  if (!sub) return onTheGo ? enablePush({ onTheGo }) : false;
   await api('api/subscribe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(pushSubscriptionBody(sub, { ride })),
+    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo })),
   });
   return true;
 }

@@ -41,12 +41,12 @@ async function pushAll(payload) {
   await Promise.all(
     subs.map(async (sub) => {
       try {
-        const ride = !!sub.aios?.ride;
+        const onTheGo = !!(sub.aios?.onTheGo ?? sub.aios?.ride); // v0.3.273 subscription migration
         const targeted = {
           ...payload,
-          ...(ride && payload.rideUrl ? {
-            url: payload.rideUrl,
-            ride: true,
+          ...(onTheGo && payload.onTheGoUrl ? {
+            url: payload.onTheGoUrl,
+            onTheGo: true,
             body: `${String(payload.body || '').replace(/\s+/g, ' ').slice(0, 112)} Tap to hear and reply.`,
           } : {}),
         };
@@ -82,7 +82,7 @@ bus.on('waiting', ({ session, summary, category }) => {
     title: `${project ? project.name : s.tool} · ${CAT_TAG[category] || 'needs you'}`,
     body: String(summary || s.summary || s.title || 'Waiting for input').replace(/\s+/g, ' ').slice(0, 140),
     url: `session?id=${session}`, // relative — the SW resolves it against its scope (/aios/)
-    rideUrl: `./?ride=1&focus=${encodeURIComponent(session)}`,
+    onTheGoUrl: `./?on-the-go=1&focus=${encodeURIComponent(session)}`,
     tag: session,
   }).catch(() => {});
 });

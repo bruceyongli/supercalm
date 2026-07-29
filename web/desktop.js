@@ -4,7 +4,7 @@
 import { mountShell, getHome, refreshHome, upsertSession, agentChip, shortTitle, needsYou, dismissedAttention, openLaunch, sessionAttentionPreview, toast } from './shell.js';
 import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
-import { subscribeRideMode, toggleRideMode } from './ride-mode.js';
+import { subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
@@ -265,18 +265,18 @@ mountShell({ onData: renderInbox, activeNav: 'inbox' });
 // dropped in the home-flip to this shell). Reuses the existing voice concierge.
 const voiceBtn = document.getElementById('dk-voice');
 if (voiceBtn) voiceBtn.onclick = () => startVoiceMode();
-const rideBtn = document.getElementById('dk-ride');
-if (rideBtn) {
-  rideBtn.onclick = async () => {
-    rideBtn.disabled = true;
-    await toggleRideMode();
-    rideBtn.disabled = false;
+const onTheGoBtn = document.getElementById('dk-on-the-go');
+if (onTheGoBtn) {
+  onTheGoBtn.onclick = async () => {
+    onTheGoBtn.disabled = true;
+    await toggleOnTheGo();
+    onTheGoBtn.disabled = false;
   };
-  subscribeRideMode((state) => {
-    rideBtn.classList.toggle('on', state.enabled);
-    rideBtn.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
-    rideBtn.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'Ride mode on' : 'Ride mode'}`;
-    rideBtn.title = state.detail;
+  subscribeOnTheGo((state) => {
+    onTheGoBtn.classList.toggle('on', state.enabled);
+    onTheGoBtn.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
+    onTheGoBtn.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'On the go · on' : 'On the go'}`;
+    onTheGoBtn.title = state.detail;
   });
 }
 const refreshBtn = document.getElementById('dk-needs-refresh');

@@ -20,15 +20,15 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/aios/harness') {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end(`<!doctype html><base href="/aios/"><script type="module">
-      const ride = await import('./ride-mode.js');
-      window.__rideCalls = [];
-      ride.setRideVoiceAdapter({
+      const onTheGo = await import('./on-the-go.js');
+      window.__onTheGoCalls = [];
+      onTheGo.setOnTheGoVoiceAdapter({
         active: () => false,
         prepare: async ({ requestMic } = {}) => ({ audio: true, mic: requestMic ? true : null }),
-        start: async (options) => { window.__rideCalls.push(options); },
+        start: async (options) => { window.__onTheGoCalls.push(options); },
         stop: () => {},
       });
-      window.__ride = ride;
+      window.__onTheGo = onTheGo;
       window.__ready = true;
     </script>`);
     return;
@@ -48,8 +48,9 @@ const server = createServer(async (req, res) => {
   const file = normalize(join(webRoot, relative));
   if (!file.startsWith(webRoot)) { res.writeHead(403); res.end(); return; }
   try {
+    const body = readFileSync(file);
     res.writeHead(200, { 'content-type': mime[extname(file)] || 'application/octet-stream' });
-    res.end(readFileSync(file));
+    res.end(body);
   } catch {
     res.writeHead(404);
     res.end('not found');
@@ -96,33 +97,33 @@ try {
 
   const result = await page.evaluate(async () => {
     const old = { id: 's_old', project: 'Old project', status: 'waiting', unread: 1, category: 'review', last_key: { id: 10 }, last_activity: 10 };
-    window.__ride.observeRideNeeds([old]); // normal-load baseline: no surprise speech
+    window.__onTheGo.observeOnTheGoNeeds([old]); // normal-load baseline: no surprise speech
     await new Promise((resolve) => setTimeout(resolve, 20));
-    const baselineCalls = window.__rideCalls.length;
+    const baselineCalls = window.__onTheGoCalls.length;
 
-    await window.__ride.toggleRideMode(); // explicit enable reads the current queue once
+    await window.__onTheGo.toggleOnTheGo(); // explicit enable reads the current queue once
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const enabledCalls = [...window.__rideCalls];
+    const enabledCalls = [...window.__onTheGoCalls];
 
-    window.__ride.observeRideNeeds([old]); // same report episode: no repeat
+    window.__onTheGo.observeOnTheGoNeeds([old]); // same report episode: no repeat
     await new Promise((resolve) => setTimeout(resolve, 30));
-    const unchangedCalls = window.__rideCalls.length;
+    const unchangedCalls = window.__onTheGoCalls.length;
 
     const updated = { ...old, project: 'Changed project', last_key: { id: 11 }, last_activity: 11 };
-    window.__ride.observeRideNeeds([updated]);
+    window.__onTheGo.observeOnTheGoNeeds([updated]);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    const updatedCalls = [...window.__rideCalls];
+    const updatedCalls = [...window.__onTheGoCalls];
 
-    await window.__ride.toggleRideMode();
-    window.__ride.observeRideNeeds([{ ...updated, last_key: { id: 12 } }]);
+    await window.__onTheGo.toggleOnTheGo();
+    window.__onTheGo.observeOnTheGoNeeds([{ ...updated, last_key: { id: 12 } }]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     return {
       baselineCalls,
       enabledCalls,
       unchangedCalls,
       updatedCalls,
-      afterOffCalls: window.__rideCalls.length,
-      state: window.__ride.rideModeState(),
+      afterOffCalls: window.__onTheGoCalls.length,
+      state: window.__onTheGo.onTheGoState(),
     };
   });
 
@@ -131,21 +132,21 @@ try {
   assert.equal(result.unchangedCalls, 1, 'an unchanged report is never announced twice');
   assert.deepEqual(result.updatedCalls.map((call) => call.focusSessionId), ['s_old', 's_old'],
     'a new report episode for the same project starts a new focused pass');
-  assert.equal(result.afterOffCalls, 2, 'turning Ride mode off stops future foreground announcements');
+  assert.equal(result.afterOffCalls, 2, 'turning the on-the-go assistant off stops future foreground announcements');
   assert.equal(result.state.enabled, false);
-  assert.equal(subscriptions[0]?.aios?.ride, true, 'this device subscribes with Ride delivery enabled');
-  assert.equal(subscriptions.at(-1)?.aios?.ride, false, 'turning Ride mode off clears only its Ride preference');
+  assert.equal(subscriptions[0]?.aios?.onTheGo, true, 'this device subscribes with on-the-go delivery enabled');
+  assert.equal(subscriptions.at(-1)?.aios?.onTheGo, false, 'turning it off clears only its on-the-go preference');
 
-  // A Ride-enabled PWA can be suspended or relaunched between two reports. Persisted report keys
+  // An enabled PWA can be suspended or relaunched between two reports. Persisted report keys
   // distinguish the old queue from the genuinely new work instead of baselining both on every load.
   await page.evaluate(() => {
-    localStorage.setItem('aios.ride.enabled', '1');
-    localStorage.setItem('aios.ride.announced', JSON.stringify(['s_old:11']));
+    localStorage.setItem('aios.on-the-go.enabled', '1');
+    localStorage.setItem('aios.on-the-go.announced', JSON.stringify(['s_old:11']));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__ready);
   const relaunchedCalls = await page.evaluate(async () => {
-    window.__ride.observeRideNeeds([{
+    window.__onTheGo.observeOnTheGoNeeds([{
       id: 's_old',
       project: 'Changed while suspended',
       status: 'waiting',
@@ -155,13 +156,38 @@ try {
       last_activity: 12,
     }]);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    return window.__rideCalls;
+    return window.__onTheGoCalls;
   });
   assert.deepEqual(relaunchedCalls.map((call) => call.focusSessionId), ['s_old'],
     'an enabled PWA announces a report that arrived while the previous page was gone');
+
+  // The automatic assistant is visually a live update briefing, not the manual Voice orb reused
+  // under another button. A missing fixture endpoint keeps the overlay in its short error grace
+  // window long enough to inspect the actual production DOM.
+  await page.evaluate(async () => {
+    const voice = await import('./voicemode.js');
+    void voice.startVoiceMode({ focusSessionId: 's_old', source: 'on-the-go-update' });
+  });
+  await page.locator('.vm-ongo .ongo-report').waitFor();
+  assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'ON THE GO');
+  assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'WHAT HAPPENED');
+  assert.equal(await page.locator('.vm-ongo .vm-orb').count(), 0,
+    'the on-the-go briefing does not reuse the manual Voice orb presentation');
+  const desktopBox = await page.locator('.ongo-shell').boundingBox();
+  assert.ok(desktopBox && desktopBox.x >= 0 && desktopBox.x + desktopBox.width <= 1280,
+    'the briefing is contained on desktop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  const mobileFit = await page.evaluate(() => ({
+    pageWidth: document.documentElement.scrollWidth,
+    viewport: innerWidth,
+    stopVisible: !!document.querySelector('.vm-ongo .vm-stop')?.getClientRects().length,
+  }));
+  assert.ok(mobileFit.pageWidth <= mobileFit.viewport, 'the briefing does not overflow an iPhone viewport');
+  assert.equal(mobileFit.stopVisible, true, 'the end-assistant control remains reachable on iPhone');
+  await page.evaluate(async () => (await import('./voicemode.js')).stopVoiceMode());
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));
 }
 
-console.log('ride_mode_browser.test ok');
+console.log('on_the_go_browser.test ok');

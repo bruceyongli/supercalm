@@ -58,6 +58,38 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
 const { featureReady } = await import('../src/server.js');
 await featureReady;
 
+// ---- voice queue is exactly Needs You, not every lifecycle-waiting session ------------------------
+{
+  const { buildVoiceItems } = await import('../src/voice.js');
+  const { dismissAttention } = await import('../src/attention_store.js');
+  const insert = db.prepare(`
+    INSERT INTO sessions
+      (id, tool, tmux, title, status, category, summary, question, started_at, last_activity)
+    VALUES (?, 'codex', ?, ?, ?, ?, ?, ?, 1, ?)`);
+  const seed = (id, { status = 'waiting', category = 'review', read = false, dismiss = false } = {}) => {
+    const request = `Original request for ${id}`;
+    const latest = `Latest curated report for ${id}`;
+    insert.run(id, `tmx_${id}`, request, status, category, latest, latest, Date.now());
+    addMessage(id, 'in', 'task', request);
+    const report = addMessage(id, 'out', 'detect', latest);
+    if (read) db.prepare('UPDATE messages SET read_at = ? WHERE id = ?').run(Date.now(), report.id);
+    if (dismiss) dismissAttention(id, report.id);
+    return { request, latest };
+  };
+  seed('s_voice_need_one');
+  const focused = seed('s_voice_need_two', { category: 'decision' });
+  seed('s_voice_read', { read: true });
+  seed('s_voice_dismissed', { dismiss: true });
+  seed('s_voice_stopped', { status: 'exited' });
+  seed('s_voice_false_positive', { category: 'working' });
+
+  const items = buildVoiceItems('s_voice_need_two', { onTheGo: true });
+  assert.deepEqual(items.map((item) => item.sessionId), ['s_voice_need_two', 's_voice_need_one'],
+    'spoken count and order contain only the two cards actually visible in Needs You');
+  assert.equal(items[0].originalRequest, focused.request, 'the briefing starts from the operator’s original request');
+  assert.equal(items[0].latestReport, focused.latest, 'the briefing uses the latest curated report');
+}
+
 // ---- the real read route emits one scoped unread patch (no broad reload required) -----------------
 {
   addMessage('s_ph', 'out', 'detect', 'a new unread report for cross-client sync');
