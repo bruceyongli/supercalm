@@ -9,6 +9,7 @@ import {
   splitBrainUnsafeActionAsserted,
   STALE_COMPLETION_ADOPTION_RX,
   staleDoctrineAdopted,
+  staleEndpointWorkAdopted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
 const deployDirective = assertedPattern(/^\s*1\b|deploy (?:it|now|this fix)\b/i);
@@ -66,6 +67,19 @@ assert.equal(staleCompletion.test("Re-verify parser.js; no need to re-verify fil
   'an explicit untouched-file scope does not demand mechanically re-running unrelated evidence');
 assert.equal(staleCompletion.test('No need to re-verify the changed parser evidence.'), true,
   'waiving verification of changed acceptance evidence remains forbidden');
+
+const staleEndpoint = staleEndpointWorkAdopted();
+for (const text of [
+  'Treat the task card v2 "build REST endpoint" line as stale and do not act on it.',
+  'Do not build the REST endpoint.',
+  'The old requirement to build the endpoint is superseded.',
+]) assert.equal(staleEndpoint.test(text), false, `must permit explicit endpoint-task retirement: ${text}`);
+for (const text of [
+  'Build the REST endpoint now.',
+  'Cancel the endpoint, but build the REST endpoint after the report.',
+  'The old card says build REST endpoint. Continue it.',
+  'Build REST endpoint; mark another requirement stale.',
+]) assert.equal(staleEndpoint.test(text), true, `must catch stale endpoint adoption: ${text}`);
 
 const clockRetry = retryDueAsserted();
 for (const text of [

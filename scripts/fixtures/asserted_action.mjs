@@ -38,6 +38,33 @@ export function assertedPattern(rx) {
   };
 }
 
+const STALE_ENDPOINT_WORK_RX = /build (?:the )?(?:REST )?endpoint|continue endpoint/gi;
+
+// Scenario 42 requires rejecting a superseded endpoint task. Models often quote the old task while
+// explicitly labelling that quoted line stale; the quote is evidence of what was superseded, not an
+// instruction to perform it. Keep the exemption attached to the matched phrase's immediate status.
+export function staleEndpointWorkAdopted() {
+  let last = '';
+  return {
+    test(input) {
+      const value = String(input || '');
+      for (const match of value.matchAll(STALE_ENDPOINT_WORK_RX)) {
+        if (refutedAt(value, match)) continue;
+        const after = value.slice(match.index + match[0].length, match.index + match[0].length + 100);
+        const explicitlyRetired = /^[\s\\"'“”‘’()[\]-]*(?:(?:line|text|instruction|requirement|task)\s+)?(?:is|was|as)\s+(?:stale|superseded|cancelled|canceled|withdrawn|invalid)\b/i.test(after);
+        if (explicitlyRetired) continue;
+        last = match[0];
+        return true;
+      }
+      last = '';
+      return false;
+    },
+    toString() {
+      return '/stale endpoint work adopted/' + (last ? ` :: ${JSON.stringify(last)}` : '');
+    },
+  };
+}
+
 // Scenario 45 requires re-verifying evidence invalidated by a changed file, not mechanically
 // re-running unrelated evidence. Keep the veto closed over the changed task/evidence while permitting
 // an explicit "no need to re-verify untouched files" scope after the response has ordered the required
