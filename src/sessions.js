@@ -2851,7 +2851,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     return json(res, 200, {
       path: displayPath, rel, name: basename(target),
       bytes: st.size, mtime: st.mtimeMs, contentKind: kind, binary: kind === 'binary',
-      truncated: st.size > FILE_VIEW_MAX_BYTES,
+      truncated: kind === 'text' && st.size > FILE_VIEW_MAX_BYTES,
       viewUrl: `${viewBase}&raw=1`, downloadUrl: `${viewBase}&raw=1&download=1`,
     });
   }

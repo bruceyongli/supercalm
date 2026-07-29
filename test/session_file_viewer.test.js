@@ -193,6 +193,7 @@ async function waitForRoutes() {
   const meta = await response.json();
   assert.equal(meta.contentKind, 'video');
   assert.equal(meta.binary, false);
+  assert.equal(meta.truncated, false);
   const rawUrl = `${base}/${meta.viewUrl}`;
   const range = await fetch(rawUrl, { headers: { range: 'bytes=2-5' } });
   assert.equal(range.status, 206);
