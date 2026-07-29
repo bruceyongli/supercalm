@@ -273,6 +273,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .asset-detail-image {
   display: block; width: 100%; max-height: min(72dvh, 780px); object-fit: contain; background: #010409;
 }
+.asset-detail-media {
+  display: grid; place-items: center; min-height: 220px; background: #000;
+}
+.asset-detail-video {
+  display: block; width: 100%; height: auto; max-height: min(72dvh, 780px); object-fit: contain; background: #000;
+}
 .asset-detail-text {
   margin: 0; max-height: min(62dvh, 720px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   padding: 12px; color: var(--ink); background: #010409; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -292,6 +298,19 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .asset-detail-meta code {
   display: block; margin-top: 2px; color: var(--ink); background: transparent;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 600px) {
+  .asset-detail-backdrop {
+    place-items: center; padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+  .asset-detail {
+    width: 100%; max-height: calc(100dvh - 16px);
+    gap: 8px; padding: 11px; border-radius: 10px;
+  }
+  .asset-detail-media { min-height: 160px; }
+  .asset-detail-video { max-height: 62dvh; }
+  .asset-detail-meta { grid-template-columns: 1fr; }
 }
 @media (hover: none) {
   /* No hover on touch: the overlay actions were permanently visible and BURIED the card's
@@ -886,6 +905,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .workspace-document.markdown { padding: 18px 22px; }
 .workspace-document.image { display: grid; place-items: center; padding: 14px; background: #090d13; }
 .workspace-document.image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.workspace-document.video { display: grid; place-items: center; padding: 14px; background: #000; }
+.workspace-document.video video { display: block; width: 100%; height: auto; max-height: 100%; object-fit: contain; background: #000; }
 .workspace-document.html { padding: 10px; background: #e8eaed; }
 .workspace-document.html iframe { display: block; width: 100%; height: 100%; min-height: 480px; border: 0; background: white; }
 .workspace-empty { padding: 18px; color: var(--muted); }
@@ -2779,6 +2800,26 @@ body.map-expanded-open { overflow: hidden; }
 .story-body.md a { color: #58a6ff; text-decoration: none; }
 .story-body.md a:hover { text-decoration: underline; }
 .story-body.md strong { color: #dde5ee; font-weight: 600; }
+.story-video-preview {
+  width: min(720px, 100%); margin: 12px 0 4px; overflow: hidden;
+  border: 1px solid #232c38; border-radius: 10px; background: #080b10;
+}
+.story-video-frame { display: grid; place-items: center; min-height: 180px; background: #000; }
+.story-video-frame video {
+  display: block; width: 100%; height: auto; max-height: min(62dvh, 680px); object-fit: contain; background: #000;
+}
+.story-video-preview figcaption {
+  display: flex; align-items: center; gap: 9px; min-width: 0; padding: 7px 10px;
+  border-top: 1px solid #161d27; color: #5c6675; font: 10px/1.4 'JetBrains Mono', ui-monospace, monospace;
+}
+.story-video-preview figcaption button {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 0; border: 0; background: transparent; color: #79b8ff; font: inherit; cursor: pointer;
+}
+.story-video-preview figcaption button:hover, .story-video-preview figcaption button:focus-visible {
+  color: #a7d1ff; text-decoration: underline; outline: none;
+}
+.story-video-preview figcaption span { margin-left: auto; white-space: nowrap; }
 .story-ev[data-kind="ask"] .story-card { background: rgba(226,178,62,.05); border: 1px solid rgba(226,178,62,.25); border-radius: 12px; padding: 13px 15px; }
 .story-ev[data-kind="ask"] .story-title { color: #e2b23e; }
 .story-ev[data-kind="fail"] .story-title { color: #f2554d; }
@@ -2913,6 +2954,10 @@ body.map-expanded-open { overflow: hidden; }
   .story-head { padding: 9px 12px; }
   .story-ev[data-kind="you"] .story-body { padding: 9px 11px; }
   .story-ev[data-kind="ask"] .story-card { padding: 10px 12px; }
+  .story-video-preview { width: 100%; margin-top: 10px; border-radius: 8px; }
+  .story-video-frame { min-height: 150px; }
+  .story-video-frame video { max-height: 54dvh; }
+  .story-video-preview figcaption { padding: 7px 8px; }
 }
 
 /* r4 4a: compact supervisor mode select (replaces the 4-button segmented) */

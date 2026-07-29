@@ -296,11 +296,20 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 const storyView = read('web/story-view.js');
 assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),
   'story view renders report/note bodies through common.js renderMarkdown');
+assert.ok(storyView.includes('storyVideoPreviews(bodyText)')
+    && storyView.includes('data-story-video=')
+    && storyView.includes('controls playsinline preload="metadata"'),
+  'story reports turn local video references into responsive, non-autoplaying inline players');
+assert.ok(storyView.includes("feedEvents.findLast((ev) => ev.kind === 'report')")
+    && storyView.includes('eventHtml(ev, i, evKey(ev) === latestReportKey)'),
+  'only the newest report auto-loads video previews');
 assert.ok(storyView.includes('<ol class="story-plan-list"') && storyView.includes("ev.kind === 'plan' ? planHtml(ev)"),
   'story plan events render as a semantic ordered list');
 const css = read('web/styles.css');
 assert.ok(css.includes('.story-body.md table') && css.includes('.story-body.md pre'),
   'rich-body table/code styles exist on the story palette');
+assert.ok(css.includes('.story-video-preview') && css.includes('.story-video-frame video'),
+  'inline video previews have dedicated responsive Story styles');
 assert.ok(css.includes('.story-plan-item.in-progress') && css.includes('.story-plan-item.completed'),
   'plan rows visually distinguish current and completed work');
 const svKey = storyView.match(/aios_story(\d+)_/)?.[1];

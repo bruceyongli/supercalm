@@ -132,6 +132,11 @@ const ATTACHMENT_CONTENT_TYPES = {
   '.txt': 'text/plain; charset=utf-8',
   '.csv': 'text/csv; charset=utf-8',
   '.md': 'text/markdown; charset=utf-8',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
+  '.ogv': 'video/ogg',
 };
 
 // Content types for the project-file viewer (GET /api/session/:id/file). Code/config files map to
@@ -148,6 +153,7 @@ const FILE_TEXT_EXTS = new Set([
   '.gitignore', '.dockerignore', '.editorconfig', '.lock', '', // no-extension files (README, Makefile, Dockerfile)
 ]);
 const FILE_IMAGE_RX = /^\.(png|jpe?g|gif|webp|avif|bmp|ico)$/;
+const FILE_VIDEO_RX = /^\.(mp4|m4v|mov|webm|ogv)$/;
 const FILE_VIEW_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_LIST_MAX = 200;
 const FILE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'vendor', '.aios', 'coverage', '.venv', '__pycache__']);
@@ -2781,6 +2787,57 @@ async function listProjectFiles(root) {
   return { root: base, gitRepo, files: list.slice(0, FILE_LIST_MAX), truncated };
 }
 
+function mediaByteRange(header, size) {
+  if (!header) return null;
+  const match = String(header).trim().match(/^bytes=(\d*)-(\d*)$/i);
+  if (!match || (!match[1] && !match[2]) || size <= 0) return { invalid: true };
+  let start;
+  let end;
+  if (!match[1]) {
+    const suffix = Number(match[2]);
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return { invalid: true };
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(match[1]);
+    end = match[2] ? Number(match[2]) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) {
+      return { invalid: true };
+    }
+    end = Math.min(end, size - 1);
+  }
+  return { start, end };
+}
+
+function streamMediaFile(req, res, target, st, type, { download = false } = {}) {
+  const range = mediaByteRange(req.headers.range, st.size);
+  if (range?.invalid) {
+    res.writeHead(416, {
+      'accept-ranges': 'bytes',
+      'content-range': `bytes */${st.size}`,
+      'cache-control': 'private, max-age=15',
+    });
+    res.end();
+    return;
+  }
+  const start = range?.start ?? 0;
+  const end = range?.end ?? Math.max(0, st.size - 1);
+  const partial = Boolean(range);
+  const headers = {
+    'content-type': type,
+    'content-length': st.size ? end - start + 1 : 0,
+    'accept-ranges': 'bytes',
+    'cache-control': 'private, max-age=15',
+    'content-disposition': `${download ? 'attachment' : 'inline'}; filename="${basename(target).replace(/"/g, '')}"`,
+  };
+  if (partial) headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
+  res.writeHead(partial ? 206 : 200, headers);
+  if (!st.size) return res.end();
+  const stream = createReadStream(target, { start, end });
+  stream.on('error', () => res.destroy());
+  stream.pipe(res);
+}
+
 route('GET', '/api/session/:id/files', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
@@ -2807,12 +2864,14 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   if (st.isDirectory()) return json(res, 400, { error: 'path is a directory' });
   const ext = extname(target).toLowerCase();
   const isImg = FILE_IMAGE_RX.test(ext);
+  const isVideo = FILE_VIDEO_RX.test(ext);
   const isPdf = ext === '.pdf';
   const viewBase = `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(rel)}`;
 
   if (!raw) {
     let kind = 'binary';
     if (isImg) kind = 'image';
+    else if (isVideo) kind = 'video';
     else if (isPdf) kind = 'pdf';
     else {
       const head = await readHead(target, Math.min(8192, st.size || 1)).catch(() => '');
@@ -2821,16 +2880,20 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     return json(res, 200, {
       path: displayPath, rel, name: basename(target),
       bytes: st.size, mtime: st.mtimeMs, contentKind: kind, binary: kind === 'binary',
-      truncated: st.size > FILE_VIEW_MAX_BYTES,
+      truncated: kind === 'text' && st.size > FILE_VIEW_MAX_BYTES,
       viewUrl: `${viewBase}&raw=1`, downloadUrl: `${viewBase}&raw=1&download=1`,
     });
   }
 
   try {
+    const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isVideo || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
+    if (isVideo) {
+      streamMediaFile(req, res, target, st, type, { download });
+      return;
+    }
     let data = await readFile(target);
     let truncated = false;
     if (data.length > FILE_VIEW_MAX_BYTES) { data = data.subarray(0, FILE_VIEW_MAX_BYTES); truncated = true; }
-    const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
     const inline = !download && (/^text\//.test(type) || /json|pdf|markdown/.test(type) || isImg);
     const headers = {
       'content-type': type,
