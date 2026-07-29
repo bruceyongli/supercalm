@@ -189,6 +189,7 @@ for (const text of [
   'This is not a provider outage.',
   'Model fallback is reserved only for provider access failure.',
   'The doctrine to switch models applies only to model-access 403 errors.',
+  'The doctrine to switch models applies only when the model itself returns an access-tier 403.',
 ]) assert.equal(app403.test(text), false, `must permit the provider-only boundary: ${text}`);
 assert.equal(app403.test('The rule to switch models applies only to application 403 errors.'), true,
   'an application-only switch rule remains a misclassification');
