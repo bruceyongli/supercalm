@@ -51,6 +51,15 @@ assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|T
   }), true, 'the semantic helper recognizes the review clause');
   assert.equal(cardLifecycleDirective('Do not close this card; verify it, then activate the next task card.'), true,
     'the independent lifecycle gate still blocks a mixed review-plus-mutation answer');
+  assert.equal(cardLifecycleDirective(
+    'Do not close the log-UI card or activate the editor card; keep card state unchanged and provide the acceptance-criteria evidence.',
+  ), false, 'one explicit negation scopes both coordinated lifecycle verbs');
+  assert.equal(cardLifecycleDirective(
+    'Do not close the log-UI card, but activate the editor card after this message.',
+  ), true, 'a contrastive second lifecycle verb remains an asserted mutation');
+  assert.equal(cardLifecycleDirective(
+    'Do not close the log-UI card. Activate the editor card after this message.',
+  ), true, 'sentence punctuation ends lifecycle refutation scope');
 
   const prematureEscalation = {
     action: 'escalate',

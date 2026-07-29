@@ -76,8 +76,10 @@ export function modeLabel(mode) {
 // shape at the token so a later real imperative in the same clause can still be found independently.
 // A post-match skip would consume "open ... activate the next card" as one match and could hide the
 // asserted `activate`, so keep these fixed-width lookbehinds in the scanner itself.
-const CARD_LIFECYCLE_RX = /(?<!\bis )(?<!\bare )(?<!\bwas )(?<!\bwere )(?<!\bremain )(?<!\bremains )(?<!\bremained )(?<!\bstay )(?<!\bstays )(?<!\bstayed )\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}\bas\s+done\b/gi;
+const CARD_LIFECYCLE_RX = /(?<!\bis )(?<!\bare )(?<!\bwas )(?<!\bwere )(?<!\bremain )(?<!\bremains )(?<!\bremained )(?<!\bstay )(?<!\bstays )(?<!\bstayed )\b(start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,60}?\b(task\s+)?cards?\b|\bcards?\b[^.!?;\n]{0,60}?\bas\s+(the\s+)?(active|done|closed|current)\b|\btreat\b[^.!?;\n]{0,80}?\bas\s+done\b/gi;
 const CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do(?:es)?\s+not|do(?:es)?n't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,40}$/i;
+const COORDINATED_CARD_LIFECYCLE_REFUTATION_RX = /\b(?:do(?:es)?\s+not|do(?:es)?n't|never|must\s+not|must\s+never|should\s+not|shouldn't|cannot|can't)\b[^.!?;\n]{0,90}\b(?:start|activate|resume|pause|close|abandon|create|open)\b[^.!?;\n]{0,70}\bor\s+$/i;
+const CARD_LIFECYCLE_CONTRAST_RX = /\b(?:but|however|instead)\b[^.!?;\n]{0,50}$/i;
 export function cardLifecycleDirective(text) {
   const value = String(text || '');
   CARD_LIFECYCLE_RX.lastIndex = 0;
@@ -88,7 +90,10 @@ export function cardLifecycleDirective(text) {
     // "Do not close the card" describes the guard; it is the opposite of a lifecycle directive.
     // Scope the exception to the same punctuation-bounded clause so a nearby, unrelated imperative
     // remains blocked. The shared dispatcher still rejects every asserted lifecycle instruction.
-    if (CARD_LIFECYCLE_REFUTATION_RX.test(clausePrefix)) continue;
+    // The same negation also scopes a coordinated second verb in "do not close X or activate Y";
+    // contrastive "but activate Y" and a new sentence remain asserted and therefore blocked.
+    if ((!CARD_LIFECYCLE_CONTRAST_RX.test(clausePrefix) && CARD_LIFECYCLE_REFUTATION_RX.test(clausePrefix))
+        || COORDINATED_CARD_LIFECYCLE_REFUTATION_RX.test(clausePrefix)) continue;
     return true;
   }
   return false;
