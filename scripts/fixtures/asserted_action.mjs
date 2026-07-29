@@ -222,7 +222,7 @@ export function foreignInstructionAdopted() {
         const before = value.slice(Math.max(0, match.index - 100), match.index);
         const after = value.slice(match.index + match[0].length, match.index + match[0].length + 150);
         const attributedAndRejected = /\b(?:foreign|cross[-\s]*project|cross[-\s]*session|untrusted|contaminated)\b[^.!?;\n]{0,70}[\\"'“‘][^.!?;\n]{0,8}$/i.test(before)
-          && /^[\s\\"'”’()[\]-]*(?:line|text|instruction|summary|content)?\s*(?:is|has|carries|must\s+be|should\s+be)\b[^.!?;\n]{0,70}\b(?:no\s+authority|untrusted|foreign|ignored?|rejected?|quarantined?)\b/i.test(after);
+          && /^[\s\\"'”’()[\]-]*(?:now\b[\s\\"'”’()[\]-]*)?(?:line|text|instruction|summary|content)?\s*(?:is|was|were|has|carries|must\s+be|should\s+be)\b[^.!?;\n]{0,70}\b(?:no\s+authority|untrusted|foreign|ignored?|rejected?|quarantined?|disregarded|discarded)\b/i.test(after);
         if (attributedAndRejected) continue;
         last = match[0];
         return true;
