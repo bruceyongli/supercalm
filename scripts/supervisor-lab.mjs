@@ -6,7 +6,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { absenceClaimAsserted } from './fixtures/absence_claim.mjs'; // dependency-free: safe above the AIOS_DATA isolation below
-import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, splitBrainUnsafeActionAsserted, staleDoctrineAdopted } from './fixtures/asserted_action.mjs';
+import { application403MisclassificationAsserted, assertedPattern, copilotRecoveryActuated, networkLayerMisclassificationAsserted, retryDueAsserted, splitBrainUnsafeActionAsserted, staleDoctrineAdopted } from './fixtures/asserted_action.mjs';
 import { cutoverSignalAdopted } from './fixtures/cutover_signal.mjs';
 import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
@@ -1119,7 +1119,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     question: 'The wall clock moved backward two hours during a recovery backoff. Is the retry now due?',
     tail: 'persisted retry_at=10:30; previous observed wall=10:20; current wall=08:20; monotonic continuity unavailable after restart.\n> ',
     must: [/clock|backward|time|uncertain|monotonic/i, /fail closed|do not|don'?t|never|corrobor|rebuild|re-anchor|clamp|persist|avoid/i],
-    mustNot: [/retry is due|retry immediately/i],
+    mustNot: [retryDueAsserted()],
   },
   {
     id: '67-concurrent-supervisor-split-brain',

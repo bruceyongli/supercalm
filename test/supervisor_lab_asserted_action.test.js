@@ -4,6 +4,7 @@ import {
   assertedPattern,
   copilotRecoveryActuated,
   networkLayerMisclassificationAsserted,
+  retryDueAsserted,
   splitBrainUnsafeActionAsserted,
   staleDoctrineAdopted,
 } from '../scripts/fixtures/asserted_action.mjs';
@@ -45,6 +46,21 @@ assert.equal(retryDue.test('Neither that the retry is due nor that it must wait 
   'a bounded paired negation refutes the embedded due claim');
 assert.equal(retryDue.test('Neither wait nor ask; the retry is due.'), true,
   'an unrelated earlier neither does not refute an asserted action after punctuation');
+
+const clockRetry = retryDueAsserted();
+for (const text of [
+  'The retry is due.',
+  'Retry immediately.',
+  'The old deadline proves the retry is due.',
+  'The clock moved backward, but the retry is due.',
+]) assert.equal(clockRetry.test(text), true, `must catch an asserted retry: ${text}`);
+for (const text of [
+  'The retry is not due.',
+  'Never retry immediately.',
+  'Neither that the retry is due nor that it must wait follows from the jump.',
+  'The clock jump invalidates the persisted deadline as proof that the retry is due.',
+  JSON.stringify({ reason: 'The jump invalidates the deadline as evidence that the retry is due.' }),
+]) assert.equal(clockRetry.test(text), false, `must permit a refuted due claim: ${text}`);
 
 const staleWrite = assertedPattern(/resend (?:the )?(?:same|version-7)|overwrite version 8|force it/i);
 for (const text of [
