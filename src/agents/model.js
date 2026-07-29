@@ -35,6 +35,7 @@ function isTransient(e) {
 // the dead hop instantly instead of re-burning it (and the logs) on every call.
 const DENIED_COOLDOWN_MS = Number(process.env.AIOS_MODEL_DENIED_COOLDOWN_MS || 10 * 60 * 1000);
 const deniedRoutes = new Map(); // key -> ts of the 403
+const exactClaudeRoutes = new Set(); // fleet organization denial -> same exact model through AIOS OAuth
 export function routeKeyOf(route) {
   return `${route?.proxy || route?.base || route?.port || '?'}:${route?.model || route?.id || '?'}`;
 }
@@ -53,10 +54,24 @@ export function isAccessDenied(e) {
   return DENIED_RX.test(String(e?.message || e || ''));
 }
 
+async function callExactClaudeOAuth(route, messages, opts) {
+  const base = process.env.AIOS_CLAUDE_AGENT_BASE_URL
+    || await import('../auth/index.js').then((auth) => auth.ensureShim());
+  return await callApiProvider({ ...route, base, kind: 'anthropic', key: '' }, messages, opts);
+}
+
 // POST chat-completions to a resolved fleet route, retrying transient failures. `messages` may contain
 // OpenAI-style multimodal content arrays (text + image_url). Returns { content, usage, raw, model }.
 export async function callProxyModel(route, messages, opts = {}) {
   const key = routeKeyOf(route);
+  if (route?.proxy === 'claude' && exactClaudeRoutes.has(key)) {
+    try {
+      return await callExactClaudeOAuth(route, messages, opts);
+    } catch (error) {
+      exactClaudeRoutes.delete(key); // let the next call re-check the fleet after a direct-path failure
+      throw error;
+    }
+  }
   if (isRouteDenied(key)) throw new Error(`model access denied (cooling down after 403): ${key}`);
   const tries = Math.max(0, opts.retries ?? 2);
   let lastErr;
@@ -72,13 +87,9 @@ export async function callProxyModel(route, messages, opts = {}) {
         // receives the real returned model ID and still fails closed on alias/substitution.
         if (route?.proxy === 'claude') {
           try {
-            const base = process.env.AIOS_CLAUDE_AGENT_BASE_URL
-              || await import('../auth/index.js').then((auth) => auth.ensureShim());
-            return await callApiProvider(
-              { ...route, base, kind: 'anthropic', key: '' },
-              messages,
-              opts,
-            );
+            const result = await callExactClaudeOAuth(route, messages, opts);
+            exactClaudeRoutes.add(key);
+            return result;
           } catch (fallbackError) {
             lastErr = fallbackError;
           }

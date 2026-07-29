@@ -126,6 +126,13 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
     }, [{ role: 'user', content: 'identity preflight' }], { retries: 0 });
     assert.equal(exact.model, 'claude-x');
     assert.equal(exact.content, 'anthropic-style reply');
+    const exactAgain = await callProxyModel({
+      id: 'claude-x',
+      model: 'claude-x',
+      proxy: 'claude',
+      port: denied.address().port,
+    }, [{ role: 'user', content: 'identity preflight again' }], { retries: 0 });
+    assert.equal(exactAgain.model, 'claude-x');
     assert.equal(deniedCalls, 1, 'the denied fleet route is attempted exactly once before the exact transport repair');
   } finally {
     delete process.env.AIOS_CLAUDE_AGENT_BASE_URL;
@@ -159,7 +166,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(am, /ANTHROPIC_API_KEY: prov\.api_key/, 'provider key reaches the claude env');
   const mj = readFileSync(new URL('../src/agents/model.js', import.meta.url), 'utf8');
   assert.match(mj, /if \(route\?\.base\) return callApiProvider/, 'base-URL routes bypass the fleet transport');
-  assert.match(mj, /route\?\.proxy === 'claude'[\s\S]{0,500}kind: 'anthropic'/, 'Claude access denial retains an exact OAuth transport repair');
+  assert.match(mj, /async function callExactClaudeOAuth[\s\S]{0,400}kind: 'anthropic'/, 'Claude access denial retains an exact OAuth transport repair');
   const api = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(api, /api\/models\/providers/, 'provider routes exist');
   assert.ok(api.indexOf("'/api/models/providers'") < api.indexOf('/api/models/providers/:id'), 'specific before :id (registration order)');
