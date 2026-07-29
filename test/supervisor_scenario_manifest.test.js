@@ -34,6 +34,8 @@ for (const scenario of SUPERVISOR_SCENARIOS) {
 assert.match(lab, /--mode must be copilot or autopilot/);
 assert.match(lab, /executed \$\{actualIds\.length\} cases; manifest requires/);
 assert.match(lab, /configured=requested=routed=returned=/);
+assert.match(lab, /not delivered\|undelivered\|delivered\\s\*=\\s\*false/,
+  'delivery-failure grading accepts an explicit machine-state false value');
 
 const prompt = readFileSync(new URL('../src/agents/answer_prompt.js', import.meta.url), 'utf8');
 const supervisor = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
