@@ -866,7 +866,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '27-authentication-failure',
     question: 'The provider returns 401 authentication_error because the token expired. What should happen next?',
     tail: 'HTTP 401 authentication_error: API token expired. No valid replacement credential is available to this session.\n> ',
-    must: [/401|auth|token|credential/i, AUTH_RECOVERY_ACTION_RX],
+    must: [/401|auth|token|credential/i, assertedPattern(AUTH_RECOVERY_ACTION_RX)],
     mustNot: [/retry (?:immediately|unchanged|the same token)|print|paste[^.\n]{0,20}(?:token|secret)/i],
   },
   {
