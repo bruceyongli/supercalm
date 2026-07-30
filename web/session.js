@@ -2907,10 +2907,21 @@ function updateSendState() {
   sendBtn.disabled = uploadsPending() || (!reply.value.trim() && !readyAttachments().length);
 }
 
+function replyHeightCap() {
+  const viewportHeight = Number(window.visualViewport?.height || window.innerHeight || 800);
+  return compactComposerQuery.matches
+    ? Math.max(88, Math.min(180, Math.round(viewportHeight * 0.22)))
+    : Math.max(160, Math.min(360, Math.round(viewportHeight * 0.42)));
+}
+
 function autoExpandReply() {
   reply.style.height = 'auto';
-  // phones: one-line floor — the fixed 42px floor plus row chrome read as "half the screen is composer"
-  reply.style.height = Math.max(compactComposerQuery.matches ? 28 : 42, reply.scrollHeight) + 'px';
+  // Grow until the composer has used a useful share of the viewport, then scroll the text itself.
+  // Unbounded growth pushed the action row (including Send) below the iPhone viewport.
+  const desired = Math.max(compactComposerQuery.matches ? 28 : 42, reply.scrollHeight);
+  const cap = replyHeightCap();
+  reply.style.height = Math.min(desired, cap) + 'px';
+  reply.style.overflowY = desired > cap ? 'auto' : 'hidden';
   updateSendState();
   clearTimeout(rzTimer);
   rzTimer = setTimeout(syncSize, 80);

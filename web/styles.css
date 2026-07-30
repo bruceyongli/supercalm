@@ -1673,14 +1673,15 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .session-shell > header, .session-shell.rail-pinned > header { grid-column: auto; }
 }
 
-/* Mobile now defaults to the desktop STORY view (the phone auto-redirect is gone). */
+/* Phone sessions use the focused companion view; these rules still make deliberately requested
+   desktop-mode sessions safe and usable at narrow widths. */
 @media (max-width: 600px) {
   /* Composer: keep the box inside the viewport (it clipped the send button at the right edge), keep it
      SLIM (operator: the composer + a dead gap ate the screen), and never let a settings select shrink
      into "m…" — the row wraps instead. Forced stacked layout here (media query) because on iOS the
      container query alone left the + / mic / send sharing a row with the crushed selects. */
   .message-box { margin: 6px 8px; max-width: calc(100% - 16px); padding: 7px; gap: 5px; }
-  .message-box textarea { min-height: 26px; } /* one line empty; auto-grows as you type */
+  .message-box textarea { min-height: 26px; max-height: min(22dvh, 180px); overflow-y: auto; } /* grow, then scroll without burying Send */
   .composer-bottom { flex-wrap: wrap; gap: 5px; }
   .composer-options { display: none; order: 2; width: 100%; }
   .message-box.settings-open .composer-options { display: block; }

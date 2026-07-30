@@ -287,6 +287,22 @@ async function playQueue(items, scope) {
 // are answered from the session log + project knowledge + supervisor notes → next item. One tap in,
 // zero after.
 const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
+function setVoiceCurrent(next) {
+  const previousId = V.current?.sessionId || '';
+  const nextId = next?.sessionId || '';
+  V.current = next || null;
+  // A reply and its delivery receipt belong only to the session that received them. Keep both visible
+  // through that session's confirmation, then clear them as the next session is presented.
+  if (previousId && nextId && previousId !== nextId) {
+    V.lastHeard = '';
+    V.delivery = null;
+    V.segment = '';
+  }
+}
+function paintVoiceSegment(text) {
+  const line = app.querySelector('.ongo-sheet-report p');
+  if (line && text) line.textContent = text;
+}
 let onTheGoUi = onTheGoState();
 setOnTheGoVoiceAdapter({
   active: () => V.on,
@@ -311,7 +327,7 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ focusSessionId, source: onTheGo ? 'on-the-go-update' : 'manual' }),
     });
-    V.voiceId = r.voiceId; V.current = r.current || null;
+    V.voiceId = r.voiceId; setVoiceCurrent(r.current || null);
     await voiceSay(r.say);
     if (r.done) return voiceModeEnd('done');
     if (r.listen) return voiceLoopListen();
@@ -326,7 +342,9 @@ async function voiceSay(text) {
     onSegment: ({ text: segment }) => {
       if (!segment || V.stopFlag) return;
       V.segment = segment;
-      render();
+      // Only the sentence being read changes here. Rebuilding the whole sheet on every boundary made
+      // the iPhone view visibly flash and reset scroll/touch state.
+      paintVoiceSegment(segment);
     },
   });
 }
@@ -348,7 +366,7 @@ async function voiceLoopListen() {
   V.lastHeard = text; render();
   try {
     const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
-    V.current = r.current || V.current;
+    setVoiceCurrent(r.current || V.current);
     V.delivery = r.delivery || V.delivery;
     V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
     await voiceSay(r.say);
@@ -357,7 +375,7 @@ async function voiceLoopListen() {
     if (r.listen) return voiceLoopListen();
     // sent/skipped -> ask the server to present the next item
     const c = await api('api/voice/continue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) });
-    V.current = c.current || null;
+    setVoiceCurrent(c.current || null);
     await voiceSay(c.say);
     if (V.stopFlag) return;
     if (c.done) return voiceModeEnd('done');
@@ -986,10 +1004,10 @@ function wire() {
     await toggleOnTheGo();
     if (S.screen === 'home') renderSoft();
   });
-  // A session tap opens the DESKTOP story view (operator: desktop story is the mobile default for sessions);
-  // the phone triage stays the mobile dashboard. ?phone=1 on a session still returns to the phone view.
-  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => { location.href = 'session?id=' + encodeURIComponent(el.dataset.open); });
-  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); location.href = 'session?id=' + encodeURIComponent(el.dataset.open2); });
+  // Keep phone navigation inside the phone surface. The hash route is also the installed PWA's durable
+  // history entry, so leaving a session always returns to the phone dashboard.
+  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => nav('session', el.dataset.open));
+  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); nav('session', el.dataset.open2); });
   for (const el of app.querySelectorAll('[data-listen]')) el.addEventListener('click', (e) => {
     e.stopPropagation();
     const s = (S.home?.sessions || []).find((x) => x.id === el.dataset.listen);
@@ -1005,7 +1023,7 @@ function wire() {
   });
   for (const el of app.querySelectorAll('[data-inspect-need]')) el.addEventListener('click', (event) => {
     event.stopPropagation();
-    location.href = `session?id=${encodeURIComponent(el.dataset.inspectNeed)}&inspect=1`;
+    nav('session', el.dataset.inspectNeed);
   });
   const submit = async (session, questions) => {
     const selections = phoneSelections(session);
@@ -1083,7 +1101,10 @@ function wire() {
   });
 
   // session
-  $('#go-home')?.addEventListener('click', () => history.back());
+  $('#go-home')?.addEventListener('click', () => {
+    nav('home', null, false);
+    history.replaceState({ screen: 'home', sid: null }, '', location.pathname + '#home');
+  });
   $('#open-actions')?.addEventListener('click', () => openSheet('actions'));
   $('#open-panels')?.addEventListener('click', () => { openSheet('panels'); mountPanels(); });
   $('#play-sess')?.addEventListener('click', () => {

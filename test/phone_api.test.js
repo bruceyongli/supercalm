@@ -182,14 +182,15 @@ await featureReady;
   assert.match(ph, /ordinary feedback is delivered immediately/i, 'On the go hands ordinary feedback directly to the current session');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
-  // Mobile-view contract (Option A): the dashboard pages default to the phone triage on a phone (opt into
-  // the desktop dashboard via ?desktop=1 → aios_dash); the SPA session route defaults to the desktop STORY
-  // view at every width, with ?phone=1 opening the phone session.
-  for (const page of ['../web/index.html', '../web/desktop.html']) {
-    assert.match(readFileSync(new URL(page, import.meta.url), 'utf8'), /aios_dash[\s\S]*?location\.replace\(`phone/, page + ' redirects a phone to the phone triage dashboard');
-  }
-  const router = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
-  assert.match(router, /get\('phone'\)[\s\S]*?phone.*#s\//, 'the canonical session route sends ?phone=1 to the phone session');
+  // The canonical shell and installed PWA both default to the phone companion at phone widths. Session
+  // taps remain hash routes inside that surface, so Back cannot strand the operator in a desktop view.
+  const shell = readFileSync(new URL('../web/app.html', import.meta.url), 'utf8');
+  const manifest = JSON.parse(readFileSync(new URL('../web/phone.webmanifest', import.meta.url), 'utf8'));
+  assert.match(shell, /innerWidth[\s\S]*location\.replace[\s\S]*\/phone/, 'the canonical shell redirects phone-sized launches');
+  assert.match(ph, /\[data-open\][\s\S]*nav\('session'/, 'phone session cards stay inside the phone router');
+  assert.match(ph, /#go-home'[\s\S]*nav\('home', null, false\)[\s\S]*replaceState\(\{ screen: 'home'/,
+    'session Back deterministically replaces the current route with phone home');
+  assert.equal(manifest.start_url, './phone#home', 'an installed phone PWA launches directly into phone home');
   assert.match(sv, /session\|records\|decisions\|usage\|health\|settings\|projects\).*\\?\\.html/, 'historical desktop .html routes serve the canonical SPA');
 }
 

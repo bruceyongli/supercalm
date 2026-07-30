@@ -41,6 +41,10 @@ assert.doesNotMatch(session, /shell\.style\.height = Math\.round\(vv\.height\)/,
   'the stale height-only iOS workaround is removed');
 assert.match(styles, /\.message-box textarea \{[^}]*font-size: 16px/s,
   'the phone composer prevents iOS input auto-zoom');
+assert.match(styles, /\.message-box textarea \{[^}]*max-height: min\(22dvh, 180px\)[^}]*overflow-y: auto/s,
+  'long phone replies scroll inside a bounded editor instead of burying Send');
+assert.match(session, /function replyHeightCap\(\)[\s\S]*viewportHeight \* 0\.22[\s\S]*Math\.min\(desired, cap\)/,
+  'the live auto-grow path caps the reply against the visible viewport');
 assert.match(styles, /grid-template-columns: 40px minmax\(0, 1fr\) 40px 40px/,
   'the phone composer keeps attach, one settings summary, mic, and send on one compact row');
 assert.match(styles, /\.session-shell\.keyboard-open > \.agent-dock-rail \{ display: none; \}/,

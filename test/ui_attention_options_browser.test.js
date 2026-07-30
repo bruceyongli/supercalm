@@ -243,7 +243,9 @@ try {
 
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await phone.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
-  await phone.goto(base + 'phone', { waitUntil: 'domcontentloaded' });
+  await phone.goto(base, { waitUntil: 'domcontentloaded' });
+  await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
+  assert.match(phone.url(), /\/aios\/phone#home$/, 'the canonical app defaults to phone home at iPhone width');
   await phone.locator('.needcard[data-open="s_opt"] .needqs').waitFor();
   const onTheGoButton = phone.locator('#on-the-go-mode');
   assert.equal(await onTheGoButton.getAttribute('aria-pressed'), 'false', 'phone companion exposes the same opt-in assistant');
@@ -277,6 +279,25 @@ try {
   ]);
   assert.ok(cardBox && actionsBox && actionsBox.x >= cardBox.x && actionsBox.x + actionsBox.width <= cardBox.x + cardBox.width,
     'phone option-card actions stay inside the card');
+  await restoredPhoneCard.locator('.needrequest').click();
+  await phone.waitForFunction(() => location.hash === '#s/s_done');
+  assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'a phone session stays in the phone companion');
+  await phone.locator('#fake-field').click();
+  const longPhoneReply = 'Please keep this response attached to the current session. '.repeat(120);
+  await phone.locator('#real-ta').fill(longPhoneReply);
+  const [fieldBox, sendBox] = await Promise.all([
+    phone.locator('#real-ta').boundingBox(),
+    phone.locator('#send-text').boundingBox(),
+  ]);
+  assert.ok(fieldBox && fieldBox.height <= 180, 'a long phone reply scrolls inside a bounded editor');
+  assert.ok(sendBox && sendBox.y >= 0 && sendBox.y + sendBox.height <= 844,
+    'Send remains reachable with a long reply');
+  await phone.locator('#send-text').click();
+  await phone.waitForFunction(() => document.querySelector('#fake-field'));
+  assert.equal(inputBodies.at(-1)?.sid, 's_done', 'the visible Send delivers the long reply to the current session');
+  await phone.locator('#go-home').click();
+  await phone.waitForFunction(() => location.hash === '#home');
+  assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'session Back returns to phone home, not the desktop SPA');
   const phoneVersion = phone.locator('.ph-app-foot [data-aios-update]');
   await phone.waitForFunction(() => document.querySelector('.ph-app-foot [data-aios-version]')?.textContent === 'vtest');
   await phoneVersion.click();

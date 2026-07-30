@@ -35,6 +35,11 @@ export function sanitizeForSpeech(text) {
     // Translate common code-ish tokens into words, then remove drawing/markdown punctuation.
     .replace(/\b([A-Za-z][\w-]{1,40})\.(?:js|mjs|cjs|ts|tsx|jsx|css|html|json|md|py|sh)\b/gi, '$1 file')
     .replace(/([A-Za-z])[_-]+(?=[A-Za-z])/g, '$1 ')
+    // Compact agent-plan counters are visual UI, not prose ("✔ task … +23 completed new task?").
+    // Preserve the useful count in words while dropping checkmarks and composer prompts.
+    .replace(/[✔✓]\s*/g, '')
+    .replace(/(?:…|\.\.\.)?\s*\+(\d+)\s+completed\b/gi, '. $1 more items completed.')
+    .replace(/\bnew task\??\b/gi, ' ')
     .replace(/[│┃┆┊┌┐└┘├┤┬┴┼╭╮╰╯─━]+/g, ' ')
     .replace(/[#*`_{}[\]<>\\|~^]+/g, ' ')
     .replace(/(?:-{3,}|={3,})/g, ' ')

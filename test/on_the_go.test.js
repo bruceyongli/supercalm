@@ -51,6 +51,10 @@ assert.match(sw, /silent: false/, 'the background notification asks the OS to us
 assert.match(dashboard, /id="dk-on-the-go"/, 'the canonical Needs You dashboard exposes the on-the-go switch');
 assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same on-the-go switch');
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
+assert.match(phone, /onSegment:[\s\S]*paintVoiceSegment\(segment\)/, 'sentence progress updates only the spoken line');
+assert.doesNotMatch(phone, /onSegment:[\s\S]{0,180}V\.segment = segment;\s*render\(\)/,
+  'sentence synchronization never rebuilds the full phone app');
+assert.match(phone, /previousId[\s\S]*nextId[\s\S]*V\.lastHeard = ''/, 'a phone transcript is cleared when the next session is actually presented');
 assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
 assert.match(voice, /NOW READING/, 'the distinct presentation identifies the sentence currently being spoken');
 assert.match(voice, /YOUR LAST RESPONSE/, 'the operator transcript remains a first-class part of the conversation');
@@ -58,11 +62,14 @@ assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progres
 assert.doesNotMatch(voice, /ui\.heard\.textContent = ''/,
   'starting the next spoken turn never erases the operator’s visible response');
 assert.match(voice, /Sent to/, 'the briefing renders a visible per-session delivery receipt');
+assert.match(voice, /ui\.sessionId !== cur\.sessionId[\s\S]*Your words will stay here/,
+  'desktop on-the-go also scopes the visible response to one session');
 assert.match(phone, /feedback message.*sent/, 'the phone reports the completed handoff count');
 assert.match(styles, /\.ongo-report/, 'the on-the-go report has its own responsive visual structure');
 assert.match(voiceServer, /isNeedsYouSession/, 'the spoken count uses the same unread and undismissed Needs You rule');
 assert.match(voiceServer, /originalRequest/, 'spoken items retain the operator’s original request');
 assert.match(voiceServer, /latestReport/, 'spoken items retain the latest curated report');
+assert.match(voiceServer, /current: currentBeforeTurn/, 'delivery confirmation remains labeled with the session that received it');
 for (const content of [onTheGo, dashboard, phone, push, sw]) {
   assert.doesNotMatch(content, /\bRide mode\b/i, 'the bicycle example is not used as the feature name');
 }

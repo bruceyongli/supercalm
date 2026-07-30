@@ -443,6 +443,20 @@ function buildOverlay({ onTheGo = false } = {}) {
 }
 function updateProgress(cur) {
   if (!ui || !cur || !cur.total) return;
+  if (ui.onTheGo && ui.sessionId && cur.sessionId && ui.sessionId !== cur.sessionId) {
+    // The transcript and delivery receipt are evidence for the previous session, not global voice
+    // state. Clear them only when /continue actually presents the next session.
+    if (ui.heard) {
+      ui.heard.textContent = 'Your words will stay here.';
+      ui.heard.classList.add('empty');
+    }
+    if (ui.heardLabel) ui.heardLabel.textContent = 'YOUR RESPONSE';
+    if (ui.delivery) {
+      ui.delivery.hidden = true;
+      ui.delivery.textContent = '';
+    }
+  }
+  ui.sessionId = cur.sessionId || ui.sessionId || '';
   ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
   if (ui.onTheGo) {

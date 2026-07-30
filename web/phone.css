@@ -205,7 +205,7 @@ a { color: var(--blue); text-decoration: none; }
 .comprow { display: flex; align-items: flex-end; gap: 9px; }
 .kbtoggle { width: 44px; height: 48px; border-radius: 12px; border: 1px solid var(--bd-strong); background: var(--bg-card); color: var(--tx-2); font-size: 18px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 .fakefield { flex: 1; height: 48px; border-radius: 14px; border: 1px solid var(--bd-strong); background: var(--bg-card); display: flex; align-items: center; padding: 0 15px; color: var(--tx-faint); font-size: 13px; text-align: left; }
-.realfield { flex: 1; border-radius: 14px; border: 1px solid #2a3442; background: var(--bg-card); color: var(--tx); font-size: 16px; line-height: 1.5; padding: 12px 14px; outline: none; resize: none; min-width: 0; }
+.realfield { flex: 1; max-height: min(22dvh, 180px); overflow-y: auto; border-radius: 14px; border: 1px solid #2a3442; background: var(--bg-card); color: var(--tx); font-size: 16px; line-height: 1.5; padding: 12px 14px; outline: none; resize: none; min-width: 0; }
 .micbtn { width: 56px; height: 56px; border-radius: 28px; background: var(--green); border: 1px solid var(--green-bd); display: flex; align-items: center; justify-content: center; flex-shrink: 0; box-shadow: 0 4px 14px rgba(35,134,54,.35); }
 .micbtn:active { transform: scale(.94); }
 .sendbtn { width: 56px; height: 56px; border-radius: 28px; background: var(--green); border: 1px solid var(--green-bd); color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }

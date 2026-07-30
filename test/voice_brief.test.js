@@ -30,6 +30,11 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(t, /Result:/);
   assert.match(t, /session state file/, 'a source filename becomes ordinary spoken words');
 }
+{
+  const t = sanitizeForSpeech('✔ Fixed phone routing … +23 completed new task?');
+  assert.doesNotMatch(t, /✔|\\+23|new task/i, 'visual task-list chrome is never read aloud');
+  assert.match(t, /23 more items completed/i, 'the useful completion count remains natural speech');
+}
 
 // ---- validation clamps + option mapping ------------------------------------------------------------
 {

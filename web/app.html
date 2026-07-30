@@ -1,6 +1,27 @@
 <!doctype html>
 <html lang="en">
 <head>
+  <script>
+    // Phones use the purpose-built companion by default, including an installed Home-Screen PWA.
+    // `desktop=1` is deliberately one-shot: choosing the desktop surface must not permanently change
+    // what the next PWA launch or Back-to-home navigation opens.
+    (() => {
+      const q = new URLSearchParams(location.search);
+      if (q.get('desktop') === '1') return;
+      if (Math.min(screen.width || 1e4, innerWidth || 1e4) > 720) return;
+      const path = location.pathname.replace(/\/+$/, '') || '/';
+      const isSession = /\/session(?:\.html)?$/.test(path);
+      const isHome = path === '/' || path === '/aios';
+      if (!isHome && !isSession) return;
+      const prefix = path.startsWith('/aios') ? '/aios' : '';
+      const carry = new URLSearchParams();
+      if (q.get('on-the-go') === '1' || q.get('ride') === '1') carry.set('on-the-go', '1');
+      if (q.get('focus')) carry.set('focus', q.get('focus'));
+      const query = carry.toString();
+      const sid = isSession ? q.get('id') : '';
+      location.replace(`${prefix}/phone${query ? `?${query}` : ''}#${sid ? `s/${encodeURIComponent(sid)}` : 'home'}`);
+    })();
+  </script>
   <meta charset="utf-8" />
   <base href="/aios/" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />

@@ -336,6 +336,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
     const currentItem = vs.items[vs.pointer];
+    const currentBeforeTurn = cur(vs);
     try {
       if (currentItem) store.addEvent(currentItem.sessionId, 'voice-turn', {
         action: r.action,
@@ -373,7 +374,9 @@ route('POST', '/api/voice/turn', async (req, res) => {
         say: outcome.say,
         done: false,
         listen: false,
-        current: cur(vs),
+        // The confirmation and receipt still describe the session we just delivered to. /continue
+        // advances the UI to the next session after that confirmation finishes.
+        current: currentBeforeTurn,
         delivery: outcome.delivery,
         sentCount: vs.sentCount || 0,
       }); // client -> /continue presents next
@@ -382,7 +385,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
       vs.pendingInstruction = '';
       vs.skipped = (vs.skipped || 0) + 1; // skipped items stay WAITING — they're still in the queue
       vs.pointer++;
-      return json(res, 200, { say: r.say, done: false, listen: false, current: cur(vs) });
+      return json(res, 200, { say: r.say, done: false, listen: false, current: currentBeforeTurn });
     }
     if (r.action === 'stop') {
       vs.pendingInstruction = '';
