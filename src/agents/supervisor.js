@@ -1150,15 +1150,17 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
   const { parsed: modelParsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
-  const parsed = enforceCopilotCurrentCardReview(enforceAnswerSafety(modelParsed, {
+  const safetyParsed = enforceAnswerSafety(modelParsed, {
       question,
       summary: s?.summary,
       terminalTail: ev.terminal_tail,
       supervisorAutopilot: cfg.mode === 'autopilot',
-  }), {
+  });
+  const parsed = enforceCopilotCurrentCardReview(safetyParsed, {
       question,
       summary: s?.summary,
       supervisorMode: cfg.mode,
+      unsafeCardLifecycle: cardLifecycleDirective(safetyParsed?.answer),
   });
 
   const answer = scrubSupervisorText(clampLine(parsed?.answer, 1500));

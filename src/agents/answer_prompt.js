@@ -225,16 +225,23 @@ export function isCurrentCardTransitionAsk({ question = '', summary = '' } = {})
 
 const COPILOT_CARD_REVIEW_ANSWER = 'Keep Supervisor task-card state unchanged. Cite the concrete acceptance-criteria and test evidence for the current card, producing any missing proof; I will review that evidence before recommending a transition.';
 
-// Both intended operating models tended to escalate a current-card question before doing Co-pilot's own
-// evidence review. This normalization is intentionally narrow: only an ordinary scope escalation on THIS
-// session's current card is converted. Integrity, goal-conflict, human-gate, cross-session, and arbitrary
-// product-choice escalations remain binding.
+// Both intended operating models either escalated a current-card question before doing Co-pilot's own
+// evidence review, or mixed that valid review with an unsafe future lifecycle directive. This normalization
+// is intentionally narrow: only an ordinary scope escalation, or an answer already classified as
+// non-reserved whose lifecycle scanner fired, is converted for THIS session's current card. Integrity,
+// goal-conflict, human-gate, cross-session, arbitrary product-choice, and bare mutation responses remain
+// binding/fail-closed.
 export function enforceCopilotCurrentCardReview(decision, context = {}) {
   if (!decision || context.supervisorMode !== 'copilot') return decision;
-  if (decision.action !== 'escalate' || String(decision.reason_code || '') !== 'scope') return decision;
   if (!isCurrentCardTransitionAsk(context)) return decision;
   if (detectsPendingPlanApproval(context)) return decision;
-  const rationale = [decision.reason, decision.recommendation].filter(Boolean).join('\n');
+  const reasonCode = String(decision.reason_code || '');
+  const unsafeAnswerReview = decision.action === 'answer'
+    && reasonCode === 'none'
+    && context.unsafeCardLifecycle === true;
+  const prematureScopeEscalation = decision.action === 'escalate' && reasonCode === 'scope';
+  if (!unsafeAnswerReview && !prematureScopeEscalation) return decision;
+  const rationale = [decision.answer, decision.reason, decision.recommendation].filter(Boolean).join('\n');
   if (!/\b(?:verify|verification|evidence|acceptance\s+criteria|test(?:s|ing|\s+(?:result|output)s?)?)\b/i.test(rationale)) return decision;
   return {
     ...decision,
