@@ -317,7 +317,13 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
     stream = null,
     startedAt = 0,
     live = null,
-    anchor = { before: '', after: '' }; // caret split captured at record start; dictation inserts here
+    anchor = { before: '', after: '' }, // caret split captured at record start; dictation inserts here
+    original = { value: '', start: 0, end: 0 };
+  const restoreOriginal = () => {
+    target.value = original.value;
+    try { target.selectionStart = original.start; target.selectionEnd = original.end; } catch {}
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+  };
   const setState = (s) => {
     btn.classList.toggle('rec', s === 'recording');
     btn.disabled = s === 'busy';
@@ -339,6 +345,7 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
     const len = target.value.length;
     const selStart = Number.isInteger(target.selectionStart) ? target.selectionStart : len;
     const selEnd = Number.isInteger(target.selectionEnd) ? target.selectionEnd : len;
+    original = { value: target.value, start: selStart, end: selEnd };
     anchor = { before: target.value.slice(0, selStart), after: target.value.slice(selEnd) };
     live = createLiveSpeechRecognizer({
       onUpdate: (text) => insertAtAnchor(target, anchor, text),
@@ -357,6 +364,7 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
       const elapsed = Date.now() - startedAt;
       const blob = new Blob(chunks, { type: rec.mimeType || opts.mimeType || chunks[0]?.type || 'audio/webm' });
       if (blob.size < 1200 || elapsed < 400) {
+        restoreOriginal();
         setState('idle');
         if (!holdMode) alert('No audio captured — tap the mic, speak, then tap stop.'); // a too-short hold cancels silently
         return;
@@ -371,12 +379,14 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
           if (!liveText) throw e;
         }
         if (!text) {
+          restoreOriginal();
           alert('No speech detected — try again.');
           return;
         }
         insertAtAnchor(target, anchor, text); // insert at the caret, preserving newlines + text around it
         target.focus();
       } catch (e) {
+        restoreOriginal();
         alert('Transcription failed: ' + e.message);
       } finally {
         live?.abort();

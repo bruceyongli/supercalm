@@ -546,11 +546,15 @@ function nav(screen, sid = null, push = true) {
   if (push) history.pushState({ screen, sid }, '', location.pathname + (screen === 'home' ? '#home' : `#s/${sid}`)); // path-anchored: <base href="./"> makes bare-hash URLs resolve to the site root
   render();
 }
+function openCanonicalSession(sid) {
+  if (!sid) return;
+  location.href = `session?id=${encodeURIComponent(sid)}&from=phone`;
+}
 window.addEventListener('popstate', () => {
   if (S.overlay || S.sheet) { S.overlay = null; S.sheet = null; render(); return; }
   const h = location.hash;
   const m = h.match(/^#s\/(.+)$/);
-  if (m) nav('session', m[1], false);
+  if (m) openCanonicalSession(m[1]);
   else nav('home', null, false);
 });
 function openOverlay(kind) {
@@ -1004,10 +1008,10 @@ function wire() {
     await toggleOnTheGo();
     if (S.screen === 'home') renderSoft();
   });
-  // Keep phone navigation inside the phone surface. The hash route is also the installed PWA's durable
-  // history entry, so leaving a session always returns to the phone dashboard.
-  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => nav('session', el.dataset.open));
-  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); nav('session', el.dataset.open2); });
+  // The phone surface is the triage inbox, not a second session app. Open the canonical responsive
+  // Story/Terminal view so attachments, dictation, panels, and future composer work stay shared.
+  for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => openCanonicalSession(el.dataset.open));
+  for (const el of app.querySelectorAll('[data-open2]')) el.addEventListener('click', (e) => { e.stopPropagation(); openCanonicalSession(el.dataset.open2); });
   for (const el of app.querySelectorAll('[data-listen]')) el.addEventListener('click', (e) => {
     e.stopPropagation();
     const s = (S.home?.sessions || []).find((x) => x.id === el.dataset.listen);
@@ -1018,12 +1022,11 @@ function wire() {
   });
   for (const el of app.querySelectorAll('[data-replyto]')) el.addEventListener('click', (e) => {
     e.stopPropagation();
-    nav('session', el.dataset.replyto);
-    setTimeout(() => startRec(), 300);
+    openCanonicalSession(el.dataset.replyto);
   });
   for (const el of app.querySelectorAll('[data-inspect-need]')) el.addEventListener('click', (event) => {
     event.stopPropagation();
-    nav('session', el.dataset.inspectNeed);
+    openCanonicalSession(el.dataset.inspectNeed);
   });
   const submit = async (session, questions) => {
     const selections = phoneSelections(session);
@@ -1182,10 +1185,12 @@ function wire() {
 }
 
 // ---- boot ---------------------------------------------------------------------------------------
-// #s/<sid> is the phone's own deep link; ?id=<sid> arrives when the desktop session page switches to
-// the phone view (the "📱 phone view" pill preserves the URL) — open that session directly.
+// Retire historical phone-session deep links into the canonical responsive Story/Terminal view.
 const bootMatch = location.hash.match(/^#s\/(.+)$/) || (new URLSearchParams(location.search).get('id') ? [null, new URLSearchParams(location.search).get('id')] : null);
-if (bootMatch) { S.screen = 'session'; S.sid = bootMatch[1]; S.text = draftGet(S.sid); loadDetail(S.sid); }
-history.replaceState({ screen: S.screen, sid: S.sid }, '', location.pathname + (S.screen === 'session' ? `#s/${S.sid}` : '#home'));
-loadHome();
-render();
+if (bootMatch) {
+  location.replace(`session?id=${encodeURIComponent(bootMatch[1])}&from=phone`);
+} else {
+  history.replaceState({ screen: S.screen, sid: S.sid }, '', location.pathname + '#home');
+  loadHome();
+  render();
+}

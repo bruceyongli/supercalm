@@ -113,6 +113,13 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const sessions = read('src/sessions.js');
   assert.match(sessions, /nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal/,
     'a genuinely changed prompt reopens a dismissed waiting session even without a Working transition');
+  const hooks = read('src/hooks.js');
+  assert.match(hooks, /noteAgentStatus\(sid, 'waiting'/,
+    'authoritative completion hooks enter the same durable attention transition as polling');
+  assert.doesNotMatch(hooks, /store\.updateSession\(sid, \{\s*status: 'waiting'/,
+    'hooks cannot bypass unread report publication with a direct lifecycle write');
+  assert.match(sessions, /same event as the waiting transition[\s\S]*unread: attentionUnreadCount\(s\.id\)/i,
+    'a new completion report is visible without waiting for a broad refresh or LLM summary');
   assert.match(dash, /through_id:\s*reportId/, 'dismissal is bounded to the currently visible report');
   const dismissPath = dash.slice(dash.indexOf('async function dismiss'), dash.indexOf('async function restoreDismissed'));
   assert.match(dismissPath, /dismiss:\s*true/, 'Dismiss is an explicit durable attention action, not generic read state');
@@ -190,8 +197,11 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 // intentionally unversioned patch.
 {
   const hooks = read('src/hooks.js');
-  assert.match(hooks, /sessionStatusPayload\(projectSession\(updated,/, 'hook transitions emit the canonical projection');
-  assert.match(hooks, /store\.updateSession\(sid,/, 'hook transitions advance durable revision state before publishing');
+  const sessions = read('src/sessions.js');
+  assert.match(hooks, /noteAgentStatus\(sid,/, 'hook transitions use the canonical lifecycle publisher');
+  assert.match(sessions, /export function noteAgentStatus[\s\S]*applyStatus\(/,
+    'the shared transition advances durable state and emits the canonical projection');
+  assert.match(sessions, /emitSessionStatus\(updated,/, 'shared lifecycle transitions use revisioned event construction');
   assert.doesNotMatch(hooks, /bus\.emit\('session-status',\s*\{/, 'hooks cannot bypass revisioned event construction');
 }
 

@@ -2,9 +2,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json, readJson } from './server.js';
 import { setHookState } from './detect.js';
+import { noteAgentStatus, repairMissingAttentionReport } from './sessions.js';
 import * as store from './store.js';
-import { bus } from './bus.js';
-import { projectSession, sessionStatusPayload } from './session_projection.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
@@ -19,6 +18,32 @@ const CLAUDE_PROJECTS_ROOT = join(homedir(), '.claude', 'projects') + '/';
 
 const WAITING_EVENT = /notification|stop|turn[-_. ]?complete|approval|idle|needs?[-_. ]?input/i;
 const WORKING_EVENT = /prompt|submit|start|pre[-_. ]?tool|exec|begin|active|running/i;
+const _waitingSessions = store.db.prepare("SELECT id FROM sessions WHERE status = 'waiting'");
+const _latestHook = store.db.prepare("SELECT ts, payload FROM events WHERE session_id = ? AND type = 'hook' ORDER BY id DESC LIMIT 1");
+const _latestInput = store.db.prepare("SELECT id, ts FROM messages WHERE session_id = ? AND direction = 'in' ORDER BY id DESC LIMIT 1");
+const _latestOutput = store.db.prepare("SELECT id FROM messages WHERE session_id = ? AND direction = 'out' ORDER BY id DESC LIMIT 1");
+
+// Older completion hooks persisted status='waiting' without creating the durable report that powers
+// Needs You. Repair only the exact stranded shape on boot: latest hook says waiting, it is not older
+// than the latest operator input, and there is no report after that input. Reviewed/dismissed reports
+// already have a newer output row and remain untouched.
+export function repairMissedHookAttention() {
+  const repaired = [];
+  for (const { id } of _waitingSessions.all()) {
+    const hook = _latestHook.get(id);
+    if (!hook) continue;
+    let event = '';
+    try { event = String(JSON.parse(hook.payload || '{}').event || ''); } catch {}
+    if (!WAITING_EVENT.test(event)) continue;
+    const input = _latestInput.get(id);
+    const output = _latestOutput.get(id);
+    if (input && Number(hook.ts) < Number(input.ts)) continue;
+    if (output && Number(output.id) > Number(input?.id || 0)) continue;
+    const result = repairMissingAttentionReport(id, { extra: { event, recovered: true } });
+    if (result.repaired) repaired.push(id);
+  }
+  return repaired;
+}
 
 function handle(tool, b, res) {
   const sid = b.session || b.session_id || b['session-id'];
@@ -38,38 +63,12 @@ function handle(tool, b, res) {
       if (WAITING_EVENT.test(event)) {
         const question = b.message || b.question || null;
         setHookState(sid, 'waiting', question);
-        const previousStatus = store.getSession(sid)?.status || s.status;
-        const updated = store.updateSession(sid, {
-          status: 'waiting',
-          question,
-          last_activity: Date.now(),
-        });
         store.addEvent(sid, 'hook', { tool, event });
-        bus.emit('session-status', sessionStatusPayload(projectSession(updated, {
-          project: updated.project_id ? store.getProject(updated.project_id) : null,
-        }), {
-          previousStatus,
-          source: 'hook',
-          extra: { tool, event },
-          ts: Date.now(),
-        }));
+        noteAgentStatus(sid, 'waiting', question, { source: 'hook', extra: { tool, event } });
       } else if (WORKING_EVENT.test(event)) {
         setHookState(sid, 'working', null);
-        const previousStatus = store.getSession(sid)?.status || s.status;
-        const updated = store.updateSession(sid, {
-          status: 'working',
-          question: null,
-          last_activity: Date.now(),
-        });
         store.addEvent(sid, 'hook', { tool, event });
-        bus.emit('session-status', sessionStatusPayload(projectSession(updated, {
-          project: updated.project_id ? store.getProject(updated.project_id) : null,
-        }), {
-          previousStatus,
-          source: 'hook',
-          extra: { tool, event },
-          ts: Date.now(),
-        }));
+        noteAgentStatus(sid, 'working', null, { source: 'hook', extra: { tool, event } });
       }
     }
   }
@@ -82,5 +81,8 @@ for (const tool of ['claude', 'codex', 'agy']) {
     handle(tool, b, res);
   });
 }
+
+const repaired = repairMissedHookAttention();
+if (repaired.length) console.log(`[aios] recovered ${repaired.length} missed hook attention report(s)`);
 
 console.log('[aios] hook endpoints ready (/api/hook/{claude,codex,agy})');

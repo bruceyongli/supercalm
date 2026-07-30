@@ -578,8 +578,8 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   }
   // Mobile-only "phone view" affordance: the desktop view is the default on phones now, so offer a
   // discoverable one-tap route to the phone companion (mirrors the phone view's "Desktop site" link).
-  // Preserves the current URL (keeps ?id=…) so a session opens straight into phone#s/<sid>. Hidden on the
-  // session page (its bottom is the composer) — CSS handles visibility; there ?phone=1 / ← back still work.
+  // Phone view always opens the triage inbox. Individual phone cards return to the canonical responsive
+  // session with `from=phone`, where the shared Back control returns here.
   // The phone-companion route lives in the drawer's SYSTEM nav (`.dk-nav-phone`, ≤720 only) — the old
   // floating bottom-right pill sat OVER table values / provider controls at every scroll end (judge-
   // blocking twice). A nav row can't cover content.

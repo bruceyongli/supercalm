@@ -1683,7 +1683,7 @@ async function pollOnce() {
     applyStatus(s, status, question, changed);
   }
 }
-function applyStatus(s, status, question, activityBump) {
+function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false } = {}) {
   const patch = {};
   if (status && status !== s.status) patch.status = status;
   const questionChanged = (question ?? null) !== (s.question ?? null);
@@ -1691,29 +1691,79 @@ function applyStatus(s, status, question, activityBump) {
   if (activityBump) patch.last_activity = now();
   const wasWaiting = s.status === 'waiting';
   const nowWaiting = status === 'waiting';
+  const freshAttention = nowWaiting && (!wasWaiting || forceAttention);
+  const attentionSeed = String(question || s.summary || s.title || 'Review the latest session update')
+    .replace(/\s+/g, ' ').trim().slice(0, 220);
+  // The lifecycle hook is authoritative and immediate; the model-curated summary is asynchronous.
+  // Give a fresh waiting episode a safe visible projection now so a slow/failed summary can never make
+  // the completed report disappear from Needs You.
+  if (freshAttention) {
+    if (!wasWaiting || !s.category) patch.category = 'review';
+    if (!wasWaiting || !s.summary) patch.summary = attentionSeed;
+  }
   if (wasWaiting && !nowWaiting) {
     patch.summary = null; // leaving waiting -> drop the stale summary/category
     patch.category = null;
   }
-  if (!Object.keys(patch).length) return;
-  const updated = store.updateSession(s.id, patch);
+  if (!Object.keys(patch).length && !forceAttention) return null;
+  const updated = Object.keys(patch).length ? store.updateSession(s.id, patch) : s;
   if (patch.status) {
     store.addEvent(s.id, 'status', { from: s.status, to: patch.status });
   }
-  // Every persisted summary-field change is a compact row patch. Activity can be noisy, but it no
-  // longer invalidates or refetches a list; clients update only this session's keyed row.
-  emitSessionStatus(updated, { previousStatus: s.status, source: 'poll' });
-  if (nowWaiting && !wasWaiting) {
-    const report = createAttentionReport(s.id, question || s.question || s.title || 'Waiting for your input');
-    runSummary(s.id, report); // async: LLM summary+category, then fires 'waiting' (push)
+  let report = null;
+  if (freshAttention) {
+    report = createAttentionReport(s.id, attentionSeed);
+    if (report.created) clearAttentionDismissal(s.id);
   } else if (nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal(s.id)) {
     // Some TUIs replace one prompt with another without an observable Working interval. A changed,
     // persisted ask is still a new attention episode; an exact detector/summary wording round-trip is
     // rejected by createAttentionReport and leaves the dismissal intact.
-    const report = createAttentionReport(s.id, question);
-    if (report.created) runSummary(s.id, report);
+    report = createAttentionReport(s.id, question);
+    if (report.created) clearAttentionDismissal(s.id);
   }
+  const dismissal = getAttentionDismissal(s.id);
+  // Every persisted summary-field change is a compact row patch. Include the attention boundary in the
+  // SAME event as the waiting transition; clients no longer need a broad refresh or a successful LLM
+  // call before the card becomes visible.
+  emitSessionStatus(updated, {
+    previousStatus: s.status,
+    source,
+    extra: {
+      ...extra,
+      ...(nowWaiting ? {
+        unread: attentionUnreadCount(s.id),
+        dismissed: !!dismissal,
+        dismissed_at: dismissal?.dismissed_at || null,
+        dismissed_report_id: dismissal?.report_id || null,
+        dismissed_report_text: dismissal?.report_text || null,
+        ...(report?.message ? { last_key: { id: report.message.id, text: report.message.text, ts: report.message.ts } } : {}),
+      } : {}),
+    },
+  });
+  if (report?.created) runSummary(s.id, report); // async refinement; the visible fallback is already durable
   bus.emit('changed');
+  return { updated, report };
+}
+
+// Lifecycle hooks and terminal polling must enter the exact same attention transition. The old hook
+// path wrote status='waiting' directly, so polling saw no transition and never created the unread
+// report that powers Needs You.
+export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {} } = {}) {
+  const session = store.getSession(sid);
+  if (!session || session.status === 'exited') return session;
+  const nextQuestion = status === 'waiting' && question == null ? session.question : question;
+  applyStatus(session, status, nextQuestion, true, { source, extra });
+  return store.getSession(sid);
+}
+
+// Recover a waiting episode persisted by the pre-unified hook path. The caller proves that the latest
+// lifecycle hook is a waiting event and that no report exists after the latest operator input; forcing
+// the attention boundary here is therefore a one-time repair, not a broad reopening of waiting rows.
+export function repairMissingAttentionReport(sid, { source = 'hook-repair', extra = {} } = {}) {
+  const session = store.getSession(sid);
+  if (!session || session.status !== 'waiting') return { repaired: false, report: null };
+  const result = applyStatus(session, 'waiting', session.question, false, { source, extra, forceAttention: true });
+  return { repaired: !!result?.report?.created, report: result?.report || null };
 }
 
 // Stabilized-snapshot signature of the session's pane, as maintained by the poll loop (lastHash of

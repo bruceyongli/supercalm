@@ -134,16 +134,13 @@ document.addEventListener('click', (e) => {
 
 window.addEventListener('popstate', () => { window.dispatchEvent(new CustomEvent('aios:navigate')); render(); });
 
-// ?phone=1 = the shell's "📱 phone view" pill. Only the retired classic index ever handled it, so after
-// the SPA cutover the pill reloaded the same desktop shell forever. Route it to the phone companion
-// CLIENT-side (the static router in src/server.js is a protected path — this keeps the fix shippable
-// by the autonomous pipeline). A session's ?id is preserved as phone.js's #s/<sid> deep link.
+// `phone=1` explicitly opens the phone triage inbox (including the desktop shell's Phone view action).
+// Phone-inbox session links use `from=phone` instead, so the canonical responsive session owns Story,
+// Terminal, files, attachments, and dictation while its Back control can still return to phone home.
 const _q = new URLSearchParams(location.search);
 if (_q.get('phone') === '1') {
-  const sid = _q.get('id');
-  location.replace(new URL('phone' + (sid ? `#s/${encodeURIComponent(sid)}` : ''), document.baseURI));
+  location.replace(new URL('phone#home', document.baseURI));
 } else {
-  // Mount the persistent sidebar ONCE, then render the initial route into #view.
   mountShell({});
   render();
 }

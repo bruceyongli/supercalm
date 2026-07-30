@@ -25,11 +25,12 @@ const stories = {
       { kind: 'ask', ts: now, askId: 'prompt-1', title: 'Needs your decision — Checks', body: 'How much verification?', options: [{ label: 'Focused checks' }, { label: 'Full checks', description: 'Run every suite.' }] },
     ],
   },
-  s_done: { events: [] },
+  s_done: { events: [{ kind: 'report', ts: now - 900, body: 'Migration is done and verified.' }] },
 };
 const answerBodies = [];
 const dismissBodies = [];
 const inputBodies = [];
+const uploadBodies = [];
 let homeRequests = 0;
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 
@@ -66,6 +67,35 @@ const server = createServer(async (req, res) => {
   if (path === '/aios/api/models/providers') return sendJson(res, { providers: [{ id: 'test' }] });
   const story = path.match(/^\/aios\/api\/session\/([^/]+)\/story$/);
   if (story) return sendJson(res, { ok: true, ...(stories[story[1]] || { events: [] }), status: 'waiting' });
+  const upload = path.match(/^\/aios\/api\/session\/([^/]+)\/upload$/);
+  if (upload && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req));
+    uploadBodies.push({ sid: upload[1], ...body });
+    return sendJson(res, {
+      ok: true,
+      attachment: {
+        name: body.name,
+        type: body.type,
+        size: body.size,
+        path: `/tmp/${body.name}`,
+        format: 'TXT',
+        isImage: false,
+      },
+    }, 201);
+  }
+  const detail = path.match(/^\/aios\/api\/session\/([^/]+)$/);
+  if (detail) {
+    const session = sessions.find((item) => item.id === detail[1]) || { id: detail[1], title: detail[1], tool: 'codex', status: 'waiting' };
+    return sendJson(res, {
+      ...session,
+      project: { id: 'p_aios', name: 'aios' },
+      autonomy: 'full',
+      effort: 'xhigh',
+      orchestration: 'off',
+      messages: [],
+      events: [],
+    });
+  }
   const answers = path.match(/^\/aios\/api\/session\/([^/]+)\/answers$/);
   if (answers && req.method === 'POST') {
     answerBodies.push(JSON.parse(await readBody(req)));
@@ -76,6 +106,7 @@ const server = createServer(async (req, res) => {
     inputBodies.push({ sid: input[1], ...JSON.parse(await readBody(req)) });
     return sendJson(res, { ok: true });
   }
+  if (path === '/aios/api/transcribe' && req.method === 'POST') return sendJson(res, { error: 'forced transcription failure' }, 503);
   if (path === '/aios/api/messages/read' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req));
     dismissBodies.push(body);
@@ -242,6 +273,32 @@ try {
   }
 
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await phone.addInitScript(() => {
+    window.__voiceAlerts = [];
+    window.alert = (message) => window.__voiceAlerts.push(String(message));
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getSupportedConstraints: () => ({}),
+        getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }),
+      },
+    });
+    class FakeMediaRecorder {
+      static isTypeSupported() { return true; }
+      constructor(_stream, options = {}) {
+        this.mimeType = options.mimeType || 'audio/webm';
+        this.state = 'inactive';
+      }
+      start() { this.state = 'recording'; }
+      stop() {
+        if (this.state === 'inactive') return;
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob([new Uint8Array(2400)], { type: this.mimeType }) });
+        queueMicrotask(() => this.onstop?.());
+      }
+    }
+    window.MediaRecorder = FakeMediaRecorder;
+  });
   await phone.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
   await phone.goto(base, { waitUntil: 'domcontentloaded' });
   await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
@@ -280,24 +337,47 @@ try {
   assert.ok(cardBox && actionsBox && actionsBox.x >= cardBox.x && actionsBox.x + actionsBox.width <= cardBox.x + cardBox.width,
     'phone option-card actions stay inside the card');
   await restoredPhoneCard.locator('.needrequest').click();
-  await phone.waitForFunction(() => location.hash === '#s/s_done');
-  assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'a phone session stays in the phone companion');
-  await phone.locator('#fake-field').click();
+  await phone.waitForFunction(() => location.pathname === '/aios/session' && new URLSearchParams(location.search).get('from') === 'phone');
+  assert.equal(new URL(phone.url()).pathname, '/aios/session', 'a phone card opens the canonical session route');
+  await phone.locator('[data-mode="story"]').waitFor();
+  assert.equal(await phone.locator('[data-mode="terminal"]').count(), 1,
+    'the phone uses the same Story and Terminal workspace as every other device');
+  assert.equal(await phone.locator('#attach').count(), 1, 'the shared mobile composer exposes attachment upload');
+  assert.equal(await phone.locator('#mic').count(), 1, 'the shared mobile composer exposes dictation');
+  await phone.screenshot({ path: join(outDir, 'phone-shared-session.png'), fullPage: true });
+  await phone.locator('#file-input').setInputFiles({
+    name: 'phone-note.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('attachment from the phone'),
+  });
+  await phone.locator('.attachment-chip.ready').waitFor();
+  assert.equal(uploadBodies.at(-1)?.sid, 's_done', 'the phone uploads through the shared session attachment route');
+
+  await phone.locator('#reply').fill('Keep this typed draft exactly.');
+  await phone.locator('#mic').click();
+  await phone.waitForFunction(() => document.querySelector('#mic')?.classList.contains('rec'));
+  await phone.waitForTimeout(450);
+  await phone.locator('#mic').click();
+  await phone.waitForFunction(() => window.__voiceAlerts.some((message) => message.includes('Transcription failed')));
+  assert.equal(await phone.locator('#reply').inputValue(), 'Keep this typed draft exactly.',
+    'failed phone dictation restores the exact pre-recording draft');
+
   const longPhoneReply = 'Please keep this response attached to the current session. '.repeat(120);
-  await phone.locator('#real-ta').fill(longPhoneReply);
+  await phone.locator('#reply').fill(longPhoneReply);
   const [fieldBox, sendBox] = await Promise.all([
-    phone.locator('#real-ta').boundingBox(),
-    phone.locator('#send-text').boundingBox(),
+    phone.locator('#reply').boundingBox(),
+    phone.locator('#send').boundingBox(),
   ]);
   assert.ok(fieldBox && fieldBox.height <= 180, 'a long phone reply scrolls inside a bounded editor');
   assert.ok(sendBox && sendBox.y >= 0 && sendBox.y + sendBox.height <= 844,
     'Send remains reachable with a long reply');
-  await phone.locator('#send-text').click();
-  await phone.waitForFunction(() => document.querySelector('#fake-field'));
+  await phone.locator('#send').click();
+  await phone.waitForFunction(() => document.querySelector('#reply')?.value === '');
   assert.equal(inputBodies.at(-1)?.sid, 's_done', 'the visible Send delivers the long reply to the current session');
-  await phone.locator('#go-home').click();
-  await phone.waitForFunction(() => location.hash === '#home');
-  assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'session Back returns to phone home, not the desktop SPA');
+  assert.equal(inputBodies.at(-1)?.attachments?.length, 1, 'the same send includes the uploaded phone attachment');
+  await phone.locator('.brand a').click();
+  await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
+  assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'the canonical session Back returns to phone home');
   const phoneVersion = phone.locator('.ph-app-foot [data-aios-update]');
   await phone.waitForFunction(() => document.querySelector('.ph-app-foot [data-aios-version]')?.textContent === 'vtest');
   await phoneVersion.click();

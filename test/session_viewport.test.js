@@ -35,6 +35,7 @@ assert.equal(
 );
 
 const session = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
+const common = readFileSync(new URL('../web/common.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../web/styles.css', import.meta.url), 'utf8');
 assert.match(session, /installSessionViewportSync\(\{/);
 assert.doesNotMatch(session, /shell\.style\.height = Math\.round\(vv\.height\)/,
@@ -53,5 +54,12 @@ assert.match(styles, /\.session-shell\.keyboard-open \.footer-composer \{ paddin
   'the keyboard-open composer does not retain a second iPhone safe-area gap');
 assert.match(session, /composer-settings-toggle/,
   'run configuration stays available from the compact composer instead of repeating in the header');
+assert.match(session, /wireMic\(micBtn, reply,[\s\S]*hint:/, 'the shared session composer owns mobile dictation');
+assert.doesNotMatch(session, /wireMic\(micBtn, reply,[^\n]*hold:\s*true/,
+  'mobile dictation is tap-to-start/tap-to-stop instead of an undiscoverable hold gesture');
+assert.match(common, /const restoreOriginal = \(\)[\s\S]*target\.value = original\.value/,
+  'dictation keeps an exact rollback snapshot of the typed draft');
+assert.match(common, /catch \(e\) \{\s*restoreOriginal\(\);\s*alert\('Transcription failed:/,
+  'a failed transcription restores the draft before reporting the error');
 
 console.log('session_viewport.test ok');

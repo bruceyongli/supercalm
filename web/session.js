@@ -186,6 +186,11 @@ export function mountSession(hostEl, { id: startId = '', embedded = true } = {})
   }
   // Ensure the markup is present: the SPA passes an empty #view (inject); the standalone page provides it.
   if (hostEl && !document.getElementById('session-shell')) hostEl.innerHTML = SESSION_MARKUP;
+  const backLink = $('.session-shell > header .brand a');
+  if (params.get('from') === 'phone' && backLink) {
+    backLink.href = 'phone#home';
+    backLink.setAttribute('aria-label', 'Back to Phone home');
+  }
   // Teardown registry — destroySession() aborts/clears these so a re-mount starts clean (idempotent). The
   // signal is attached to every window/document/media-query listener; element listeners are GC'd with the
   // markup when #view is swapped.
@@ -3734,7 +3739,7 @@ installSessionViewportSync({
   },
 });
 compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
-wireMic(micBtn, reply, $('#mic-status'), { hold: true, hint: () => latestSessionInfo?.tool }); // hold on touch; ?agent= matches THIS session's agent for STT
+wireMic(micBtn, reply, $('#mic-status'), { hint: () => latestSessionInfo?.tool }); // tap once to record, again to transcribe; ?agent= matches THIS session's agent for STT
 syncReplyPlaceholder();
 
 // Input routing. On desktop the terminal is interactive: clicking it focuses the terminal textarea and

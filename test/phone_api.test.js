@@ -58,6 +58,71 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
 const { featureReady } = await import('../src/server.js');
 await featureReady;
 
+// ---- boot repair recovers only waiting hooks whose latest operator input has no later report ------
+{
+  const { addEvent } = await import('../src/store.js');
+  const { repairMissedHookAttention } = await import('../src/hooks.js');
+  const insert = db.prepare(`
+    INSERT INTO sessions
+      (id, project_id, tool, tmux, title, status, started_at, last_activity)
+    VALUES (?, 'p_ph', 'codex', ?, ?, 'waiting', 1, 1)
+  `);
+  insert.run('s_hook_stranded', 'tmx_hook_stranded', 'Report the finished phone work');
+  addMessage('s_hook_stranded', 'in', 'task', 'Fix the phone UI');
+  addEvent('s_hook_stranded', 'hook', { tool: 'codex', event: 'agent-turn-complete' });
+
+  insert.run('s_hook_reviewed', 'tmx_hook_reviewed', 'Do not reopen this reviewed report');
+  addMessage('s_hook_reviewed', 'in', 'task', 'Already handled');
+  addEvent('s_hook_reviewed', 'hook', { tool: 'codex', event: 'agent-turn-complete' });
+  const reviewed = addMessage('s_hook_reviewed', 'out', 'detect', 'Already reviewed');
+  db.prepare('UPDATE messages SET read_at = ? WHERE id = ?').run(Date.now(), reviewed.id);
+
+  const recovered = repairMissedHookAttention();
+  assert.deepEqual(recovered, ['s_hook_stranded']);
+  assert.equal(unreadBySession().get('s_hook_stranded')?.n, 1, 'the stranded completion becomes visible in Needs You');
+  assert.equal(unreadBySession().get('s_hook_reviewed'), undefined, 'a reviewed completion is not reopened');
+  db.prepare("UPDATE messages SET read_at = ? WHERE session_id = 's_hook_stranded' AND direction = 'out'").run(Date.now());
+  db.prepare("UPDATE sessions SET status = 'working', category = NULL, summary = NULL WHERE id = 's_hook_stranded'").run();
+}
+
+// ---- lifecycle hooks publish a durable Needs You report immediately --------------------------------
+{
+  db.prepare(`
+    INSERT INTO sessions
+      (id, project_id, tool, tmux, title, status, started_at, last_activity)
+    VALUES ('s_hook_report', 'p_ph', 'codex', 'tmx_hook_report', 'Finish the mobile composer', 'working', 1, 1)
+  `).run();
+  const patchPromise = new Promise((resolve) => {
+    const listener = (patch) => {
+      if (patch.session !== 's_hook_report' || patch.source !== 'hook') return;
+      bus.off('session-status', listener);
+      resolve(patch);
+    };
+    bus.on('session-status', listener);
+  });
+  const response = await fetch(`http://127.0.0.1:${port}/api/hook/codex`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 's_hook_report', event: 'agent-turn-complete' }),
+  });
+  assert.equal(response.status, 200);
+  const patch = await Promise.race([patchPromise, new Promise((_, reject) => setTimeout(() => reject(new Error('missing hook attention patch')), 1000))]);
+  assert.equal(patch.status, 'waiting');
+  assert.equal(patch.category, 'review', 'a safe visible category does not wait for asynchronous summarization');
+  assert.equal(patch.unread, 1, 'the hook transition creates the unread report that powers Needs You');
+  assert.equal(patch.last_key?.text, 'Finish the mobile composer');
+  const home = await fetch(`http://127.0.0.1:${port}/api/phone/home`).then((r) => r.json());
+  const row = home.sessions.find((session) => session.id === 's_hook_report');
+  assert.equal(row?.status, 'waiting');
+  assert.equal(row?.unread, 1);
+  assert.equal(row?.category, 'review');
+  await fetch(`http://127.0.0.1:${port}/api/hook/codex`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ session: 's_hook_report', event: 'agent-start' }),
+  });
+}
+
 // ---- voice queue is exactly Needs You, not every lifecycle-waiting session ------------------------
 {
   const { buildVoiceItems } = await import('../src/voice.js');
@@ -182,14 +247,18 @@ await featureReady;
   assert.match(ph, /ordinary feedback is delivered immediately/i, 'On the go hands ordinary feedback directly to the current session');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
-  // The canonical shell and installed PWA both default to the phone companion at phone widths. Session
-  // taps remain hash routes inside that surface, so Back cannot strand the operator in a desktop view.
+  // The canonical shell defaults to phone HOME at phone widths, while sessions use the one shared
+  // responsive Story/Terminal implementation and retain a return marker for the phone inbox.
   const shell = readFileSync(new URL('../web/app.html', import.meta.url), 'utf8');
+  const router = readFileSync(new URL('../web/router.js', import.meta.url), 'utf8');
+  const sessionView = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
   const manifest = JSON.parse(readFileSync(new URL('../web/phone.webmanifest', import.meta.url), 'utf8'));
   assert.match(shell, /innerWidth[\s\S]*location\.replace[\s\S]*\/phone/, 'the canonical shell redirects phone-sized launches');
-  assert.match(ph, /\[data-open\][\s\S]*nav\('session'/, 'phone session cards stay inside the phone router');
-  assert.match(ph, /#go-home'[\s\S]*nav\('home', null, false\)[\s\S]*replaceState\(\{ screen: 'home'/,
-    'session Back deterministically replaces the current route with phone home');
+  assert.match(ph, /\[data-open\][\s\S]*openCanonicalSession/, 'phone session cards open the canonical session view');
+  assert.match(ph, /session\?id=.*from=phone/, 'phone session links preserve their return destination');
+  assert.match(router, /Phone-inbox session links use `from=phone`/, 'the SPA does not route phone sessions to a second renderer');
+  assert.match(sessionView, /params\.get\('from'\) === 'phone'[\s\S]*backLink\.href = 'phone#home'/,
+    'the shared session Back control returns to phone home');
   assert.equal(manifest.start_url, './phone#home', 'an installed phone PWA launches directly into phone home');
   assert.match(sv, /session\|records\|decisions\|usage\|health\|settings\|projects\).*\\?\\.html/, 'historical desktop .html routes serve the canonical SPA');
 }
