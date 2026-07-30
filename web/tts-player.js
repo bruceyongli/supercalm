@@ -148,7 +148,7 @@ function playUrl(url, h) {
 // The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
 // has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
 // re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
-function speakStream(text, h, extra = {}, onSlow) {
+function speakStream(text, h, extra = {}, onSlow, onSegment) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
@@ -163,16 +163,17 @@ function speakStream(text, h, extra = {}, onSlow) {
       clearTimeout(cap);
       if (slow) clearTimeout(slow);
       try { ctrl.abort(); } catch {}
-      for (const url of urls.splice(0)) { try { URL.revokeObjectURL(url); } catch {} }
+      for (const item of urls.splice(0)) { try { URL.revokeObjectURL(item.url); } catch {} }
       err ? reject(err) : resolve();
     };
     const pump = async () => {
       if (playing || finished) return;
       playing = true;
       while (urls.length && !h.stopped && !finished) {
-        const url = urls.shift();
+        const item = urls.shift();
         played += 1;
-        await playUrl(url, h);
+        try { onSegment?.({ text: item.text || '', index: Number.isFinite(item.index) ? item.index : played - 1 }); } catch {}
+        await playUrl(item.url, h);
       }
       playing = false;
       if (h.stopped) return finish();
@@ -201,7 +202,11 @@ function speakStream(text, h, extra = {}, onSlow) {
             if (block) {
               const { event, data } = parseSseBlock(block);
               if (event === 'chunk' && data.audio_base64) {
-                urls.push(URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)));
+                urls.push({
+                  url: URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)),
+                  text: String(data.text || ''),
+                  index: Number(data.index),
+                });
                 pump();
               } else if (event === 'done') {
                 readingDone = true;
@@ -225,10 +230,10 @@ function speakStream(text, h, extra = {}, onSlow) {
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
 // Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
 // has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
-function speakSingle(text, h, extra = {}, onSlow) {
+function speakSingle(text, h, extra = {}, onSlow, onSegment) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
-    let done = false, cap = null, stall = null, playedSome = false;
+    let done = false, cap = null, stall = null, playedSome = false, segmentShown = false;
     const ctrl = new AbortController();
     const slow = onSlow ? setTimeout(() => { if (!playedSome && !done) { try { onSlow(); } catch {} } }, 4500) : null;
     const finish = (err) => {
@@ -253,7 +258,14 @@ function speakSingle(text, h, extra = {}, onSlow) {
         const a = getPlayer();
         a.onended = () => { try { URL.revokeObjectURL(url); } catch {} finish(); };
         a.onerror = () => { try { URL.revokeObjectURL(url); } catch {} finish(new Error('audio playback failed')); };
-        a.onplaying = a.ontimeupdate = () => { playedSome = true; armStall(3500); };
+        a.onplaying = a.ontimeupdate = () => {
+          playedSome = true;
+          if (!segmentShown) {
+            segmentShown = true;
+            try { onSegment?.({ text, index: 0, total: 1 }); } catch {}
+          }
+          armStall(3500);
+        };
         a.onpause = () => { if (h.stopped) finish(); };
         a.src = url;
         try { a.currentTime = 0; } catch {}
@@ -278,7 +290,7 @@ function chosenVoice() {
     return vs.find((v) => v.voiceURI === id) || vs.find((v) => v.name === id) || null;
   } catch { return null; }
 }
-function speakBrowser(text, h) {
+function speakBrowser(text, h, onSegment) {
   return new Promise((resolve) => {
     if (!text || h.stopped || typeof speechSynthesis === 'undefined') return resolve();
     let done = false, cap = null, poll = null, started = false;
@@ -291,6 +303,7 @@ function speakBrowser(text, h) {
         const u = new SpeechSynthesisUtterance(p);
         if (picked) u.voice = picked;
         u.rate = ttsRate();
+        u.onstart = () => { try { onSegment?.({ text: p, index: i, total: chunks.length }); } catch {} };
         if (i === chunks.length - 1) u.onend = u.onerror = fin;
         speechSynthesis.speak(u);
       });
@@ -315,27 +328,28 @@ let streamUnavailable = false;
 // Optional callbacks let a caller show its own UI without coupling this module to any:
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback } = {}) {
+//   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
-  if (mode === 'browser') return speakBrowser(text, h);
+  if (mode === 'browser') return speakBrowser(text, h, onSegment);
   try {
     const long = text.length > 220 || splitSentences(text).length > 2;
     if (long && !streamUnavailable) {
-      return await speakStream(text, h, ttsExtra, onSlow).catch((e) => {
+      return await speakStream(text, h, ttsExtra, onSlow, onSegment).catch((e) => {
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
         if (/\b409\b/.test(String(e?.message || ''))) streamUnavailable = true;
         if (h.stopped) return;
-        return speakSingle(text, h, ttsExtra, onSlow);
+        return speakSingle(text, h, ttsExtra, onSlow, onSegment);
       });
     }
-    return await speakSingle(text, h, ttsExtra, onSlow);
+    return await speakSingle(text, h, ttsExtra, onSlow, onSegment);
   } catch {
     if (h.stopped) return;
     try { onFallback?.(); } catch {}
-    return speakBrowser(text, h);
+    return speakBrowser(text, h, onSegment);
   }
 }
 

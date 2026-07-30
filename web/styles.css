@@ -167,58 +167,79 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 
 /* On-the-go is an update briefing, not the manual Voice orb with a different entry button. */
 .vm-ongo {
-  place-items: stretch; overflow: auto; background:
+  place-items: center; overflow: hidden; background:
     radial-gradient(circle at 88% 8%, rgba(46,160,67,.16), transparent 36%),
     linear-gradient(145deg, rgba(4,12,10,.98), rgba(1,4,9,.98));
 }
 .ongo-shell {
-  width: min(760px, 100%); min-height: min(720px, calc(100dvh - 48px)); margin: auto;
-  display: flex; flex-direction: column; gap: 16px; padding: clamp(20px, 5vw, 44px);
-  border: 1px solid rgba(78,203,108,.2); border-radius: 24px; background: rgba(8,15,14,.8);
+  width: min(680px, 100%); height: min(650px, calc(100dvh - 48px)); min-height: min(500px, calc(100dvh - 48px)); margin: auto;
+  display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto auto; gap: 12px; padding: clamp(18px, 3.5vw, 28px);
+  border: 1px solid rgba(78,203,108,.2); border-radius: 20px; background: rgba(8,15,14,.88);
   box-shadow: 0 28px 90px rgba(0,0,0,.38); text-align: left;
 }
 .ongo-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
-.ongo-head h2 { margin: 5px 0 0; color: var(--ink); font: 500 clamp(24px, 5vw, 34px)/1.15 'IBM Plex Sans', system-ui, sans-serif; }
+.ongo-head h2 { margin: 4px 0 0; color: var(--ink); font: 550 clamp(21px, 4vw, 28px)/1.15 'IBM Plex Sans', system-ui, sans-serif; }
 .ongo-kicker, .ongo-label { color: #72d68b; font: 700 10px/1 'JetBrains Mono', monospace; letter-spacing: .16em; }
 .ongo-live {
-  display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; flex: 0 0 auto;
   border: 1px solid rgba(78,203,108,.24); border-radius: 999px; background: rgba(46,160,67,.08);
 }
 .ongo-live > i { width: 8px; height: 8px; border-radius: 50%; background: #4ecb6c; animation: vmpulse 2.2s ease-in-out infinite; }
 .vm-ongo .vm-state { color: #a7f0c0; font-size: 10px; }
-.vm-ongo .vm-progress { max-width: none; align-items: stretch; }
+.ongo-track { display: grid; gap: 6px; }
+.ongo-track > div { display: flex; justify-content: space-between; gap: 12px; color: #769281; font: 650 10.5px/1.25 'JetBrains Mono', monospace; }
 .vm-ongo .vm-prog-label { text-align: right; color: #769281; }
 .vm-ongo .vm-bar { height: 3px; background: rgba(78,203,108,.12); }
 .vm-ongo .vm-bar > i { background: #4ecb6c; }
+.ongo-dialog { min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; gap: 9px; }
 .ongo-report {
-  flex: 1; min-height: 230px; display: flex; flex-direction: column; gap: 14px;
-  padding: clamp(18px, 4vw, 30px); border: 1px solid rgba(255,255,255,.08); border-radius: 18px;
+  min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: hidden;
+  padding: clamp(14px, 2.5vw, 18px); border: 1px solid rgba(255,255,255,.08); border-radius: 14px;
   background: rgba(255,255,255,.035);
 }
 .vm-ongo .vm-said {
-  max-height: none; color: #f2f7f4; font: 400 clamp(18px, 3.6vw, 24px)/1.65 'IBM Plex Sans', system-ui, sans-serif;
-  text-wrap: pretty;
+  min-height: 0; max-height: none; overflow: auto; color: #f2f7f4;
+  font: 430 clamp(16px, 2.6vw, 19px)/1.48 'IBM Plex Sans', system-ui, sans-serif; text-wrap: pretty;
+}
+.ongo-segment {
+  display: block; margin: 0 0 7px; padding: 3px 7px; border-left: 2px solid transparent;
+  border-radius: 4px; opacity: .58; transition: opacity .18s ease, background .18s ease, border-color .18s ease;
+}
+.ongo-segment.done { opacity: .32; }
+.ongo-segment.current {
+  opacity: 1; border-left-color: #4ecb6c; background: rgba(78,203,108,.1); color: #fff;
 }
 .ongo-heard {
-  min-height: 72px; display: grid; grid-template-columns: 44px 1fr; align-items: start; gap: 12px;
-  padding: 14px 16px; border-left: 2px solid rgba(78,203,108,.6); background: rgba(46,160,67,.05);
+  min-height: 54px; display: grid; grid-template-columns: 126px 1fr; align-items: start; gap: 10px;
+  padding: 10px 12px; border-left: 2px solid rgba(78,203,108,.6); border-radius: 0 8px 8px 0; background: rgba(46,160,67,.06);
 }
-.vm-ongo .vm-heard { color: #a7f0c0; font-style: normal; line-height: 1.5; }
+.vm-ongo .vm-heard { max-height: 74px; overflow: auto; color: #b9eec8; font-size: 13px; font-style: normal; line-height: 1.4; }
+.vm-ongo .vm-heard.empty { color: #769281; }
 .ongo-delivery, .ongo-sheet-delivery { color: #a7f0c0; font-size: 12px; font-weight: 650; }
 .ongo-delivery.failed, .ongo-sheet-delivery.failed { color: #f3ae79; }
-.vm-ongo .vm-controls { width: 100%; grid-template-columns: auto 1fr auto; align-items: center; justify-items: stretch; }
+.ongo-foot { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.ongo-settings { min-width: 0; color: #769281; font-size: 11px; }
+.ongo-settings > summary { min-height: 36px; display: flex; align-items: center; cursor: pointer; list-style: none; color: #91a699; }
+.ongo-settings > summary::-webkit-details-marker { display: none; }
+.ongo-settings > summary::before { content: '▸'; margin-right: 6px; }
+.ongo-settings[open] > summary::before { content: '▾'; }
+.vm-ongo .vm-controls { width: 100%; grid-template-columns: auto auto auto; align-items: center; justify-items: start; margin-top: 7px; }
 .vm-ongo .vm-mode { color: #769281; }
-.vm-ongo .vm-speed { justify-self: center; background: rgba(255,255,255,.025); }
-.vm-ongo .vm-stop { align-self: center; min-height: 46px; }
+.vm-ongo .vm-speed { justify-self: start; background: rgba(255,255,255,.025); }
+.vm-ongo .vm-stop { min-height: 40px; flex: 0 0 auto; }
 @media (max-width: 620px) {
   .vm-ongo { padding: 0; }
-  .ongo-shell { min-height: 100dvh; border: 0; border-radius: 0; padding: calc(18px + env(safe-area-inset-top)) 16px calc(18px + env(safe-area-inset-bottom)); }
+  .ongo-shell {
+    width: 100%; height: 100dvh; min-height: 0; border: 0; border-radius: 0; gap: 10px;
+    padding: calc(14px + env(safe-area-inset-top)) 14px calc(12px + env(safe-area-inset-bottom));
+  }
   .ongo-head { align-items: center; }
-  .ongo-head h2 { font-size: 25px; }
+  .ongo-head h2 { font-size: 22px; }
   .ongo-live { padding: 7px 9px; }
-  .ongo-report { min-height: 190px; }
-  .vm-ongo .vm-controls { grid-template-columns: 1fr; justify-items: center; }
-  .ongo-heard { grid-template-columns: 36px 1fr; }
+  .ongo-heard { grid-template-columns: 1fr; gap: 6px; min-height: 62px; }
+  .vm-ongo .vm-controls { grid-template-columns: 1fr; justify-items: start; }
+  .ongo-foot { align-items: center; }
+  .ongo-settings[open] { position: absolute; left: 14px; right: 14px; bottom: calc(62px + env(safe-area-inset-bottom)); z-index: 2; padding: 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; background: #0b1211; }
 }
 
 /* reply composer */

@@ -126,21 +126,23 @@ function renderInbox(home) {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
     const preview = sessionAttentionPreview(s, { optionCount: questions.length });
+    const handledReview = s.category === 'review' && preview.actionSource === 'default';
+    const showNext = preview.need && !handledReview && !questions.length;
+    const outcomeMark = s.category === 'review' ? '✓' : s.category === 'decision' ? '◆' : '!';
     return { key: `card:${s.id}`, html: `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
-        <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
-        ${agentChip(s.tool)}
-        <a class="dk-card-project" href="session?id=${esc(s.id)}">${esc(s.project || s.id)}</a>
+        <span class="dk-card-kind" style="color:${bcolor}">${blabel}</span>
+        <span class="dk-card-context">${esc(s.project || s.id)} · ${esc(s.tool || 'agent')}</span>
         <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
-      <div class="dk-attention-preview">
-        <div class="dk-attention-row request"><span>Request</span><p>${esc(preview.request || fullTitle(s))}</p></div>
-        ${preview.outcome ? `<div class="dk-attention-row happened"><span>What happened</span><p>${esc(preview.outcome)}</p></div>` : ''}
-        ${preview.need ? `<div class="dk-attention-row important"><span>Action needed</span><p>${esc(preview.need)}</p></div>` : ''}
-      </div>
+      <a class="dk-card-title" href="session?id=${esc(s.id)}">${esc(preview.request || fullTitle(s))}</a>
+      ${preview.outcome ? `<p class="dk-card-outcome"><span aria-hidden="true">${outcomeMark}</span>${esc(preview.outcome)}</p>` : ''}
+      ${showNext ? `<div class="dk-card-next"><span aria-hidden="true">→</span><b>${esc(preview.need)}</b></div>` : ''}
       ${choicesHtml(s, questions)}
-      <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
+      <div class="dk-card-actions">${handledReview
+        ? `<a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Review result</a><button class="dk-reply-btn" data-dk-reply>Request changes</button>`
+        : `<button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a>`}<button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>` };
   });

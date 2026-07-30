@@ -96,10 +96,12 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(spoken, /Deploy approval\./);
   assert.match(spoken, /Options: y, Yes, deploy it\./);
   const onTheGo = speakOnTheGoBrief(b);
-  assert.match(onTheGo, /^Here's what happened\./);
-  assert.match(onTheGo, /Your original request was: Deploy build 12 and verify checkout\./);
-  assert.match(onTheGo, /For deploy build 12, The release candidate is ready\./);
-  assert.match(onTheGo, /For verify checkout, Checkout tests passed\./);
+  assert.match(onTheGo, /^You asked: Deploy build 12 and verify checkout\./);
+  assert.match(onTheGo, /Update: q\./);
+  assert.match(onTheGo, /I need your input: Say whether to deploy\./);
+  assert.doesNotMatch(onTheGo, /release candidate|checkout tests passed/i,
+    'the automatic interruption does not enumerate the full deliverable history');
+  assert.ok(onTheGo.split(/\s+/).length <= 55, 'the first on-the-go pass stays within one short spoken brief');
   assert.doesNotMatch(onTheGo, /Deploy approval/, 'on-the-go narration does not repeat the manual Voice title/summary format');
   // cache: second call with identical input returns the same object without invoking
   const b2 = await buildVoiceBrief({ sessionId: 's_t', project: 'shop', tool: 'codex', category: 'decision', originalRequest: 'Deploy build 12 and verify checkout.', latestReport: 'The release candidate is ready and checkout tests passed.', summary: 'sum', ask: 'ask', screen: '', call: async () => { throw new Error('must not be called'); } });
@@ -108,6 +110,19 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   const b3 = await buildVoiceBrief({ sessionId: 's_t2', project: 'shop', tool: 'codex', category: 'action', summary: 'fix the login at https://x.co/y now', ask: '', screen: '', call: async () => { throw new Error('down'); } });
   assert.equal(b3.kind, 'input');
   assert.ok(!b3.standard.includes('https://'), 'fallback text is sanitized too');
+}
+
+{
+  const long = speakOnTheGoBrief({
+    request: Array(40).fill('requested detail').join(' '),
+    quick: Array(40).fill('reported outcome').join(' '),
+    standard: 'must not replace quick',
+    updates: Array.from({ length: 6 }, (_, index) => ({ requested: `deliverable ${index}`, latest: `long outcome ${index}` })),
+    needs: Array(30).fill('operator decision').join(' '),
+    options: [],
+  });
+  assert.ok(long.split(/\s+/).length <= 60, 'even malformed model output cannot become a long automatic monologue');
+  assert.doesNotMatch(long, /deliverable 5|long outcome 5/, 'per-deliverable details remain available only on request');
 }
 
 console.log('voice_brief.test ok');

@@ -196,7 +196,7 @@ export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
       category: s?.category,
       optionCount,
     })
-    : { request: doing, happened: '', action: '', mode: 'none' };
+    : { request: doing, happened: '', action: '', actionSource: 'none', mode: 'none' };
   const request = copy.request || doing;
   const need = copy.action;
   const outcome = copy.happened || copy.latest;
@@ -209,7 +209,7 @@ export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
         : s?.dismissed
           ? 'It stays out of Needs you until a newer report arrives.'
           : 'Resume the session when you want it to continue.';
-  return { state, doing, request, outcome, need, attentionMode: copy.mode, next };
+  return { state, doing, request, outcome, need, actionSource: copy.actionSource, attentionMode: copy.mode, next };
 }
 
 // ---- sidebar --------------------------------------------------------------------------------------

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const webRoot = join(root, 'web');
+const outDir = join(root, 'test-results', 'on-the-go');
+mkdirSync(outDir, { recursive: true });
 const subscriptions = [];
 const mime = { '.js': 'text/javascript', '.html': 'text/html', '.css': 'text/css' };
 const readBody = (req) => new Promise((resolve) => {
@@ -19,7 +21,7 @@ const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   if (url.pathname === '/aios/harness') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(`<!doctype html><base href="/aios/"><script type="module">
+    res.end(`<!doctype html><meta charset="utf-8"><base href="/aios/"><link rel="stylesheet" href="styles.css"><script type="module">
       const onTheGo = await import('./on-the-go.js');
       window.__onTheGoCalls = [];
       onTheGo.setOnTheGoVoiceAdapter({
@@ -170,22 +172,50 @@ try {
   });
   await page.locator('.vm-ongo .ongo-report').waitFor();
   assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'ON THE GO');
-  assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'WHAT HAPPENED');
+  assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'NOW READING');
+  assert.equal(await page.locator('.vm-ongo .ongo-segment.current').count(), 1,
+    'the exact sentence currently being spoken has a visible marker');
+  assert.equal(await page.locator('.vm-ongo .ongo-heard').count(), 1,
+    'the operator response region is always present, even before speech is recognized');
+  assert.match(await page.locator('.vm-ongo .vm-heard').textContent(), /words|Listening/i);
   assert.equal(await page.locator('.vm-ongo .ongo-delivery').count(), 1,
     'the briefing includes a dedicated delivery-receipt region');
   assert.equal(await page.locator('.vm-ongo .vm-orb').count(), 0,
     'the on-the-go briefing does not reuse the manual Voice orb presentation');
+  await page.evaluate(() => {
+    document.querySelector('.vm-ongo').dataset.state = 'speaking';
+    document.querySelector('.vm-state').textContent = 'Speaking…';
+    document.querySelector('.ongo-title').textContent = 'Supercalm';
+    document.querySelector('.ongo-context').textContent = 'Codex · review';
+    document.querySelector('.vm-prog-label').textContent = '2 of 3';
+    document.querySelector('.vm-bar > i').style.width = '66%';
+    document.querySelector('.vm-said').innerHTML = [
+      '<span class="ongo-segment done">You asked: simplify On-the-go and Needs You.</span>',
+      '<span class="ongo-segment current">Update: the brief is shorter and the current sentence stays highlighted.</span>',
+      '<span class="ongo-segment">I need your input: review the new layout.</span>',
+    ].join('');
+    document.querySelector('.ongoing-heard-label').textContent = 'YOUR LAST RESPONSE';
+    const heard = document.querySelector('.vm-heard');
+    heard.classList.remove('empty');
+    heard.textContent = '“Keep the report short and make my response easy to find.”';
+  });
   const desktopBox = await page.locator('.ongo-shell').boundingBox();
   assert.ok(desktopBox && desktopBox.x >= 0 && desktopBox.x + desktopBox.width <= 1280,
     'the briefing is contained on desktop');
+  await page.screenshot({ path: join(outDir, 'desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
   const mobileFit = await page.evaluate(() => ({
     pageWidth: document.documentElement.scrollWidth,
     viewport: innerWidth,
-    stopVisible: !!document.querySelector('.vm-ongo .vm-stop')?.getClientRects().length,
+    stop: document.querySelector('.vm-ongo .vm-stop')?.getBoundingClientRect().toJSON(),
+    heard: document.querySelector('.vm-ongo .ongo-heard')?.getBoundingClientRect().toJSON(),
   }));
   assert.ok(mobileFit.pageWidth <= mobileFit.viewport, 'the briefing does not overflow an iPhone viewport');
-  assert.equal(mobileFit.stopVisible, true, 'the end-assistant control remains reachable on iPhone');
+  assert.ok(mobileFit.stop && mobileFit.stop.top >= 0 && mobileFit.stop.bottom <= 844,
+    'the end-assistant control remains reachable on iPhone');
+  assert.ok(mobileFit.heard && mobileFit.heard.top >= 0 && mobileFit.heard.bottom <= 844,
+    'the operator response remains visible without scrolling on iPhone');
+  await page.screenshot({ path: join(outDir, 'phone.png') });
   await page.evaluate(async () => (await import('./voicemode.js')).stopVoiceMode());
 } finally {
   await browser.close();

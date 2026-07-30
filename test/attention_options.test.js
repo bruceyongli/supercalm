@@ -5,8 +5,8 @@ import { attentionCopy, sameAttentionMessage } from '../web/attention-preview.js
 
 const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
 
-// The inbox is an operator brief, not a terminal mirror. Every card separates the request, what
-// happened, and the concrete handling action; duplicate reports and TUI chrome never become actions.
+// The inbox is an operator brief, not a terminal mirror. Cards retain the request and outcome, then
+// show a separate action line only when the agent asked a concrete question.
 {
   const transport = 'agreement=0.840 kappa=0.713 indeterminate=0.070 retained_pairs=18 Falling back from WebSockets to HTTPS transport. stream disconnected before completion: tls handshake eof stream disconnected before completion: error';
   const longer = `${transport} sending request for url (https://chatgpt.com/backend-api/codex/responses)`;
@@ -22,6 +22,7 @@ const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf
   assert.ok(review.happened.length <= 260);
   assert.equal(review.action, 'Review the result. Reply with changes, or dismiss it if you’re satisfied.',
     'a review always says how to handle the completed result');
+  assert.equal(review.actionSource, 'default');
 
   const decision = attentionCopy({
     title: 'Ship the release',
@@ -33,6 +34,7 @@ const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf
   assert.equal(decision.happened, 'All verification passed.');
   assert.equal(decision.action, 'Choose the deployment window.',
     'a distinct decision keeps context and the operator action separate');
+  assert.equal(decision.actionSource, 'question');
 
   const chrome = '✔ Port candidate stack onto current main ✔ Overlay evaluator tooling untracked … +23 completed ⏵⏵ bypass permissions on (shift+tab to cycle) install gh … new task? /clear to save 112.7k tokens';
   const cleaned = attentionCopy({
@@ -55,6 +57,17 @@ const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf
   });
   assert.equal(approval.action, 'Approve this next step: rewrite the story. Or reply with changes.',
     'a useful action is derived from the clean status instead of a TUI composer');
+
+  const longFinal = attentionCopy({
+    title: 'Improve the attention cards',
+    summary: 'The new compact card design is implemented and all checks passed.',
+    question: 'Implemented the compact hierarchy across desktop, iPad, and phone. The request is now the title, the outcome is one concise line, and completed reviews use explicit controls. All browser checks and 119 suites passed.',
+    category: 'review',
+  });
+  assert.equal(longFinal.happened, 'The new compact card design is implemented and all checks passed.');
+  assert.equal(longFinal.actionSource, 'default');
+  assert.doesNotMatch(longFinal.action, /Implemented the compact hierarchy/,
+    'a distinct final report is an outcome, never a giant fake operator action');
 }
 
 // The inbox takes only the newest still-pending structured prompt and keeps every question in that

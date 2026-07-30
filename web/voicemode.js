@@ -77,7 +77,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
         try {
           live = createLiveSpeechRecognizer({
             onUpdate: (heard) => {
-              if (ui?.heard && heard) ui.heard.textContent = '“' + heard + '”';
+              if (heard) setHeard(heard);
             },
           });
           live.start();
@@ -97,7 +97,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
         } finally {
           live?.abort();
         }
-        if (text && ui?.heard) ui.heard.textContent = '“' + text + '”';
+        if (text) setHeard(text);
         state = await post('api/voice/turn', { voiceId, userText: text });
       } else {
         setState('thinking');
@@ -185,6 +185,7 @@ async function speak(text) {
   await speakSmart(text, handle, {
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
+    onSegment: focusSpokenSegment,
   });
 }
 
@@ -383,17 +384,18 @@ function buildOverlay({ onTheGo = false } = {}) {
   root.className = onTheGo ? 'vm vm-ongo' : 'vm';
   root.innerHTML = onTheGo
     ? '<div class="ongo-shell">' +
-      '<div class="ongo-head"><div><span class="ongo-kicker">ON THE GO</span><h2>Live project update</h2></div>' +
+      '<div class="ongo-head"><div><span class="ongo-kicker">ON THE GO</span><h2 class="ongo-title">Project update</h2></div>' +
       '<div class="ongo-live"><i></i><span class="vm-state">Starting…</span></div></div>' +
-      '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
-      '<section class="ongo-report"><span class="ongo-label">WHAT HAPPENED</span><div class="vm-said"></div></section>' +
-      '<section class="ongo-heard"><span class="ongo-label">YOU</span><div class="vm-heard"></div></section>' +
-      '<div class="ongo-delivery" hidden></div>' +
-      '<div class="vm-controls"><span class="vm-mode"></span>' +
-      '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
-      '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
+      '<div class="ongo-track"><div><span class="ongo-context">Needs You</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
+      '<div class="ongo-dialog">' +
+      '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">NOW READING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
+      '<section class="ongo-heard"><span class="ongo-label ongoing-heard-label">YOUR RESPONSE</span><div class="vm-heard empty">Your words will stay here.</div></section>' +
+      '<div class="ongo-delivery" hidden></div></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
-      '<button class="btn danger vm-stop">End on-the-go assistant</button></div>'
+      '<div class="ongo-foot"><details class="ongo-settings"><summary>Voice &amp; speed</summary><div class="vm-controls"><span class="vm-mode"></span>' +
+      '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
+      '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div></details>' +
+      '<button class="btn danger vm-stop">End assistant</button></div></div>'
     : '<div class="vm-box">' +
       '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
       '<div class="vm-orb"></div>' +
@@ -419,6 +421,10 @@ function buildOverlay({ onTheGo = false } = {}) {
     deviceVoice: root.querySelector('.vm-device-voice'),
     ttsNotice: root.querySelector('.vm-tts-notice'),
     delivery: root.querySelector('.ongo-delivery'),
+    title: root.querySelector('.ongo-title'),
+    context: root.querySelector('.ongo-context'),
+    spokenLabel: root.querySelector('.ongoing-spoken-label'),
+    heardLabel: root.querySelector('.ongoing-heard-label'),
     onTheGo,
   };
   root.querySelector('.vm-stop').onclick = end;
@@ -437,8 +443,12 @@ function buildOverlay({ onTheGo = false } = {}) {
 }
 function updateProgress(cur) {
   if (!ui || !cur || !cur.total) return;
-  ui.prog.textContent = ui.onTheGo ? `Needs You · ${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
-  ui.bar.style.width = Math.round(((cur.n - 1) / cur.total) * 100) + '%';
+  ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
+  ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
+  if (ui.onTheGo) {
+    if (ui.title) ui.title.textContent = cur.project || 'Project update';
+    if (ui.context) ui.context.textContent = [cur.tool, cur.category].filter(Boolean).join(' · ') || 'Needs You';
+  }
 }
 function updateDelivery(delivery, sentCount = 0) {
   if (!ui?.delivery || !delivery) return;
@@ -452,8 +462,55 @@ function setState(s, said) {
   if (!ui) return;
   ui.root.dataset.state = s;
   ui.state.textContent = { speaking: 'Speaking…', listening: 'Listening…', thinking: 'Thinking…', error: 'Error' }[s] || s;
-  if (said != null) {
-    ui.said.textContent = said;
-    ui.heard.textContent = '';
+  if (said != null) paintSpokenText(said);
+  if (ui.onTheGo && s === 'listening' && ui.heard?.classList.contains('empty')) {
+    ui.heard.textContent = 'Listening — your words will appear here.';
   }
+}
+
+function spokenParts(text) {
+  return (String(text || '').match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(text || '')])
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function paintSpokenText(text) {
+  if (!ui?.said) return;
+  if (!ui.onTheGo) {
+    ui.said.textContent = text;
+    return;
+  }
+  const parts = spokenParts(text);
+  ui.said.replaceChildren(...parts.map((part, index) => {
+    const span = document.createElement('span');
+    span.className = `ongo-segment${index === 0 ? ' current' : ''}`;
+    span.dataset.spoken = part.toLowerCase().replace(/\s+/g, ' ').trim();
+    span.textContent = part;
+    return span;
+  }));
+}
+
+function focusSpokenSegment(segment = {}) {
+  if (!ui?.onTheGo || !ui.said) return;
+  const spans = [...ui.said.querySelectorAll('.ongo-segment')];
+  if (!spans.length) return;
+  const needle = String(segment.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  let next = needle
+    ? spans.find((span) => span.dataset.spoken === needle || span.dataset.spoken.includes(needle) || needle.includes(span.dataset.spoken))
+    : null;
+  if (!next && Number.isFinite(Number(segment.index))) next = spans[Math.max(0, Math.min(spans.length - 1, Number(segment.index)))];
+  next ||= spans.find((span) => !span.classList.contains('done')) || spans[0];
+  const at = spans.indexOf(next);
+  spans.forEach((span, index) => {
+    span.classList.toggle('current', index === at);
+    span.classList.toggle('done', index < at);
+  });
+  next.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+}
+
+function setHeard(text) {
+  if (!ui?.heard || !text) return;
+  ui.heard.textContent = `“${text}”`;
+  ui.heard.classList.remove('empty');
+  if (ui.heardLabel) ui.heardLabel.textContent = 'YOUR LAST RESPONSE';
 }

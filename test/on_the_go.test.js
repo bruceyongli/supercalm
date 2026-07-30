@@ -34,6 +34,7 @@ const sw = read('web/sw.js');
 const dashboard = read('web/views/dashboard.js');
 const phone = read('web/phone.js');
 const styles = read('web/styles.css');
+const player = read('web/tts-player.js');
 
 assert.match(onTheGo, /enablePush\(\{ onTheGo: true \}\)/, 'on-the-go mode enables its device push preference');
 assert.match(onTheGo, /markAnnounced\(currentNeeds\)/, 'one spoken queue pass deduplicates its complete snapshot');
@@ -51,7 +52,11 @@ assert.match(dashboard, /id="dk-on-the-go"/, 'the canonical Needs You dashboard 
 assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same on-the-go switch');
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
 assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
-assert.match(voice, /WHAT HAPPENED/, 'the distinct presentation leads with the human-readable outcome');
+assert.match(voice, /NOW READING/, 'the distinct presentation identifies the sentence currently being spoken');
+assert.match(voice, /YOUR LAST RESPONSE/, 'the operator transcript remains a first-class part of the conversation');
+assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');
+assert.doesNotMatch(voice, /ui\.heard\.textContent = ''/,
+  'starting the next spoken turn never erases the operator’s visible response');
 assert.match(voice, /Sent to/, 'the briefing renders a visible per-session delivery receipt');
 assert.match(phone, /feedback message.*sent/, 'the phone reports the completed handoff count');
 assert.match(styles, /\.ongo-report/, 'the on-the-go report has its own responsive visual structure');

@@ -190,26 +190,26 @@ export function speakBrief(brief, { level = 'standard', withTopic = true, prefix
   return [prefix, withTopic ? brief.topic + '.' : '', body, opts].filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
 }
 
+function spokenLimit(value, maxWords) {
+  const clean = sanitizeForSpeech(value).replace(/[.!?]+$/, '').replace(/\s+/g, ' ').trim();
+  const words = clean.split(' ').filter(Boolean);
+  if (words.length <= maxWords) return clean;
+  return words.slice(0, maxWords).join(' ').replace(/[,;:—-]$/, '') + '…';
+}
+
 export function speakOnTheGoBrief(brief) {
-  const clause = (value) => sanitizeForSpeech(value).replace(/[.!?]+$/, '').trim();
-  const request = clause(brief?.request || '');
-  const updates = (brief?.updates || []).slice(0, 6);
-  const latest = updates.length
-    ? updates.map((item) => updates.length === 1
-      ? `The latest report says: ${clause(item.latest)}.`
-      : `For ${clause(item.requested)}, ${clause(item.latest)}.`).join(' ')
-    : brief?.standard
-      ? `The latest report says: ${clause(brief.standard)}.`
-      : '';
-  const needs = brief?.needs ? `What needs you now: ${clause(brief.needs)}.` : '';
+  // The first pass is an interruption, not an audiobook. Give the operator one compact orientation
+  // and leave the full multi-deliverable history for an explicit "more" request.
+  const request = spokenLimit(brief?.request, 16);
+  const latest = spokenLimit(brief?.quick || brief?.standard || brief?.updates?.[0]?.latest, 22);
+  const needs = spokenLimit(brief?.needs, 14);
   const options = brief?.options?.length
-    ? `Your choices are ${brief.options.map((option) => clause(option.spoken || option.label)).join(', or ')}.`
+    ? `Choices: ${brief.options.slice(0, 3).map((option) => spokenLimit(option.spoken || option.label, 7)).join(', or ')}.`
     : '';
   return [
-    "Here's what happened.",
-    request ? `Your original request was: ${request}.` : '',
-    latest,
-    needs,
+    request ? `You asked: ${request}.` : '',
+    latest ? `Update: ${latest}.` : '',
+    needs ? `I need your input: ${needs}.` : '',
     options,
   ].filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
 }

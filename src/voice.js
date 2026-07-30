@@ -213,9 +213,13 @@ async function present(vs, greet) {
     } else {
       let request = sanitizeForSpeech(it.originalRequest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
       let latest = sanitizeForSpeech(it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-      if (request.length > 150) request = request.slice(0, 150).replace(/\s+\S*$/, '') + '…';
-      if (latest.length > 180) latest = latest.slice(0, 180).replace(/\s+\S*$/, '') + '…';
-      say = `${lead} Here's what happened. ${request ? `You originally asked: ${request}.` : ''} ${latest ? `The latest report says: ${latest}.` : ''} What would you like to do?`;
+      const requestCap = vs.onTheGo ? 90 : 150;
+      const latestCap = vs.onTheGo ? 120 : 180;
+      if (request.length > requestCap) request = request.slice(0, requestCap).replace(/\s+\S*$/, '') + '…';
+      if (latest.length > latestCap) latest = latest.slice(0, latestCap).replace(/\s+\S*$/, '') + '…';
+      say = vs.onTheGo
+        ? `${lead} ${request ? `You asked: ${request}.` : ''} ${latest ? `Update: ${latest}.` : ''} What would you like the agent to do?`
+        : `${lead} Here's what happened. ${request ? `You originally asked: ${request}.` : ''} ${latest ? `The latest report says: ${latest}.` : ''} What would you like to do?`;
     }
   }
   return say;

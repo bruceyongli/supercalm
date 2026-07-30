@@ -137,21 +137,23 @@ try {
     'Needs You exposes an explicit opt-in on-the-go assistant switch');
 
   const optionCard = page.locator('[data-dk-card][data-sid="s_opt"]');
-  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Request', 'What happened', 'Action needed'],
-    'an actionable decision is a three-part scan: request, state, and operator action');
-  assert.match(await optionCard.locator('.dk-attention-row.request').innerText(), /Configure release checks/);
-  assert.match(await optionCard.locator('.dk-attention-row.important').innerText(), /Answer each question below/i);
-  const donePreview = page.locator('[data-dk-card][data-sid="s_done"] .dk-attention-preview');
-  assert.deepEqual(await donePreview.locator('.dk-attention-row > span').allTextContents(), ['Request', 'What happened', 'Action needed'],
-    'a completed review still makes the handling action explicit');
-  assert.match(await donePreview.locator('.happened').innerText(), /Migration is done and verified/);
-  assert.match(await donePreview.locator('.important').innerText(), /Reply with changes, or dismiss/i);
-  assert.equal((await donePreview.innerText()).match(/Migration is done and verified/g)?.length, 1,
+  assert.match(await optionCard.locator('.dk-card-title').innerText(), /Configure release checks/);
+  assert.equal(await optionCard.locator('.dk-card-next').count(), 0,
+    'structured choices are the action; the card does not repeat an Action needed box above them');
+  const doneCardInitial = page.locator('[data-dk-card][data-sid="s_done"]');
+  assert.match(await doneCardInitial.locator('.dk-card-outcome').innerText(), /Migration is done and verified/);
+  assert.equal(await doneCardInitial.locator('.dk-card-next').count(), 0,
+    'a completed review uses its Review result / Request changes controls instead of generic instructional copy');
+  assert.equal((await doneCardInitial.innerText()).match(/Migration is done and verified/g)?.length, 1,
     'a duplicated review report appears only once');
-  const noisePreview = page.locator('[data-dk-card][data-sid="s_noise"] .dk-attention-preview');
-  assert.match(await noisePreview.locator('.happened').innerText(), /Completed 25 items/i);
-  assert.doesNotMatch(await noisePreview.innerText(), /bypass permissions|new task|tokens/i,
+  assert.deepEqual(await doneCardInitial.locator('.dk-card-actions').getByRole('link').allTextContents(), ['Review result']);
+  assert.deepEqual(await doneCardInitial.locator('.dk-card-actions').getByRole('button').allTextContents(), ['Request changes', 'Dismiss']);
+  const noiseCard = page.locator('[data-dk-card][data-sid="s_noise"]');
+  assert.match(await noiseCard.locator('.dk-card-outcome').innerText(), /Completed 25 items/i);
+  assert.doesNotMatch(await noiseCard.innerText(), /bypass permissions|new task|tokens/i,
     'raw TUI controls never reach the high-attention card');
+  assert.ok((await doneCardInitial.boundingBox()).height < 180,
+    'a normal Needs You item stays compact enough to scan several at once');
   await page.locator('#dk-cmdk-row').click();
   await page.locator('#dk-palette-q').fill('Configure release');
   await page.locator('.dk-pal-preview-row.important').waitFor();
@@ -254,12 +256,14 @@ try {
   await phone.screenshot({ path: join(outDir, 'phone-dismissed-section.png'), fullPage: true });
   await phone.locator('[data-restore-attention="s_done"]').click();
   await phone.locator('.needcard[data-open="s_done"]').waitFor();
-  const restoredPhonePreview = phone.locator('.needcard[data-open="s_done"] .needpreview');
-  assert.deepEqual(await restoredPhonePreview.locator('b').allTextContents(), ['Request', 'What happened', 'Action needed'],
-    'phone uses the same scan-first operator brief');
-  assert.equal((await restoredPhonePreview.innerText()).match(/Migration is done and verified/g)?.length, 1,
+  const restoredPhoneCard = phone.locator('.needcard[data-open="s_done"]');
+  assert.match(await restoredPhoneCard.locator('.needrequest').innerText(), /Completed migration/);
+  assert.match(await restoredPhoneCard.locator('.needoutcome').innerText(), /Migration is done and verified/);
+  assert.equal(await restoredPhoneCard.locator('.neednext').count(), 0,
+    'phone also avoids repeating default review instructions');
+  assert.equal((await restoredPhoneCard.innerText()).match(/Migration is done and verified/g)?.length, 1,
     'phone also collapses a duplicated review report');
-  assert.match(await restoredPhonePreview.locator('.important').innerText(), /Reply with changes, or dismiss/i);
+  assert.deepEqual(await restoredPhoneCard.locator('.needacts button').allTextContents(), ['▶ Listen', 'Review result', 'Dismiss']);
   await phone.screenshot({ path: join(outDir, 'phone-needs-you-options.png'), fullPage: true });
   const phoneRequestsBeforeRefresh = homeRequests;
   const phoneRefreshResponse = phone.waitForResponse((response) => response.url().endsWith('/api/phone/home'));

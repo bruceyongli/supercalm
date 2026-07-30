@@ -82,6 +82,7 @@ function attentionPreview(session, { optionCount = 0 } = {}) {
     request: copy.request || session.title || session.id,
     need: copy.action,
     outcome: copy.happened || copy.latest,
+    actionSource: copy.actionSource,
   };
 }
 function phoneNeeds() {
@@ -253,9 +254,9 @@ function stopSpeech() {
   try { stopAllPlayback(); } catch {}
   render();
 }
-async function speakOne(text) {
+async function speakOne(text, options = {}) {
   phoneHandle = newPlayback();
-  try { await speakSmart(text, phoneHandle, {}); } catch {}
+  try { await speakSmart(text, phoneHandle, options); } catch {}
   return !phoneHandle.stopped; // done (true) unless it was stopped mid-line
 }
 async function playQueue(items, scope) {
@@ -285,7 +286,7 @@ async function playQueue(items, scope) {
 // silence) → STT → /api/voice/turn → ordinary feedback is delivered immediately; genuine questions
 // are answered from the session log + project knowledge + supervisor notes → next item. One tap in,
 // zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', delivery: null, sentCount: 0 };
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
 let onTheGoUi = onTheGoState();
 setOnTheGoVoiceAdapter({
   active: () => V.on,
@@ -302,7 +303,7 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
+  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
   render();
   try {
     const r = await api('api/voice/start', {
@@ -318,12 +319,20 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
 }
 async function voiceSay(text) {
   if (!text || V.stopFlag) return;
-  V.state = 'speaking'; V.said = text; render();
-  await speakOne(text);
+  V.state = 'speaking'; V.said = text;
+  V.segment = (String(text).match(/[^.!?]+[.!?]+|\S[^.!?]*$/) || [text])[0].trim();
+  render();
+  await speakOne(text, {
+    onSegment: ({ text: segment }) => {
+      if (!segment || V.stopFlag) return;
+      V.segment = segment;
+      render();
+    },
+  });
 }
 async function voiceLoopListen() {
   if (V.stopFlag) return;
-  V.state = 'listening'; V.lastHeard = ''; render();
+  V.state = 'listening'; render();
   const blob = await vadRecord(V.stream, { maxMs: 45000 });
   if (V.stopFlag) return;
   if (!blob || blob.size < 800) { await voiceSay("I didn't hear anything. Say skip, stop, or your reply."); return voiceLoopListen(); }
@@ -357,7 +366,7 @@ async function voiceLoopListen() {
 }
 function voiceModeEnd(why) {
   const sentCount = V.sentCount;
-  V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = '';
+  V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = ''; V.segment = '';
   try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
   V.stream = null;
   if (V.voiceId) api('api/voice/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) }).catch(() => {});
@@ -627,28 +636,29 @@ function renderHome() {
     const isPlaying = S.playScope === 'home' && S.speakingId === s.last_key?.id;
     const questions = phoneOptionQuestions(s);
     const preview = attentionPreview(s, { optionCount: questions.length });
+    const handledReview = s.category === 'review' && preview.actionSource === 'default';
+    const showNext = preview.need && !handledReview && !questions.length;
+    const outcomeMark = s.category === 'review' ? '✓' : s.category === 'decision' ? '◆' : '!';
     ensureOptionQuestions(s, () => renderSoft());
     return `
     <div class="needcard" data-open="${esc(s.id)}">
       <div class="strip" style="background:${bColor}"></div>
       <div class="needrow">
-        <span class="badge" style="color:${bColor};border:1px solid ${bColor}66;background:${bColor}14">${bLabel}</span>
-        <span class="agchip" style="color:${chipColor(s.tool)};border-color:${chipColor(s.tool)}8c">${esc(AGENT_LABEL[s.tool] || s.tool)}</span>
-        <span class="needproject">${esc(s.project || s.id)}</span>
+        <span class="badge" style="color:${bColor}">${bLabel}</span>
+        <span class="needproject">${esc(s.project || s.id)} · ${esc(AGENT_LABEL[s.tool] || s.tool)}</span>
         ${isPlaying ? '<span class="reading-ind">▶ reading</span>' : ''}
         <span class="needtime">${ago(s.last_activity)}</span>
       </div>
-      <div class="needpreview">
-        <div class="request"><b>Request</b><p>${esc(preview.request)}</p></div>
-        ${preview.outcome ? `<div class="happened"><b>What happened</b><p>${esc(preview.outcome)}</p></div>` : ''}
-        ${preview.need ? `<div class="important"><b>Action needed</b><p>${esc(preview.need)}</p></div>` : ''}
-      </div>
+      <div class="needrequest">${esc(preview.request)}</div>
+      ${preview.outcome ? `<div class="needoutcome"><span aria-hidden="true" style="color:${bColor}">${outcomeMark}</span><p>${esc(preview.outcome)}</p></div>` : ''}
+      ${showNext ? `<div class="neednext"><span aria-hidden="true">→</span><b>${esc(preview.need)}</b></div>` : ''}
       ${optionList(s, questions)}
       <div class="needacts">
         <button class="act listen" data-listen="${esc(s.id)}">${isPlaying ? '■ Stop' : '▶ Listen'}</button>
-        <button class="act reply" data-replyto="${esc(s.id)}">● Reply</button>
+        ${handledReview
+          ? `<button class="act reply" data-open2="${esc(s.id)}">Review result</button>`
+          : `<button class="act reply" data-replyto="${esc(s.id)}">Reply</button>`}
         <button class="act dismiss" data-dismiss-need="${esc(s.id)}">Dismiss</button>
-        <button class="act open" data-open2="${esc(s.id)}">›</button>
       </div>
     </div>`;
   }).join('');
@@ -838,20 +848,25 @@ function renderSheet() {
   if (S.sheet === 'voicemode') {
     const st = V.state;
     const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
-    const cur = V.current ? `${V.current.project || ''} · ${V.current.category || ''} · ${V.current.n}/${V.current.total}` : '';
+    const project = V.current?.project || 'Project update';
+    const context = V.current ? [V.current.tool, V.current.category].filter(Boolean).join(' · ') : 'Needs You';
+    const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
+    const heard = V.lastHeard
+      ? `“${V.lastHeard.slice(0, 260)}”`
+      : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
     if (V.onTheGo) return `
     <button class="scrim" data-voice-end aria-label="end"></button>
     <div class="sheet ongoing-sheet">
       <div class="ongo-sheet-head">
-        <div><span class="ongo-sheet-kicker">ON THE GO</span><div class="ongo-sheet-title">Live project update</div></div>
+        <div><span class="ongo-sheet-kicker">ON THE GO</span><div class="ongo-sheet-title">${esc(project)}</div></div>
         <div class="ongo-sheet-live"><i></i>${esc(label)}</div>
       </div>
-      ${cur ? `<div class="ongo-sheet-progress">Needs You · ${esc(cur)}</div>` : ''}
+      <div class="ongo-sheet-progress"><span>${esc(context || 'Needs You')}</span><b>${esc(progress)}</b></div>
       <div class="ongo-sheet-report">
-        <span>WHAT HAPPENED</span>
-        <p>${esc(V.said || 'Preparing a clear update…')}</p>
+        <span>NOW READING</span>
+        <p>${esc(V.segment || 'Preparing a clear update…')}</p>
       </div>
-      ${V.lastHeard ? `<div class="ongo-sheet-heard"><b>YOU</b><span>“${esc(V.lastHeard.slice(0, 220))}”</span></div>` : ''}
+      <div class="ongo-sheet-heard"><b>${V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE'}</b><span>${esc(heard)}</span></div>
       ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
@@ -864,7 +879,7 @@ function renderSheet() {
         <span class="rec-dot" style="${st === 'listening' ? '' : 'background:var(--teal)'}"></span>
         <span>${esc(label)}</span>
       </div>
-      ${cur ? `<div class="footnote">${esc(cur)}</div>` : ''}
+      ${V.current ? `<div class="footnote">${esc([project, context, progress].filter(Boolean).join(' · '))}</div>` : ''}
       ${V.lastHeard ? `<div class="pm-goal" style="text-align:center;color:var(--tx-2)">“${esc(V.lastHeard.slice(0, 160))}”</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow">

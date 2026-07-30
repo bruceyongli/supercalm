@@ -98,14 +98,21 @@ function defaultHappened(category) {
   return 'The agent finished its latest turn and is waiting for your review.';
 }
 
+function isOperatorAsk(value) {
+  const text = String(value || '').trim();
+  if (!text || text.length > 220) return false;
+  return /\?\s*$/.test(text)
+    || /^(?:please\s+)?(?:choose|select|decide|approve|confirm|provide|reply|tell|enter|pick|which|when|where|why|how|should|would|do you|can you)\b/i.test(text);
+}
+
 function actionFromReport(report, category) {
   const ready = report.match(/\bready to ([^.;]+?)\s+(?:but|and)\s+needs?\s+(?:(?:the\s+)?operator(?:'s)?|your)?\s*approval\b/i);
-  if (ready?.[1]) return `Approve this next step: ${ready[1].trim()}. Or reply with changes.`;
+  if (ready?.[1]) return { text: `Approve this next step: ${ready[1].trim()}. Or reply with changes.`, source: 'report' };
   const approval = report.match(/\bneeds?\s+(?:(?:the\s+)?operator(?:'s)?|your)\s+approval\s+to\s+([^.;]+)/i);
-  if (approval?.[1]) return `Approve this next step: ${approval[1].trim()}. Or reply with changes.`;
-  if (category === 'decision') return 'Reply with the decision the agent needs to continue.';
-  if (category === 'action') return 'Reply with the missing information or instruction so work can continue.';
-  return 'Review the result. Reply with changes, or dismiss it if you’re satisfied.';
+  if (approval?.[1]) return { text: `Approve this next step: ${approval[1].trim()}. Or reply with changes.`, source: 'report' };
+  if (category === 'decision') return { text: 'Reply with the decision the agent needs to continue.', source: 'default' };
+  if (category === 'action') return { text: 'Reply with the missing information or instruction so work can continue.', source: 'default' };
+  return { text: 'Review the result. Reply with changes, or dismiss it if you’re satisfied.', source: 'default' };
 }
 
 export function attentionCopy({
@@ -130,6 +137,7 @@ export function attentionCopy({
 
   let happened = '';
   let action = '';
+  let actionSource = 'default';
 
   if (optionCount > 0) {
     happened = update && !sameAttentionMessage(update, ask) && !updateIsChrome
@@ -138,28 +146,31 @@ export function attentionCopy({
     action = optionCount > 1
       ? 'Answer each question below. Your choices send after the last answer.'
       : 'Choose an option below to continue the session.';
+    actionSource = 'options';
   } else if (ask && !askIsChrome && explicitlyActionable) {
     happened = update && !sameAttentionMessage(ask, update) ? update : defaultHappened(category);
     action = ask;
-  } else if (ask && update && !askIsChrome && !sameAttentionMessage(ask, update)) {
+    actionSource = 'question';
+  } else if (ask && update && !askIsChrome && !sameAttentionMessage(ask, update) && isOperatorAsk(ask)) {
     happened = update;
     action = ask;
+    actionSource = 'question';
   } else {
     const sameCleanReport = ask && update && sameAttentionMessage(ask, update);
     const candidate = sameCleanReport
       ? (ask.length >= update.length ? ask : update)
       : update || ask || report;
     happened = candidate || defaultHappened(category);
-    action = actionFromReport(candidate, category);
+    ({ text: action, source: actionSource } = actionFromReport(candidate, category));
   }
 
   // A failed summarizer can leave only terminal chrome. Keep a useful state sentence instead of
   // promoting a cleaned fragment such as a task-list footer into the action box.
   if ((!happened || (updateIsChrome && !/[✔✓]/.test(rawUpdate))) && !report) happened = defaultHappened(category);
-  if (!action || hasAttentionChrome(action)) action = actionFromReport(happened, category);
+  if (!action || hasAttentionChrome(action)) ({ text: action, source: actionSource } = actionFromReport(happened, category));
   if (sameAttentionMessage(happened, action)) {
     happened = defaultHappened(category);
-    action = actionFromReport(cleanAttentionText(update || ask || report, 300), category);
+    ({ text: action, source: actionSource } = actionFromReport(cleanAttentionText(update || ask || report, 300), category));
   }
 
   const mode = happened && action ? 'brief' : action ? 'action' : 'update';
@@ -169,6 +180,7 @@ export function attentionCopy({
     action: cleanAttentionText(action, 300),
     // Compatibility names for existing consumers while every surface moves to the semantic labels.
     latest: cleanAttentionText(happened, 260),
+    actionSource,
     mode,
   };
 }
