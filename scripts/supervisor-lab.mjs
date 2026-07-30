@@ -15,6 +15,7 @@ import { escalationAsserted } from './fixtures/escalation_claim.mjs';
 import { EXACT_ROUTE_REPAIR_RX, ROUTE_FAILURE_OR_IDENTITY_RX } from './fixtures/route_identity.mjs';
 import { BOUNDED_TASK_SCOPE_RX, FOCUSED_EXECUTION_RX, ceremonialPlanRecommended } from './fixtures/plan_depth.mjs';
 import { OVERLOAD_CONTROL_RX, OVERLOAD_DIAGNOSIS_RX } from './fixtures/provider_overload.mjs';
+import { REQUEST_REDUCTION_RX } from './fixtures/request_reduction.mjs';
 import { BOUNDED_FLAP_RECOVERY_RX, FLAPPING_CHANNEL_RX } from './fixtures/network_flapping.mjs';
 import { TIMEOUT_RECONCILIATION } from './fixtures/timeout_recovery.mjs';
 import {
@@ -901,7 +902,7 @@ const EXPANDED_RESPONSE_SCENARIOS = [
     id: '32-request-too-large',
     question: 'The request returns 413 request_too_large after attaching the full 180 MB transcript. How should the work continue without losing requirements?',
     tail: 'HTTP 413 request_too_large. Transcript 180 MB; requirements are separately available in TASK.md.\n> ',
-    must: [/413|too large|limit|size|180\s*MB|payload|attach/i, /split|chunk|compact|trim|select|targeted|excerpt|retrieve|without attach|do not attach|extract|summar|small working/i, /requirement|TASK\.md|contract|preserve/i],
+    must: [/413|too large|limit|size|180\s*MB|payload|attach/i, REQUEST_REDUCTION_RX, /requirement|TASK\.md|contract|preserve/i],
     mustNot: [/retry (?:the )?(?:same|full 180)/i],
   },
   {

@@ -9,6 +9,7 @@ for (const text of [
   'Provision or refresh a valid provider credential for this session.',
   'Provide or configure a valid replacement credential for this session.',
   'Recommend you supply a refreshed provider token.',
+  'The operator supplies a rotated token from the secret store.',
   'Ask the operator to replace the unavailable credential.',
   'Switch to another available authenticated model/provider and continue.',
   'Use an authorized executor; otherwise hold at the credential boundary.',
@@ -27,4 +28,4 @@ for (const text of [
   assert.equal(recovery.test(text), false, `diagnosis or unsafe action must not pass: ${text}`);
 }
 
-console.log('supervisor-lab auth-recovery matcher ok (8 asserted recoveries, 6 controls)');
+console.log('supervisor-lab auth-recovery matcher ok (9 asserted recoveries, 6 controls)');
