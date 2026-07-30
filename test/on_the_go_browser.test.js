@@ -171,6 +171,8 @@ try {
   await page.locator('.vm-ongo .ongo-report').waitFor();
   assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'ON THE GO');
   assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'WHAT HAPPENED');
+  assert.equal(await page.locator('.vm-ongo .ongo-delivery').count(), 1,
+    'the briefing includes a dedicated delivery-receipt region');
   assert.equal(await page.locator('.vm-ongo .vm-orb').count(), 0,
     'the on-the-go briefing does not reuse the manual Voice orb presentation');
   const desktopBox = await page.locator('.ongo-shell').boundingBox();

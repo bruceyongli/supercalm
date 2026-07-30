@@ -7,7 +7,8 @@ import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } fro
 import { searchWiki } from './wiki.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
 import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
-import { asksForConfirmation, confirmedPendingReply, providerFailureReply } from './voice_turn.js';
+import { asksForConfirmation, confirmedPendingReply, onTheGoImmediateReply, providerFailureReply } from './voice_turn.js';
+import { deliverVoiceFeedback } from './voice_delivery.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -26,6 +27,7 @@ On "send" or "next", briefly confirm and say you're moving on — do NOT describ
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
 Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
 Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
+const ON_THE_GO_SYS = `ON THE GO DELIVERY MODE: The operator has explicitly enabled automatic feedback handoff. For an ordinary statement, opinion, answer, choice, correction, or instruction, use action "send" immediately with their complete feedback in "message"; do not ask for confirmation. Use "await" only when they ask you a genuine informational question or request more explanation.`;
 
 const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
@@ -259,7 +261,7 @@ async function brainReply(vs, userText) {
       // /turn records the current transcript in history before calling us. Appending userText again
       // made every spoken turn appear twice to the model, with two consecutive user roles; this was
       // especially confusing on the confirmation turn.
-      [{ role: 'system', content: SYS + '\n\n' + ctx }, ...vs.history],
+      [{ role: 'system', content: SYS + (vs.onTheGo ? '\n' + ON_THE_GO_SYS : '') + '\n\n' + ctx }, ...vs.history],
       { temperature: 0.3, max_tokens: 650, timeout_ms: 10000, signal: ac.signal }
     );
     const action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
@@ -324,39 +326,51 @@ route('POST', '/api/voice/turn', async (req, res) => {
     // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
     // established a pending instruction, "yes" (including "yes, and also ...") can be delivered
     // reliably even if every model provider is down on this turn.
-    const r = confirmedPendingReply(vs.pendingInstruction, userText) || await brainReply(vs, userText);
+    const r = confirmedPendingReply(vs.pendingInstruction, userText)
+      || (vs.onTheGo ? onTheGoImmediateReply(userText) : null)
+      || await brainReply(vs, userText);
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
+    const currentItem = vs.items[vs.pointer];
+    try {
+      if (currentItem) store.addEvent(currentItem.sessionId, 'voice-turn', {
+        action: r.action,
+        mode: vs.onTheGo ? 'on-the-go' : 'manual',
+        input_len: userText.length,
+        has_message: !!r.message,
+        // Keep a private recoverable draft at the delivery boundary. Successful sends are also
+        // recorded as normal inbound messages; failed sends no longer erase the operator's words.
+        ...(r.action === 'send' ? { draft: String(r.message || userText).slice(0, 8000) } : {}),
+      });
+    } catch {}
 
     if (r.action === 'send') {
       const it = vs.items[vs.pointer];
-      let say = r.say;
       vs.pendingInstruction = '';
-      // The client may have died while we thought (abort/navigation) — a reply nobody heard
-      // confirmed must not be delivered on top of a restarted pass.
-      if (it && !req.destroyed && voiceSessions.has(vs.id)) {
-        const live = store.getSession(it.sessionId);
-        const msg = r.message || userText;
-        if (!live || live.status === 'exited') {
-          say = 'That session has stopped, so I could not send it. You can resume it from the dashboard. Moving on.';
-        } else if (live.status !== 'waiting' && answeredElsewhereSince(it.sessionId, it.presentedAt)) {
-          say = 'That item was already answered from somewhere else, so I did not send. Moving on.';
-        } else {
-          try {
-            const dr = await sessions.deliverReply(it.sessionId, msg, { source: 'voice' });
-            if (dr.stopped || dr.missing) {
-              say = 'That session has stopped, so I could not send it. You can resume it from the dashboard. Moving on.';
-            } else {
-              try { store.addEvent(it.sessionId, 'voice-reply', { len: msg.length }); } catch {}
-            }
-          } catch (e) {
-            console.error('[aios] voice send failed:', e.message);
-            say = "I couldn't deliver that reply — the send failed, so it still needs you. Moving on for now.";
-          }
-        }
+      const outcome = await deliverVoiceFeedback({
+        item: it,
+        reply: { ...r, message: r.message || userText },
+        // The client may have died while we thought (abort/navigation) — a reply nobody heard
+        // confirmed must not be delivered on top of a restarted pass.
+        requestAlive: !req.destroyed && voiceSessions.has(vs.id),
+        getSession: (sid) => store.getSession(sid),
+        answeredElsewhere: answeredElsewhereSince,
+        deliverReply: (sid, message) => sessions.deliverReply(sid, message, { source: 'voice' }),
+      });
+      if (outcome.sent) {
+        vs.sentCount = (vs.sentCount || 0) + 1;
+        try { store.addEvent(it.sessionId, 'voice-reply', { len: outcome.delivery.length, mode: vs.onTheGo ? 'on-the-go' : 'manual' }); } catch {}
       }
+      try { if (it) store.addEvent(it.sessionId, 'voice-delivery', outcome.delivery); } catch {}
       vs.pointer++;
-      return json(res, 200, { say, done: false, listen: false, current: cur(vs) }); // client -> /continue presents next
+      return json(res, 200, {
+        say: outcome.say,
+        done: false,
+        listen: false,
+        current: cur(vs),
+        delivery: outcome.delivery,
+        sentCount: vs.sentCount || 0,
+      }); // client -> /continue presents next
     }
     if (r.action === 'next') {
       vs.pendingInstruction = '';
@@ -368,7 +382,13 @@ route('POST', '/api/voice/turn', async (req, res) => {
       vs.pendingInstruction = '';
       vs.done = true;
       voiceSessions.delete(vs.id);
-      return json(res, 200, { say: r.say, done: true, listen: false });
+      const count = vs.sentCount || 0;
+      const say = vs.onTheGo
+        ? count
+          ? `Okay, stopping. I sent ${count} ${count === 1 ? 'feedback message' : 'feedback messages'} during this conversation.`
+          : 'Okay, stopping. No feedback was sent during this conversation.'
+        : r.say;
+      return json(res, 200, { say, done: true, listen: false, sentCount: count });
     }
     // New-instruction replies carry the model's normalized draft. Older/less compliant models may
     // omit it, so retain the transcript when their spoken reply clearly asks for confirmation.

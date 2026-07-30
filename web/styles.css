@@ -204,6 +204,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   padding: 14px 16px; border-left: 2px solid rgba(78,203,108,.6); background: rgba(46,160,67,.05);
 }
 .vm-ongo .vm-heard { color: #a7f0c0; font-style: normal; line-height: 1.5; }
+.ongo-delivery, .ongo-sheet-delivery { color: #a7f0c0; font-size: 12px; font-weight: 650; }
+.ongo-delivery.failed, .ongo-sheet-delivery.failed { color: #f3ae79; }
 .vm-ongo .vm-controls { width: 100%; grid-template-columns: auto 1fr auto; align-items: center; justify-items: stretch; }
 .vm-ongo .vm-mode { color: #769281; }
 .vm-ongo .vm-speed { justify-self: center; background: rgba(255,255,255,.025); }

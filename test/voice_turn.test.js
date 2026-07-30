@@ -4,8 +4,11 @@ import {
   asksForConfirmation,
   confirmationFrom,
   confirmedPendingReply,
+  isVoiceInformationQuestion,
+  onTheGoImmediateReply,
   providerFailureReply,
 } from '../src/voice_turn.js';
+import { deliverVoiceFeedback } from '../src/voice_delivery.js';
 
 const pending = 'Fix the report ordering and keep dismissed sessions hidden.';
 
@@ -39,11 +42,63 @@ const recovered = confirmedPendingReply(failed.message, 'Send it');
 assert.equal(recovered.action, 'send');
 assert.equal(recovered.message, failed.message);
 
+assert.equal(isVoiceInformationQuestion('What happened to the deployment?'), true);
+assert.equal(isVoiceInformationQuestion('Why is this session blocked'), true, 'STT does not need question punctuation');
+assert.equal(isVoiceInformationQuestion('Is it deployed'), true);
+assert.equal(isVoiceInformationQuestion('Can you tell me what changed'), true);
+assert.equal(isVoiceInformationQuestion('Can you make the button larger on iPhone?'), false, 'a polite instruction is feedback, not an information question');
+assert.equal(onTheGoImmediateReply('Tell me what failed'), null, 'questions stay with the assistant');
+assert.deepEqual(
+  onTheGoImmediateReply('I prefer option two, and make the mobile controls larger.'),
+  {
+    say: "Got it. I'm sending your feedback now.",
+    action: 'send',
+    message: 'I prefer option two, and make the mobile controls larger.',
+    deterministic: true,
+    onTheGoImmediate: true,
+  },
+);
+assert.equal(onTheGoImmediateReply('stop').action, 'stop');
+assert.equal(onTheGoImmediateReply('next').action, 'next');
+
+// Complete business path: ordinary On-the-go feedback becomes a send, the shared delivery path
+// receives the exact transcript, and success is not announced until that delivery resolves.
+{
+  const reply = onTheGoImmediateReply('Use the calmer layout and keep the dismissed items hidden.');
+  let delivered = '';
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_target', project: 'AIOS', presentedAt: 10 },
+    reply,
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
+    deliverReply: async (_sid, message) => { delivered = message; return { ok: true }; },
+  });
+  assert.equal(delivered, reply.message);
+  assert.equal(outcome.sent, true);
+  assert.equal(outcome.delivery.status, 'sent');
+  assert.match(outcome.say, /^Sent your feedback to AIOS/);
+}
+{
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_target', project: 'AIOS' },
+    reply: { message: 'feedback' },
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
+    deliverReply: async () => { throw new Error('tmux unavailable'); },
+  });
+  assert.equal(outcome.sent, false);
+  assert.equal(outcome.delivery.status, 'failed');
+  assert.doesNotMatch(outcome.say, /^Sent/);
+}
+
 const voiceSource = readFileSync(new URL('../src/voice.js', import.meta.url), 'utf8');
 assert.doesNotMatch(
   voiceSource,
   /\.\.\.vs\.history,\s*\{\s*role:\s*['"]user['"]/,
   'the current transcript is not appended a second time after it was recorded in history',
 );
+assert.match(voiceSource, /onTheGoImmediateReply\(userText\)/, 'On the go routes ordinary feedback through immediate delivery');
+assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
+assert.match(voiceSource, /draft: String\(r\.message \|\| userText\)/, 'an attempted handoff keeps a recoverable private draft');
 
 console.log('voice_turn.test ok');

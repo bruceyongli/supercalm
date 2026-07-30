@@ -65,6 +65,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
     voiceId = state.voiceId;
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
+      if (state.delivery) updateDelivery(state.delivery, state.sentCount);
       if (state.done && ui) ui.bar.style.width = '100%';
       setState('speaking', state.say);
       await speak(state.say);
@@ -387,6 +388,7 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
       '<section class="ongo-report"><span class="ongo-label">WHAT HAPPENED</span><div class="vm-said"></div></section>' +
       '<section class="ongo-heard"><span class="ongo-label">YOU</span><div class="vm-heard"></div></section>' +
+      '<div class="ongo-delivery" hidden></div>' +
       '<div class="vm-controls"><span class="vm-mode"></span>' +
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
@@ -416,6 +418,7 @@ function buildOverlay({ onTheGo = false } = {}) {
     speed: root.querySelector('.vm-speed'),
     deviceVoice: root.querySelector('.vm-device-voice'),
     ttsNotice: root.querySelector('.vm-tts-notice'),
+    delivery: root.querySelector('.ongo-delivery'),
     onTheGo,
   };
   root.querySelector('.vm-stop').onclick = end;
@@ -436,6 +439,14 @@ function updateProgress(cur) {
   if (!ui || !cur || !cur.total) return;
   ui.prog.textContent = ui.onTheGo ? `Needs You · ${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round(((cur.n - 1) / cur.total) * 100) + '%';
+}
+function updateDelivery(delivery, sentCount = 0) {
+  if (!ui?.delivery || !delivery) return;
+  ui.delivery.hidden = false;
+  ui.delivery.classList.toggle('failed', delivery.status !== 'sent');
+  ui.delivery.textContent = delivery.status === 'sent'
+    ? `✓ Sent to ${delivery.project}${sentCount > 1 ? ` · ${sentCount} sent` : ''}`
+    : `Not sent · ${String(delivery.status || 'delivery failed').replace(/-/g, ' ')}`;
 }
 function setState(s, said) {
   if (!ui) return;

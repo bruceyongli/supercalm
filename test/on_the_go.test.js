@@ -52,6 +52,8 @@ assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
 assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
 assert.match(voice, /WHAT HAPPENED/, 'the distinct presentation leads with the human-readable outcome');
+assert.match(voice, /Sent to/, 'the briefing renders a visible per-session delivery receipt');
+assert.match(phone, /feedback message.*sent/, 'the phone reports the completed handoff count');
 assert.match(styles, /\.ongo-report/, 'the on-the-go report has its own responsive visual structure');
 assert.match(voiceServer, /isNeedsYouSession/, 'the spoken count uses the same unread and undismissed Needs You rule');
 assert.match(voiceServer, /originalRequest/, 'spoken items retain the operator’s original request');

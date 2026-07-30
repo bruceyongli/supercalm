@@ -179,7 +179,7 @@ await featureReady;
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
   assert.ok(!/autofocus/i.test(ph.replace(/autoFocus="\{\{ true \}\}"/g, '')), 'nothing autofocuses');
   assert.match(ph, /stopped mid-queue: do NOT mark read/, 'read-on-completion semantics');
-  assert.match(ph, /explicit/i, 'voice review requires explicit send');
+  assert.match(ph, /ordinary feedback is delivered immediately/i, 'On the go hands ordinary feedback directly to the current session');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // Mobile-view contract (Option A): the dashboard pages default to the phone triage on a phone (opt into

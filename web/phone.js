@@ -279,9 +279,10 @@ async function playQueue(items, scope) {
 
 // ---- interactive voice mode (home): the desktop concierge, hands-free on the phone ----------------
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
-// silence) → STT → /api/voice/turn → confirm-before-send brain (questions answered from session log +
-// project knowledge + supervisor notes) → next item, until done or "stop". One tap in, zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '' };
+// silence) → STT → /api/voice/turn → ordinary feedback is delivered immediately; genuine questions
+// are answered from the session log + project knowledge + supervisor notes → next item. One tap in,
+// zero after.
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', delivery: null, sentCount: 0 };
 let onTheGoUi = onTheGoState();
 setOnTheGoVoiceAdapter({
   active: () => V.on,
@@ -298,7 +299,7 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; S.sheet = 'voicemode';
+  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
   render();
   try {
     const r = await api('api/voice/start', {
@@ -336,6 +337,8 @@ async function voiceLoopListen() {
   try {
     const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
     V.current = r.current || V.current;
+    V.delivery = r.delivery || V.delivery;
+    V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
     await voiceSay(r.say);
     if (V.stopFlag) return;
     if (r.done) return voiceModeEnd('done');
@@ -350,6 +353,7 @@ async function voiceLoopListen() {
   } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
 }
 function voiceModeEnd(why) {
+  const sentCount = V.sentCount;
   V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = '';
   try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
   V.stream = null;
@@ -358,6 +362,7 @@ function voiceModeEnd(why) {
   stopSpeech();
   if (S.sheet === 'voicemode') S.sheet = null;
   if (why === 'done') loadHome();
+  if (sentCount) toast(`${sentCount} ${sentCount === 1 ? 'feedback message' : 'feedback messages'} sent`);
   render();
 }
 // energy-gated recorder: resolves with the utterance blob once the speaker pauses
@@ -845,6 +850,7 @@ function renderSheet() {
         <p>${esc(V.said || 'Preparing a clear update…')}</p>
       </div>
       ${V.lastHeard ? `<div class="ongo-sheet-heard"><b>YOU</b><span>“${esc(V.lastHeard.slice(0, 220))}”</span></div>` : ''}
+      ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
       <div class="footnote">reply naturally · say “skip” to move on · ask for all session statuses only when you want them</div>

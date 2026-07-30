@@ -54,6 +54,35 @@ export function asksForConfirmation(text) {
   return CONFIRM_QUESTION.test(clean(text));
 }
 
+const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end (?:this|the) (?:assistant|conversation|session))[\s.!]*$/i;
+const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on)[\s.!]*$/i;
+const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happened| should| would| could| can)\b|why\b|how(?:'s| is| are| did| does| do| should| would| could| can)?\b|when\b|where\b|who\b|which\b|more(?: details?)?\b|details?\b|tell me\b|explain\b|give me (?:more|details|the status)\b|read\b|repeat\b|do you think\b|(?:can|could|would) you (?:tell|explain|summarize|repeat|read|give me|check the status)\b|is (?:it|this|that|the|there)\b|are (?:they|these|those|the|there)\b|was (?:it|this|that|the|there)\b|were (?:they|these|those|the|there)\b|did (?:the|it|this|that|they)\b|does (?:the|it|this|that)\b|has (?:the|it|this|that)\b|have (?:the|it|this|that|they)\b)/i;
+const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
+
+export function isVoiceInformationQuestion(text) {
+  const value = clean(text);
+  if (POLITE_ACTION.test(value)) return false;
+  return value.endsWith('?') || INFO_QUESTION.test(value);
+}
+
+// Enabling On the go is the operator's standing authorization to hand their ordinary feedback to
+// the session they are currently discussing. Manual Voice keeps confirm-before-send; On the go
+// sends statements/opinions/answers immediately and reserves the model for genuine questions.
+export function onTheGoImmediateReply(userText) {
+  const message = clean(userText);
+  if (!message) return null;
+  if (STOP.test(message)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
+  if (NEXT.test(message)) return { say: 'Okay, skipping this one.', action: 'next', message: '', deterministic: true };
+  if (isVoiceInformationQuestion(message)) return null;
+  return {
+    say: "Got it. I'm sending your feedback now.",
+    action: 'send',
+    message,
+    deterministic: true,
+    onTheGoImmediate: true,
+  };
+}
+
 // A provider outage is not a speech-recognition failure. Preserve the transcript as a pending
 // instruction and give the operator a deterministic next step; "send it" on the next turn then
 // succeeds without calling any model.
