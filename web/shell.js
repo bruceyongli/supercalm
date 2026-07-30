@@ -179,7 +179,7 @@ export function dismissedAttention() {
 // One compact, shared interpretation for attention cards and ⌘K. The home projection contains the
 // task/title, latest curated summary, and current question; do not pretend to know a deeper outcome
 // when those fields do not contain one.
-export function sessionAttentionPreview(s) {
+export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
   const status = String(s?.status || 'stopped');
   const state = status === 'working' ? 'Working'
     : status === 'waiting' ? 'Needs you'
@@ -189,14 +189,17 @@ export function sessionAttentionPreview(s) {
   const doing = cleanAttentionText(s?.title || s?.project || s?.id, 180);
   const copy = status === 'waiting'
     ? attentionCopy({
+      request: s?.title,
       question: s?.question,
       summary: s?.summary,
       fallback: s?.last_key?.text,
       category: s?.category,
+      optionCount,
     })
-    : { latest: '', action: '', mode: 'none' };
+    : { request: doing, happened: '', action: '', mode: 'none' };
+  const request = copy.request || doing;
   const need = copy.action;
-  const outcome = copy.latest;
+  const outcome = copy.happened || copy.latest;
   const next = status === 'waiting'
     ? 'Reply continues the session; Dismiss only clears this report.'
     : status === 'working' || status === 'starting'
@@ -206,7 +209,7 @@ export function sessionAttentionPreview(s) {
         : s?.dismissed
           ? 'It stays out of Needs you until a newer report arrives.'
           : 'Resume the session when you want it to continue.';
-  return { state, doing, outcome, need, attentionMode: copy.mode, next };
+  return { state, doing, request, outcome, need, attentionMode: copy.mode, next };
 }
 
 // ---- sidebar --------------------------------------------------------------------------------------
@@ -367,9 +370,9 @@ function renderPalette() {
   const previewHtml = preview ? `
     <aside class="dk-pal-preview" aria-live="polite">
       <div class="dk-pal-preview-head"><span class="dk-pal-state ${esc(selected.session.status)}">${esc(preview.state)}</span>${selected.session.project ? `<span>${esc(selected.session.project)}</span>` : ''}</div>
-      ${selected.session.status === 'waiting' ? '' : `<div class="dk-pal-preview-row"><b>Working on</b><p>${esc(preview.doing)}</p></div>`}
-      ${preview.outcome ? `<div class="dk-pal-preview-row"><b>Latest update</b><p>${esc(preview.outcome)}</p></div>` : ''}
-      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Your move</b><p>${esc(preview.need)}</p></div>` : ''}
+      <div class="dk-pal-preview-row request"><b>${selected.session.status === 'waiting' ? 'Request' : 'Working on'}</b><p>${esc(selected.session.status === 'waiting' ? preview.request : preview.doing)}</p></div>
+      ${preview.outcome ? `<div class="dk-pal-preview-row"><b>What happened</b><p>${esc(preview.outcome)}</p></div>` : ''}
+      ${preview.need ? `<div class="dk-pal-preview-row important"><b>Action needed</b><p>${esc(preview.need)}</p></div>` : ''}
     </aside>` : `
     <aside class="dk-pal-preview quiet">
       <b>${esc(selected?.label || 'Jump anywhere')}</b>

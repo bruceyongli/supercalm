@@ -5,24 +5,56 @@ import { attentionCopy, sameAttentionMessage } from '../web/attention-preview.js
 
 const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf8');
 
-// The inbox distinguishes context from an actual human action. Independently truncated copies of the
-// same report render once; only a distinct question earns the highlighted "Your move" treatment.
+// The inbox is an operator brief, not a terminal mirror. Every card separates the request, what
+// happened, and the concrete handling action; duplicate reports and TUI chrome never become actions.
 {
   const transport = 'agreement=0.840 kappa=0.713 indeterminate=0.070 retained_pairs=18 Falling back from WebSockets to HTTPS transport. stream disconnected before completion: tls handshake eof stream disconnected before completion: error';
   const longer = `${transport} sending request for url (https://chatgpt.com/backend-api/codex/responses)`;
   assert.equal(sameAttentionMessage(transport, longer), true);
-  assert.deepEqual(attentionCopy({
+  const review = attentionCopy({
+    title: 'Verify transport recovery',
     question: longer,
     summary: transport,
     category: 'review',
-  }), { latest: longer, action: '', mode: 'update' },
-  'a review report repeated across question and summary becomes one Latest row');
-  assert.deepEqual(attentionCopy({
+  });
+  assert.equal(review.request, 'Verify transport recovery');
+  assert.match(review.happened, /^agreement=0\.840[\s\S]+…$/);
+  assert.ok(review.happened.length <= 260);
+  assert.equal(review.action, 'Review the result. Reply with changes, or dismiss it if you’re satisfied.',
+    'a review always says how to handle the completed result');
+
+  const decision = attentionCopy({
+    title: 'Ship the release',
     question: 'Choose the deployment window.',
     summary: 'All verification passed.',
     category: 'decision',
-  }), { latest: 'All verification passed.', action: 'Choose the deployment window.', mode: 'split' },
-  'a distinct decision keeps context and the operator action separate');
+  });
+  assert.equal(decision.request, 'Ship the release');
+  assert.equal(decision.happened, 'All verification passed.');
+  assert.equal(decision.action, 'Choose the deployment window.',
+    'a distinct decision keeps context and the operator action separate');
+
+  const chrome = '✔ Port candidate stack onto current main ✔ Overlay evaluator tooling untracked … +23 completed ⏵⏵ bypass permissions on (shift+tab to cycle) install gh … new task? /clear to save 112.7k tokens';
+  const cleaned = attentionCopy({
+    title: 'Reconcile and qualify the Supervisor candidate',
+    question: chrome,
+    summary: chrome,
+    fallback: chrome,
+    category: 'review',
+  });
+  assert.equal(cleaned.happened, 'Completed 25 items, including Port candidate stack onto current main and Overlay evaluator tooling untracked.');
+  assert.equal(cleaned.action, 'Review the result. Reply with changes, or dismiss it if you’re satisfied.');
+  assert.doesNotMatch(`${cleaned.happened} ${cleaned.action}`, /bypass permissions|new task|tokens/i,
+    'terminal controls and counters never enter the operator brief');
+
+  const approval = attentionCopy({
+    title: 'Build the video workflow',
+    summary: 'Agent completed pipeline validation; ready to rewrite the story but needs operator approval to proceed.',
+    question: '✻ Brewed for 7m 17s superlife-video-pipeline-setup ❯ rewrite the story ▸▸ new task? /clear to save 20k tokens',
+    category: 'decision',
+  });
+  assert.equal(approval.action, 'Approve this next step: rewrite the story. Or reply with changes.',
+    'a useful action is derived from the clean status instead of a TUI composer');
 }
 
 // The inbox takes only the newest still-pending structured prompt and keeps every question in that

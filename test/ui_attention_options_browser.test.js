@@ -15,6 +15,7 @@ const sessions = [
   { id: 's_opt', title: 'Configure release checks', project: 'aios', tool: 'codex', model: 'gpt-test', status: 'waiting', category: 'decision', summary: 'Choose the runtime and verification scope.', question: 'Choose the runtime and verification scope.', unread: 1, last_key: { id: 11, text: 'choices', ts: now }, last_activity: now },
   { id: 's_done', title: 'Completed migration', project: 'aios', tool: 'claude', model: 'claude-test', status: 'waiting', category: 'review', summary: 'Migration is done and verified.', question: 'Migration is done and verified.', unread: 1, last_key: { id: 12, text: 'done', ts: now - 1000 }, last_activity: now - 1000 },
   { id: 's_reply', title: 'Confirm deployment window', project: 'aios', tool: 'codex', model: 'gpt-test', status: 'waiting', category: 'action', summary: 'When should this deploy?', question: 'When should this deploy?', unread: 1, last_key: { id: 13, text: 'when', ts: now - 1500 }, last_activity: now - 1500 },
+  { id: 's_noise', title: 'Reconcile and qualify the Supervisor candidate', project: 'aios', tool: 'claude', model: 'claude-test', status: 'waiting', category: 'review', summary: '✔ Port candidate stack onto current main ✔ Overlay evaluator tooling untracked … +23 completed ⏵⏵ bypass permissions on (shift+tab to cycle) install gh … new task? /clear to save 112.7k tokens', question: '✔ Port candidate stack onto current main ✔ Overlay evaluator tooling untracked … +23 completed ⏵⏵ bypass permissions on (shift+tab to cycle) install gh … new task? /clear to save 112.7k tokens', unread: 1, last_key: { id: 14, text: 'raw terminal footer', ts: now - 1800 }, last_activity: now - 1800 },
   { id: 's_work', title: 'Active implementation', project: 'aios', tool: 'codex', model: 'gpt-test', status: 'working', category: null, summary: 'Implementing the next slice.', question: null, unread: 0, last_key: null, last_activity: now - 2000 },
 ];
 const stories = {
@@ -48,7 +49,7 @@ const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   if (path === '/aios/api/phone/home') {
     homeRequests++;
-    return sendJson(res, { ok: true, sessions, counts: { waiting: 3, working: 1, live: 4 } });
+    return sendJson(res, { ok: true, sessions, counts: { waiting: 4, working: 1, live: 5 } });
   }
   if (path === '/aios/api/auth/status') return sendJson(res, { mode: 'cli' });
   if (path === '/aios/api/version') return sendJson(res, { version: 'test' });
@@ -136,18 +137,26 @@ try {
     'Needs You exposes an explicit opt-in on-the-go assistant switch');
 
   const optionCard = page.locator('[data-dk-card][data-sid="s_opt"]');
-  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Your move'],
-    'an actionable decision uses one clearly labelled operator request');
+  assert.deepEqual(await optionCard.locator('.dk-attention-row > span').allTextContents(), ['Request', 'What happened', 'Action needed'],
+    'an actionable decision is a three-part scan: request, state, and operator action');
+  assert.match(await optionCard.locator('.dk-attention-row.request').innerText(), /Configure release checks/);
+  assert.match(await optionCard.locator('.dk-attention-row.important').innerText(), /Answer each question below/i);
   const donePreview = page.locator('[data-dk-card][data-sid="s_done"] .dk-attention-preview');
-  assert.deepEqual(await donePreview.locator('.dk-attention-row > span').allTextContents(), ['Latest'],
-    'the same review report in summary and question renders once');
-  assert.equal(await donePreview.locator('.important').count(), 0,
-    'a duplicated review report does not invent a nested action box');
+  assert.deepEqual(await donePreview.locator('.dk-attention-row > span').allTextContents(), ['Request', 'What happened', 'Action needed'],
+    'a completed review still makes the handling action explicit');
+  assert.match(await donePreview.locator('.happened').innerText(), /Migration is done and verified/);
+  assert.match(await donePreview.locator('.important').innerText(), /Reply with changes, or dismiss/i);
+  assert.equal((await donePreview.innerText()).match(/Migration is done and verified/g)?.length, 1,
+    'a duplicated review report appears only once');
+  const noisePreview = page.locator('[data-dk-card][data-sid="s_noise"] .dk-attention-preview');
+  assert.match(await noisePreview.locator('.happened').innerText(), /Completed 25 items/i);
+  assert.doesNotMatch(await noisePreview.innerText(), /bypass permissions|new task|tokens/i,
+    'raw TUI controls never reach the high-attention card');
   await page.locator('#dk-cmdk-row').click();
   await page.locator('#dk-palette-q').fill('Configure release');
   await page.locator('.dk-pal-preview-row.important').waitFor();
-  assert.match(await page.locator('.dk-pal-preview').innerText(), /Your move[\s\S]*Choose the runtime and verification scope/i,
-    '⌘K exposes the selected session attention preview before navigation');
+  assert.match(await page.locator('.dk-pal-preview').innerText(), /Request[\s\S]*Configure release checks[\s\S]*Action needed/i,
+    '⌘K exposes the same request/action brief before navigation');
   await page.screenshot({ path: join(outDir, 'command-preview.png') });
   await page.keyboard.press('Escape');
   await page.screenshot({ path: join(outDir, 'needs-you-options.png'), fullPage: true });
@@ -246,9 +255,11 @@ try {
   await phone.locator('[data-restore-attention="s_done"]').click();
   await phone.locator('.needcard[data-open="s_done"]').waitFor();
   const restoredPhonePreview = phone.locator('.needcard[data-open="s_done"] .needpreview');
-  assert.deepEqual(await restoredPhonePreview.locator('b').allTextContents(), ['Latest'],
-    'phone also collapses a duplicated review report to one row');
-  assert.equal(await restoredPhonePreview.locator('.important').count(), 0);
+  assert.deepEqual(await restoredPhonePreview.locator('b').allTextContents(), ['Request', 'What happened', 'Action needed'],
+    'phone uses the same scan-first operator brief');
+  assert.equal((await restoredPhonePreview.innerText()).match(/Migration is done and verified/g)?.length, 1,
+    'phone also collapses a duplicated review report');
+  assert.match(await restoredPhonePreview.locator('.important').innerText(), /Reply with changes, or dismiss/i);
   await phone.screenshot({ path: join(outDir, 'phone-needs-you-options.png'), fullPage: true });
   const phoneRequestsBeforeRefresh = homeRequests;
   const phoneRefreshResponse = phone.waitForResponse((response) => response.url().endsWith('/api/phone/home'));

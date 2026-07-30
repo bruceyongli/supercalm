@@ -80,7 +80,7 @@ function choicesHtml(s, questions) {
     ${questions.map((question, questionIndex) => `
       <div class="dk-card-question" data-dk-question="${questionIndex}">
         ${questions.length > 1 || question.header ? `<div class="dk-card-question-head">${question.header ? esc(question.header) : `Question ${questionIndex + 1}`}</div>` : ''}
-        ${questions.length > 1 && question.question ? `<div class="dk-card-question-text">${esc(question.question)}</div>` : ''}
+        ${question.question ? `<div class="dk-card-question-text">${esc(question.question)}</div>` : ''}
         <div class="dk-card-opts">${question.options.map((option, optionIndex) => {
           const selected = selections.get(questionIndex)?.has(optionIndex);
           return `<button class="dk-opt${selected ? ' selected' : ''}" data-dk-choice data-question="${questionIndex}" data-option="${optionIndex}" aria-pressed="${selected ? 'true' : 'false'}">
@@ -125,18 +125,19 @@ function renderInbox(home) {
   const cardSpecs = cards.map((s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
-    const preview = sessionAttentionPreview(s);
+    const preview = sessionAttentionPreview(s, { optionCount: questions.length });
     return { key: `card:${s.id}`, html: `
     <div class="dk-card" data-dk-card data-sid="${esc(s.id)}" style="--strip:${bcolor}">
       <div class="dk-card-top">
         <span class="dk-chip" style="color:${bcolor};border-color:${bcolor}55">${blabel}</span>
         ${agentChip(s.tool)}
-        <a class="dk-card-name" href="session?id=${esc(s.id)}">${esc(fullTitle(s))}</a>
+        <a class="dk-card-project" href="session?id=${esc(s.id)}">${esc(s.project || s.id)}</a>
         <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
       <div class="dk-attention-preview">
-        ${preview.outcome ? `<div class="dk-attention-row"><span>Latest</span><p>${esc(preview.outcome)}</p></div>` : ''}
-        ${preview.need ? `<div class="dk-attention-row important"><span>Your move</span><p>${esc(preview.need)}</p></div>` : ''}
+        <div class="dk-attention-row request"><span>Request</span><p>${esc(preview.request || fullTitle(s))}</p></div>
+        ${preview.outcome ? `<div class="dk-attention-row happened"><span>What happened</span><p>${esc(preview.outcome)}</p></div>` : ''}
+        ${preview.need ? `<div class="dk-attention-row important"><span>Action needed</span><p>${esc(preview.need)}</p></div>` : ''}
       </div>
       ${choicesHtml(s, questions)}
       <div class="dk-card-actions"><button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a><button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>

@@ -1,15 +1,78 @@
-// One semantic split for every Needs-you surface.
+// One semantic brief for every Needs-you surface.
 //
-// A waiting session can contain two useful pieces of information:
-//   1. the latest outcome/context from the agent;
-//   2. a distinct action or decision for the operator.
-//
-// The home projection sometimes puts the same report in both `summary` and `question` (with one field
-// merely truncated). Treating those as two concepts produced a repeated Latest + Needs you card. Only
-// action/decision categories or a question genuinely different from the summary earn "Your move".
+// The waiting projection is imperfect: when a model summary fails, `summary`, `question`, and
+// `last_key.text` can all contain the agent TUI's task list, composer, permission mode, and token
+// counter. Those strings are useful for debugging a terminal, but they are never an operator action.
+// This module turns the available fields into the three things a person needs for a quick scan:
+//   1. what they asked for;
+//   2. what happened;
+//   3. what they need to do now.
+
+const ANSI_RX = /\u001b(?:\][^\u0007]*(?:\u0007|\u001b\\)|\[[0-?]*[ -/]*[@-~])/g;
+const TERMINAL_CHROME_RX = /(?:⏵⏵|▸▸|▶▶|bypass permissions|shift\+tab(?:\s+to\s+cycle)?|new task\?|\/clear(?:\s+to\s+save)?|esc to interrupt|context (?:used|left)|\d+(?:\.\d+)?k?\s+tokens?\b|ctrl\+[a-z]\s+to\b|auto-accept|remote-mac-gui-control)/i;
+const PROCESS_PREFIX_RX = /^\s*[✻✽✶✢✳·∗◐◓◑◒]?\s*(?:brewed|sautéed|cogitated|thought|thinking|worked|crunched|churned)\s+for\s+\d+[hms](?:\s+\d+[hms])?\s*/i;
+
+function clipped(value, max) {
+  const text = String(value || '').trim();
+  if (text.length <= max) return text;
+  const head = text.slice(0, Math.max(1, max - 1));
+  const word = head.replace(/\s+\S*$/, '').trim();
+  return `${word || head.trim()}…`;
+}
+
+export function hasAttentionChrome(value) {
+  return TERMINAL_CHROME_RX.test(String(value || '')) || PROCESS_PREFIX_RX.test(String(value || ''));
+}
+
+function completedTaskSummary(text) {
+  if (!/[✔✓]/.test(text)) return '';
+  const more = Number(text.match(/…?\s*\+(\d+)\s+completed\b/i)?.[1] || 0);
+  const tasks = [...text.matchAll(/[✔✓]\s*([^✔✓]+?)(?=[✔✓]|…?\s*\+\d+\s+completed\b|$)/g)]
+    .map((match) => match[1]
+      .replace(/\s*….*$/, '')
+      .replace(/\s+(?:[\w]+-){2,}[\w-]+\s*$/, '')
+      .replace(/\s+/g, ' ')
+      .trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  if (!tasks.length) return '';
+  const total = tasks.length + more;
+  const examples = tasks.length === 1 ? tasks[0] : `${tasks[0]} and ${tasks[1]}`;
+  return more
+    ? `Completed ${total} items, including ${examples}.`
+    : `Completed ${examples}.`;
+}
 
 export function cleanAttentionText(value, max = 300) {
-  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, max);
+  let text = String(value || '')
+    .replace(ANSI_RX, ' ')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#*`>~]+/g, ' ')
+    .replace(/\u00a0/g, ' ');
+
+  // Some Claude screens flatten to “timer project-name ❯ useful command ▸▸ footer”. In that exact
+  // shape the text after the prompt glyph is the only human-readable fragment.
+  if (PROCESS_PREFIX_RX.test(text) && text.includes('❯')) text = text.slice(text.lastIndexOf('❯') + 1);
+  text = text.replace(PROCESS_PREFIX_RX, '');
+
+  const chromeAt = [
+    text.search(/(?:⏵⏵|▸▸|▶▶)/),
+    text.search(/\bbypass permissions\b/i),
+    text.search(/\bnew task\?/i),
+    text.search(/\/clear(?:\s+to\s+save)?/i),
+    text.search(/\besc to interrupt\b/i),
+    text.search(/\b\d+(?:\.\d+)?k?\s+tokens?\b/i),
+  ].filter((index) => index >= 0);
+  if (chromeAt.length) text = text.slice(0, Math.min(...chromeAt));
+
+  text = text
+    .replace(/\bshift\+tab(?:\s+to\s+cycle)?\b/gi, ' ')
+    .replace(/\bremote-mac-gui-control\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const tasks = completedTaskSummary(text);
+  return clipped(tasks || text, max);
 }
 
 function comparable(value) {
@@ -29,26 +92,83 @@ export function sameAttentionMessage(left, right) {
   return Math.min(a.length, b.length) >= 64 && (a.includes(b) || b.includes(a));
 }
 
+function defaultHappened(category) {
+  if (category === 'decision') return 'The agent paused at a decision point.';
+  if (category === 'action') return 'The agent is blocked until it gets your input.';
+  return 'The agent finished its latest turn and is waiting for your review.';
+}
+
+function actionFromReport(report, category) {
+  const ready = report.match(/\bready to ([^.;]+?)\s+(?:but|and)\s+needs?\s+(?:(?:the\s+)?operator(?:'s)?|your)?\s*approval\b/i);
+  if (ready?.[1]) return `Approve this next step: ${ready[1].trim()}. Or reply with changes.`;
+  const approval = report.match(/\bneeds?\s+(?:(?:the\s+)?operator(?:'s)?|your)\s+approval\s+to\s+([^.;]+)/i);
+  if (approval?.[1]) return `Approve this next step: ${approval[1].trim()}. Or reply with changes.`;
+  if (category === 'decision') return 'Reply with the decision the agent needs to continue.';
+  if (category === 'action') return 'Reply with the missing information or instruction so work can continue.';
+  return 'Review the result. Reply with changes, or dismiss it if you’re satisfied.';
+}
+
 export function attentionCopy({
+  request,
+  title,
   question,
   summary,
   fallback,
   category,
+  optionCount = 0,
 } = {}) {
-  const ask = cleanAttentionText(question, 300);
-  const update = cleanAttentionText(summary, 300);
-  const report = cleanAttentionText(fallback, 300);
+  const requested = cleanAttentionText(request || title, 220);
+  const rawAsk = String(question || '');
+  const rawUpdate = String(summary || '');
+  const rawReport = String(fallback || '');
+  const ask = cleanAttentionText(rawAsk, 300);
+  const update = cleanAttentionText(rawUpdate, 300);
+  const report = cleanAttentionText(rawReport, 300);
+  const askIsChrome = hasAttentionChrome(rawAsk);
+  const updateIsChrome = hasAttentionChrome(rawUpdate);
   const explicitlyActionable = category === 'action' || category === 'decision';
 
-  if (ask && update && !sameAttentionMessage(ask, update)) {
-    return { latest: cleanAttentionText(update, 220), action: ask, mode: 'split' };
+  let happened = '';
+  let action = '';
+
+  if (optionCount > 0) {
+    happened = update && !sameAttentionMessage(update, ask) && !updateIsChrome
+      ? update
+      : defaultHappened('decision');
+    action = optionCount > 1
+      ? 'Answer each question below. Your choices send after the last answer.'
+      : 'Choose an option below to continue the session.';
+  } else if (ask && !askIsChrome && explicitlyActionable) {
+    happened = update && !sameAttentionMessage(ask, update) ? update : defaultHappened(category);
+    action = ask;
+  } else if (ask && update && !askIsChrome && !sameAttentionMessage(ask, update)) {
+    happened = update;
+    action = ask;
+  } else {
+    const sameCleanReport = ask && update && sameAttentionMessage(ask, update);
+    const candidate = sameCleanReport
+      ? (ask.length >= update.length ? ask : update)
+      : update || ask || report;
+    happened = candidate || defaultHappened(category);
+    action = actionFromReport(candidate, category);
   }
-  if (ask && explicitlyActionable) {
-    return { latest: '', action: ask, mode: 'action' };
+
+  // A failed summarizer can leave only terminal chrome. Keep a useful state sentence instead of
+  // promoting a cleaned fragment such as a task-list footer into the action box.
+  if ((!happened || (updateIsChrome && !/[✔✓]/.test(rawUpdate))) && !report) happened = defaultHappened(category);
+  if (!action || hasAttentionChrome(action)) action = actionFromReport(happened, category);
+  if (sameAttentionMessage(happened, action)) {
+    happened = defaultHappened(category);
+    action = actionFromReport(cleanAttentionText(update || ask || report, 300), category);
   }
-  if (ask || update) {
-    const single = ask.length >= update.length ? ask : update;
-    return { latest: single, action: '', mode: 'update' };
-  }
-  return { latest: report, action: '', mode: 'update' };
+
+  const mode = happened && action ? 'brief' : action ? 'action' : 'update';
+  return {
+    request: requested,
+    happened: cleanAttentionText(happened, 260),
+    action: cleanAttentionText(action, 300),
+    // Compatibility names for existing consumers while every surface moves to the semantic labels.
+    latest: cleanAttentionText(happened, 260),
+    mode,
+  };
 }

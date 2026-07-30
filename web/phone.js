@@ -69,16 +69,19 @@ function toast(t) {
   render();
 }
 function hhmm(ts) { const d = new Date(Number(ts)); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
-function attentionPreview(session) {
+function attentionPreview(session, { optionCount = 0 } = {}) {
   const copy = attentionCopy({
+    request: session.title,
     question: session.question,
     summary: session.summary,
     fallback: session.last_key?.text,
     category: session.category,
+    optionCount,
   });
   return {
+    request: copy.request || session.title || session.id,
     need: copy.action,
-    outcome: copy.latest,
+    outcome: copy.happened || copy.latest,
   };
 }
 function phoneNeeds() {
@@ -610,7 +613,7 @@ function renderHome() {
       ${questions.map((question, questionIndex) => `
         <div class="needq">
           ${questions.length > 1 || question.header ? `<div class="needq-head">${esc(question.header || `Question ${questionIndex + 1}`)}</div>` : ''}
-          ${questions.length > 1 ? `<div class="needq-text">${esc(question.question)}</div>` : ''}
+          ${question.question ? `<div class="needq-text">${esc(question.question)}</div>` : ''}
           <div class="needopts">${question.options.map((option, optionIndex) => {
             const selected = selections.get(questionIndex)?.has(optionIndex);
             return `<button class="needopt${selected ? ' selected' : ''}" data-need-choice="${esc(s.id)}" data-question="${questionIndex}" data-option="${optionIndex}" aria-pressed="${selected ? 'true' : 'false'}"><span>${option.key ? `${esc(option.key)} — ` : ''}${esc(option.label)}</span>${option.description ? `<small>${esc(option.description)}</small>` : ''}</button>`;
@@ -622,24 +625,23 @@ function renderHome() {
   const needCards = needs.map((s) => {
     const [bLabel, bColor] = badgeFor(s) || ['REVIEW', '#3fbf5f'];
     const isPlaying = S.playScope === 'home' && S.speakingId === s.last_key?.id;
-    const preview = attentionPreview(s);
     const questions = phoneOptionQuestions(s);
+    const preview = attentionPreview(s, { optionCount: questions.length });
     ensureOptionQuestions(s, () => renderSoft());
     return `
     <div class="needcard" data-open="${esc(s.id)}">
       <div class="strip" style="background:${bColor}"></div>
-      <div class="needtitle">
-        <span class="needname">${esc(s.title || s.id)}</span>
-        ${isPlaying ? '<span class="reading-ind">▶ reading</span>' : ''}
-        <span class="needtime">${ago(s.last_activity)}</span>
-      </div>
       <div class="needrow">
         <span class="badge" style="color:${bColor};border:1px solid ${bColor}66;background:${bColor}14">${bLabel}</span>
         <span class="agchip" style="color:${chipColor(s.tool)};border-color:${chipColor(s.tool)}8c">${esc(AGENT_LABEL[s.tool] || s.tool)}</span>
+        <span class="needproject">${esc(s.project || s.id)}</span>
+        ${isPlaying ? '<span class="reading-ind">▶ reading</span>' : ''}
+        <span class="needtime">${ago(s.last_activity)}</span>
       </div>
       <div class="needpreview">
-        ${preview.outcome ? `<div><b>Latest</b><p>${esc(preview.outcome)}</p></div>` : ''}
-        ${preview.need ? `<div class="important"><b>Your move</b><p>${esc(preview.need)}</p></div>` : ''}
+        <div class="request"><b>Request</b><p>${esc(preview.request)}</p></div>
+        ${preview.outcome ? `<div class="happened"><b>What happened</b><p>${esc(preview.outcome)}</p></div>` : ''}
+        ${preview.need ? `<div class="important"><b>Action needed</b><p>${esc(preview.need)}</p></div>` : ''}
       </div>
       ${optionList(s, questions)}
       <div class="needacts">
