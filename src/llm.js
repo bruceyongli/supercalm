@@ -7,16 +7,13 @@ import { callProxyModel, isRouteDenied, markRouteDenied, isAccessDenied } from '
 // each model scored on the right action (await/send/next/stop), confirm-before-send,
 // strict JSON, and latency, on the real voice prompt. Provider-diverse so one upstream
 // outage can't kill voice:
-//   gemini-3.1-flash-lite (8791) — fastest faithful: 7/7, strict JSON, ~1.4s
-//   kimi-k2.6             (8790) — 7/7 faithful, smart, separate aliyun quota
-//   claude-haiku-4-5      (8789) — Anthropic-reliable fallback, ~2.0s
-// gemini-3.1-flash-lite leads — both more faithful AND faster than claude-haiku (6/7;
-// it eager-sends a bare instruction). NOTE: the 8791 proxy is fine to use (no ban-risk).
-// Not chosen: deepseek-v4 + the big claude/gpt models eager-send (skip the confirm step);
-// glm-5.1 emits no parseable JSON; the 8787 gemini-cli pool was rate-limited (429) at
-// bench time. Override the chain with AIOS_VOICE_CHAIN ("port:model,port:model,...").
+//   gpt-5.6-luna          (8788) — live subscription route, strict JSON, ~2.6s
+//   kimi-k2.6 / glm-5.2   (8790) — provider-diverse Aliyun fallbacks
+//   claude-haiku-4-5      (8789) — final fallback when Anthropic subscription auth permits it
+// Keep a provider-diverse chain, but lead with the currently reliable low-latency JSON route.
+// Override the chain with AIOS_VOICE_CHAIN ("port:model,port:model,...").
 export const VOICE_CHAIN = (process.env.AIOS_VOICE_CHAIN ||
-  '8790:glm-5.2,8790:kimi-k2.6,8789:claude-haiku-4-5') // antigravity (8791) down 2026-07-20 — chain starts at live aliyun
+  '8788:gpt-5.6-luna,8790:kimi-k2.6,8790:glm-5.2,8789:claude-haiku-4-5')
   .split(',')
   .map((s) => {
     // "8791:model" = fleet port entry; a bare model id (or "api:model") = user API provider route.
@@ -150,11 +147,14 @@ export function parseJson(content) {
 export async function chatJson(messages, opts = {}, chain = VOICE_CHAIN, callFn = callEntry) {
   let lastErr;
   for (const entry of withUserTail(chain)) {
+    const key = entry.api ? `api:${entry.model}` : `${entry.port}:${entry.model}`;
+    if (isRouteDenied(key)) { lastErr = lastErr || new Error(`model access denied (cooldown): ${key}`); continue; }
     try {
       const content = await callFn(entry, messages, opts);
       return { obj: parseJson(content), model: entry.model };
     } catch (e) {
       lastErr = e;
+      if (isAccessDenied(e)) markRouteDenied(key);
       console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port}: ${e.message}`);
       if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain
     }

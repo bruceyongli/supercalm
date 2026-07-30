@@ -7,6 +7,7 @@ import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } fro
 import { searchWiki } from './wiki.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
 import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
+import { asksForConfirmation, confirmedPendingReply, providerFailureReply } from './voice_turn.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -14,7 +15,7 @@ import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from '
 
 const SYS = `You are Supercalm Voice, a hands-free voice concierge. You help the user clear a queue of CLI coding-agent sessions waiting on them; you SPEAK (text-to-speech) and they reply by voice. Be warm and VERY brief: normally at most 2 short spoken sentences, ~25 words total — this is read aloud by a neural voice, so every extra word adds delay before you start speaking. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase for the ear.
 For the user's reply about the CURRENT item:
-- an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await").
+- an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await"); put the clear actionable draft in "message" even though it is not sent yet.
 - a confirmation (yes/go/send/correct) -> action "send", with "message" = a clear actionable instruction that captures their intent.
 - asks for detail or your opinion -> answer briefly, stay here (action "await").
 - asks a QUESTION about the session, the project, or what the supervisor thinks -> answer from CONTEXT (recent messages, screen, PROJECT KNOWLEDGE, SUPERVISOR notes) in 1-2 spoken sentences, then action "await". If the context doesn't contain the answer, say so plainly — never invent. Never speak URLs or file paths; use bare file names.
@@ -24,7 +25,7 @@ Default to "await" for any NEW instruction — confirm before acting. Only use "
 On "send" or "next", briefly confirm and say you're moving on — do NOT describe or invent the next item; the system presents it on the next turn.
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
 Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
-Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...only when action=send..."}`;
+Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
 
 const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
@@ -247,14 +248,18 @@ async function presentNext(vs, greet) {
 async function brainReply(vs, userText) {
   // Hard total budget: the client aborts /turn at 30s — without a bound here the chain's worst case
   // (3+ models × 45s socket timeouts) outlived the client, and a 'send' computed after the client
-  // gave up was still typed into the agent (double-send on the retry pass). Timeout → the safe
-  // "say again" await; the aborted brain result can never reach a send.
+  // gave up was still typed into the agent (double-send on the retry pass). Timeout → preserve what
+  // the operator said and offer a deterministic "send it" next step; never blame their speech for
+  // an upstream model/provider failure.
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TURN_BUDGET_MS);
   try {
     const ctx = await stateContext(vs, userText);
     const { obj } = await chatJson(
-      [{ role: 'system', content: SYS + '\n\n' + ctx }, ...vs.history, { role: 'user', content: userText }],
+      // /turn records the current transcript in history before calling us. Appending userText again
+      // made every spoken turn appear twice to the model, with two consecutive user roles; this was
+      // especially confusing on the confirmation turn.
+      [{ role: 'system', content: SYS + '\n\n' + ctx }, ...vs.history],
       { temperature: 0.3, max_tokens: 650, timeout_ms: 10000, signal: ac.signal }
     );
     const action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
@@ -265,7 +270,8 @@ async function brainReply(vs, userText) {
     };
   } catch (e) {
     console.error('[aios] voice reply failed:', e.message);
-    return { say: 'Sorry, I had trouble understanding. Could you say that again?', action: 'await', message: '' };
+    const it = vs.items[vs.pointer];
+    return providerFailureReply(userText, it?.project);
   } finally {
     clearTimeout(timer);
   }
@@ -315,13 +321,17 @@ route('POST', '/api/voice/turn', async (req, res) => {
     vs.emptyTurns = 0;
 
     vs.history.push({ role: 'user', content: userText });
-    const r = await brainReply(vs, userText);
+    // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
+    // established a pending instruction, "yes" (including "yes, and also ...") can be delivered
+    // reliably even if every model provider is down on this turn.
+    const r = confirmedPendingReply(vs.pendingInstruction, userText) || await brainReply(vs, userText);
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
 
     if (r.action === 'send') {
       const it = vs.items[vs.pointer];
       let say = r.say;
+      vs.pendingInstruction = '';
       // The client may have died while we thought (abort/navigation) — a reply nobody heard
       // confirmed must not be delivered on top of a restarted pass.
       if (it && !req.destroyed && voiceSessions.has(vs.id)) {
@@ -349,15 +359,20 @@ route('POST', '/api/voice/turn', async (req, res) => {
       return json(res, 200, { say, done: false, listen: false, current: cur(vs) }); // client -> /continue presents next
     }
     if (r.action === 'next') {
+      vs.pendingInstruction = '';
       vs.skipped = (vs.skipped || 0) + 1; // skipped items stay WAITING — they're still in the queue
       vs.pointer++;
       return json(res, 200, { say: r.say, done: false, listen: false, current: cur(vs) });
     }
     if (r.action === 'stop') {
+      vs.pendingInstruction = '';
       vs.done = true;
       voiceSessions.delete(vs.id);
       return json(res, 200, { say: r.say, done: true, listen: false });
     }
+    // New-instruction replies carry the model's normalized draft. Older/less compliant models may
+    // omit it, so retain the transcript when their spoken reply clearly asks for confirmation.
+    if (r.message || asksForConfirmation(r.say)) vs.pendingInstruction = r.message || userText;
     return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs) });
   } finally {
     vs.inflight = false;
