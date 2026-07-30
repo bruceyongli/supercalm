@@ -350,9 +350,11 @@ route('POST', '/api/voice/turn', async (req, res) => {
       const outcome = await deliverVoiceFeedback({
         item: it,
         reply: { ...r, message: r.message || userText },
-        // The client may have died while we thought (abort/navigation) — a reply nobody heard
-        // confirmed must not be delivered on top of a restarted pass.
-        requestAlive: !req.destroyed && voiceSessions.has(vs.id),
+        // IncomingMessage.destroyed describes the HTTP request stream, not the voice conversation.
+        // iPhone/PWA fetches commonly close that upload stream after the body is consumed, so using
+        // req.destroyed here falsely cancelled valid feedback. /voice/stop removes the voice session;
+        // that durable ownership is the only liveness signal relevant to delivery.
+        requestAlive: voiceSessions.has(vs.id),
         getSession: (sid) => store.getSession(sid),
         answeredElsewhere: answeredElsewhereSince,
         deliverReply: (sid, message) => sessions.deliverReply(sid, message, { source: 'voice' }),

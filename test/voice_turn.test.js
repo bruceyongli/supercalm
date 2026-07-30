@@ -100,5 +100,9 @@ assert.doesNotMatch(
 assert.match(voiceSource, /onTheGoImmediateReply\(userText\)/, 'On the go routes ordinary feedback through immediate delivery');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
 assert.match(voiceSource, /draft: String\(r\.message \|\| userText\)/, 'an attempted handoff keeps a recoverable private draft');
+assert.match(voiceSource, /requestAlive: voiceSessions\.has\(vs\.id\)/,
+  'an active voice session owns delivery even after the HTTP upload stream closes');
+assert.doesNotMatch(voiceSource, /requestAlive:\s*!req\.destroyed/,
+  'request-stream teardown is never mistaken for conversation cancellation');
 
 console.log('voice_turn.test ok');
