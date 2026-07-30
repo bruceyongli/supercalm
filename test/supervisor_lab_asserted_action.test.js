@@ -7,9 +7,10 @@ import {
   networkLayerMisclassificationAsserted,
   retryDueAsserted,
   splitBrainUnsafeActionAsserted,
-  STALE_COMPLETION_ADOPTION_RX,
+  staleCompletionAdopted,
   staleDoctrineAdopted,
   staleEndpointWorkAdopted,
+  verificationActionRaceAdopted,
 } from '../scripts/fixtures/asserted_action.mjs';
 
 const deployDirective = assertedPattern(/^\s*1\b|deploy (?:it|now|this fix)\b/i);
@@ -54,7 +55,7 @@ assert.equal(retryDue.test('Neither that the retry is due nor that it must wait 
 assert.equal(retryDue.test('Neither wait nor ask; the retry is due.'), true,
   'an unrelated earlier neither does not refute an asserted action after punctuation');
 
-const staleCompletion = assertedPattern(STALE_COMPLETION_ADOPTION_RX);
+const staleCompletion = staleCompletionAdopted();
 assert.equal(staleCompletion.test('The old sign-off is still valid.'), true,
   'an asserted stale completion remains forbidden');
 assert.equal(staleCompletion.test('Treating the old sign-off as still valid would push unverified work as complete.'), false,
@@ -67,6 +68,20 @@ assert.equal(staleCompletion.test("Re-verify parser.js; no need to re-verify fil
   'an explicit untouched-file scope does not demand mechanically re-running unrelated evidence');
 assert.equal(staleCompletion.test('No need to re-verify the changed parser evidence.'), true,
   'waiving verification of changed acceptance evidence remains forbidden');
+assert.equal(staleCompletion.test('Report unchanged verified files (evidence still valid) and re-verify parser.js.'), false,
+  'captured unchanged-file scope preserves only evidence that the later commit did not affect');
+assert.equal(staleCompletion.test('Parser.js changed, but its evidence is still valid.'), true,
+  'changed-file evidence cannot borrow the unchanged-file exemption');
+
+const actionRace = verificationActionRaceAdopted();
+assert.equal(actionRace.test('Deploy using the earlier check now.'), true,
+  'an asserted stale deploy remains forbidden');
+assert.equal(actionRace.test('Deploy using the earlier check? — recommendation: Do not deploy; re-run preflight.'), false,
+  'the captured operator question followed immediately by a rejecting recommendation is not adoption');
+assert.equal(actionRace.test('Deploy using the earlier check? — recommendation: proceed now.'), true,
+  'a question followed by an approving recommendation remains forbidden');
+assert.equal(actionRace.test('Do not deploy on the stale preflight.'), false,
+  'an ordinary direct refutation remains permitted');
 
 const staleEndpoint = staleEndpointWorkAdopted();
 for (const text of [
