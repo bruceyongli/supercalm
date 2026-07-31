@@ -1,5 +1,6 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage } from './common.js';
 import { unlockAudio as unlockPlayer, newPlayback, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
+import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 
 // Hands-free voice concierge loop:
 //   speak (TTS) -> [listen with VAD -> STT -> /turn]  OR  [/continue] -> speak -> ...
@@ -10,6 +11,7 @@ let active = false,
   stopFlag = false,
   voiceId = null,
   handle = null, // current tts-player playback handle (for stop)
+  requestInterrupt = null,
   ui = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -71,12 +73,17 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
       if (state.done && ui) ui.bar.style.width = '100%';
       // Ignored nearby speech and silent windows are intentionally silent responses: keep listening
       // without erasing/re-reading the project brief or pretending a conversational turn happened.
+      let interruption = null;
       if (!state.ignored || state.say) {
         setState('speaking', state.say);
-        await speak(state.say);
+        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current });
       }
       if (state.done || stopFlag) break;
-      if (state.listen) {
+      if (interruption?.text) {
+        setHeard(interruption.text);
+        setState('thinking');
+        state = await post('api/voice/turn', { voiceId, userText: interruption.text });
+      } else if (state.listen || interruption?.tap) {
         setState('listening');
         let text = '';
         let live = null;
@@ -130,6 +137,7 @@ function end(reason = 'complete') {
   active = false;
   if (voiceId) post('api/voice/stop', { voiceId }).catch(() => {});
   voiceId = null;
+  requestInterrupt = null;
   try { handle?.stop(); } catch {}
   try { stopAllPlayback(); } catch {} // halt any tts-player playback (belt for the shared element)
   if (ui) { ui.root.remove(); ui = null; }
@@ -183,16 +191,64 @@ function renderVoiceControls() {
 }
 // Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
 // user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
-async function speak(text) {
+async function speak(text, { allowInterruption = false } = {}) {
   if (!text || stopFlag) return;
   if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Kokoro when the network is better.', { offerDevice: true });
   else clearTtsNotice();
   handle = newPlayback();
-  await speakSmart(text, handle, {
+  let live = null;
+  let accepted = null;
+  let capturingSpeech = false;
+  let pendingSpeech = '';
+  let speechTimer = null;
+  let resolveInterruption;
+  const interruption = new Promise((resolve) => { resolveInterruption = resolve; });
+  const haltPlayback = () => {
+    try { handle?.stop(); } catch {}
+    try { stopAllPlayback(); } catch {}
+  };
+  const accept = (result) => {
+    if (accepted || stopFlag) return;
+    accepted = result;
+    if (speechTimer) clearTimeout(speechTimer);
+    haltPlayback();
+    resolveInterruption(result);
+  };
+  if (allowInterruption) {
+    requestInterrupt = accept;
+    if (ui?.interrupt) ui.interrupt.hidden = false;
+    live = createLiveSpeechRecognizer({
+      onUpdate: (heard) => {
+        if (accepted || (!capturingSpeech && !isClearVoiceInterruption(heard, text))) return;
+        if (!capturingSpeech) {
+          capturingSpeech = true;
+          haltPlayback(); // barge-in is immediate; delivery waits briefly for the whole utterance
+          setState('listening');
+          if (ui?.interrupt) ui.interrupt.hidden = true;
+        }
+        pendingSpeech = extractVoiceInterruption(heard, text) || heard.trim();
+        setHeard(pendingSpeech);
+        if (speechTimer) clearTimeout(speechTimer);
+        speechTimer = setTimeout(() => accept({ text: pendingSpeech }), 700);
+      },
+    });
+    live.start();
+  }
+  const playback = speakSmart(text, handle, {
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
     onSegment: focusSpokenSegment,
-  });
+  }).then(() => null, () => null);
+  const playbackOrCapture = playback.then(() => capturingSpeech ? interruption : null);
+  const result = allowInterruption ? await Promise.race([playbackOrCapture, interruption]) : await playback;
+  if (requestInterrupt === accept) requestInterrupt = null;
+  if (speechTimer) clearTimeout(speechTimer);
+  live?.abort();
+  if (ui?.interrupt) ui.interrupt.hidden = true;
+  // Let the stopped audio promise unwind, but never hold the conversation hostage to a browser that
+  // missed its pause event.
+  if (accepted) await Promise.race([playback, sleep(250)]);
+  return accepted || result;
 }
 
 // ---- on-device voice selection ----
@@ -404,7 +460,8 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="ongo-foot"><details class="ongo-settings"><summary>Voice &amp; speed</summary><div class="vm-controls"><span class="vm-mode"></span>' +
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div></details>' +
-      '<button class="btn danger vm-stop">End assistant</button></div></div>'
+      '<div class="ongo-actions"><button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
+      '<button class="btn danger vm-stop">End assistant</button></div></div></div>'
     : '<div class="vm-box">' +
       '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
       '<div class="vm-orb"></div>' +
@@ -415,7 +472,8 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
-      '<button class="btn danger vm-stop">Stop</button></div>';
+      '<div class="vm-action-row"><button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
+      '<button class="btn danger vm-stop">Stop</button></div></div>';
   document.body.appendChild(root);
   const o = {
     root,
@@ -434,9 +492,11 @@ function buildOverlay({ onTheGo = false } = {}) {
     context: root.querySelector('.ongo-context'),
     spokenLabel: root.querySelector('.ongoing-spoken-label'),
     heardLabel: root.querySelector('.ongoing-heard-label'),
+    interrupt: root.querySelector('.vm-interrupt'),
     onTheGo,
   };
   root.querySelector('.vm-stop').onclick = end;
+  o.interrupt.onclick = () => requestInterrupt?.({ tap: true });
   o.deviceVoice.onclick = () => {
     if (ttsMode() === 'browser') {
       setTtsMode('neural');

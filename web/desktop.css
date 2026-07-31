@@ -176,6 +176,16 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-ongo.on { color: #79b8ff; border-color: rgba(88,166,255,.52); background: rgba(88,166,255,.08); }
 .dk-ongo.on > span { background: #58a6ff; box-shadow: 0 0 0 4px rgba(88,166,255,.14); animation: dkpulse 2.4s ease-in-out infinite; }
 .dk-ongo:disabled { opacity: .65; cursor: wait; }
+.dk-voice-style {
+  display: inline-flex; padding: 2px; border: 1px solid var(--line2); border-radius: 10px;
+  background: rgba(6,10,15,.5);
+}
+.dk-voice-style[hidden] { display: none; }
+.dk-voice-style button {
+  min-height: 27px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--dim);
+  font: 700 10.5px/1 'JetBrains Mono', monospace; cursor: pointer;
+}
+.dk-voice-style button.active { background: #1c2633; color: #dbe7f6; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
 .dk-card { position: relative; background: #10151d; border: 1px solid #1d2632; border-radius: 12px; padding: 12px 15px 11px 18px; margin-bottom: 9px; }
 .dk-card > * { max-width: 940px; }
 .dk-card::before { content: ''; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: 0 3px 3px 0; background: var(--strip, #4ecb6c); }
@@ -209,6 +219,8 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
   .dk-page-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .dk-page-actions > button { justify-content: center; min-height: 38px; }
   .dk-page-actions .dk-ongo { grid-column: 1 / -1; }
+  .dk-page-actions .dk-voice-style { grid-column: 1 / -1; }
+  .dk-voice-style button { flex: 1; min-height: 34px; }
 }
 .dk-card-meta { margin-left: auto; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #5c6675; }
 .dk-card-msg { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; line-height: 1.62; color: #dde5ee; margin-top: 9px; white-space: pre-wrap; overflow-wrap: anywhere; }

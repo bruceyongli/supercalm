@@ -98,6 +98,7 @@ try {
   await page.waitForFunction(() => window.__ready);
 
   const result = await page.evaluate(async () => {
+    window.__onTheGo.setVoiceUpdateStyle('walkie');
     const old = { id: 's_old', project: 'Old project', status: 'waiting', unread: 1, category: 'review', last_key: { id: 10 }, last_activity: 10 };
     window.__onTheGo.observeOnTheGoNeeds([old]); // normal-load baseline: no surprise speech
     await new Promise((resolve) => setTimeout(resolve, 20));
@@ -137,12 +138,57 @@ try {
   assert.equal(result.afterOffCalls, 2, 'turning the on-the-go assistant off stops future foreground announcements');
   assert.equal(result.state.enabled, false);
   assert.equal(subscriptions[0]?.aios?.onTheGo, true, 'this device subscribes with on-the-go delivery enabled');
+  assert.equal(subscriptions[0]?.aios?.voiceStyle, 'walkie', 'the push subscription retains the chosen walkie-talkie style');
   assert.equal(subscriptions.at(-1)?.aios?.onTheGo, false, 'turning it off clears only its on-the-go preference');
+
+  // Call style asks before any microphone or report audio begins. Accept starts the same focused
+  // assistant; Not now silences that snapshot without removing it from Needs You.
+  const callOffer = await page.evaluate(async () => {
+    window.__onTheGo.setVoiceUpdateStyle('call');
+    await window.__onTheGo.toggleOnTheGo();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    return { beforeAccept: window.__onTheGoCalls.length, offered: window.__onTheGo.onTheGoState() };
+  });
+  await page.locator('[data-voice-update-call]').waitFor();
+  await page.screenshot({ path: join(outDir, 'incoming-call-desktop.png') });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const callBox = await page.locator('.voice-update-call-card').boundingBox();
+  assert.ok(callBox && callBox.x >= 0 && callBox.x + callBox.width <= 390 && callBox.y >= 0 && callBox.y + callBox.height <= 844,
+    'the incoming call and both choices fit an iPhone PWA viewport');
+  await page.screenshot({ path: join(outDir, 'incoming-call-phone.png') });
+  await page.locator('[data-voice-call-accept]').click();
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const callResult = await page.evaluate(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const afterAccept = window.__onTheGoCalls.length;
+    const latest = { id: 's_old', project: 'Another update', status: 'waiting', unread: 1, category: 'review', last_key: { id: 13 }, last_activity: 13 };
+    window.__onTheGo.observeOnTheGoNeeds([latest]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const offeredAgain = window.__onTheGo.onTheGoState();
+    document.querySelector('[data-voice-call-decline]')?.click();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return {
+      afterAccept,
+      offeredAgain,
+      afterDecline: window.__onTheGo.onTheGoState(),
+      callsAfterDecline: window.__onTheGoCalls.length,
+    };
+  });
+  assert.equal(callOffer.offered.style, 'call');
+  assert.equal(callOffer.offered.incoming.id, 's_old');
+  assert.equal(callResult.afterAccept, callOffer.beforeAccept + 1,
+    'Accept starts the same focused Voice Assistant only after consent');
+  assert.equal(callResult.offeredAgain.incoming.id, 's_old', 'a genuinely new report offers another call');
+  assert.equal(callResult.afterDecline.incoming, null, 'Not now closes the incoming call');
+  assert.equal(callResult.callsAfterDecline, callResult.afterAccept,
+    'Not now never starts speech or sends feedback');
+  assert.equal(subscriptions.at(-1)?.aios?.voiceStyle, 'call', 'the device updates push delivery to call style');
 
   // An enabled PWA can be suspended or relaunched between two reports. Persisted report keys
   // distinguish the old queue from the genuinely new work instead of baselining both on every load.
   await page.evaluate(() => {
     localStorage.setItem('aios.on-the-go.enabled', '1');
+    localStorage.setItem('aios.voice-updates.style', 'walkie');
     localStorage.setItem('aios.on-the-go.announced', JSON.stringify(['s_old:11']));
   });
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -179,6 +225,8 @@ try {
     'the exact sentence currently being spoken has a visible marker');
   assert.equal(await page.locator('.vm-ongo .ongo-heard').count(), 1,
     'the operator response region is always present, even before speech is recognized');
+  assert.equal(await page.locator('.vm-ongo .vm-interrupt').textContent(), 'Speak now',
+    'the live briefing has an explicit touch interruption fallback');
   assert.match(await page.locator('.vm-ongo .vm-heard').textContent(), /words|Listening/i);
   assert.equal(await page.locator('.vm-ongo .ongo-delivery').count(), 1,
     'the briefing includes a dedicated delivery-receipt region');
@@ -186,6 +234,7 @@ try {
     'the on-the-go briefing does not reuse the manual Voice orb presentation');
   await page.evaluate(() => {
     document.querySelector('.vm-ongo').dataset.state = 'speaking';
+    document.querySelector('.vm-ongo .vm-interrupt').hidden = false;
     document.querySelector('.vm-state').textContent = 'Speaking…';
     document.querySelector('.ongo-title').textContent = 'aios/supercalm';
     document.querySelector('.ongo-context').textContent = 'Voice Assistant · report quality · Codex';
@@ -210,11 +259,14 @@ try {
     pageWidth: document.documentElement.scrollWidth,
     viewport: innerWidth,
     stop: document.querySelector('.vm-ongo .vm-stop')?.getBoundingClientRect().toJSON(),
+    interrupt: document.querySelector('.vm-ongo .vm-interrupt')?.getBoundingClientRect().toJSON(),
     heard: document.querySelector('.vm-ongo .ongo-heard')?.getBoundingClientRect().toJSON(),
   }));
   assert.ok(mobileFit.pageWidth <= mobileFit.viewport, 'the briefing does not overflow an iPhone viewport');
   assert.ok(mobileFit.stop && mobileFit.stop.top >= 0 && mobileFit.stop.bottom <= 844,
     'the end-assistant control remains reachable on iPhone');
+  assert.ok(mobileFit.interrupt && mobileFit.interrupt.top >= 0 && mobileFit.interrupt.bottom <= 844,
+    'the speak-now interruption control remains reachable on iPhone');
   assert.ok(mobileFit.heard && mobileFit.heard.top >= 0 && mobileFit.heard.bottom <= 844,
     'the operator response remains visible without scrolling on iPhone');
   await page.screenshot({ path: join(outDir, 'phone.png') });

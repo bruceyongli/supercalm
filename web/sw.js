@@ -15,16 +15,22 @@ self.addEventListener('push', (event) => {
   const base = self.registration.scope;
   const url = new URL(d.url || '.', base).href;
   const onTheGoUrl = d.onTheGoUrl ? new URL(d.onTheGoUrl, base).href : '';
+  const voiceCallUrl = d.voiceCallUrl ? new URL(d.voiceCallUrl, base).href : '';
+  const voiceAcceptUrl = d.voiceAcceptUrl ? new URL(d.voiceAcceptUrl, base).href : '';
+  const callStyle = d.voiceStyle === 'call' && !!voiceCallUrl;
   event.waitUntil(
     self.registration.showNotification(d.title || 'Supercalm', {
       body: d.body || '',
       tag: d.tag || 'aios',
-      data: { url, onTheGoUrl },
+      data: { url, onTheGoUrl, voiceCallUrl, voiceAcceptUrl },
       icon: new URL('icon.svg', base).href,
       badge: new URL('icon.svg', base).href,
       silent: false,
       renotify: true,
-      actions: onTheGoUrl ? [
+      actions: callStyle ? [
+        { action: 'answer', title: 'Answer' },
+        { action: 'later', title: 'Not now' },
+      ] : onTheGoUrl ? [
         { action: 'talk', title: 'Start Voice Assistant' },
         { action: 'open', title: 'Open' },
       ] : [],
@@ -34,8 +40,13 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  if (event.action === 'later') return;
   const data = event.notification.data || {};
-  const url = (event.action === 'talk' && data.onTheGoUrl) ? data.onTheGoUrl : (data.url || self.registration.scope);
+  const url = event.action === 'answer' && data.voiceAcceptUrl
+    ? data.voiceAcceptUrl
+    : event.action === 'talk' && data.onTheGoUrl
+      ? data.onTheGoUrl
+      : data.voiceCallUrl || data.url || self.registration.scope;
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
       for (const w of wins) {

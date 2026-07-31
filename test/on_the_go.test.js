@@ -36,7 +36,8 @@ const phone = read('web/phone.js');
 const styles = read('web/styles.css');
 const player = read('web/tts-player.js');
 
-assert.match(onTheGo, /enablePush\(\{ onTheGo: true \}\)/, 'on-the-go mode enables its device push preference');
+assert.match(onTheGo, /enablePush\(\{ onTheGo: true, voiceStyle: style \}\)/,
+  'Voice updates enables push with this device\'s chosen communication style');
 assert.match(onTheGo, /markAnnounced\(currentNeeds\)/, 'one spoken queue pass deduplicates its complete snapshot');
 assert.match(onTheGo, /if \(!enabled && !pendingFocus\) markAnnounced\(currentNeeds\)/,
   'a normal launch baselines old work, while an enabled device can discover an unseen report after reload');
@@ -46,10 +47,20 @@ assert.match(voice, /focusSessionId, source/, 'the focused on-the-go report reac
 assert.match(voiceServer, /a\.id === focusSessionId/, 'the newly announced project is presented before the older queue');
 assert.match(push, /sub\.aios\?\.onTheGo/, 'push delivery honors each device preference');
 assert.match(push, /onTheGoUrl: `\.\/\?on-the-go=1&focus=/, 'background notifications deep-link back to focused voice');
+assert.match(push, /voiceCallUrl: `\.\/\?voice-call=1&focus=/,
+  'call-style notifications open an incoming update instead of beginning audio');
+assert.match(push, /voiceAcceptUrl: `\.\/\?voice-call=accept&focus=/,
+  'an explicit notification Answer action begins the accepted conversation');
 assert.match(sw, /action: 'talk'/, 'supporting browsers expose a Voice Assistant notification action');
+assert.match(sw, /action: 'answer'[\s\S]*action: 'later'/,
+  'call-style notifications offer Answer and Not now without dismissing Needs You');
 assert.match(sw, /silent: false/, 'the background notification asks the OS to use an audible alert');
 assert.match(dashboard, /id="dk-on-the-go"/, 'the canonical Needs You dashboard exposes the on-the-go switch');
+assert.match(dashboard, /data-voice-update-style="call"[\s\S]*data-voice-update-style="walkie"/,
+  'desktop offers both Call and Walkie-talkie update styles');
 assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same on-the-go switch');
+assert.match(phone, /data-voice-update-style="call"[\s\S]*data-voice-update-style="walkie"/,
+  'phone and PWA offer the same two styles');
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
 assert.match(phone, /phoneVoiceConstraints[\s\S]*noiseSuppression/,
   'the iPhone capture path requests platform noise suppression before semantic filtering');
@@ -66,7 +77,14 @@ assert.match(voice, /api\/transcribe\?language=auto&polish=true/,
   'Voice Assistant uses Spark transcript cleanup before intent reasoning');
 assert.match(voice, /markIgnoredSpeech\(state\.ignoredReason\)/,
   'nearby or silent speech is visibly ignored instead of becoming a response');
+assert.match(voice, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,
+  'desktop Voice Assistant listens for a clear question or correction while it is speaking');
+assert.match(phone, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,
+  'phone Voice Assistant supports the same spoken interruption path');
+assert.match(voice, /vm-interrupt/, 'desktop and iPad retain a tap-to-interrupt fallback');
+assert.match(phone, /data-voice-interrupt/, 'phone retains a reachable tap-to-interrupt fallback');
 assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');
+assert.match(player, /seenChunkIds/, 'a repeated streaming chunk cannot replay the report opening');
 assert.doesNotMatch(voice, /ui\.heard\.textContent = ''/,
   'starting the next spoken turn never erases the operator’s visible response');
 assert.match(voice, /Sent to/, 'the briefing renders a visible per-session delivery receipt');
@@ -100,5 +118,9 @@ for (const content of [dashboard, phone, voice]) {
 }
 assert.match(dashboard, /Voice updates/, 'the proactive control is named for what it does');
 assert.match(dashboard, /Voice Assistant/, 'the manual and proactive paths share one assistant identity');
+assert.match(onTheGo, /declineVoiceUpdate[\s\S]*markAnnounced\(currentNeeds\)/,
+  'Not now silences the offered snapshot without changing its Needs You state');
+assert.match(styles, /\.voice-update-call[\s\S]*safe-area-inset-bottom/,
+  'the incoming-call surface fits installed iPhone and iPad PWAs');
 
 console.log('on_the_go.test ok');

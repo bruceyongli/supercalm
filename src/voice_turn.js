@@ -3,7 +3,8 @@
 // depend on a second model call, especially when the operator adds one more requirement while
 // saying yes. These helpers stay pure so the exact spoken sequence is cheap to regression-test.
 
-const CONFIRM_PREFIX = /^(?:yes|yeah|yep|correct|that(?:'s| is) right|right|confirm(?:ed)?|go ahead|send (?:it|that)|do it|please do|okay|ok|sure)\b/i;
+const CONFIRM_PREFIX = /^(?:yes|yeah|yep|correct|that(?:'s| is) right|right|confirm(?:ed)?|go ahead|send (?:it|that)|do it|please do)\b/i;
+const SOFT_CONFIRM_PREFIX = /^(?:okay|ok|sure)\b/i;
 const CONFIRM_ONLY = /^(?:(?:and\s+)?(?:also\s+)?(?:go ahead|send (?:it|that)|do it|please|now|thanks?|thank you)[\s,.;!]*)+$/i;
 const CONFIRM_QUESTION = /\b(?:confirm|send (?:it|that)|shall I|should I|want me to|is that right|did I get that right|sound right|correct)\b/i;
 
@@ -13,7 +14,9 @@ function clean(v) {
 
 export function confirmationFrom(text) {
   const value = clean(text);
-  const match = value.match(CONFIRM_PREFIX);
+  const strong = value.match(CONFIRM_PREFIX);
+  const soft = strong ? null : value.match(SOFT_CONFIRM_PREFIX);
+  const match = strong || soft;
   if (!match) return null;
   let additional = value
     .slice(match[0].length)
@@ -23,6 +26,10 @@ export function confirmationFrom(text) {
   // "Okay, but..." and "Yes, actually..." revise the pending request; they are not authorization
   // to send both the old and new versions.
   if (/^(?:but|instead|actually|wait|no\b|change\b)/i.test(additional)) return null;
+  // "Okay" is a conversational acknowledgement, not a universal approval prefix. With substantive
+  // words after it ("Okay, moving on" / "Okay, tell me more"), route the whole turn by its meaning.
+  if (soft && additional && !CONFIRM_ONLY.test(additional)) return null;
+  if (isNavigationIntent(additional)) additional = ''; // "Yes, move on" approves; moving on is automatic after delivery.
   if (CONFIRM_ONLY.test(additional)) additional = '';
   return { additional };
 }
@@ -57,8 +64,11 @@ export function asksForConfirmation(text) {
   return CONFIRM_QUESTION.test(clean(text));
 }
 
+const DISCOURSE_PREFIX = /^(?:(?:okay|ok|alright|all right|right|well)[\s,.;:!-]+)+/i;
 const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end (?:this|the) (?:assistant|conversation|session))[\s.!]*$/i;
-const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on)[\s.!]*$/i;
+const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on|moving on|let(?:'s| us) move on|go (?:to )?(?:the )?next(?: one| item)?)[\s.!]*$/i;
+const DEFER = /\b(?:(?:just\s+)?leave (?:it|this|this one)(?: alone)?|i(?:'ll| will) (?:(?:do|handle) (?:the |a )?review|review (?:it|this)|handle (?:it|this)) (?:myself )?later|i(?:'ll| will) (?:do|review|handle) (?:it|this) (?:myself )?later|nothing (?:needs?|need) (?:the )?agent to do (?:right )?now|no(?:thing| action) (?:is )?needed (?:from (?:the )?agent )?(?:right )?now)\b/i;
+const CANCEL_PENDING = /^(?:never mind|nevermind|cancel that|forget that|don'?t send (?:that|it)|do not send (?:that|it)|leave that unsent)[\s.!]*$/i;
 const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happened| should| would| could| can)\b|why\b|how(?:'s| is| are| did| does| do| should| would| could| can)?\b|when\b|where\b|who\b|which\b|more(?: details?)?\b|details?\b|tell me\b|explain\b|give me (?:more|details|the status)\b|read\b|repeat\b|do you think\b|(?:can|could|would) you (?:tell|explain|summarize|repeat|read|give me|check the status)\b|is (?:it|this|that|the|there)\b|are (?:they|these|those|the|there)\b|was (?:it|this|that|the|there)\b|were (?:they|these|those|the|there)\b|did (?:the|it|this|that|they)\b|does (?:the|it|this|that)\b|has (?:the|it|this|that)\b|have (?:the|it|this|that|they)\b)/i;
 const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
 const META_QUESTION = /\b(?:i (?:was|am|'m) (?:asking|wondering)|i asked|my question (?:was|is)|what i (?:asked|wanted to know))\b.{0,80}\b(?:detail|explain|why|what|how|status|happen|mean|think|recommend)/i;
@@ -67,7 +77,14 @@ const WAKE = /\b(?:hey[\s,]+|okay[\s,]+|ok[\s,]+)?super[\s-]*calm\b/i;
 export function isVoiceInformationQuestion(text) {
   const value = clean(text);
   if (POLITE_ACTION.test(value)) return false;
-  return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value);
+  const withoutPreface = value.replace(DISCOURSE_PREFIX, '');
+  return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value)
+    || INFO_QUESTION.test(withoutPreface) || META_QUESTION.test(withoutPreface);
+}
+
+export function isNavigationIntent(text) {
+  const value = clean(text).replace(DISCOURSE_PREFIX, '');
+  return !!value && (NEXT.test(value) || DEFER.test(value));
 }
 
 // Strong conversational models sometimes answer an obvious follow-up directly despite the request
@@ -106,12 +123,74 @@ export function normalizeVoiceAddress(text) {
 // Stop/next are shared deterministic controls. All feedback and questions otherwise go through the
 // same context-aware Voice Assistant brain, regardless of whether the conversation was manually
 // started or proactively announced.
-export function voiceControlReply(userText) {
+export function voiceControlReply(userText, { hasPending = false } = {}) {
   const message = clean(userText);
   if (!message) return null;
-  if (STOP.test(message)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
-  if (NEXT.test(message)) return { say: 'Okay, skipping this one.', action: 'next', message: '', deterministic: true };
+  const intent = message.replace(DISCOURSE_PREFIX, '');
+  if (STOP.test(intent)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
+  if (NEXT.test(intent)) return { say: 'Okay, moving to the next item.', action: 'next', message: '', deterministic: true };
+  if (DEFER.test(intent)) return { say: "Okay. I'll leave this item for your later review and move to the next one.", action: 'next', message: '', deterministic: true };
+  if (hasPending && CANCEL_PENDING.test(intent)) return { say: "Okay, I won't send that. We can stay on this item.", action: 'cancel', message: '', deterministic: true };
   return null;
+}
+
+const DECLARED_ADVANCE = /\b(?:i(?:'ll| will| am|'m)\s+)?(?:am\s+)?moving (?:on|to the next)|\bi(?:'ll| will) move (?:on|to the next)|\bnext item\b/i;
+const ASKED_ADVANCE = /\b(?:should|shall|may|can|would you like|do you want)\b.{0,35}\b(?:move|moving|go)\b.{0,15}\b(?:on|next)\b/i;
+
+export function reconcileVoiceReply(reply, userText) {
+  const out = { ...(reply || {}) };
+  if (out.action === 'await' && DECLARED_ADVANCE.test(clean(out.say)) && !ASKED_ADVANCE.test(clean(out.say))) {
+    out.action = 'next';
+    out.message = '';
+    out.reconciled = true;
+  }
+  if (['next', 'stop', 'cancel', 'ignore'].includes(out.action)) out.message = '';
+  // A deterministic navigation reading always wins over an LLM's contradictory draft.
+  return voiceControlReply(userText) || out;
+}
+
+export function createVoiceDialogueState() {
+  return { phase: 'listening', pending: null };
+}
+
+export function scopedVoicePending(dialogue, sessionId) {
+  const pending = dialogue?.phase === 'confirming' ? dialogue.pending : null;
+  return pending?.sessionId === sessionId ? String(pending.text || '') : '';
+}
+
+export function reduceVoiceDialogue(dialogue, { reply, userText, sessionId }) {
+  const prior = dialogue || createVoiceDialogueState();
+  if (reply?.action === 'ignore') return prior; // ambient speech cannot mutate a real pending turn
+  if (['send', 'next', 'stop', 'cancel'].includes(reply?.action)) return createVoiceDialogueState();
+  const canStage = reply?.action === 'await'
+    && !!clean(reply.message)
+    && asksForConfirmation(reply.say)
+    && !isVoiceInformationQuestion(userText);
+  if (canStage) {
+    return {
+      phase: 'confirming',
+      pending: { sessionId, text: clean(reply.message) },
+    };
+  }
+  // Detail questions while confirming do not silently approve or destroy the draft. A later explicit
+  // yes can still send it; presenting another session will fail the session-id scope check.
+  if (scopedVoicePending(prior, sessionId) && isVoiceInformationQuestion(userText)) return prior;
+  return createVoiceDialogueState();
+}
+
+// One authoritative reducer for a live turn. Ordering is the safety contract: navigation/global
+// controls first, confirmation only against a scoped draft second, contextual reasoning last. The
+// reply and next dialogue state are returned together so spoken behavior and server state cannot drift.
+export async function resolveVoiceTurn({ dialogue, sessionId, userText, brain }) {
+  const pending = scopedVoicePending(dialogue, sessionId);
+  const raw = voiceControlReply(userText, { hasPending: !!pending })
+    || confirmedPendingReply(pending, userText)
+    || await brain();
+  const reply = reconcileVoiceReply(raw, userText);
+  return {
+    reply,
+    dialogue: reduceVoiceDialogue(dialogue, { reply, userText, sessionId }),
+  };
 }
 
 // Compatibility exports for older callers/tests during the user-facing rename. They intentionally

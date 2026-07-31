@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-brief-'));
-const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
+const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
 
 // ---- the sanitizer kills exactly the unspeakable junk the operator named --------------------------
 {
@@ -34,6 +34,14 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   const t = sanitizeForSpeech('✔ Fixed phone routing … +23 completed new task?');
   assert.doesNotMatch(t, /✔|\\+23|new task/i, 'visual task-list chrome is never read aloud');
   assert.match(t, /23 more items completed/i, 'the useful completion count remains natural speech');
+}
+{
+  assert.equal(stripRoutineProcessEvidence('All browser checks and 119 suites passed.'), '',
+    'routine successful release evidence cannot become the spoken update');
+  assert.equal(stripRoutineProcessEvidence('The interruption now preserves the question, and all 119 suites passed.'),
+    'The interruption now preserves the question.', 'a real outcome survives beside a stock test footer');
+  assert.match(stripRoutineProcessEvidence('Three suites failed because the send button is blocked.'), /failed/,
+    'failed verification remains important and audible');
 }
 
 // ---- validation clamps + option mapping ------------------------------------------------------------
@@ -67,6 +75,8 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(SYS_BRIEF, /trusted project lead/i);
   assert.match(SYS_BRIEF, /owner already knows what their project is/i);
   assert.match(SYS_BRIEF, /Never explain the product/i);
+  assert.match(SYS_BRIEF, /OUTCOME FIRST/);
+  assert.match(SYS_BRIEF, /routine release evidence/i);
   assert.match(SYS_BRIEF, /EACH distinct requested deliverable/);
   assert.match(SYS_BRIEF, /decision\|input\|discussion\|review\|blocked\|progress/);
   const user = buildBriefUserText({
@@ -88,6 +98,15 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(user, /CURRENT TASK CONTRACT[\s\S]*repair checkout/);
   assert.match(user, /RECENT CONVERSATION[\s\S]*Apple Pay still fails/);
   assert.doesNotMatch(user, /raw terminal nonsense/, 'automatic voice briefs never ingest the terminal tail');
+}
+
+{
+  const deDuplicated = stripRepeatedOrientation(
+    'AIOS Supercalm. Voice Assistant. Report quality. You asked why the update was vague. It now explains the cause and fix.',
+    ['AIOS Supercalm', 'Voice Assistant', 'Report quality'],
+  );
+  assert.match(deDuplicated, /^You asked why/);
+  assert.doesNotMatch(deDuplicated, /AIOS Supercalm|Voice Assistant|Report quality/);
 }
 
 // ---- generation with an injected model + template fail-open ---------------------------------------
@@ -141,6 +160,9 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.equal(b3.kind, 'input');
   assert.equal(b3.identity, 'shop/storefront');
   assert.ok(!b3.standard.includes('https://'), 'fallback text is sanitized too');
+  const b4 = await buildVoiceBrief({ sessionId: 's_t3', project: 'shop', projectIdentity: 'shop/storefront', tool: 'codex', category: 'review', originalRequest: 'Fix the voice report.', latestReport: 'All browser checks and 119 suites passed.', call: async () => { throw new Error('down'); } });
+  assert.doesNotMatch(b4.spoken, /119|suites passed/i, 'the fail-open path also refuses to report release ceremony as the outcome');
+  assert.match(b4.spoken, /not how the requested issue changed/i);
 }
 
 {

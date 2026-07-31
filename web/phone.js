@@ -10,12 +10,13 @@
 // POST api/messages/read (read-state syncs server-side so desktop and phone agree),
 // existing input/type/stop/kill/resume + /api/tts + /api/transcribe. Live via /api/events SSE.
 
-import { api, coalesce, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
+import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
-import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
+import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
+import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 
 registerSW();
 
@@ -286,6 +287,7 @@ async function playQueue(items, scope) {
 // silence) → polished STT → shared intent reasoning → questions stay with the assistant; instructions
 // are restated and confirmed before they reach the agent. One tap in, zero after.
 const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
+let phoneInterrupt = null;
 function setVoiceCurrent(next) {
   const previousId = V.current?.sessionId || '';
   const nextId = next?.sessionId || '';
@@ -302,6 +304,10 @@ function setVoiceCurrent(next) {
 function paintVoiceSegment(text) {
   const line = app.querySelector('.ongo-sheet-report p');
   if (line && text) line.textContent = text;
+}
+function paintVoiceHeard(text) {
+  const line = app.querySelector('.ongo-sheet-heard span');
+  if (line && text) line.textContent = `“${text.slice(0, 260)}”`;
 }
 let onTheGoUi = onTheGoState();
 setOnTheGoVoiceAdapter({
@@ -328,9 +334,10 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
       body: JSON.stringify({ focusSessionId, source: onTheGo ? 'on-the-go-update' : 'manual' }),
     });
     V.voiceId = r.voiceId; setVoiceCurrent(r.current || null);
-    await voiceSay(r.say);
+    const interruption = await voiceSay(r.say, { allowInterruption: !r.done });
     if (r.done) return voiceModeEnd('done');
-    if (r.listen) return voiceLoopListen();
+    if (interruption?.text) return voiceSubmitTurn(interruption.text);
+    if (r.listen || interruption?.tap) return voiceLoopListen();
   } catch (e) { toast('Voice mode failed: ' + (e.message || e)); voiceModeEnd('error'); }
 }
 function phoneVoiceConstraints() {
@@ -342,12 +349,50 @@ function phoneVoiceConstraints() {
   if (supported.channelCount) audio.channelCount = { ideal: 1 };
   return Object.keys(audio).length ? { audio } : { audio: true };
 }
-async function voiceSay(text) {
+async function voiceSay(text, { allowInterruption = false } = {}) {
   if (!text || V.stopFlag) return;
   V.state = 'speaking'; V.said = text;
   V.segment = (String(text).match(/[^.!?]+[.!?]+|\S[^.!?]*$/) || [text])[0].trim();
   render();
-  await speakOne(text, {
+  let live = null;
+  let accepted = null;
+  let capturingSpeech = false;
+  let pendingSpeech = '';
+  let speechTimer = null;
+  let resolveInterruption;
+  const interruption = new Promise((resolve) => { resolveInterruption = resolve; });
+  const haltPlayback = () => {
+    try { phoneHandle?.stop(); } catch {}
+    try { stopAllPlayback(); } catch {}
+  };
+  const accept = (result) => {
+    if (accepted || V.stopFlag) return;
+    accepted = result;
+    if (speechTimer) clearTimeout(speechTimer);
+    resolveInterruption(result);
+    haltPlayback();
+  };
+  if (allowInterruption) {
+    phoneInterrupt = accept;
+    live = createLiveSpeechRecognizer({
+      onUpdate: (heard) => {
+        if (accepted || (!capturingSpeech && !isClearVoiceInterruption(heard, text))) return;
+        if (!capturingSpeech) {
+          capturingSpeech = true;
+          haltPlayback(); // stop now, then retain subsequent interim words before sending the turn
+          V.state = 'listening';
+          render();
+        }
+        pendingSpeech = extractVoiceInterruption(heard, text) || heard.trim();
+        V.lastHeard = pendingSpeech;
+        paintVoiceHeard(pendingSpeech);
+        if (speechTimer) clearTimeout(speechTimer);
+        speechTimer = setTimeout(() => accept({ text: pendingSpeech }), 700);
+      },
+    });
+    live.start();
+  }
+  const playback = speakOne(text, {
     onSegment: ({ text: segment }) => {
       if (!segment || V.stopFlag) return;
       V.segment = segment;
@@ -355,7 +400,14 @@ async function voiceSay(text) {
       // the iPhone view visibly flash and reset scroll/touch state.
       paintVoiceSegment(segment);
     },
-  });
+  }).then(() => null, () => null);
+  const playbackOrCapture = playback.then(() => capturingSpeech ? interruption : null);
+  const result = allowInterruption ? await Promise.race([playbackOrCapture, interruption]) : await playback;
+  if (phoneInterrupt === accept) phoneInterrupt = null;
+  if (speechTimer) clearTimeout(speechTimer);
+  live?.abort();
+  if (accepted) await Promise.race([playback, new Promise((resolve) => setTimeout(resolve, 250))]);
+  return accepted || result;
 }
 async function voiceLoopListen() {
   if (V.stopFlag) return;
@@ -390,6 +442,10 @@ async function voiceLoopListen() {
     await voiceSay('Sorry, I could not transcribe that. Try again.');
     return voiceLoopListen();
   }
+  return voiceSubmitTurn(text);
+}
+async function voiceSubmitTurn(text) {
+  if (V.stopFlag || !text) return;
   V.silentTurns = 0; V.lastHeard = text; V.ignoredReason = ''; render();
   try {
     const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
@@ -398,23 +454,26 @@ async function voiceLoopListen() {
     V.ignoredReason = r.ignored ? (r.ignoredReason || 'not-addressed') : '';
     V.delivery = r.delivery || V.delivery;
     V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
-    await voiceSay(r.say);
+    const interruption = await voiceSay(r.say, { allowInterruption: !r.done });
     render();
     if (V.stopFlag) return;
     if (r.done) return voiceModeEnd('done');
-    if (r.listen) return voiceLoopListen();
+    if (interruption?.text) return voiceSubmitTurn(interruption.text);
+    if (r.listen || interruption?.tap) return voiceLoopListen();
     // sent/skipped -> ask the server to present the next item
     const c = await api('api/voice/continue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) });
     setVoiceCurrent(c.current || null);
-    await voiceSay(c.say);
+    const nextInterruption = await voiceSay(c.say, { allowInterruption: !c.done });
     if (V.stopFlag) return;
     if (c.done) return voiceModeEnd('done');
+    if (nextInterruption?.text) return voiceSubmitTurn(nextInterruption.text);
     return voiceLoopListen();
   } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
 }
 function voiceModeEnd(why) {
   const sentCount = V.sentCount;
   V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = ''; V.segment = '';
+  phoneInterrupt = null;
   try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
   V.stream = null;
   if (V.voiceId) api('api/voice/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) }).catch(() => {});
@@ -750,10 +809,15 @@ function renderHome() {
       <div class="ph-voicebar">
         <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
         <button class="ongobig ${onTheGoUi.enabled ? 'on' : ''}" id="on-the-go-mode" type="button" aria-pressed="${onTheGoUi.enabled ? 'true' : 'false'}" title="${esc(onTheGoUi.detail || '')}">
-          <span></span>${onTheGoUi.talking ? 'Talking…' : onTheGoUi.enabled ? 'Voice updates · on' : 'Voice updates'}
+          <span></span>${onTheGoUi.talking ? 'Talking…' : onTheGoUi.incoming ? 'Incoming…' : onTheGoUi.enabled ? `Voice updates · ${onTheGoUi.style === 'call' ? 'Call' : 'Walkie'}` : 'Voice updates'}
         </button>
       </div>
-      ${onTheGoUi.enabled ? `<div class="ongo-note">${esc(onTheGoUi.detail)}</div>` : ''}
+      ${onTheGoUi.enabled ? `
+        <div class="ph-voice-style" role="group" aria-label="Voice update style">
+          <button type="button" data-voice-update-style="call" aria-pressed="${onTheGoUi.style === 'call' ? 'true' : 'false'}" class="${onTheGoUi.style === 'call' ? 'active' : ''}">Call</button>
+          <button type="button" data-voice-update-style="walkie" aria-pressed="${onTheGoUi.style === 'walkie' ? 'true' : 'false'}" class="${onTheGoUi.style === 'walkie' ? 'active' : ''}">Walkie-talkie</button>
+        </div>
+        <div class="ongo-note">${esc(onTheGoUi.detail)}</div>` : ''}
     </div>
     <div class="scroll home-scroll">
       <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span><button class="ph-needs-refresh" id="refresh-needs" aria-label="Refresh Needs you from the server">↻ Refresh</button></div>
@@ -930,7 +994,7 @@ function renderSheet() {
       <div class="ongo-sheet-heard ${V.ignoredReason ? 'ignored' : ''}"><b>${heardLabel}</b><span>${esc(heard)}</span></div>
       ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
-      <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
+      <div class="sheetrow">${st === 'speaking' ? '<button class="sbtn" data-voice-interrupt>Speak now</button>' : ''}<button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
       <div class="footnote">ask follow-ups naturally · instructions are confirmed before anything is sent</div>
     </div>`;
     return `
@@ -944,6 +1008,7 @@ function renderSheet() {
       ${V.lastHeard ? `<div class="pm-goal" style="text-align:center;color:var(--tx-2)">“${esc(V.lastHeard.slice(0, 160))}”</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow">
+        ${st === 'speaking' ? '<button class="sbtn" data-voice-interrupt>Speak now</button>' : ''}
         <button class="sbtn neutral" data-voice-end>■ End</button>
       </div>
       <div class="footnote">say “skip” for the next item · “stop” to end · ask any question about the session or project</div>
@@ -1047,6 +1112,12 @@ function wire() {
     await toggleOnTheGo();
     if (S.screen === 'home') renderSoft();
   });
+  for (const button of app.querySelectorAll('[data-voice-update-style]')) {
+    button.addEventListener('click', () => {
+      setVoiceUpdateStyle(button.dataset.voiceUpdateStyle);
+      if (S.screen === 'home') render();
+    });
+  }
   // The phone surface is the triage inbox, not a second session app. Open the canonical responsive
   // Story/Terminal view so attachments, dictation, panels, and future composer work stay shared.
   for (const el of app.querySelectorAll('[data-open]')) el.addEventListener('click', () => openCanonicalSession(el.dataset.open));
@@ -1187,6 +1258,7 @@ function wire() {
 
   // overlays + sheets
   for (const el of app.querySelectorAll('[data-close-overlay]')) el.addEventListener('click', () => history.back());
+  for (const el of app.querySelectorAll('[data-voice-interrupt]')) el.addEventListener('click', () => phoneInterrupt?.({ tap: true }));
   for (const el of app.querySelectorAll('[data-voice-end]')) el.addEventListener('click', () => voiceModeEnd('user'));
   for (const el of app.querySelectorAll('[data-close-sheet]')) el.addEventListener('click', () => { if (S.sheet === 'rec') return cancelRec(); S.sheet = null; render(); });
   $('#rec-stop')?.addEventListener('click', () => stopRecAndReview());

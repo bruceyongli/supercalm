@@ -56,6 +56,28 @@ export function sanitizeForSpeech(text) {
     .trim();
 }
 
+// Passing the release gate is supporting evidence, not the update the owner asked to hear. Agent
+// reports commonly end with a stock "all N suites passed" footer, and a model can still promote that
+// easy-to-copy sentence over the actual fix. Remove only SUCCESS boilerplate here; failed checks and
+// requested, user-visible verification ("Apple Pay now works") remain available to the brief.
+const ROUTINE_PASS_RX = /\b(?:(?:all\s+)?(?:\d+\s+)?(?:(?:automated|browser|unit|integration|full)\s+)?(?:test\s+)?suites?\s+(?:passed|pass|green)|(?:all\s+)?(?:\d+\s+)?tests?\s+(?:passed|pass|green)|(?:secret|security)\s+scans?\s+passed|(?:health|deployment)\s+(?:checks?|probes?)\s+passed)\b/i;
+const ROUTINE_ONLY_RX = /^(?:(?:all\s+)?(?:browser|release|health|deployment|automated)\s+checks?\s+(?:and\s+)?)?(?:(?:all\s+)?\d+\s+(?:test\s+)?suites?|(?:all\s+)?(?:\d+\s+)?tests?|(?:secret|security)\s+scans?|(?:health|deployment)\s+(?:checks?|probes?))\s+(?:passed|pass|green)(?:\s+(?:successfully|cleanly))?$/i;
+
+export function stripRoutineProcessEvidence(text) {
+  const clean = sanitizeForSpeech(text).replace(/\s+/g, ' ').trim();
+  if (!clean || !ROUTINE_PASS_RX.test(clean)) return clean;
+  const sentences = clean.match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [clean];
+  return sentences.map((sentence) => {
+    if (!ROUTINE_PASS_RX.test(sentence)) return sentence.trim();
+    const terminal = sentence.match(/[.!?]+\s*$/)?.[0] || '';
+    const body = sentence.replace(/[.!?]+\s*$/, '').trim();
+    if (ROUTINE_ONLY_RX.test(body)) return '';
+    const clauses = body.split(/\s*(?:;|,\s*and\b|\band\b)\s*/i).filter(Boolean);
+    const useful = clauses.filter((clause) => !ROUTINE_PASS_RX.test(clause));
+    return useful.length ? useful.join('. ') + terminal : '';
+  }).filter(Boolean).join(' ').replace(/\s{2,}/g, ' ').trim();
+}
+
 export const SYS_BRIEF = `You prepare SPOKEN briefs of coding-agent sessions for the PROJECT OWNER. Act like a trusted project lead calling with a useful update, not a robot reading fields. The owner already knows what their project is. Never explain the product, its mission, architecture, host, or general purpose. Instead, orient them to the exact work thread using this hierarchy: project/repository identity, module or feature, current workstream, then what happened to the requested update. The listener must quickly understand which work this is, what they asked for, what materially happened, why it matters, and the one response—if any—that moves work forward. You receive the current task contract, recent operator/agent conversation, the latest curated report, and supervisor notes.
 
 Return STRICT minified JSON only, no fences:
@@ -69,13 +91,18 @@ SOURCE PRIORITY:
 - If the latest report does not say what happened to one requested deliverable, say "No separate outcome was reported" instead of guessing.
 - Do not repeat the whole report or invent a status.
 
+OUTCOME FIRST (hard):
+- The update is the reported issue, its cause when known, the user-visible change, and any remaining gap. Lead with those facts.
+- Passing test suites, test counts, secret scans, health probes, commit ids, deployment mechanics, and file-change counts are routine release evidence. OMIT them from quick, standard, spoken, and updates when they passed. Mention verification only when it failed, the operator explicitly asked about verification, or it materially changes confidence in a risky result.
+- Never substitute "all tests passed," "all N suites passed," "deployed successfully," or similar process ceremony for explaining how the reported issue was solved.
+
 kind: decision = the agent offered explicit choices or approval; input = it needs information/credentials/a value only the human has; discussion = it wants design feedback or is thinking out loud; review = work is finished and awaits verification/sign-off; blocked = an external failure (auth, environment, access) stops it; progress = still working, nothing needed.
 options: ONLY when the agent laid out concrete choices (numbered options, yes/no approval, A-or-B). Map each to the key the terminal expects (1/2/3/y/n). Otherwise [].
 
 EAR RULES (hard):
 - Never say URLs, absolute file paths, hashes, or percent-of-context-window numbers. Say "a link", the bare file name ("styles dot css"), "an id".
 - Never reproduce terminal sequences, ASCII art, source code, raw markdown, isolated symbols, or symbol-heavy model/session identifiers. Translate them into the human outcome.
-- Keep EXACT names that carry the decision: command names, error names, branch names, dollar amounts, test counts.
+- Keep EXACT names that carry the decision: command names, error names, branch names, and dollar amounts. Test counts belong only in an explicit verification answer, never the automatic update.
 - Round big numbers ("about three hundred files"). Spell acronyms only if ambiguous.
 - Plain sentences, active voice, no markdown, no emoji, no bullet characters. Numbers as digits are fine.
 - The three levels must each stand alone (don't say "as I said").
@@ -131,11 +158,11 @@ export function validateBrief(o) {
     request: clamp(o.request, 320),
     updates: (Array.isArray(o.updates) ? o.updates : []).slice(0, 6).map((item) => ({
       requested: clamp(item?.requested, 100),
-      latest: clamp(item?.latest, 260),
+      latest: clamp(stripRoutineProcessEvidence(item?.latest), 260) || 'No user-facing outcome was reported.',
     })).filter((item) => item.requested && item.latest),
-    quick: clamp(o.quick, 160),
-    standard: clamp(o.standard, 420),
-    spoken: clamp(o.spoken, 720),
+    quick: clamp(stripRoutineProcessEvidence(o.quick), 160),
+    standard: clamp(stripRoutineProcessEvidence(o.standard), 420),
+    spoken: clamp(stripRoutineProcessEvidence(o.spoken), 720),
     detail: clamp(o.detail, 1200),
     needs: clamp(o.needs, 160),
     options: (Array.isArray(o.options) ? o.options : []).slice(0, 4).map((x) => ({
@@ -144,6 +171,7 @@ export function validateBrief(o) {
       spoken: clamp(x?.spoken || x?.label, 90),
     })).filter((x) => x.key && x.label),
   };
+  if (!brief.standard && o.standard) brief.standard = 'The report only gave routine release verification, not how the requested issue changed.';
   if (!brief.standard) return null;
   if (!brief.quick) brief.quick = brief.standard.slice(0, 140);
   if (!brief.spoken) brief.spoken = brief.standard;
@@ -228,7 +256,9 @@ export async function buildVoiceBrief({
   if (!brief) {
     // fail-open: a sanitized template beats silence
     const sentence = (value, max) => sanitizeForSpeech(value).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '').slice(0, max);
-    const gist = sentence(cleanLatest, 260);
+    const rawGist = sentence(cleanLatest, 260);
+    const gist = sentence(stripRoutineProcessEvidence(cleanLatest), 260)
+      || (rawGist ? 'The report only gave routine release verification, not how the requested issue changed' : '');
     const request = sentence(cleanOriginal, 320);
     const need = ['decision', 'action'].includes(category) ? sentence(ask || summary, 160) : '';
     brief = {
@@ -272,14 +302,41 @@ function spokenLimit(value, maxWords) {
   return words.slice(0, maxWords).join(' ').replace(/[,;:—-]$/, '') + '…';
 }
 
+function normalizedWords(value) {
+  return sanitizeForSpeech(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+}
+
+// The orientation is added deterministically below. If the model ignored the instruction and began
+// by restating those same identity/module/workstream lines, drop only those leading duplicates so
+// neither the transcript nor TTS reads the same opening twice.
+export function stripRepeatedOrientation(spoken, orientationParts = []) {
+  const parts = (String(spoken || '').match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(spoken || '')])
+    .map((part) => part.trim()).filter(Boolean);
+  const candidates = orientationParts.map(normalizedWords).filter((words) => words.length);
+  let removed = 0;
+  while (parts.length && removed < candidates.length) {
+    const words = normalizedWords(parts[0]);
+    const duplicate = candidates.some((candidate) => {
+      if (!words.length || Math.abs(words.length - candidate.length) > 2) return false;
+      const present = words.filter((word) => candidate.includes(word)).length;
+      return present / Math.max(words.length, candidate.length) >= 0.8;
+    });
+    if (!duplicate) break;
+    parts.shift();
+    removed++;
+  }
+  return parts.join(' ').trim();
+}
+
 export function speakOnTheGoBrief(brief) {
   // Orientation is deterministic rather than entrusted to prose generation: the project owner always
   // hears identity → module → workstream before the model's prioritized update.
-  const orientation = spokenLimit([brief?.identity, brief?.module, brief?.workstream].filter(Boolean).join('. '), 22);
-  const integrated = spokenLimit(brief?.spoken, 68);
+  const orientationParts = [brief?.identity, brief?.module, brief?.workstream].filter(Boolean);
+  const orientation = spokenLimit(orientationParts.join('. '), 22);
+  const integrated = spokenLimit(stripRepeatedOrientation(brief?.spoken, orientationParts), 68);
   if (integrated) return [orientation ? `${orientation}.` : '', integrated].filter(Boolean).join(' ');
   const request = spokenLimit(brief?.request, 22);
-  const latest = spokenLimit(brief?.quick || brief?.standard || brief?.updates?.[0]?.latest, 28);
+  const latest = spokenLimit(stripRoutineProcessEvidence(brief?.quick || brief?.standard || brief?.updates?.[0]?.latest), 28);
   const needs = spokenLimit(brief?.needs, 18);
   const options = brief?.options?.length
     ? `Choices: ${brief.options.slice(0, 3).map((option) => spokenLimit(option.spoken || option.label, 7)).join(', or ')}.`

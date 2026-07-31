@@ -153,6 +153,8 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
     const urls = [];
+    const seenChunkIds = new Set();
+    let lastUnindexedText = '';
     let readingDone = false, playing = false, finished = false, played = 0;
     const capMs = Math.max(90000, 20000 + (text.length * 130) / ttsRate());
     const cap = setTimeout(() => finish(played ? undefined : new Error('tts stream timeout')), capMs);
@@ -202,10 +204,27 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
             if (block) {
               const { event, data } = parseSseBlock(block);
               if (event === 'chunk' && data.audio_base64) {
+                const index = Number(data.index);
+                const chunkText = String(data.text || '').replace(/\s+/g, ' ').trim();
+                // A reconnecting/upstream streaming synthesizer can replay its first completed
+                // chunks. Their indices are transport identities: enqueue each one exactly once or
+                // the listener hears the opening sentences repeated even though the transcript is
+                // correct. Older streams without indices get a conservative consecutive-text guard.
+                if (Number.isFinite(index)) {
+                  if (seenChunkIds.has(index)) {
+                    sep = buffer.indexOf('\n\n');
+                    continue;
+                  }
+                  seenChunkIds.add(index);
+                } else if (chunkText && chunkText === lastUnindexedText) {
+                  sep = buffer.indexOf('\n\n');
+                  continue;
+                }
+                lastUnindexedText = Number.isFinite(index) ? '' : chunkText;
                 urls.push({
                   url: URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)),
-                  text: String(data.text || ''),
-                  index: Number(data.index),
+                  text: chunkText,
+                  index,
                 });
                 pump();
               } else if (event === 'done') {

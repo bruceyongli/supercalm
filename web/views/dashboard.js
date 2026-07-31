@@ -6,7 +6,7 @@ import { getHome, refreshHome, subscribeHome, upsertSession, agentChip, shortTit
 const fullTitle = (s) => (String(s.title || '').trim() || s.project || s.id || '').split('\n')[0].slice(0, 160);
 import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboardBrowserIdentity } from '../common.js';
 import { startVoiceMode } from '../voicemode.js';
-import { subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
+import { setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
@@ -358,6 +358,10 @@ export function init(el) {
             <button class="dk-refresh" id="dk-needs-refresh" title="Refresh Needs you from the server">↻ Refresh</button>
             <button class="dk-voice" id="dk-voice" title="Start a hands-free conversation about Needs You">● Voice Assistant</button>
             <button class="dk-ongo" id="dk-on-the-go" type="button" aria-pressed="false" title="Automatically announce new Needs You updates"><span></span> Voice updates</button>
+            <div class="dk-voice-style" id="dk-voice-style" role="group" aria-label="Voice update style" hidden>
+              <button type="button" data-voice-update-style="call" aria-pressed="false">Call</button>
+              <button type="button" data-voice-update-style="walkie" aria-pressed="false">Walkie-talkie</button>
+            </div>
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
@@ -379,13 +383,23 @@ export function init(el) {
     await toggleOnTheGo();
     if (host) onTheGo.disabled = false;
   };
+  for (const button of host.querySelectorAll('[data-voice-update-style]')) {
+    button.onclick = () => setVoiceUpdateStyle(button.dataset.voiceUpdateStyle);
+  }
   unsubOnTheGo = subscribeOnTheGo((state) => {
     const button = $('#dk-on-the-go');
     if (!button) return;
     button.classList.toggle('on', state.enabled);
     button.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
-    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'Voice updates · on' : 'Voice updates'}`;
+    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.incoming ? 'Incoming update…' : state.enabled ? `Voice updates · ${state.style === 'call' ? 'Call' : 'Walkie-talkie'}` : 'Voice updates'}`;
     button.title = state.detail;
+    const choices = $('#dk-voice-style');
+    if (choices) choices.hidden = !state.enabled;
+    for (const choice of host.querySelectorAll('[data-voice-update-style]')) {
+      const active = choice.dataset.voiceUpdateStyle === state.style;
+      choice.classList.toggle('active', active);
+      choice.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
   });
   const refresh = $('#dk-needs-refresh');
   if (refresh) refresh.onclick = async () => {

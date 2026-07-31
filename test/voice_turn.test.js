@@ -4,9 +4,14 @@ import {
   asksForConfirmation,
   confirmationFrom,
   confirmedPendingReply,
+  createVoiceDialogueState,
   isVoiceInformationQuestion,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
+  reconcileVoiceReply,
+  reduceVoiceDialogue,
+  resolveVoiceTurn,
+  scopedVoicePending,
   voiceControlReply,
   providerFailureReply,
 } from '../src/voice_turn.js';
@@ -22,6 +27,7 @@ assert.deepEqual(
 );
 assert.equal(confirmationFrom('No, change the layout first.'), null, 'a correction is not mistaken for confirmation');
 assert.equal(confirmationFrom('Okay, but change the layout first.'), null, 'a qualified correction still needs reasoning');
+assert.equal(confirmationFrom('Okay, moving on.'), null, 'an acknowledgement plus navigation is not approval');
 
 const confirmed = confirmedPendingReply(pending, 'Yes, and also make the controls larger on iPhone.');
 assert.equal(confirmed.action, 'send');
@@ -32,6 +38,8 @@ assert.match(confirmed.message, /Additional request from the operator: make the 
 assert.equal(confirmedPendingReply('', 'Yes'), null, 'a bare yes cannot send without a pending instruction');
 assert.equal(confirmedPendingReply(pending, 'Yes, what exactly failed?'), null,
   'an acknowledgment followed by a question stays in the assistant conversation');
+assert.equal(confirmedPendingReply(pending, 'Okay, moving on.'), null,
+  'navigation can never be appended to a stale agent draft');
 assert.equal(asksForConfirmation('I understood the change. Should I send that?'), true);
 assert.equal(asksForConfirmation('Here is more detail about the report.'), false);
 
@@ -79,8 +87,89 @@ assert.equal(normalizeVoiceAddress('Hey super calm, I prefer option two and larg
   'I prefer option two and larger mobile controls');
 assert.equal(voiceControlReply('stop').action, 'stop');
 assert.equal(voiceControlReply('next').action, 'next');
+assert.equal(voiceControlReply('Okay, moving on.', { hasPending: true }).action, 'next');
+assert.equal(voiceControlReply("Just leave it. I'll do a review later.", { hasPending: true }).action, 'next');
+assert.equal(voiceControlReply("I'll later do a review myself so nothing need the agent to do right now.").action, 'next',
+  'the previously misdelivered live utterance deterministically defers the item');
+assert.equal(voiceControlReply("Don't send that.", { hasPending: true }).action, 'cancel');
 assert.equal(voiceControlReply('I prefer option two.'), null,
   'feedback goes through contextual intent reasoning instead of an unconditional send shortcut');
+
+// Explicit dialogue state: a draft exists only while this exact item awaits confirmation.
+{
+  const initial = createVoiceDialogueState();
+  const staged = reduceVoiceDialogue(initial, {
+    sessionId: 's_one',
+    userText: 'Make the report shorter.',
+    reply: { action: 'await', say: 'I understood: make the report shorter. Should I send that?', message: 'Make the report shorter.' },
+  });
+  assert.equal(staged.phase, 'confirming');
+  assert.equal(scopedVoicePending(staged, 's_one'), 'Make the report shorter.');
+  assert.equal(scopedVoicePending(staged, 's_two'), '', 'a draft cannot cross into the next session');
+  const afterQuestion = reduceVoiceDialogue(staged, {
+    sessionId: 's_one',
+    userText: 'What is currently too long?',
+    reply: { action: 'await', say: 'The opening repeats the same context.', message: '' },
+  });
+  assert.equal(scopedVoicePending(afterQuestion, 's_one'), 'Make the report shorter.',
+    'asking detail does not approve or silently discard the pending draft');
+  const afterMove = reduceVoiceDialogue(afterQuestion, {
+    sessionId: 's_one',
+    userText: 'Okay, moving on.',
+    reply: voiceControlReply('Okay, moving on.', { hasPending: true }),
+  });
+  assert.equal(afterMove.phase, 'listening');
+  assert.equal(scopedVoicePending(afterMove, 's_one'), '');
+  const ambient = reduceVoiceDialogue(staged, {
+    sessionId: 's_one', userText: 'people nearby talking', reply: { action: 'ignore', say: '', message: '' },
+  });
+  assert.equal(scopedVoicePending(ambient, 's_one'), 'Make the report shorter.', 'ambient speech cannot mutate the pending state');
+}
+
+assert.equal(
+  reconcileVoiceReply({ action: 'await', say: 'Understood. Moving on.', message: 'moving on' }, 'Nothing else here.').action,
+  'next',
+  'spoken movement and the internal pointer transition cannot disagree',
+);
+
+// End-to-end turn selection: navigation short-circuits the model and cannot inherit a stale draft.
+{
+  const confirming = reduceVoiceDialogue(createVoiceDialogueState(), {
+    sessionId: 's_live',
+    userText: 'Change the layout.',
+    reply: { action: 'await', say: 'Should I send that?', message: 'Change the layout.' },
+  });
+  let brainCalls = 0;
+  const moved = await resolveVoiceTurn({
+    dialogue: confirming,
+    sessionId: 's_live',
+    userText: 'Okay, moving on.',
+    brain: async () => { brainCalls++; throw new Error('must not call'); },
+  });
+  assert.equal(moved.reply.action, 'next');
+  assert.equal(moved.reply.message, '');
+  assert.equal(scopedVoicePending(moved.dialogue, 's_live'), '');
+  assert.equal(brainCalls, 0);
+
+  const deferred = await resolveVoiceTurn({
+    dialogue: confirming,
+    sessionId: 's_live',
+    userText: "Just leave it. I'll do a review later.",
+    brain: async () => { brainCalls++; throw new Error('must not call'); },
+  });
+  assert.equal(deferred.reply.action, 'next');
+  assert.equal(deferred.reply.message, '');
+  assert.equal(brainCalls, 0);
+
+  const approved = await resolveVoiceTurn({
+    dialogue: confirming,
+    sessionId: 's_live',
+    userText: 'Yes, send it.',
+    brain: async () => { throw new Error('must not call'); },
+  });
+  assert.equal(approved.reply.action, 'send');
+  assert.equal(approved.reply.message, 'Change the layout.');
+}
 
 // Complete delivery boundary: a context-classified send reaches the shared delivery path, and
 // success is not announced until that delivery resolves.
@@ -124,8 +213,13 @@ assert.match(voiceSource, /normalizeVoiceAddress\(rawUserText\)/,
   'manual and proactive entry points normalize speech through the same conversation path');
 assert.match(voiceSource, /isVoiceInformationQuestion\(userText\)[\s\S]*\['send', 'ignore'\]/,
   'explicit questions have a deterministic never-send guard');
-assert.match(voiceSource, /action === 'send' && !vs\.pendingInstruction/,
+assert.match(voiceSource, /action === 'send' && !pending/,
   'a new instruction is confirmed before either Voice entry point can deliver it');
+assert.doesNotMatch(voiceSource, /vs\.pendingInstruction/,
+  'unscoped pending text has been replaced by explicit per-session dialogue state');
+const voiceTurnSource = readFileSync(new URL('../src/voice_turn.js', import.meta.url), 'utf8');
+assert.match(voiceTurnSource, /voiceControlReply\(userText, \{ hasPending: !!pending \}\)[\s\S]*confirmedPendingReply/,
+  'navigation and cancellation are resolved before confirmation');
 assert.doesNotMatch(voiceSource, /ON_THE_GO_SYS/,
   'proactive announcements no longer use a weaker second assistant policy');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');

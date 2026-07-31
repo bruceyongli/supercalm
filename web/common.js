@@ -443,16 +443,22 @@ function urlB64ToUint8(b64) {
   return Uint8Array.from([...raw].map((c) => c.charCodeAt(0)));
 }
 
-function pushSubscriptionBody(sub, { onTheGo = false } = {}) {
+function pushSubscriptionBody(sub, { onTheGo = false, voiceStyle = 'call' } = {}) {
   const body = typeof sub?.toJSON === 'function' ? sub.toJSON() : {
     endpoint: sub?.endpoint,
     expirationTime: sub?.expirationTime,
     keys: sub?.keys,
   };
-  return { ...body, aios: { onTheGo: !!onTheGo } };
+  return {
+    ...body,
+    aios: {
+      onTheGo: !!onTheGo,
+      voiceStyle: voiceStyle === 'walkie' ? 'walkie' : 'call',
+    },
+  };
 }
 
-export async function enablePush({ onTheGo = false } = {}) {
+export async function enablePush({ onTheGo = false, voiceStyle = 'call' } = {}) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
     alert('Push not supported here. On iPhone/iPad, add Supercalm to your Home Screen first.');
     return false;
@@ -479,20 +485,20 @@ export async function enablePush({ onTheGo = false } = {}) {
   await api('api/subscribe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo })),
+    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo, voiceStyle })),
   });
   return true;
 }
 
-export async function setPushPreferences({ onTheGo = false } = {}) {
+export async function setPushPreferences({ onTheGo = false, voiceStyle = 'call' } = {}) {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
   const reg = await navigator.serviceWorker.getRegistration();
   const sub = reg && await reg.pushManager.getSubscription();
-  if (!sub) return onTheGo ? enablePush({ onTheGo }) : false;
+  if (!sub) return onTheGo ? enablePush({ onTheGo, voiceStyle }) : false;
   await api('api/subscribe', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo })),
+    body: JSON.stringify(pushSubscriptionBody(sub, { onTheGo, voiceStyle })),
   });
   return true;
 }

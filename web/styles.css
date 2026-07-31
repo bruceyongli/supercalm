@@ -122,6 +122,38 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .spin { animation: spin 0.8s linear infinite; transform-origin: 50% 50%; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Incoming Voice update: a consent boundary before live audio begins. The underlying Needs You item
+   remains untouched when the operator says Not now. */
+.voice-update-call {
+  position: fixed; inset: 0; z-index: 99; display: grid; place-items: center;
+  padding: calc(20px + env(safe-area-inset-top)) calc(20px + env(safe-area-inset-right))
+    calc(20px + env(safe-area-inset-bottom)) calc(20px + env(safe-area-inset-left));
+  background: rgba(1,4,9,.78); backdrop-filter: blur(14px);
+}
+.voice-update-call-card {
+  width: min(430px, 100%); display: grid; justify-items: center; gap: 11px; padding: clamp(24px, 7vw, 38px);
+  border: 1px solid rgba(88,166,255,.3); border-radius: 24px;
+  background: linear-gradient(155deg, rgba(18,29,43,.98), rgba(8,13,20,.98));
+  box-shadow: 0 28px 90px rgba(0,0,0,.55); text-align: center;
+}
+.voice-update-call-signal {
+  width: 62px; height: 62px; display: grid; place-items: center; margin-bottom: 4px; border-radius: 50%;
+  background: rgba(78,203,108,.12); box-shadow: 0 0 0 0 rgba(78,203,108,.28); animation: voiceCallRing 2s ease-out infinite;
+}
+.voice-update-call-signal i { width: 22px; height: 22px; border-radius: 50%; background: #4ecb6c; box-shadow: 0 0 22px rgba(78,203,108,.65); }
+@keyframes voiceCallRing { 55%, 100% { box-shadow: 0 0 0 18px rgba(78,203,108,0); } }
+.voice-update-call-kicker { color: #79b8ff; font: 800 10px/1 'JetBrains Mono', monospace; letter-spacing: .14em; }
+.voice-update-call-card h2 { max-width: 100%; color: #f1f5fa; font: 650 clamp(22px, 6vw, 28px)/1.2 'IBM Plex Sans', system-ui, sans-serif; overflow-wrap: anywhere; }
+.voice-update-call-card p {
+  display: -webkit-box; max-width: 360px; margin: 0; overflow: hidden; color: #9fabb9;
+  font: 450 14px/1.5 'IBM Plex Sans', system-ui, sans-serif; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+}
+.voice-update-call-actions { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.voice-update-call-actions button { min-height: 50px; border-radius: 13px; font: 750 14px/1 'IBM Plex Sans', system-ui, sans-serif; cursor: pointer; }
+.voice-update-call-actions .later { border: 1px solid #303b4a; background: #111821; color: #a8b3c0; }
+.voice-update-call-actions .answer { border: 1px solid #3a9e52; background: #25763a; color: #f2fff5; }
+.voice-update-call-card small { color: #657386; font: 500 10.5px/1.4 'IBM Plex Sans', system-ui, sans-serif; }
+
 /* voice mode */
 .voice-btn { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; min-height: 30px; }
 .voice-btn svg { display: block; }
@@ -144,6 +176,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .vm-said { color: var(--ink); font-size: 18px; line-height: 1.55; max-height: 42vh; overflow: auto; }
 .vm-heard { color: var(--green); font-size: 14px; min-height: 1.2em; font-style: italic; }
 .vm-stop { min-width: 130px; }
+.vm-action-row, .ongo-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.vm-interrupt { color: #d9f8e2; border-color: rgba(78,203,108,.55); background: rgba(78,203,108,.12); }
+.vm-interrupt[hidden] { display: none; }
 .vm-progress { width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 6px; align-items: center; }
 .vm-bar { width: 100%; height: 6px; background: var(--line2); border-radius: 999px; overflow: hidden; }
 .vm-bar > i { display: block; height: 100%; width: 0%; background: var(--blue); transition: width 0.4s ease; }

@@ -12,6 +12,7 @@ export { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js'
 
 const ENABLED_KEY = 'aios.on-the-go.enabled';
 const ANNOUNCED_KEY = 'aios.on-the-go.announced';
+const STYLE_KEY = 'aios.voice-updates.style';
 const ANNOUNCED_MAX = 120;
 
 function readEnabled() {
@@ -31,26 +32,42 @@ function readAnnounced() {
     return new Set(Array.isArray(values) ? values.slice(-ANNOUNCED_MAX) : []);
   } catch { return new Set(); }
 }
+function readStyle(wasEnabled) {
+  try {
+    const saved = localStorage.getItem(STYLE_KEY);
+    if (saved === 'call' || saved === 'walkie') return saved;
+    // Preserve automatic speech on devices that enabled Voice updates before this choice existed.
+    // Fresh devices start with the less intrusive incoming-call style.
+    return wasEnabled ? 'walkie' : 'call';
+  } catch { return 'call'; }
+}
 function saveAnnounced() {
   try { localStorage.setItem(ANNOUNCED_KEY, JSON.stringify([...announced].slice(-ANNOUNCED_MAX))); } catch {}
 }
 
 let enabled = readEnabled();
+let style = readStyle(enabled);
 let announced = readAnnounced();
 let currentNeeds = [];
 let initialObserved = false;
 let talking = false;
+let incoming = null;
 let push = 'unknown';
-let detail = enabled ? 'Voice updates on · announces new foreground reports' : 'Off';
+let detail = enabled ? `Voice updates on · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}` : 'Off';
 let listeners = new Set();
 let chimeContext = null;
+let ringTimer = null;
 
 const launchParams = new URLSearchParams(location.search);
 const notificationLaunch = launchParams.get('on-the-go') === '1' || launchParams.get('ride') === '1';
-let pendingFocus = notificationLaunch ? String(launchParams.get('focus') || '') : '';
-if (notificationLaunch) {
+const callLaunch = launchParams.get('voice-call');
+let pendingFocus = notificationLaunch || callLaunch ? String(launchParams.get('focus') || '') : '';
+let acceptNotificationCall = callLaunch === 'accept';
+if (notificationLaunch || callLaunch) {
   enabled = true;
+  style = callLaunch ? 'call' : 'walkie';
   try { localStorage.setItem(ENABLED_KEY, '1'); } catch {}
+  try { localStorage.setItem(STYLE_KEY, style); } catch {}
 }
 
 let voiceAdapter = {
@@ -65,16 +82,65 @@ export function setOnTheGoVoiceAdapter(adapter = {}) {
 }
 
 export function onTheGoState() {
-  return { enabled, talking, push, detail };
+  return {
+    enabled,
+    talking,
+    style,
+    incoming: incoming ? {
+      id: incoming.id,
+      project: incoming.project || incoming.title || 'Project update',
+      summary: incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.',
+    } : null,
+    detail,
+  };
 }
 
 function emit() {
   const state = onTheGoState();
   document.documentElement.classList.toggle('on-the-go-on', enabled);
+  renderIncomingCall();
   for (const listener of listeners) {
     try { listener(state); } catch {}
   }
   window.dispatchEvent(new CustomEvent('aios:on-the-go', { detail: state }));
+}
+
+function stopRinging() {
+  clearInterval(ringTimer);
+  ringTimer = null;
+}
+
+function renderIncomingCall() {
+  let layer = document.querySelector('[data-voice-update-call]');
+  if (!incoming || !enabled || style !== 'call') {
+    layer?.remove();
+    return;
+  }
+  if (!layer) {
+    layer = document.createElement('div');
+    layer.className = 'voice-update-call';
+    layer.dataset.voiceUpdateCall = '';
+    layer.setAttribute('role', 'dialog');
+    layer.setAttribute('aria-modal', 'true');
+    layer.setAttribute('aria-labelledby', 'voice-update-call-title');
+    layer.innerHTML = `
+      <div class="voice-update-call-card">
+        <div class="voice-update-call-signal" aria-hidden="true"><i></i></div>
+        <div class="voice-update-call-kicker">VOICE ASSISTANT · INCOMING UPDATE</div>
+        <h2 id="voice-update-call-title"></h2>
+        <p></p>
+        <div class="voice-update-call-actions">
+          <button type="button" class="later" data-voice-call-decline>Not now</button>
+          <button type="button" class="answer" data-voice-call-accept>Accept</button>
+        </div>
+        <small>Not now silences this update. It stays in Needs You.</small>
+      </div>`;
+    layer.querySelector('[data-voice-call-accept]').onclick = acceptVoiceUpdate;
+    layer.querySelector('[data-voice-call-decline]').onclick = declineVoiceUpdate;
+    document.body.append(layer);
+  }
+  layer.querySelector('h2').textContent = incoming.project || incoming.title || 'Project update';
+  layer.querySelector('p').textContent = incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.';
 }
 
 export function subscribeOnTheGo(listener) {
@@ -113,11 +179,47 @@ async function chime() {
   } catch {}
 }
 
+function offerCall(session) {
+  if (!enabled || style !== 'call' || talking || voiceAdapter.active?.() || !session || document.hidden) return false;
+  const key = onTheGoAttentionKey(session);
+  if (incoming && onTheGoAttentionKey(incoming) === key) return true;
+  incoming = session;
+  detail = `Incoming update from ${session.project || session.title || 'a project'}`;
+  emit();
+  stopRinging();
+  void chime();
+  ringTimer = setInterval(() => { if (incoming && !document.hidden) void chime(); }, 5000);
+  return true;
+}
+
+export async function acceptVoiceUpdate() {
+  const session = incoming;
+  if (!session) return false;
+  stopRinging();
+  incoming = null;
+  emit();
+  return speakNeeds(session, { manual: true });
+}
+
+export function declineVoiceUpdate() {
+  if (!incoming) return false;
+  // One call offers a guided pass over the current queue. "Not now" silences that snapshot without
+  // changing Needs You or its cross-device dismissal state; only a genuinely new report can ring.
+  markAnnounced(currentNeeds);
+  stopRinging();
+  incoming = null;
+  detail = 'Call declined · Needs You is unchanged';
+  emit();
+  return true;
+}
+
 async function speakNeeds(session, { manual = false } = {}) {
   if (!enabled || talking || voiceAdapter.active?.() || !session || document.hidden) return false;
   // One concierge pass walks the complete current queue, so mark that snapshot together. A skipped
   // report remains visible in Needs You but does not immediately re-trigger another spoken pass.
   markAnnounced(currentNeeds);
+  stopRinging();
+  incoming = null;
   talking = true;
   detail = `Talking about ${session.project || session.title || 'a project'}…`;
   emit();
@@ -136,14 +238,19 @@ async function speakNeeds(session, { manual = false } = {}) {
 }
 
 function scan({ manual = false } = {}) {
-  if (!enabled || talking || voiceAdapter.active?.() || document.hidden) return;
+  if (!enabled || talking || incoming || voiceAdapter.active?.() || document.hidden) return;
   let next = null;
   if (pendingFocus) {
     next = currentNeeds.find((session) => session.id === pendingFocus) || null;
     if (next) pendingFocus = '';
   }
   if (!next) next = manual ? currentNeeds[0] || null : nextOnTheGoAttention(currentNeeds, announced);
-  if (next) speakNeeds(next, { manual });
+  if (!next) return;
+  if (style === 'call' && !manual && !acceptNotificationCall) offerCall(next);
+  else {
+    acceptNotificationCall = false;
+    speakNeeds(next, { manual: true });
+  }
 }
 
 export function observeOnTheGoNeeds(needs) {
@@ -169,10 +276,12 @@ export async function toggleOnTheGo() {
   if (enabled) {
     enabled = false;
     talking = false;
+    stopRinging();
+    incoming = null;
     detail = 'Off';
     try { localStorage.setItem(ENABLED_KEY, '0'); } catch {}
     try { voiceAdapter.stop?.(); } catch {}
-    setPushPreferences({ onTheGo: false }).catch(() => {});
+    setPushPreferences({ onTheGo: false, voiceStyle: style }).catch(() => {});
     emit();
     return onTheGoState();
   }
@@ -186,7 +295,7 @@ export async function toggleOnTheGo() {
   // microphone access after the notification prompt settles so iOS never has two system permission
   // sheets competing at once (getUserMedia permission does not require the same transient activation).
   const audioPrime = voiceAdapter.prepare?.({ requestMic: false }).catch(() => null);
-  const pushOn = await enablePush({ onTheGo: true }).catch(() => false);
+  const pushOn = await enablePush({ onTheGo: true, voiceStyle: style }).catch(() => false);
   await audioPrime;
   const voice = await voiceAdapter.prepare?.({ requestMic: true })
     .catch((error) => ({ mic: false, error: error?.message || error }));
@@ -194,10 +303,31 @@ export async function toggleOnTheGo() {
   detail = voice?.mic === false
     ? 'Notifications on · microphone permission still needed for replies'
     : pushOn
-      ? 'Voice updates on · speaks in foreground, notifies in background'
-      : 'Voice updates on in foreground · install the PWA for background notifications';
+      ? `Voice updates on · ${style === 'call' ? 'asks before talking' : 'speaks new reports'} and notifies in background`
+      : `Voice updates on in foreground · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}`;
   emit();
-  scan({ manual: true });
+  const current = currentNeeds[0] || null;
+  if (style === 'call' && current) offerCall(current);
+  else scan({ manual: true });
+  return onTheGoState();
+}
+
+export function setVoiceUpdateStyle(nextStyle) {
+  const next = nextStyle === 'walkie' ? 'walkie' : 'call';
+  if (next === style) return onTheGoState();
+  style = next;
+  try { localStorage.setItem(STYLE_KEY, style); } catch {}
+  stopRinging();
+  const offered = incoming;
+  incoming = null;
+  detail = enabled
+    ? `Voice updates on · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}`
+    : 'Off';
+  if (enabled) setPushPreferences({ onTheGo: true, voiceStyle: style }).catch(() => {});
+  emit();
+  // Switching an unanswered incoming call to walkie-talkie means "tell me now"; otherwise this
+  // setting affects the next genuinely new report without inventing a duplicate update.
+  if (enabled && style === 'walkie' && offered) speakNeeds(offered, { manual: true });
   return onTheGoState();
 }
 
@@ -205,9 +335,15 @@ export async function toggleOnTheGo() {
 // prompt. This makes a previously enabled on-the-go assistant resilient across page reloads on iOS.
 if (enabled) {
   // Refresh an existing subscription's preference after a renamed release without showing prompts.
-  setPushPreferences({ onTheGo: true }).catch(() => {});
+  setPushPreferences({ onTheGo: true, voiceStyle: style }).catch(() => {});
   window.addEventListener('pointerdown', () => voiceAdapter.prepare?.({ requestMic: false }).catch(() => {}), { once: true, capture: true });
 }
-window.addEventListener('visibilitychange', () => { if (!document.hidden) scan(); });
+window.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopRinging();
+  else {
+    if (incoming) { void chime(); ringTimer = setInterval(() => { if (incoming && !document.hidden) void chime(); }, 5000); }
+    else scan();
+  }
+});
 window.addEventListener('aios:voice-mode-end', () => { talking = false; setTimeout(scan, 500); });
 queueMicrotask(emit);

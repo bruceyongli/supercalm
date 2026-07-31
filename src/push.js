@@ -42,12 +42,16 @@ async function pushAll(payload) {
     subs.map(async (sub) => {
       try {
         const onTheGo = !!(sub.aios?.onTheGo ?? sub.aios?.ride); // v0.3.273 subscription migration
+        const voiceStyle = sub.aios?.voiceStyle === 'walkie' ? 'walkie' : 'call';
         const targeted = {
           ...payload,
           ...(onTheGo && payload.onTheGoUrl ? {
-            url: payload.onTheGoUrl,
+            url: voiceStyle === 'call' ? (payload.voiceCallUrl || payload.url) : payload.onTheGoUrl,
             onTheGo: true,
-            body: `${String(payload.body || '').replace(/\s+/g, ' ').slice(0, 112)} Tap to hear and reply.`,
+            voiceStyle,
+            voiceCallUrl: payload.voiceCallUrl,
+            voiceAcceptUrl: payload.voiceAcceptUrl,
+            body: `${String(payload.body || '').replace(/\s+/g, ' ').slice(0, 112)} ${voiceStyle === 'call' ? 'Tap to answer.' : 'Tap to hear and reply.'}`,
           } : {}),
         };
         await webpush.sendNotification(sub, JSON.stringify(targeted), { TTL: 600, urgency: 'high' });
@@ -83,6 +87,8 @@ bus.on('waiting', ({ session, summary, category }) => {
     body: String(summary || s.summary || s.title || 'Waiting for input').replace(/\s+/g, ' ').slice(0, 140),
     url: `session?id=${session}`, // relative — the SW resolves it against its scope (/aios/)
     onTheGoUrl: `./?on-the-go=1&focus=${encodeURIComponent(session)}`,
+    voiceCallUrl: `./?voice-call=1&focus=${encodeURIComponent(session)}`,
+    voiceAcceptUrl: `./?voice-call=accept&focus=${encodeURIComponent(session)}`,
     tag: session,
   }).catch(() => {});
 });

@@ -5,7 +5,7 @@ import * as store from './store.js';
 import * as sessions from './sessions.js';
 import { chat } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
-import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } from './voice_brief.js';
+import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech, stripRoutineProcessEvidence } from './voice_brief.js';
 import { listWiki, readWiki, searchWiki } from './wiki.js';
 import { getContext } from './context_doc.js';
 import { getRuntime, listEvents as listProjectEvents, taskCard } from './agents/supervisor/project_memory.js';
@@ -13,12 +13,12 @@ import { storyFor } from './story_api.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
 import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
 import {
-  asksForConfirmation,
-  confirmedPendingReply,
+  createVoiceDialogueState,
   isVoiceInformationQuestion,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
-  voiceControlReply,
+  resolveVoiceTurn,
+  scopedVoicePending,
   providerFailureReply,
 } from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
@@ -34,6 +34,7 @@ For the user's reply about the CURRENT item:
 - asks for detail or your opinion -> answer briefly, stay here (action "await").
 - asks a QUESTION about the session, the project, or what the supervisor thinks -> answer from CONTEXT (recent messages, screen, PROJECT KNOWLEDGE, SUPERVISOR notes) in 1-2 spoken sentences, then action "await". If the context doesn't contain the answer, say so plainly — never invent. Never speak URLs or file paths; use bare file names.
 - in a follow-up such as "tell me about this", "what happened here", or "why", "this" means the current update/workstream—not the product in general. Answer the useful detail behind the report.
+- When explaining an update, answer what broke, the cause when known, what changed for the user, and any remaining gap. Successful test counts, suite totals, commit ids, file counts, and deployment ceremony are supporting evidence—not the answer—unless the owner explicitly asks about verification or release mechanics. Failed verification remains important.
 - a correction such as "I was asking for details" means answer the earlier question; it is NEVER feedback to send to the coding agent.
 - skip / pass / later / next -> action "next".
 - stop / done / that's all -> action "stop".
@@ -42,7 +43,10 @@ Default to "await" for any NEW instruction — confirm before acting. Only use "
 On "send" or "next", briefly confirm and say you're moving on — do NOT describe or invent the next item; the system presents it on the next turn.
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
 Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
-Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop|ignore","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
+- "leave it", "I'll review later", "moving on", or equivalent defers the current item -> action "next", message empty. It does not send anything to the coding agent.
+- "never mind" or "don't send that" while confirming a draft -> action "cancel", message empty; remain on this item.
+- Your spoken words and action must agree. Never say you are moving on with action "await". Never put navigation words into an agent message.
+Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop|cancel|ignore","message":"...draft only when awaiting explicit confirmation; final instruction when sending..."}`;
 
 const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
@@ -369,7 +373,9 @@ async function present(vs, greet) {
       }
     } else {
       let request = sanitizeForSpeech(it.originalRequest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-      let latest = sanitizeForSpeech(it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      const rawLatest = sanitizeForSpeech(it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      let latest = stripRoutineProcessEvidence(rawLatest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '')
+        || (rawLatest ? 'The report only gave routine release verification, not how the requested issue changed' : '');
       const requestCap = vs.onTheGo ? 90 : 150;
       const latestCap = vs.onTheGo ? 120 : 180;
       if (request.length > requestCap) request = request.slice(0, requestCap).replace(/\s+\S*$/, '') + '…';
@@ -427,7 +433,7 @@ async function brainReply(vs, userText) {
       CONVERSATION_CHAIN,
     );
     const obj = parseVoiceBrainOutput(content, userText);
-    let action = ['await', 'send', 'next', 'stop', 'ignore'].includes(obj.action) ? obj.action : 'await';
+    let action = ['await', 'send', 'next', 'stop', 'cancel', 'ignore'].includes(obj.action) ? obj.action : 'await';
     let say = sanitizeForSpeech(String(obj.say || '')).trim();
     let message = obj.message ? String(obj.message) : '';
     // An STT transcript often loses question punctuation. This deterministic semantic guard covers
@@ -443,7 +449,8 @@ async function brainReply(vs, userText) {
     // Voice updates and manually-started Voice use the same deliberate delivery contract: a new
     // instruction is restated first, and only a later confirmation crosses into the coding session.
     // This is also the last safety boundary against nearby conversation that sounded task-related.
-    if (action === 'send' && !vs.pendingInstruction) {
+    const pending = scopedVoicePending(vs.dialogue, vs.items[vs.pointer]?.sessionId);
+    if (action === 'send' && !pending) {
       action = 'await';
       message = message || userText;
       say = say && !/\b(?:sent|forwarded|passed)\b/i.test(say)
@@ -481,7 +488,7 @@ route('POST', '/api/voice/start', async (req, res) => {
   const onTheGo = source.startsWith('on-the-go');
   const items = buildVoiceItems(focusSessionId, { onTheGo });
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
-  const vs = { id: id('v'), items, pointer: 0, history: [], onTheGo, createdAt: now(), lastTouch: now() };
+  const vs = { id: id('v'), items, pointer: 0, history: [], dialogue: createVoiceDialogueState(), onTheGo, createdAt: now(), lastTouch: now() };
   voiceSessions.set(vs.id, vs);
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
@@ -538,9 +545,14 @@ route('POST', '/api/voice/turn', async (req, res) => {
     // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
     // established a pending instruction, "yes" (including "yes, and also ...") can be delivered
     // reliably even if every model provider is down on this turn.
-    const r = confirmedPendingReply(vs.pendingInstruction, userText)
-      || voiceControlReply(userText)
-      || await brainReply(vs, userText);
+    const sessionId = vs.items[vs.pointer]?.sessionId || '';
+    const resolved = await resolveVoiceTurn({
+      dialogue: vs.dialogue,
+      sessionId,
+      userText,
+      brain: () => brainReply(vs, userText),
+    });
+    const r = resolved.reply;
     if (r.action === 'ignore') {
       vs.history.pop(); // nearby speech must not become context for the next real operator turn
       return json(res, 200, {
@@ -556,9 +568,11 @@ route('POST', '/api/voice/turn', async (req, res) => {
     trim(vs.history);
     const currentItem = vs.items[vs.pointer];
     const currentBeforeTurn = cur(vs);
+    vs.dialogue = resolved.dialogue;
     try {
       if (currentItem) store.addEvent(currentItem.sessionId, 'voice-turn', {
         action: r.action,
+        phase: vs.dialogue.phase,
         mode: vs.onTheGo ? 'on-the-go' : 'manual',
         input_len: userText.length,
         has_message: !!r.message,
@@ -570,7 +584,6 @@ route('POST', '/api/voice/turn', async (req, res) => {
 
     if (r.action === 'send') {
       const it = vs.items[vs.pointer];
-      vs.pendingInstruction = '';
       const outcome = await deliverVoiceFeedback({
         item: it,
         reply: { ...r, message: r.message || userText },
@@ -602,13 +615,11 @@ route('POST', '/api/voice/turn', async (req, res) => {
       }); // client -> /continue presents next
     }
     if (r.action === 'next') {
-      vs.pendingInstruction = '';
       vs.skipped = (vs.skipped || 0) + 1; // skipped items stay WAITING — they're still in the queue
       vs.pointer++;
       return json(res, 200, { say: r.say, done: false, listen: false, current: currentBeforeTurn, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
     }
     if (r.action === 'stop') {
-      vs.pendingInstruction = '';
       vs.done = true;
       voiceSessions.delete(vs.id);
       const count = vs.sentCount || 0;
@@ -619,9 +630,9 @@ route('POST', '/api/voice/turn', async (req, res) => {
         : r.say;
       return json(res, 200, { say, done: true, listen: false, sentCount: count, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
     }
-    // New-instruction replies carry the model's normalized draft. Older/less compliant models may
-    // omit it, so retain the transcript when their spoken reply clearly asks for confirmation.
-    if (r.message || asksForConfirmation(r.say)) vs.pendingInstruction = r.message || userText;
+    if (r.action === 'cancel') {
+      return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs), ...(vs.onTheGo ? { acceptedText: userText } : {}) });
+    }
     return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs), ...(vs.onTheGo ? { acceptedText: userText } : {}) });
   } finally {
     vs.inflight = false;
