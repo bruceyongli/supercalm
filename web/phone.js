@@ -17,6 +17,7 @@ import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQue
 import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
+import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 
 registerSW();
 
@@ -446,6 +447,15 @@ async function voiceLoopListen() {
 }
 async function voiceSubmitTurn(text) {
   if (V.stopFlag || !text) return;
+  const disposition = voiceTranscriptDisposition(text, { spoken: V.said });
+  if (!disposition.accepted) {
+    V.ignoredReason = disposition.reason;
+    V.lastHeard = '';
+    V.silentTurns++;
+    render();
+    return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
+  }
+  text = disposition.text;
   V.silentTurns = 0; V.lastHeard = text; V.ignoredReason = ''; render();
   try {
     const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
@@ -485,7 +495,13 @@ function voiceModeEnd(why) {
   render();
 }
 // energy-gated recorder: resolves with the utterance blob once the speaker pauses
-function vadRecord(stream, { maxMs = 45000, silenceMs = 1400, minSpeechMs = 500, threshold = 0.017 } = {}) {
+function vadRecord(stream, {
+  maxMs = 45000,
+  silenceMs = VOICE_CAPTURE_DEFAULTS.silenceMs,
+  minSpeechMs = VOICE_CAPTURE_DEFAULTS.minSpeechMs,
+  threshold = VOICE_CAPTURE_DEFAULTS.threshold,
+  graceMs = VOICE_CAPTURE_DEFAULTS.graceMs,
+} = {}) {
   return new Promise((resolve) => {
     let rec;
     try {
@@ -515,10 +531,11 @@ function vadRecord(stream, { maxMs = 45000, silenceMs = 1400, minSpeechMs = 500,
       else if (spokeAt && !silentSince) silentSince = nowT;
       const spokeLong = spokeAt && nowT - spokeAt > minSpeechMs;
       const silentLong = silentSince && nowT - silentSince > silenceMs;
-      if (V.stopFlag || nowT - t0 > maxMs || (spokeLong && silentLong)) {
+      const noSpeech = !spokeAt && nowT - t0 > graceMs;
+      if (V.stopFlag || noSpeech || nowT - t0 > maxMs || (spokeLong && silentLong)) {
         clearInterval(timer);
         try { src?.disconnect(); } catch {}
-        rec.onstop = () => resolve(spokeAt || !an ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null);
+        rec.onstop = () => resolve((spokeAt || !an) && !noSpeech ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null);
         try { rec.stop(); } catch { resolve(null); }
       }
     }, 120);
@@ -971,11 +988,15 @@ function renderSheet() {
     const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
     const heard = V.ignoredReason === 'no-speech'
       ? 'No response heard. Nothing was sent.'
-      : V.lastHeard
-      ? `“${V.lastHeard.slice(0, 260)}”`
-      : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
+      : V.ignoredReason === 'fragment'
+        ? 'A clipped sound was ignored. Still listening.'
+        : V.lastHeard
+          ? `“${V.lastHeard.slice(0, 260)}”`
+          : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
     const heardLabel = V.ignoredReason === 'no-speech'
       ? 'NO RESPONSE · NOTHING SENT'
+      : V.ignoredReason === 'fragment'
+        ? 'AUDIO FRAGMENT · NOT USED'
       : V.ignoredReason
         ? 'HEARD NEARBY · NOT USED'
         : V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE';

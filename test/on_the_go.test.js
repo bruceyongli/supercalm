@@ -64,6 +64,8 @@ assert.match(phone, /data-voice-update-style="call"[\s\S]*data-voice-update-styl
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
 assert.match(phone, /phoneVoiceConstraints[\s\S]*noiseSuppression/,
   'the iPhone capture path requests platform noise suppression before semantic filtering');
+assert.match(phone, /threshold = VOICE_CAPTURE_DEFAULTS\.threshold[\s\S]*noSpeech = !spokeAt/,
+  'phone uses the desktop speech threshold and stops a quiet capture instead of recording room noise forever');
 assert.match(phone, /onSegment:[\s\S]*paintVoiceSegment\(segment\)/, 'sentence progress updates only the spoken line');
 assert.doesNotMatch(phone, /onSegment:[\s\S]{0,180}V\.segment = segment;\s*render\(\)/,
   'sentence synchronization never rebuilds the full phone app');
@@ -81,6 +83,10 @@ assert.match(voice, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\
   'desktop Voice Assistant listens for a clear question or correction while it is speaking');
 assert.match(phone, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,
   'phone Voice Assistant supports the same spoken interruption path');
+assert.match(phone, /voiceTranscriptDisposition\(text, \{ spoken: V\.said \}\)/,
+  'phone uses the shared transcript-quality boundary before sending a turn');
+assert.match(voice, /voiceTranscriptDisposition\(text, \{ spoken: lastSpoken \}\)/,
+  'desktop uses the same transcript-quality boundary');
 assert.match(voice, /vm-interrupt/, 'desktop and iPad retain a tap-to-interrupt fallback');
 assert.match(phone, /data-voice-interrupt/, 'phone retains a reachable tap-to-interrupt fallback');
 assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');
@@ -101,8 +107,8 @@ assert.match(voiceServer, /getContext\(project\.id\)/,
   'follow-up questions can use maintained project knowledge when the owner asks for it');
 assert.match(voiceServer, /taskCard\(runtime\.active_task_id\)/,
   'briefing knows the current task contract and verification criteria');
-assert.match(voiceServer, /normalizeVoiceAddress\(rawUserText\)/,
-  'proactive and manual speech enter the same conversation path');
+assert.match(voiceServer, /voiceTranscriptDisposition\(rawUserText[\s\S]*normalizeVoiceAddress\(disposition\.text\)/,
+  'proactive and manual speech enter the same validated conversation path');
 assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*claude-opus-5[\s\S]*gpt-5\.6-luna[\s\S]*qwen36-a3b-nvfp4-marlin/,
   'follow-up reasoning prioritizes Opus 5 and retains GPT-5.6 and the local model as fallbacks');
 assert.doesNotMatch(voiceServer, /ON_THE_GO_SYS/,

@@ -209,8 +209,10 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(voiceSource, /onTheGoImmediateReply\(userText\)/,
   'On the go no longer treats every transcript as immediate feedback');
-assert.match(voiceSource, /normalizeVoiceAddress\(rawUserText\)/,
-  'manual and proactive entry points normalize speech through the same conversation path');
+assert.match(voiceSource, /voiceTranscriptDisposition\(rawUserText[\s\S]*normalizeVoiceAddress\(disposition\.text\)/,
+  'manual and proactive entry points share transcript validation and conversation normalization');
+assert.match(voiceSource, /if \(!disposition\.accepted\)[\s\S]*voice-input-ignored[\s\S]*ignoredReason: disposition\.reason/,
+  'the server rejects phone fragments before dialogue or model reasoning, including for stale PWA clients');
 assert.match(voiceSource, /isVoiceInformationQuestion\(userText\)[\s\S]*\['send', 'ignore'\]/,
   'explicit questions have a deterministic never-send guard');
 assert.match(voiceSource, /action === 'send' && !pending/,

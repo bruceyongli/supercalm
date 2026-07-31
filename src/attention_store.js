@@ -73,6 +73,10 @@ export function getAttentionDismissal(sessionId) {
   return projectDismissal(_get.get(sessionId));
 }
 
+export function getLatestAttentionReport(sessionId) {
+  return _lastOut.get(sessionId) || null;
+}
+
 export function listAttentionDismissals(limit = 500) {
   return _list.all(Math.max(1, Math.min(1000, Number(limit) || 500))).map(projectDismissal);
 }

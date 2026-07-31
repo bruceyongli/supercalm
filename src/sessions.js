@@ -49,6 +49,7 @@ import {
   clearAttentionDismissal,
   createAttentionReport,
   getAttentionDismissal,
+  getLatestAttentionReport,
   markAttentionReportRead,
 } from './attention_store.js';
 import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
@@ -1692,7 +1693,11 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
   const wasWaiting = s.status === 'waiting';
   const nowWaiting = status === 'waiting';
   const freshAttention = nowWaiting && (!wasWaiting || forceAttention);
-  const attentionSeed = String(question || s.summary || s.title || 'Review the latest session update')
+  // The title is useful for a brand-new session's first completion, but on later attention episodes it
+  // describes how the thread began—not what just finished. Never reopen a reused session with that old
+  // title (which Voice would then narrate as today's update) when runSummary captured no reliable facts.
+  const firstAttentionFallback = freshAttention && !getLatestAttentionReport(s.id) ? s.title : '';
+  const attentionSeed = String(question || s.summary || firstAttentionFallback || 'The session is waiting, but no reliable new report was captured. Open Story or Terminal to review it.')
     .replace(/\s+/g, ' ').trim().slice(0, 220);
   // The lifecycle hook is authoritative and immediate; the model-curated summary is asynchronous.
   // Give a fresh waiting episode a safe visible projection now so a slow/failed summary can never make

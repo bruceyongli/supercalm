@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const root = new URL('../', import.meta.url);
-const assets = new Map(['voicemode.js', 'common.js', 'tts-player.js', 'voice-interruption.js']
+const assets = new Map(['voicemode.js', 'common.js', 'tts-player.js', 'voice-interruption.js', 'voice-input.js']
   .map((name) => [`/${name}`, readFileSync(new URL(`web/${name}`, root))]));
 const turns = [];
 const readBody = async (req) => {

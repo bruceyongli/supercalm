@@ -1,6 +1,7 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage } from './common.js';
 import { unlockAudio as unlockPlayer, newPlayback, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
+import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 
 // Hands-free voice concierge loop:
 //   speak (TTS) -> [listen with VAD -> STT -> /turn]  OR  [/continue] -> speak -> ...
@@ -64,6 +65,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
   ui = buildOverlay({ onTheGo: String(source).startsWith('on-the-go') });
   try {
     let state = await post('api/voice/start', { focusSessionId, source });
+    let lastSpoken = '';
     voiceId = state.voiceId;
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
@@ -76,13 +78,20 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
       let interruption = null;
       if (!state.ignored || state.say) {
         setState('speaking', state.say);
+        lastSpoken = state.say || lastSpoken;
         interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current });
       }
       if (state.done || stopFlag) break;
       if (interruption?.text) {
-        setHeard(interruption.text);
+        const disposition = voiceTranscriptDisposition(interruption.text, { spoken: lastSpoken });
+        if (!disposition.accepted) {
+          markIgnoredSpeech(disposition.reason);
+          state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
+          continue;
+        }
+        setHeard(disposition.text);
         setState('thinking');
-        state = await post('api/voice/turn', { voiceId, userText: interruption.text });
+        state = await post('api/voice/turn', { voiceId, userText: disposition.text });
       } else if (state.listen || interruption?.tap) {
         setState('listening');
         let text = '';
@@ -110,8 +119,14 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
         } finally {
           live?.abort();
         }
-        if (text) setHeard(text);
-        state = await post('api/voice/turn', { voiceId, userText: text });
+        const disposition = voiceTranscriptDisposition(text, { spoken: lastSpoken });
+        if (!disposition.accepted) {
+          markIgnoredSpeech(disposition.reason);
+          state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
+          continue;
+        }
+        setHeard(disposition.text);
+        state = await post('api/voice/turn', { voiceId, userText: disposition.text });
       } else {
         setState('thinking');
         state = await post('api/voice/continue', { voiceId });
@@ -381,7 +396,12 @@ function recorderOptions() {
 // getUserMedia rejections (NotAllowedError…) propagate TYPED to the caller — the loop names the
 // cause and stops instead of nagging forever. Everything after acquisition is try/finally so a
 // constructor failure can never leak the mic.
-async function recordUntilSilence({ maxMs = 90000, silenceMs = 1800, graceMs = 8000 } = {}) {
+async function recordUntilSilence({
+  maxMs = 90000,
+  silenceMs = VOICE_CAPTURE_DEFAULTS.silenceMs,
+  graceMs = VOICE_CAPTURE_DEFAULTS.graceMs,
+  threshold = VOICE_CAPTURE_DEFAULTS.threshold,
+} = {}) {
   const stream = await navigator.mediaDevices.getUserMedia(microphoneConstraints());
   const opts = recorderOptions();
   const chunks = [];
@@ -423,7 +443,7 @@ async function recordUntilSilence({ maxMs = 90000, silenceMs = 1800, graceMs = 8
           rms = Math.sqrt(sum / buf.length);
         }
         const t = Date.now();
-        if (rms > 0.045) { lastVoice = t; spoke = true; }
+        if (rms > threshold) { lastVoice = t; spoke = true; }
         if (ui && ui.orb) ui.orb.style.transform = `scale(${(1 + Math.min(rms * 4, 1)).toFixed(2)})`;
         const done = t - t0 > maxMs || (spoke && t - lastVoice > silenceMs) || (!spoke && t - t0 > grace);
         done ? resolve() : setTimeout(tick, 100); // NOT rAF — background tabs freeze rAF and wedge the loop here
@@ -602,6 +622,7 @@ function setHeard(text) {
 function markIgnoredSpeech(reason = '') {
   if (!ui?.onTheGo || !ui.heard) return;
   ui.heard.classList.add('ignored');
-  if (ui.heardLabel) ui.heardLabel.textContent = reason === 'no-speech' ? 'NO RESPONSE · NOTHING SENT' : 'HEARD NEARBY · NOT USED';
+  if (ui.heardLabel) ui.heardLabel.textContent = reason === 'no-speech' ? 'NO RESPONSE · NOTHING SENT' : reason === 'fragment' ? 'AUDIO FRAGMENT · NOT USED' : 'HEARD NEARBY · NOT USED';
   if (reason === 'no-speech') ui.heard.textContent = 'Still listening for your reply.';
+  else if (reason === 'fragment') ui.heard.textContent = 'A clipped sound was ignored. Still listening.';
 }

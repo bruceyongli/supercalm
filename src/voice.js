@@ -11,7 +11,7 @@ import { getContext } from './context_doc.js';
 import { getRuntime, listEvents as listProjectEvents, taskCard } from './agents/supervisor/project_memory.js';
 import { storyFor } from './story_api.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
-import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
+import { asksForSessionOverview, isNeedsYouSession, isStaleSessionTitleEcho, latestAttentionReportFrom, latestReliableReport, originalRequestFrom } from './voice_attention.js';
 import {
   createVoiceDialogueState,
   isVoiceInformationQuestion,
@@ -22,6 +22,7 @@ import {
   providerFailureReply,
 } from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
+import { voiceTranscriptDisposition } from '../web/voice-input.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -100,13 +101,12 @@ function stillNeedsAttention(sessionId) {
   return isNeedsYouSession(session, session ? attentionState(session) : {});
 }
 
-function latestReportFor(session) {
-  const summary = String(session?.summary || '').trim();
-  const question = String(session?.question || '').trim();
-  if (!summary) return question;
-  if (!question || summary === question || question.includes(summary)) return question || summary;
-  if (summary.includes(question)) return summary;
-  return `${summary}. ${question}`;
+function latestReportFor(session, messages = []) {
+  return latestReliableReport(messages, session);
+}
+
+function recentVoiceMessages(sessionId, limit = 200) {
+  return store.recentMessagesFor(sessionId, Math.max(1, Math.min(500, Number(limit) || 200)));
 }
 
 export function projectIdentityFor(project) {
@@ -142,7 +142,9 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
       return (a.last_activity || 0) - (b.last_activity || 0);
     }); // otherwise oldest waiting first
   return live.map((s) => {
-    const messages = store.messagesFor(s.id, 200);
+    const messages = recentVoiceMessages(s.id, 200);
+    const report = latestAttentionReportFrom(messages);
+    const latestReport = latestReportFor(s, messages);
     const project = s.project_id ? store.getProject(s.project_id) : null;
     return {
       sessionId: s.id,
@@ -151,9 +153,9 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
       projectId: s.project_id || null,
       project: project?.name || 'adhoc',
       projectIdentity: projectIdentityFor(project),
-      originalRequest: originalRequestFrom(messages, s.title || ''),
-      latestReport: latestReportFor(s),
-      summary: s.summary || s.question || '',
+      originalRequest: originalRequestFrom(messages, s.title || '', { reportId: report?.id }),
+      latestReport,
+      summary: latestReport,
       category: s.category || 'review',
       onTheGo,
     };
@@ -277,10 +279,16 @@ async function stateContext(vs, userText = '') {
     if (evidence.projectContext) lines.push(`PROJECT BACKGROUND:\n${evidence.projectContext}`);
     if (evidence.taskContext) lines.push(`CURRENT TASK CONTRACT:\n${evidence.taskContext}`);
     if (evidence.recentConversation) lines.push(`RECENT CONVERSATION:\n${evidence.recentConversation}`);
-    const msgs = store.messagesFor(it.sessionId, 200).slice(-4);
+    const msgs = recentVoiceMessages(it.sessionId, 4);
     if (msgs.length) {
       lines.push('Recent:');
-      for (const m of msgs) lines.push(`  ${m.direction === 'in' ? 'you' : 'agent'}: ${String(m.text).replace(/\s+/g, ' ').slice(0, 160)}`);
+      const sessionTitle = store.getSession(it.sessionId)?.title || '';
+      for (const m of msgs) {
+        const text = m.direction === 'out' && isStaleSessionTitleEcho(m.text, sessionTitle)
+          ? '[stale status detector title echo omitted]'
+          : String(m.text).replace(/\s+/g, ' ').slice(0, 160);
+        lines.push(`  ${m.direction === 'in' ? 'you' : 'agent'}: ${text}`);
+      }
     }
     let snap = '';
     try {
@@ -333,8 +341,8 @@ async function briefFor(it) {
       sessionId: it.sessionId, project: it.project, projectIdentity: it.projectIdentity, tool: it.tool, category: it.category,
       ...evidence,
       originalRequest: it.originalRequest,
-      latestReport: it.latestReport || latestReportFor(s2),
-      summary: it.summary, ask: s2?.question || '', screen: '', supervisorNote: supervisorNoteFor(it.sessionId),
+      latestReport: it.latestReport || latestReportFor(s2, recentVoiceMessages(it.sessionId, 200)),
+      summary: it.latestReport || it.summary, ask: it.latestReport || s2?.question || '', screen: '', supervisorNote: supervisorNoteFor(it.sessionId),
     });
     if (it._brief) {
       it.module = it._brief.module || '';
@@ -496,6 +504,7 @@ route('POST', '/api/voice/start', async (req, res) => {
     voiceSessions.delete(vs.id);
     return json(res, 200, { voiceId: null, say: 'Everything that was waiting just got handled. All caught up.', done: true, listen: false });
   }
+  vs.lastSpoken = p.say;
   json(res, 200, { voiceId: vs.id, say: p.say, done: false, listen: true, count: items.length, current: cur(vs) });
 });
 
@@ -532,14 +541,42 @@ route('POST', '/api/voice/turn', async (req, res) => {
       // re-ask forever is an infinite nag loop. Three strikes → end the pass gracefully.
       vs.emptyTurns = (vs.emptyTurns || 0) + 1;
       if (vs.emptyTurns >= 3) {
+        vs.lastSpoken = "I'm having trouble hearing you, so I'll stop here. Check the microphone and tap voice again when you're ready.";
         voiceSessions.delete(vs.id);
-        return json(res, 200, { say: "I'm having trouble hearing you, so I'll stop here. Check the microphone and tap voice again when you're ready.", done: true, listen: false });
+        return json(res, 200, { say: vs.lastSpoken, done: true, listen: false });
       }
-      return json(res, 200, { say: "Sorry, I didn't catch that — could you say it again?", done: false, listen: true });
+      vs.lastSpoken = "Sorry, I didn't catch that — could you say it again?";
+      return json(res, 200, { say: vs.lastSpoken, done: false, listen: true });
     }
     vs.emptyTurns = 0;
 
-    const userText = normalizeVoiceAddress(rawUserText);
+    // Defense in depth for installed PWAs running an older phone bundle: clipped STT and the tail of
+    // our own TTS are silence/noise, not user intent. Never spend a model call or mutate dialogue state.
+    const disposition = voiceTranscriptDisposition(rawUserText, { spoken: vs.lastSpoken || '' });
+    if (!disposition.accepted) {
+      vs.fragmentTurns = (vs.fragmentTurns || 0) + 1;
+      const done = vs.fragmentTurns >= 3;
+      try {
+        const currentItem = vs.items[vs.pointer];
+        if (currentItem) store.addEvent(currentItem.sessionId, 'voice-input-ignored', {
+          reason: disposition.reason,
+          input_len: rawUserText.length,
+          mode: vs.onTheGo ? 'on-the-go' : 'manual',
+        });
+      } catch {}
+      if (done) voiceSessions.delete(vs.id);
+      return json(res, 200, {
+        say: done ? "I'm only hearing fragments, so I'll stop here. No feedback was sent." : '',
+        done,
+        listen: !done,
+        ignored: true,
+        ignoredReason: disposition.reason,
+        current: cur(vs),
+      });
+    }
+    vs.fragmentTurns = 0;
+
+    const userText = normalizeVoiceAddress(disposition.text);
 
     vs.history.push({ role: 'user', content: userText });
     // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
@@ -564,6 +601,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
         current: cur(vs),
       });
     }
+    vs.lastSpoken = r.say;
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
     const currentItem = vs.items[vs.pointer];
@@ -657,6 +695,7 @@ route('POST', '/api/voice/continue', async (req, res) => {
       : "That's everything that needed you. You're all caught up — talk soon.";
     return json(res, 200, { say, done: true, listen: false, current: null });
   }
+  vs.lastSpoken = p.say;
   json(res, 200, { say: p.say, done: false, listen: true, current: cur(vs) });
 });
 
@@ -671,7 +710,9 @@ route('POST', '/api/voice/stop', async (req, res) => {
 route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
   const s2 = store.getSession(sid);
   if (!s2) return json(res, 404, { error: 'no such session' });
-  const messages = store.messagesFor(sid, 200);
+  const messages = recentVoiceMessages(sid, 200);
+  const report = latestAttentionReportFrom(messages);
+  const latestReport = latestReportFor(s2, messages);
   const project = s2.project_id ? store.getProject(s2.project_id) : null;
   const evidence = await voiceEvidenceFor({
     sessionId: sid,
@@ -685,9 +726,9 @@ route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
     projectIdentity: projectIdentityFor(project),
     tool: s2.tool, category: s2.category || 'review',
     ...evidence,
-    originalRequest: originalRequestFrom(messages, s2.title || ''),
-    latestReport: latestReportFor(s2),
-    summary: s2.summary || s2.title || '', ask: s2.question || '',
+    originalRequest: originalRequestFrom(messages, s2.title || '', { reportId: report?.id }),
+    latestReport,
+    summary: latestReport || s2.title || '', ask: latestReport,
     screen: '', supervisorNote: supervisorNoteFor(sid),
   });
   json(res, 200, { ok: true, brief });
