@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  addressedOnTheGoSpeech,
   asksForConfirmation,
   confirmationFrom,
   confirmedPendingReply,
   isVoiceInformationQuestion,
-  onTheGoImmediateReply,
+  onTheGoControlReply,
   providerFailureReply,
 } from '../src/voice_turn.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
@@ -28,6 +29,8 @@ assert.match(confirmed.message, /Fix the report ordering/);
 assert.match(confirmed.message, /Additional request from the operator: make the controls larger/);
 
 assert.equal(confirmedPendingReply('', 'Yes'), null, 'a bare yes cannot send without a pending instruction');
+assert.equal(confirmedPendingReply(pending, 'Yes, what exactly failed?'), null,
+  'an acknowledgment followed by a question stays in the assistant conversation');
 assert.equal(asksForConfirmation('I understood the change. Should I send that?'), true);
 assert.equal(asksForConfirmation('Here is more detail about the report.'), false);
 
@@ -46,25 +49,33 @@ assert.equal(isVoiceInformationQuestion('What happened to the deployment?'), tru
 assert.equal(isVoiceInformationQuestion('Why is this session blocked'), true, 'STT does not need question punctuation');
 assert.equal(isVoiceInformationQuestion('Is it deployed'), true);
 assert.equal(isVoiceInformationQuestion('Can you tell me what changed'), true);
+assert.equal(isVoiceInformationQuestion('I was asking for the details'), true,
+  'a correction about an earlier question cannot become agent feedback');
 assert.equal(isVoiceInformationQuestion('Can you make the button larger on iPhone?'), false, 'a polite instruction is feedback, not an information question');
-assert.equal(onTheGoImmediateReply('Tell me what failed'), null, 'questions stay with the assistant');
 assert.deepEqual(
-  onTheGoImmediateReply('I prefer option two, and make the mobile controls larger.'),
-  {
-    say: "Got it. I'm sending your feedback now.",
-    action: 'send',
-    message: 'I prefer option two, and make the mobile controls larger.',
-    deterministic: true,
-    onTheGoImmediate: true,
-  },
+  addressedOnTheGoSpeech('Two people nearby are discussing option two.'),
+  { addressed: false, message: '' },
+  'nearby conversation never enters the assistant turn',
 );
-assert.equal(onTheGoImmediateReply('stop').action, 'stop');
-assert.equal(onTheGoImmediateReply('next').action, 'next');
+assert.deepEqual(
+  addressedOnTheGoSpeech('People nearby are talking. Supercalm, what failed in verification?'),
+  { addressed: true, message: 'what failed in verification' },
+  'only speech after the wake phrase is accepted',
+);
+assert.deepEqual(
+  addressedOnTheGoSpeech('Hey super calm, I prefer option two and larger mobile controls.'),
+  { addressed: true, message: 'I prefer option two and larger mobile controls' },
+);
+assert.deepEqual(addressedOnTheGoSpeech('Supercalm'), { addressed: true, message: '' });
+assert.equal(onTheGoControlReply('stop').action, 'stop');
+assert.equal(onTheGoControlReply('next').action, 'next');
+assert.equal(onTheGoControlReply('I prefer option two.'), null,
+  'feedback goes through contextual intent reasoning instead of an unconditional send shortcut');
 
-// Complete business path: ordinary On-the-go feedback becomes a send, the shared delivery path
-// receives the exact transcript, and success is not announced until that delivery resolves.
+// Complete delivery boundary: a context-classified send reaches the shared delivery path, and
+// success is not announced until that delivery resolves.
 {
-  const reply = onTheGoImmediateReply('Use the calmer layout and keep the dismissed items hidden.');
+  const reply = { action: 'send', message: 'Use the calmer layout and keep the dismissed items hidden.' };
   let delivered = '';
   const outcome = await deliverVoiceFeedback({
     item: { sessionId: 's_target', project: 'AIOS', presentedAt: 10 },
@@ -97,7 +108,12 @@ assert.doesNotMatch(
   /\.\.\.vs\.history,\s*\{\s*role:\s*['"]user['"]/,
   'the current transcript is not appended a second time after it was recorded in history',
 );
-assert.match(voiceSource, /onTheGoImmediateReply\(userText\)/, 'On the go routes ordinary feedback through immediate delivery');
+assert.doesNotMatch(voiceSource, /onTheGoImmediateReply\(userText\)/,
+  'On the go no longer treats every transcript as immediate feedback');
+assert.match(voiceSource, /addressedOnTheGoSpeech\(rawUserText\)/,
+  'the server filters unaddressed nearby speech before history or delivery');
+assert.match(voiceSource, /isVoiceInformationQuestion\(userText\) && action === 'send'/,
+  'explicit questions have a deterministic never-send guard');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
 assert.match(voiceSource, /draft: String\(r\.message \|\| userText\)/, 'an attempted handoff keeps a recoverable private draft');
 assert.match(voiceSource, /requestAlive: voiceSessions\.has\(vs\.id\)/,

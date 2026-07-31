@@ -40,31 +40,44 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
 {
   const b = validateBrief({
     topic: 'Widget cache fix', kind: 'decision', quick: 'Cache fix ready; approve checkout?',
+    project: 'Widget Shop is the customer checkout service.',
     request: 'Fix the widget cache and preserve local work.',
     updates: [{ requested: 'widget cache', latest: 'The cache fix passed all tests.' }],
     standard: 'The agent repaired the cache and wants approval for a git checkout that drops two local edits.',
+    spoken: 'Widget Shop handles checkout. You asked to fix its cache without losing local work. The fix passed, but checkout would discard two edits, so I need your approval.',
     detail: 'x'.repeat(2000), needs: 'A yes or no on the checkout.',
     options: [{ key: 'y', label: 'Approve checkout', spoken: 'Yes, approve the checkout' }, { key: 'zzzz', label: '' }],
   });
   assert.equal(b.kind, 'decision');
+  assert.match(b.project, /checkout service/);
+  assert.match(b.spoken, /I need your approval/);
   assert.equal(b.updates.length, 1);
-  assert.ok(b.detail.length <= 900);
+  assert.ok(b.detail.length <= 1200);
   assert.equal(b.options.length, 1);
   assert.equal(validateBrief({ topic: 'x' }), null, 'no standard -> invalid');
   assert.match(SYS_BRIEF, /Never say URLs, absolute file paths/);
   assert.match(SYS_BRIEF, /ORIGINAL REQUEST/);
+  assert.match(SYS_BRIEF, /CURRENT TASK CONTRACT/);
+  assert.match(SYS_BRIEF, /RECENT CONVERSATION/);
+  assert.match(SYS_BRIEF, /trusted project lead/i);
   assert.match(SYS_BRIEF, /EACH distinct requested deliverable/);
   assert.match(SYS_BRIEF, /decision\|input\|discussion\|review\|blocked\|progress/);
   const user = buildBriefUserText({
     project: 'shop',
     tool: 'codex',
     category: 'review',
+    projectContext: 'Shop is the customer checkout application.',
+    taskContext: 'Goal: repair checkout without changing payment providers.',
+    recentConversation: 'Operator: Keep Apple Pay working.\nAgent report: Card checkout passes, Apple Pay still fails.',
     originalRequest: 'Fix checkout and improve mobile.',
     latestReport: 'Checkout is fixed; mobile needs approval.',
     screen: '├ raw terminal nonsense should never appear',
   });
   assert.match(user, /ORIGINAL REQUEST:[\s\S]*Fix checkout/);
   assert.match(user, /LATEST REPORT:[\s\S]*Checkout is fixed/);
+  assert.match(user, /PROJECT BACKGROUND[\s\S]*customer checkout/);
+  assert.match(user, /CURRENT TASK CONTRACT[\s\S]*repair checkout/);
+  assert.match(user, /RECENT CONVERSATION[\s\S]*Apple Pay still fails/);
   assert.doesNotMatch(user, /raw terminal nonsense/, 'automatic voice briefs never ingest the terminal tail');
 }
 
@@ -73,6 +86,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   const call = async () => JSON.stringify({
     topic: 'Deploy approval',
     kind: 'decision',
+    project: 'Shop is the customer checkout application.',
     request: 'Deploy build 12 and verify checkout.',
     updates: [
       { requested: 'deploy build 12', latest: 'The release candidate is ready.' },
@@ -80,6 +94,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
     ],
     quick: 'q',
     standard: 'Approve the deploy of build 12?',
+    spoken: 'Shop handles customer checkout. You asked to deploy build 12 and verify checkout. The candidate is ready and checkout passed. I need your approval to deploy.',
     detail: 'd',
     needs: 'Say whether to deploy.',
     options: [{ key: 'y', label: 'Approve', spoken: 'Yes, deploy it' }],
@@ -101,12 +116,10 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(spoken, /Deploy approval\./);
   assert.match(spoken, /Options: y, Yes, deploy it\./);
   const onTheGo = speakOnTheGoBrief(b);
-  assert.match(onTheGo, /^You asked: Deploy build 12 and verify checkout\./);
-  assert.match(onTheGo, /Update: q\./);
-  assert.match(onTheGo, /I need your input: Say whether to deploy\./);
-  assert.doesNotMatch(onTheGo, /release candidate|checkout tests passed/i,
-    'the automatic interruption does not enumerate the full deliverable history');
-  assert.ok(onTheGo.split(/\s+/).length <= 55, 'the first on-the-go pass stays within one short spoken brief');
+  assert.match(onTheGo, /^Shop handles customer checkout\./);
+  assert.match(onTheGo, /candidate is ready and checkout passed/i);
+  assert.match(onTheGo, /approval to deploy/i);
+  assert.ok(onTheGo.split(/\s+/).length <= 95, 'the first on-the-go pass stays within one bounded spoken brief');
   assert.doesNotMatch(onTheGo, /Deploy approval/, 'on-the-go narration does not repeat the manual Voice title/summary format');
   // cache: second call with identical input returns the same object without invoking
   const b2 = await buildVoiceBrief({ sessionId: 's_t', project: 'shop', tool: 'codex', category: 'decision', originalRequest: 'Deploy build 12 and verify checkout.', latestReport: 'The release candidate is ready and checkout tests passed.', summary: 'sum', ask: 'ask', screen: '', call: async () => { throw new Error('must not be called'); } });
@@ -119,6 +132,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
 
 {
   const long = speakOnTheGoBrief({
+    spoken: Array(140).fill('integrated update').join(' '),
     request: Array(40).fill('requested detail').join(' '),
     quick: Array(40).fill('reported outcome').join(' '),
     standard: 'must not replace quick',
@@ -126,7 +140,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
     needs: Array(30).fill('operator decision').join(' '),
     options: [],
   });
-  assert.ok(long.split(/\s+/).length <= 60, 'even malformed model output cannot become a long automatic monologue');
+  assert.ok(long.split(/\s+/).length <= 95, 'even malformed model output cannot become a long automatic monologue');
   assert.doesNotMatch(long, /deliverable 5|long outcome 5/, 'per-deliverable details remain available only on request');
 }
 

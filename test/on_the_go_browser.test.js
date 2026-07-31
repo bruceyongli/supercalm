@@ -173,6 +173,8 @@ try {
   await page.locator('.vm-ongo .ongo-report').waitFor();
   assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'ON THE GO');
   assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'NOW READING');
+  assert.match(await page.locator('.vm-ongo .ongo-context').textContent(), /Supercalm/,
+    'the wake phrase is visible while the assistant is listening around other people');
   assert.equal(await page.locator('.vm-ongo .ongo-segment.current').count(), 1,
     'the exact sentence currently being spoken has a visible marker');
   assert.equal(await page.locator('.vm-ongo .ongo-heard').count(), 1,
@@ -186,7 +188,7 @@ try {
     document.querySelector('.vm-ongo').dataset.state = 'speaking';
     document.querySelector('.vm-state').textContent = 'Speaking…';
     document.querySelector('.ongo-title').textContent = 'Supercalm';
-    document.querySelector('.ongo-context').textContent = 'Codex · review';
+    document.querySelector('.ongo-context').textContent = 'Say “Supercalm…” · Codex · review';
     document.querySelector('.vm-prog-label').textContent = '2 of 3';
     document.querySelector('.vm-bar > i').style.width = '66%';
     document.querySelector('.vm-said').innerHTML = [

@@ -40,6 +40,9 @@ export function confirmedPendingReply(pending, userText) {
   if (!instruction) return null;
   const confirmation = confirmationFrom(userText);
   if (!confirmation) return null;
+  // "Yes, what exactly failed?" acknowledges that we spoke but asks a follow-up; it is not approval
+  // to append the question to the pending agent instruction.
+  if (confirmation.additional && isVoiceInformationQuestion(confirmation.additional)) return null;
   return {
     say: confirmation.additional
       ? "Got it. I'll send the original instruction with that additional request."
@@ -58,29 +61,36 @@ const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end 
 const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on)[\s.!]*$/i;
 const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happened| should| would| could| can)\b|why\b|how(?:'s| is| are| did| does| do| should| would| could| can)?\b|when\b|where\b|who\b|which\b|more(?: details?)?\b|details?\b|tell me\b|explain\b|give me (?:more|details|the status)\b|read\b|repeat\b|do you think\b|(?:can|could|would) you (?:tell|explain|summarize|repeat|read|give me|check the status)\b|is (?:it|this|that|the|there)\b|are (?:they|these|those|the|there)\b|was (?:it|this|that|the|there)\b|were (?:they|these|those|the|there)\b|did (?:the|it|this|that|they)\b|does (?:the|it|this|that)\b|has (?:the|it|this|that)\b|have (?:the|it|this|that|they)\b)/i;
 const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
+const META_QUESTION = /\b(?:i (?:was|am|'m) (?:asking|wondering)|i asked|my question (?:was|is)|what i (?:asked|wanted to know))\b.{0,80}\b(?:detail|explain|why|what|how|status|happen|mean|think|recommend)/i;
+const WAKE = /\b(?:hey[\s,]+|okay[\s,]+|ok[\s,]+)?super[\s-]*calm\b/i;
 
 export function isVoiceInformationQuestion(text) {
   const value = clean(text);
   if (POLITE_ACTION.test(value)) return false;
-  return value.endsWith('?') || INFO_QUESTION.test(value);
+  return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value);
 }
 
-// Enabling On the go is the operator's standing authorization to hand their ordinary feedback to
-// the session they are currently discussing. Manual Voice keeps confirm-before-send; On the go
-// sends statements/opinions/answers immediately and reserves the model for genuine questions.
-export function onTheGoImmediateReply(userText) {
+// Browser microphones cannot identify the operator's voice among people nearby. On the go therefore
+// has a spoken address boundary, like a wake phrase: only words explicitly addressed to "Supercalm"
+// enter conversation history or become eligible for delivery. Text before the wake phrase is always
+// ignored, so a nearby conversation cannot become the payload merely because it later mentions us.
+export function addressedOnTheGoSpeech(text) {
+  const value = clean(text);
+  const match = WAKE.exec(value);
+  if (!match) return { addressed: false, message: '' };
+  const after = value.slice(match.index + match[0].length).replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, '');
+  return { addressed: true, message: clean(after) };
+}
+
+// Stop/next are safe deterministic conversation controls once the wake boundary has been crossed.
+// All feedback and questions go through the context-aware brain; the old "every statement = send"
+// shortcut turned nearby conversation and follow-up questions into agent instructions.
+export function onTheGoControlReply(userText) {
   const message = clean(userText);
   if (!message) return null;
   if (STOP.test(message)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
   if (NEXT.test(message)) return { say: 'Okay, skipping this one.', action: 'next', message: '', deterministic: true };
-  if (isVoiceInformationQuestion(message)) return null;
-  return {
-    say: "Got it. I'm sending your feedback now.",
-    action: 'send',
-    message,
-    deterministic: true,
-    onTheGoImmediate: true,
-  };
+  return null;
 }
 
 // A provider outage is not a speech-recognition failure. Preserve the transcript as a pending

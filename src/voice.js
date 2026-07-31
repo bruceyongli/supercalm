@@ -1,25 +1,38 @@
 import { route, json, readJson } from './server.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import * as store from './store.js';
 import * as sessions from './sessions.js';
 import { chatJson } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
 import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } from './voice_brief.js';
-import { searchWiki } from './wiki.js';
+import { listWiki, readWiki, searchWiki } from './wiki.js';
+import { getContext } from './context_doc.js';
+import { getRuntime, listEvents as listProjectEvents, taskCard } from './agents/supervisor/project_memory.js';
+import { storyFor } from './story_api.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
 import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
-import { asksForConfirmation, confirmedPendingReply, onTheGoImmediateReply, providerFailureReply } from './voice_turn.js';
+import {
+  addressedOnTheGoSpeech,
+  asksForConfirmation,
+  confirmedPendingReply,
+  isVoiceInformationQuestion,
+  onTheGoControlReply,
+  providerFailureReply,
+} from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
 // the llm.js fallback chain. The browser handles TTS playback + STT (with VAD).
 
-const SYS = `You are Supercalm Voice, a hands-free voice concierge. You help the user clear a queue of CLI coding-agent sessions waiting on them; you SPEAK (text-to-speech) and they reply by voice. Be warm and VERY brief: normally at most 2 short spoken sentences, ~25 words total — this is read aloud by a neural voice, so every extra word adds delay before you start speaking. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase for the ear.
+const SYS = `You are Supercalm Voice, a hands-free project lead. You help the user understand and clear a queue of coding-agent sessions waiting on them; you SPEAK and they reply by voice. Sound like an intelligent human colleague on a phone call: grounded, specific, calm, and concise. Normally use 2-4 short spoken sentences. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase them for the ear.
 For the user's reply about the CURRENT item:
 - an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await"); put the clear actionable draft in "message" even though it is not sent yet.
 - a confirmation (yes/go/send/correct) -> action "send", with "message" = a clear actionable instruction that captures their intent.
 - asks for detail or your opinion -> answer briefly, stay here (action "await").
 - asks a QUESTION about the session, the project, or what the supervisor thinks -> answer from CONTEXT (recent messages, screen, PROJECT KNOWLEDGE, SUPERVISOR notes) in 1-2 spoken sentences, then action "await". If the context doesn't contain the answer, say so plainly — never invent. Never speak URLs or file paths; use bare file names.
+- a correction such as "I was asking for details" means answer the earlier question; it is NEVER feedback to send to the coding agent.
 - skip / pass / later / next -> action "next".
 - stop / done / that's all -> action "stop".
 Default to "await" for any NEW instruction — confirm before acting. Only use "send" once the user confirms (yes / go / correct / send it) OR gives an explicit do-it directive (e.g. "just do it", "go ahead and send"). When unsure between await and send, choose await.
@@ -27,11 +40,24 @@ On "send" or "next", briefly confirm and say you're moving on — do NOT describ
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
 Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
 Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
-const ON_THE_GO_SYS = `ON THE GO DELIVERY MODE: The operator has explicitly enabled automatic feedback handoff. For an ordinary statement, opinion, answer, choice, correction, or instruction, use action "send" immediately with their complete feedback in "message"; do not ask for confirmation. Use "await" only when they ask you a genuine informational question or request more explanation.`;
+const ON_THE_GO_SYS = `ON THE GO DELIVERY MODE:
+- The wake phrase has already proved that this turn was addressed to you. Do not mention the wake phrase in your answer.
+- The operator has authorized immediate handoff ONLY for speech that is clearly an answer, choice, correction, opinion, or instruction intended for the CURRENT coding agent. Then use action "send" with a complete, actionable message.
+- A question, request for details, request for your opinion, uncertainty, thinking aloud, or correction that they were asking a question must use action "await": answer it yourself from context and leave "message" empty. Never send a question to the coding agent.
+- If intent is ambiguous, use action "await" and ask one short clarifying question. Safety is more important than clearing the queue quickly.
+- Nearby speech was filtered before this call. Never reinterpret unrelated conversational fragments as agent feedback.`;
 
 const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
-const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 12000); // must stay well inside the client's 30s /turn abort
+const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 18000); // must stay well inside the client's 30s /turn abort
+const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
+  || '8792:qwen36-a3b-nvfp4-marlin,8788:gpt-5.6-luna,8789:claude-haiku-4-5')
+  .split(',')
+  .map((entry) => {
+    const [port, ...model] = entry.trim().split(':');
+    return { port: Number(port), model: model.join(':') };
+  })
+  .filter((entry) => Number.isFinite(entry.port) && entry.model);
 const trim = (h) => { while (h.length > 16) h.shift(); };
 const touch = (vs) => { vs.lastTouch = now(); };
 // Lazy expiry keyed on LAST TOUCH, run on every voice endpoint — a createdAt-based sweep would kill
@@ -91,6 +117,7 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
       sessionId: s.id,
       tmux: s.tmux,
       tool: s.tool,
+      projectId: s.project_id || null,
       project: s.project_id ? store.getProject(s.project_id)?.name || 'adhoc' : 'adhoc',
       originalRequest: originalRequestFrom(messages, s.title || ''),
       latestReport: latestReportFor(s),
@@ -117,6 +144,96 @@ function supervisorNoteFor(sessionId) {
   } catch { return ''; }
 }
 
+function readProjectOverview(project) {
+  if (!project?.id) return '';
+  const parts = [];
+  try {
+    const pages = listWiki(project.id);
+    const overview = pages.find((page) => /(?:^|\/)overview\.md$/i.test(page.path))
+      || pages.find((page) => /overview|about|architecture/i.test(`${page.title || ''} ${page.path || ''}`));
+    const page = overview ? readWiki(project.id, overview.path) : null;
+    if (page?.content) parts.push(String(page.content).slice(0, 2400));
+  } catch {}
+  try {
+    const context = getContext(project.id);
+    if (context?.doc) parts.push(String(context.doc).slice(0, 2200));
+  } catch {}
+  if (!parts.length && project.path) {
+    for (const name of ['README.md', 'readme.md', 'README']) {
+      const file = join(project.path, name);
+      if (!existsSync(file)) continue;
+      try { parts.push(readFileSync(file, 'utf8').slice(0, 2400)); } catch {}
+      break;
+    }
+  }
+  return sanitizeForSpeech(parts.join('\n')).slice(0, 3200);
+}
+
+function currentTaskContext(sessionId) {
+  try {
+    const runtime = getRuntime(sessionId);
+    const card = runtime?.active_task_id ? taskCard(runtime.active_task_id) : null;
+    if (!card?.task) return '';
+    const lines = [
+      `${card.task.title || 'Current task'} (${card.task.status})`,
+      card.task.goal ? `Goal: ${card.task.goal}` : '',
+      ...card.criteria.slice(0, 10).map((criterion) => `${criterion.status === 'satisfied' ? 'Already verified' : 'Still required'}: ${criterion.text}`),
+    ].filter(Boolean);
+    const events = listProjectEvents({ projectId: card.task.project_id, taskId: card.task.id, limit: 6 }).reverse();
+    if (events.length) {
+      lines.push('Recent task record:');
+      for (const event of events) lines.push(`${event.type}: ${event.summary}`);
+    }
+    return sanitizeForSpeech(lines.join('\n')).slice(0, 4000);
+  } catch {
+    return '';
+  }
+}
+
+function storyConversation(events) {
+  const relevant = (events || []).filter((event) => ['you', 'report', 'ask', 'fail', 'plan'].includes(event?.kind)).slice(-18);
+  const lines = [];
+  for (const event of relevant) {
+    if (event.kind === 'you') lines.push(`Operator: ${event.body || event.text || ''}`);
+    else if (event.kind === 'report') lines.push(`Agent report: ${event.body || event.text || ''}`);
+    else if (event.kind === 'ask') {
+      const options = (event.options || []).map((option) => option.label || option.description || option).filter(Boolean).join(' or ');
+      lines.push(`Agent needs a decision: ${event.body || event.text || event.title || ''}${options ? `. Choices: ${options}` : ''}`);
+    } else if (event.kind === 'fail') lines.push(`Problem encountered: ${event.body || event.text || event.title || ''}`);
+    else if (event.kind === 'plan') {
+      const items = (event.planItems || []).map((item) => item.step || item.content || item.text).filter(Boolean).slice(0, 6);
+      if (items.length) lines.push(`Plan: ${items.join('; ')}`);
+    }
+  }
+  return sanitizeForSpeech(lines.join('\n')).slice(0, 6500);
+}
+
+export async function voiceEvidenceFor(it) {
+  if (!it) return { projectContext: '', taskContext: '', recentConversation: '' };
+  if (it._evidence) return it._evidence;
+  if (it._evidencePromise) return it._evidencePromise;
+  it._evidencePromise = (async () => {
+    const session = store.getSession(it.sessionId);
+    const project = session?.project_id ? store.getProject(session.project_id) : null;
+    let recentConversation = '';
+    try {
+      const story = await storyFor(it.sessionId, { rounds: 4 });
+      recentConversation = storyConversation(story?.events);
+    } catch {}
+    return {
+      projectContext: readProjectOverview(project),
+      taskContext: currentTaskContext(it.sessionId),
+      recentConversation,
+    };
+  })();
+  try {
+    it._evidence = await it._evidencePromise;
+    return it._evidence;
+  } finally {
+    it._evidencePromise = null;
+  }
+}
+
 async function stateContext(vs, userText = '') {
   const it = vs.items[vs.pointer];
   const lines = [`You are on item ${vs.pointer + 1} of ${vs.items.length}.`];
@@ -124,6 +241,10 @@ async function stateContext(vs, userText = '') {
     lines.push(`CURRENT: ${it.project} (${it.tool}), ${it.category}.`);
     if (it.originalRequest) lines.push(`ORIGINAL REQUEST: ${sanitizeForSpeech(it.originalRequest).slice(0, 1200)}`);
     if (it.latestReport) lines.push(`LATEST REPORT: ${sanitizeForSpeech(it.latestReport).slice(0, 1200)}`);
+    const evidence = await voiceEvidenceFor(it);
+    if (evidence.projectContext) lines.push(`PROJECT BACKGROUND:\n${evidence.projectContext}`);
+    if (evidence.taskContext) lines.push(`CURRENT TASK CONTRACT:\n${evidence.taskContext}`);
+    if (evidence.recentConversation) lines.push(`RECENT CONVERSATION:\n${evidence.recentConversation}`);
     const msgs = store.messagesFor(it.sessionId, 200).slice(-4);
     if (msgs.length) {
       lines.push('Recent:');
@@ -175,8 +296,10 @@ async function briefFor(it) {
   if (it._brief) return it._brief;
   try {
     const s2 = store.getSession(it.sessionId);
+    const evidence = await voiceEvidenceFor(it);
     it._brief = await buildVoiceBrief({
       sessionId: it.sessionId, project: it.project, tool: it.tool, category: it.category,
+      ...evidence,
       originalRequest: it.originalRequest,
       latestReport: it.latestReport || latestReportFor(s2),
       summary: it.summary, ask: s2?.question || '', screen: '', supervisorNote: supervisorNoteFor(it.sessionId),
@@ -185,7 +308,7 @@ async function briefFor(it) {
   return it._brief;
 }
 function prefetchBriefs(vs) {
-  for (const it of vs.items.slice(0, 12)) briefFor(it).catch(() => {}); // fire-and-forget: item 2+ speak instantly
+  for (const it of vs.items.slice(0, 4)) briefFor(it).catch(() => {}); // fire-and-forget: item 2+ speak instantly
 }
 
 async function present(vs, greet) {
@@ -198,11 +321,13 @@ async function present(vs, greet) {
     const where = it.project && it.project !== 'adhoc' ? `${it.project} ${it.tool}` : it.tool;
     const lead = greet
       ? vs.onTheGo
-        ? `There ${n === 1 ? 'is' : 'are'} ${n} ${n === 1 ? 'update' : 'updates'} in Needs You. First, ${where}.`
+        ? `There ${n === 1 ? 'is' : 'are'} ${n} ${n === 1 ? 'update' : 'updates'} in Needs You. I only use a response that starts with Supercalm, so nearby conversation is ignored. First, ${where}.`
         : `You have ${n} ${n > 1 ? 'items' : 'item'} in Needs You. First up, ${where}.`
       : `Next, ${where}.`;
-    // spoken brief (gpt-5.5) with a hard latency budget; sanitized template if it isn't ready
-    const brief = await Promise.race([briefFor(it), new Promise((r) => setTimeout(() => r(null), 4000))]);
+    // A grounded project-lead brief is worth a short pause. The local briefing model normally returns
+    // in about 11 seconds; 14 seconds keeps /start inside the client's 30-second bound while avoiding
+    // the robotic template on every first presentation.
+    const brief = await Promise.race([briefFor(it), new Promise((r) => setTimeout(() => r(null), 14000))]);
     if (brief) {
       if (vs.onTheGo) {
         say = `${lead} ${speakOnTheGoBrief(brief)} ${brief.needs ? '' : 'What would you like to do?'}`.trim();
@@ -228,7 +353,7 @@ async function present(vs, greet) {
 // Advance to the next item that is STILL live and present it. Items resolve out from under a pass
 // constantly (answered from the dashboard, another device, or the agent moved on) — presenting a
 // snapshot blind risked sending a reply into a session that no longer asked anything. Re-checks once
-// more AFTER the brief wait (status can flip during those 4s). Pushes the final spoken line into the
+// more AFTER the brief wait (status can flip while it is generated). Pushes the final spoken line into the
 // brain history exactly once, only for what was actually said.
 async function presentNext(vs, greet) {
   let skipped = 0;
@@ -266,17 +391,38 @@ async function brainReply(vs, userText) {
       // made every spoken turn appear twice to the model, with two consecutive user roles; this was
       // especially confusing on the confirmation turn.
       [{ role: 'system', content: SYS + (vs.onTheGo ? '\n' + ON_THE_GO_SYS : '') + '\n\n' + ctx }, ...vs.history],
-      { temperature: 0.3, max_tokens: 650, timeout_ms: 10000, signal: ac.signal }
+      { temperature: 0.3, max_tokens: 650, timeout_ms: 12000, signal: ac.signal },
+      CONVERSATION_CHAIN,
     );
-    const action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
+    let action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
+    let say = sanitizeForSpeech(String(obj.say || '')).trim() || 'Okay.';
+    let message = obj.message ? String(obj.message) : '';
+    // An STT transcript often loses question punctuation. This deterministic semantic guard covers
+    // explicit detail/status/opinion questions and "I was asking..." corrections even if a model
+    // violates the JSON policy: questions stay in the conversation and can never become agent input.
+    if (vs.onTheGo && isVoiceInformationQuestion(userText) && action === 'send') {
+      action = 'await';
+      message = '';
+      if (/\b(?:send|forward|pass)(?:ing|ed)?\b.{0,35}\b(?:agent|session|feedback)\b/i.test(say)) {
+        say = "I understood that as a question, so I didn't send it to the agent. I don't yet have a reliable answer from the available context.";
+      }
+    }
     return {
-      say: sanitizeForSpeech(String(obj.say || '')).trim() || 'Okay.',
+      say,
       action,
-      message: obj.message ? String(obj.message) : '',
+      message,
     };
   } catch (e) {
     console.error('[aios] voice reply failed:', e.message);
     const it = vs.items[vs.pointer];
+    if (vs.onTheGo && isVoiceInformationQuestion(userText)) {
+      return {
+        say: 'I heard your question, but the response service is temporarily unavailable. I did not send it to the agent.',
+        action: 'await',
+        message: '',
+        providerFailed: true,
+      };
+    }
     return providerFailureReply(userText, it?.project);
   } finally {
     clearTimeout(timer);
@@ -313,8 +459,24 @@ route('POST', '/api/voice/turn', async (req, res) => {
   vs.inflight = true;
   try {
     touch(vs);
-    const userText = String(b.userText || '').trim();
-    if (!userText) {
+    const rawUserText = String(b.userText || '').trim();
+    if (!rawUserText) {
+      if (vs.onTheGo) {
+        // Silence is not a conversational turn. Keep it out of history and never synthesize a
+        // response from it. After three quiet windows, end this pass silently; the persistent On the
+        // go switch can announce the next new Needs You report without draining the microphone.
+        vs.emptyTurns = (vs.emptyTurns || 0) + 1;
+        const done = vs.emptyTurns >= 3;
+        if (done) voiceSessions.delete(vs.id);
+        return json(res, 200, {
+          say: '',
+          done,
+          listen: !done,
+          ignored: true,
+          ignoredReason: 'no-speech',
+          current: cur(vs),
+        });
+      }
       // Consecutive silent turns = capture is broken (mic denied, dead VAD, muted input) — a polite
       // re-ask forever is an infinite nag loop. Three strikes → end the pass gracefully.
       vs.emptyTurns = (vs.emptyTurns || 0) + 1;
@@ -326,12 +488,40 @@ route('POST', '/api/voice/turn', async (req, res) => {
     }
     vs.emptyTurns = 0;
 
+    let userText = rawUserText;
+    if (vs.onTheGo) {
+      const addressed = addressedOnTheGoSpeech(rawUserText);
+      if (!addressed.addressed) {
+        // Do not retain nearby conversation in LLM history, decisions, messages, or delivery drafts.
+        // The client labels the visible live transcript as ignored and immediately resumes listening.
+        return json(res, 200, {
+          say: '',
+          done: false,
+          listen: true,
+          ignored: true,
+          ignoredReason: 'not-addressed',
+          current: cur(vs),
+        });
+      }
+      if (!addressed.message) {
+        return json(res, 200, {
+          say: "I'm listening. Say Supercalm, then your question or feedback in the same sentence.",
+          done: false,
+          listen: true,
+          ignored: true,
+          ignoredReason: 'wake-only',
+          current: cur(vs),
+        });
+      }
+      userText = addressed.message;
+    }
+
     vs.history.push({ role: 'user', content: userText });
     // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
     // established a pending instruction, "yes" (including "yes, and also ...") can be delivered
     // reliably even if every model provider is down on this turn.
     const r = confirmedPendingReply(vs.pendingInstruction, userText)
-      || (vs.onTheGo ? onTheGoImmediateReply(userText) : null)
+      || (vs.onTheGo ? onTheGoControlReply(userText) : null)
       || await brainReply(vs, userText);
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
@@ -379,13 +569,14 @@ route('POST', '/api/voice/turn', async (req, res) => {
         current: currentBeforeTurn,
         delivery: outcome.delivery,
         sentCount: vs.sentCount || 0,
+        ...(vs.onTheGo ? { acceptedText: userText } : {}),
       }); // client -> /continue presents next
     }
     if (r.action === 'next') {
       vs.pendingInstruction = '';
       vs.skipped = (vs.skipped || 0) + 1; // skipped items stay WAITING — they're still in the queue
       vs.pointer++;
-      return json(res, 200, { say: r.say, done: false, listen: false, current: currentBeforeTurn });
+      return json(res, 200, { say: r.say, done: false, listen: false, current: currentBeforeTurn, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
     }
     if (r.action === 'stop') {
       vs.pendingInstruction = '';
@@ -397,12 +588,12 @@ route('POST', '/api/voice/turn', async (req, res) => {
           ? `Okay, stopping. I sent ${count} ${count === 1 ? 'feedback message' : 'feedback messages'} during this conversation.`
           : 'Okay, stopping. No feedback was sent during this conversation.'
         : r.say;
-      return json(res, 200, { say, done: true, listen: false, sentCount: count });
+      return json(res, 200, { say, done: true, listen: false, sentCount: count, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
     }
     // New-instruction replies carry the model's normalized draft. Older/less compliant models may
     // omit it, so retain the transcript when their spoken reply clearly asks for confirmation.
     if (r.message || asksForConfirmation(r.say)) vs.pendingInstruction = r.message || userText;
-    return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs) });
+    return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs), ...(vs.onTheGo ? { acceptedText: userText } : {}) });
   } finally {
     vs.inflight = false;
   }
@@ -441,10 +632,18 @@ route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
   const s2 = store.getSession(sid);
   if (!s2) return json(res, 404, { error: 'no such session' });
   const messages = store.messagesFor(sid, 200);
+  const project = s2.project_id ? store.getProject(s2.project_id) : null;
+  const evidence = await voiceEvidenceFor({
+    sessionId: sid,
+    projectId: s2.project_id || null,
+    project: project?.name || 'adhoc',
+    tool: s2.tool,
+  });
   const brief = await buildVoiceBrief({
     sessionId: sid,
-    project: s2.project_id ? store.getProject(s2.project_id)?.name || 'adhoc' : 'adhoc',
+    project: project?.name || 'adhoc',
     tool: s2.tool, category: s2.category || 'review',
+    ...evidence,
     originalRequest: originalRequestFrom(messages, s2.title || ''),
     latestReport: latestReportFor(s2),
     summary: s2.summary || s2.title || '', ask: s2.question || '',

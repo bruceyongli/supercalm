@@ -283,10 +283,9 @@ async function playQueue(items, scope) {
 
 // ---- interactive voice mode (home): the desktop concierge, hands-free on the phone ----------------
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
-// silence) → STT → /api/voice/turn → ordinary feedback is delivered immediately; genuine questions
-// are answered from the session log + project knowledge + supervisor notes → next item. One tap in,
-// zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
+// silence) → STT → addressed-intent reasoning → questions stay with the assistant; explicit feedback
+// reaches the agent. One tap in, zero after.
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
 function setVoiceCurrent(next) {
   const previousId = V.current?.sessionId || '';
   const nextId = next?.sessionId || '';
@@ -295,6 +294,7 @@ function setVoiceCurrent(next) {
   // through that session's confirmation, then clear them as the next session is presented.
   if (previousId && nextId && previousId !== nextId) {
     V.lastHeard = '';
+    V.ignoredReason = '';
     V.delivery = null;
     V.segment = '';
   }
@@ -318,8 +318,8 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
   if (V.on) return;
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
-  try { V.stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
+  try { V.stream = await navigator.mediaDevices.getUserMedia(phoneVoiceConstraints()); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
+  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.ignoredReason = ''; V.silentTurns = 0; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
   render();
   try {
     const r = await api('api/voice/start', {
@@ -332,6 +332,15 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
     if (r.done) return voiceModeEnd('done');
     if (r.listen) return voiceLoopListen();
   } catch (e) { toast('Voice mode failed: ' + (e.message || e)); voiceModeEnd('error'); }
+}
+function phoneVoiceConstraints() {
+  const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+  const audio = {};
+  if (supported.echoCancellation) audio.echoCancellation = true;
+  if (supported.noiseSuppression) audio.noiseSuppression = true;
+  if (supported.autoGainControl) audio.autoGainControl = true;
+  if (supported.channelCount) audio.channelCount = { ideal: 1 };
+  return Object.keys(audio).length ? { audio } : { audio: true };
 }
 async function voiceSay(text) {
   if (!text || V.stopFlag) return;
@@ -353,7 +362,16 @@ async function voiceLoopListen() {
   V.state = 'listening'; render();
   const blob = await vadRecord(V.stream, { maxMs: 45000 });
   if (V.stopFlag) return;
-  if (!blob || blob.size < 800) { await voiceSay("I didn't hear anything. Say skip, stop, or your reply."); return voiceLoopListen(); }
+  if (!blob || blob.size < 800) {
+    if (V.onTheGo) {
+      V.ignoredReason = 'no-speech';
+      V.silentTurns++;
+      render();
+      return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
+    }
+    await voiceSay("I didn't hear anything. Say skip, stop, or your reply.");
+    return voiceLoopListen();
+  }
   V.state = 'thinking'; render();
   let text = '';
   try {
@@ -362,14 +380,26 @@ async function voiceLoopListen() {
     text = (j.text || '').trim();
   } catch {}
   if (V.stopFlag) return;
-  if (!text) { await voiceSay('Sorry, I could not transcribe that. Try again.'); return voiceLoopListen(); }
-  V.lastHeard = text; render();
+  if (!text) {
+    if (V.onTheGo) {
+      V.ignoredReason = 'no-speech';
+      V.silentTurns++;
+      render();
+      return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
+    }
+    await voiceSay('Sorry, I could not transcribe that. Try again.');
+    return voiceLoopListen();
+  }
+  V.silentTurns = 0; V.lastHeard = text; V.ignoredReason = ''; render();
   try {
     const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
     setVoiceCurrent(r.current || V.current);
+    if (r.acceptedText) V.lastHeard = r.acceptedText;
+    V.ignoredReason = r.ignored ? (r.ignoredReason || 'not-addressed') : '';
     V.delivery = r.delivery || V.delivery;
     V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
     await voiceSay(r.say);
+    render();
     if (V.stopFlag) return;
     if (r.done) return voiceModeEnd('done');
     if (r.listen) return voiceLoopListen();
@@ -871,11 +901,22 @@ function renderSheet() {
     const st = V.state;
     const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
     const project = V.current?.project || 'Project update';
-    const context = V.current ? [V.current.tool, V.current.category].filter(Boolean).join(' · ') : 'Needs You';
+    const context = V.current
+      ? [V.onTheGo ? 'Say “Supercalm…”' : '', V.current.tool, V.current.category].filter(Boolean).join(' · ')
+      : V.onTheGo ? 'Say “Supercalm…” before responding' : 'Needs You';
     const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
-    const heard = V.lastHeard
+    const heard = V.ignoredReason === 'no-speech'
+      ? 'No response heard. Nothing was sent.'
+      : V.ignoredReason === 'wake-only'
+        ? 'Wake phrase heard; include your question or feedback after it.'
+        : V.lastHeard
       ? `“${V.lastHeard.slice(0, 260)}”`
       : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
+    const heardLabel = V.ignoredReason === 'no-speech'
+      ? 'NO RESPONSE · NOTHING SENT'
+      : V.ignoredReason
+        ? 'HEARD NEARBY · NOT USED'
+        : V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE';
     if (V.onTheGo) return `
     <button class="scrim" data-voice-end aria-label="end"></button>
     <div class="sheet ongoing-sheet">
@@ -888,11 +929,11 @@ function renderSheet() {
         <span>NOW READING</span>
         <p>${esc(V.segment || 'Preparing a clear update…')}</p>
       </div>
-      <div class="ongo-sheet-heard"><b>${V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE'}</b><span>${esc(heard)}</span></div>
+      <div class="ongo-sheet-heard ${V.ignoredReason ? 'ignored' : ''}"><b>${heardLabel}</b><span>${esc(heard)}</span></div>
       ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
-      <div class="footnote">reply naturally · say “skip” to move on · ask for all session statuses only when you want them</div>
+      <div class="footnote">start with “Supercalm” · nearby speech is ignored · then ask a question or give feedback</div>
     </div>`;
     return `
     <button class="scrim" data-voice-end aria-label="end"></button>

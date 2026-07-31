@@ -58,6 +58,41 @@ addMessage('s_ph', 'out', 'detect', 'new report B after the reply');
 const { featureReady } = await import('../src/server.js');
 await featureReady;
 
+// ---- voice evidence combines project purpose, task contract, and real recent conversation --------
+{
+  const { addEvent } = await import('../src/store.js');
+  const { setContext } = await import('../src/context_doc.js');
+  const { createTask, upsertRuntime } = await import('../src/agents/supervisor/project_memory.js');
+  const { voiceEvidenceFor } = await import('../src/voice.js');
+  db.prepare("INSERT INTO projects (id, name, path, created_at) VALUES ('p_voice_context', 'Calm Shop', '/missing/calm-shop', 1)").run();
+  db.prepare(`
+    INSERT INTO sessions
+      (id, project_id, tool, tmux, title, status, started_at, last_activity)
+    VALUES ('s_voice_context', 'p_voice_context', 'codex', 'tmx_voice_context', 'Repair checkout', 'exited', 1, 1)
+  `).run();
+  addEvent('s_voice_context', 'launch-queued', {});
+  addMessage('s_voice_context', 'in', 'task', 'Keep Apple Pay working while repairing checkout.');
+  addMessage('s_voice_context', 'out', 'agent', 'Card checkout passes, but Apple Pay verification still fails.');
+  setContext('p_voice_context', {
+    doc: '# Calm Shop\nCalm Shop is the customer checkout application for the storefront.',
+    source: 'test',
+  });
+  const card = createTask({
+    projectId: 'p_voice_context',
+    title: 'Repair checkout safely',
+    goal: 'Restore checkout without regressing Apple Pay.',
+    criteria: ['Card checkout passes', 'Apple Pay passes'],
+    sessionId: 's_voice_context',
+  });
+  upsertRuntime('s_voice_context', { project_id: 'p_voice_context', active_task_id: card.task.id });
+  const evidence = await voiceEvidenceFor({ sessionId: 's_voice_context', project: 'Calm Shop', tool: 'codex' });
+  assert.match(evidence.projectContext, /customer checkout application/);
+  assert.match(evidence.taskContext, /Restore checkout without regressing Apple Pay/);
+  assert.match(evidence.taskContext, /Still required: Apple Pay passes/);
+  assert.match(evidence.recentConversation, /Operator: Keep Apple Pay working/);
+  assert.match(evidence.recentConversation, /Agent report: Card checkout passes/);
+}
+
 // ---- boot repair recovers only waiting hooks whose latest operator input has no later report ------
 {
   const { addEvent } = await import('../src/store.js');
@@ -244,7 +279,8 @@ await featureReady;
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
   assert.ok(!/autofocus/i.test(ph.replace(/autoFocus="\{\{ true \}\}"/g, '')), 'nothing autofocuses');
   assert.match(ph, /stopped mid-queue: do NOT mark read/, 'read-on-completion semantics');
-  assert.match(ph, /ordinary feedback is delivered immediately/i, 'On the go hands ordinary feedback directly to the current session');
+  assert.match(ph, /addressed-intent reasoning/i,
+    'phone On the go separates questions and nearby speech from explicit agent feedback');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // The canonical shell defaults to phone HOME at phone widths, while sessions use the one shared

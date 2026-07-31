@@ -66,9 +66,15 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
       if (state.delivery) updateDelivery(state.delivery, state.sentCount);
+      if (state.acceptedText) setHeard(state.acceptedText);
+      if (state.ignored) markIgnoredSpeech(state.ignoredReason);
       if (state.done && ui) ui.bar.style.width = '100%';
-      setState('speaking', state.say);
-      await speak(state.say);
+      // Ignored nearby speech and silent windows are intentionally silent responses: keep listening
+      // without erasing/re-reading the project brief or pretending a conversational turn happened.
+      if (!state.ignored || state.say) {
+        setState('speaking', state.say);
+        await speak(state.say);
+      }
       if (state.done || stopFlag) break;
       if (state.listen) {
         setState('listening');
@@ -386,7 +392,7 @@ function buildOverlay({ onTheGo = false } = {}) {
     ? '<div class="ongo-shell">' +
       '<div class="ongo-head"><div><span class="ongo-kicker">ON THE GO</span><h2 class="ongo-title">Project update</h2></div>' +
       '<div class="ongo-live"><i></i><span class="vm-state">Starting…</span></div></div>' +
-      '<div class="ongo-track"><div><span class="ongo-context">Needs You</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
+      '<div class="ongo-track"><div><span class="ongo-context">Say “Supercalm…” before responding</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
       '<div class="ongo-dialog">' +
       '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">NOW READING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
       '<section class="ongo-heard"><span class="ongo-label ongoing-heard-label">YOUR RESPONSE</span><div class="vm-heard empty">Your words will stay here.</div></section>' +
@@ -461,7 +467,7 @@ function updateProgress(cur) {
   ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
   if (ui.onTheGo) {
     if (ui.title) ui.title.textContent = cur.project || 'Project update';
-    if (ui.context) ui.context.textContent = [cur.tool, cur.category].filter(Boolean).join(' · ') || 'Needs You';
+    if (ui.context) ui.context.textContent = ['Say “Supercalm…”', cur.tool, cur.category].filter(Boolean).join(' · ');
   }
 }
 function updateDelivery(delivery, sentCount = 0) {
@@ -526,5 +532,14 @@ function setHeard(text) {
   if (!ui?.heard || !text) return;
   ui.heard.textContent = `“${text}”`;
   ui.heard.classList.remove('empty');
+  ui.heard.classList.remove('ignored');
   if (ui.heardLabel) ui.heardLabel.textContent = 'YOUR LAST RESPONSE';
+}
+
+function markIgnoredSpeech(reason = '') {
+  if (!ui?.onTheGo || !ui.heard) return;
+  ui.heard.classList.add('ignored');
+  if (ui.heardLabel) ui.heardLabel.textContent = reason === 'no-speech' ? 'NO RESPONSE · NOTHING SENT' : 'HEARD NEARBY · NOT USED';
+  if (reason === 'no-speech') ui.heard.textContent = 'Still listening for “Supercalm…”';
+  else if (reason === 'wake-only') ui.heard.textContent = 'Wake phrase heard; include your question or feedback after it.';
 }
