@@ -1,9 +1,9 @@
 import { route, json, readJson } from './server.js';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import * as store from './store.js';
 import * as sessions from './sessions.js';
-import { chatJson } from './llm.js';
+import { chat } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
 import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech } from './voice_brief.js';
 import { listWiki, readWiki, searchWiki } from './wiki.js';
@@ -13,11 +13,12 @@ import { storyFor } from './story_api.js';
 import { attentionUnreadCount, getAttentionDismissal } from './attention_store.js';
 import { asksForSessionOverview, isNeedsYouSession, originalRequestFrom } from './voice_attention.js';
 import {
-  addressedOnTheGoSpeech,
   asksForConfirmation,
   confirmedPendingReply,
   isVoiceInformationQuestion,
-  onTheGoControlReply,
+  normalizeVoiceAddress,
+  parseVoiceBrainOutput,
+  voiceControlReply,
   providerFailureReply,
 } from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
@@ -26,32 +27,28 @@ import { deliverVoiceFeedback } from './voice_delivery.js';
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
 // the llm.js fallback chain. The browser handles TTS playback + STT (with VAD).
 
-const SYS = `You are Supercalm Voice, a hands-free project lead. You help the user understand and clear a queue of coding-agent sessions waiting on them; you SPEAK and they reply by voice. Sound like an intelligent human colleague on a phone call: grounded, specific, calm, and concise. Normally use 2-4 short spoken sentences. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase them for the ear.
+export const VOICE_SYSTEM_PROMPT = `You are Supercalm Voice Assistant, a hands-free project lead. You help the project owner understand and clear a queue of coding-agent sessions waiting on them; you SPEAK and they reply by voice. Sound like an intelligent human colleague on a phone call: grounded, specific, calm, and concise. The owner already knows what their project is, so never explain the product or mission unless explicitly asked. Orient every answer to the exact work thread: project/repository identity, module or feature, and current improvement. Normally use 2-4 short spoken sentences. If the user explicitly asks for all/each session status, give one plain short clause per relevant session, up to about 120 words. No markdown, no code, no URLs, no emoji; keep key technical terms but phrase them for the ear.
 For the user's reply about the CURRENT item:
 - an instruction for the agent -> restate its core in one sentence and ask them to confirm (action "await"); put the clear actionable draft in "message" even though it is not sent yet.
 - a confirmation (yes/go/send/correct) -> action "send", with "message" = a clear actionable instruction that captures their intent.
 - asks for detail or your opinion -> answer briefly, stay here (action "await").
 - asks a QUESTION about the session, the project, or what the supervisor thinks -> answer from CONTEXT (recent messages, screen, PROJECT KNOWLEDGE, SUPERVISOR notes) in 1-2 spoken sentences, then action "await". If the context doesn't contain the answer, say so plainly — never invent. Never speak URLs or file paths; use bare file names.
+- in a follow-up such as "tell me about this", "what happened here", or "why", "this" means the current update/workstream—not the product in general. Answer the useful detail behind the report.
 - a correction such as "I was asking for details" means answer the earlier question; it is NEVER feedback to send to the coding agent.
 - skip / pass / later / next -> action "next".
 - stop / done / that's all -> action "stop".
-Default to "await" for any NEW instruction — confirm before acting. Only use "send" once the user confirms (yes / go / correct / send it) OR gives an explicit do-it directive (e.g. "just do it", "go ahead and send"). When unsure between await and send, choose await.
+- speech that is clearly unrelated to this report or sounds like a nearby third-party conversation -> action "ignore", with empty "say" and "message".
+Default to "await" for any NEW instruction — confirm before acting. Only use "send" after the system has already restated an instruction and the user confirms it (yes / go / correct / send it). When unsure between await and send, choose await.
 On "send" or "next", briefly confirm and say you're moving on — do NOT describe or invent the next item; the system presents it on the next turn.
 When asked to PRESENT an item: say what its agent needs and ask what they want to do; mention the count only at the very start. Ignore any greyed composer placeholder hint (e.g. "Explain this codebase") — it is not a real task.
 Do not mention other sessions, stopped work, or general system status unless the user explicitly asks for a session overview.
-Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
-const ON_THE_GO_SYS = `ON THE GO DELIVERY MODE:
-- The wake phrase has already proved that this turn was addressed to you. Do not mention the wake phrase in your answer.
-- The operator has authorized immediate handoff ONLY for speech that is clearly an answer, choice, correction, opinion, or instruction intended for the CURRENT coding agent. Then use action "send" with a complete, actionable message.
-- A question, request for details, request for your opinion, uncertainty, thinking aloud, or correction that they were asking a question must use action "await": answer it yourself from context and leave "message" empty. Never send a question to the coding agent.
-- If intent is ambiguous, use action "await" and ask one short clarifying question. Safety is more important than clearing the queue quickly.
-- Nearby speech was filtered before this call. Never reinterpret unrelated conversational fragments as agent feedback.`;
+Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop|ignore","message":"...draft when awaiting confirmation, final instruction when sending..."}`;
 
 const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
 const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 18000); // must stay well inside the client's 30s /turn abort
 const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
-  || '8792:qwen36-a3b-nvfp4-marlin,8788:gpt-5.6-luna,8789:claude-haiku-4-5')
+  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen36-a3b-nvfp4-marlin')
   .split(',')
   .map((entry) => {
     const [port, ...model] = entry.trim().split(':');
@@ -67,7 +64,17 @@ function gcVoiceSessions() {
 }
 const cur = (vs) => {
   const it = vs.items[vs.pointer];
-  return it ? { sessionId: it.sessionId, project: it.project, tool: it.tool, category: it.category, n: vs.pointer + 1, total: vs.items.length } : null;
+  return it ? {
+    sessionId: it.sessionId,
+    project: it.project,
+    projectIdentity: it.projectIdentity || it.project,
+    module: it.module || '',
+    workstream: it.workstream || '',
+    tool: it.tool,
+    category: it.category,
+    n: vs.pointer + 1,
+    total: vs.items.length,
+  } : null;
 };
 // Did anyone else answer this session since we presented it? (dashboard reply, another device…)
 // A voice reply dictated against an old prompt must not land on top of someone else's answer.
@@ -98,6 +105,25 @@ function latestReportFor(session) {
   return `${summary}. ${question}`;
 }
 
+export function projectIdentityFor(project) {
+  if (!project) return 'adhoc';
+  const names = [];
+  const add = (value) => {
+    const name = String(value || '').trim();
+    const key = name.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (key && !names.some((existing) => existing.toLowerCase().replace(/[^a-z0-9]+/g, '') === key)) names.push(name);
+  };
+  add(project.name);
+  if (project.path) {
+    const packageFile = join(project.path, 'package.json');
+    if (existsSync(packageFile)) {
+      try { add(JSON.parse(readFileSync(packageFile, 'utf8')).name); } catch {}
+    }
+    add(basename(project.path));
+  }
+  return names.slice(0, 2).join('/') || 'adhoc';
+}
+
 export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
   const live = store
     .listLiveSessions()
@@ -113,12 +139,14 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
     }); // otherwise oldest waiting first
   return live.map((s) => {
     const messages = store.messagesFor(s.id, 200);
+    const project = s.project_id ? store.getProject(s.project_id) : null;
     return {
       sessionId: s.id,
       tmux: s.tmux,
       tool: s.tool,
       projectId: s.project_id || null,
-      project: s.project_id ? store.getProject(s.project_id)?.name || 'adhoc' : 'adhoc',
+      project: project?.name || 'adhoc',
+      projectIdentity: projectIdentityFor(project),
       originalRequest: originalRequestFrom(messages, s.title || ''),
       latestReport: latestReportFor(s),
       summary: s.summary || s.question || '',
@@ -238,7 +266,7 @@ async function stateContext(vs, userText = '') {
   const it = vs.items[vs.pointer];
   const lines = [`You are on item ${vs.pointer + 1} of ${vs.items.length}.`];
   if (it) {
-    lines.push(`CURRENT: ${it.project} (${it.tool}), ${it.category}.`);
+    lines.push(`CURRENT WORK THREAD: ${it.projectIdentity || it.project} · ${it.module || 'current module'} · ${it.workstream || it.category} · ${it.tool}.`);
     if (it.originalRequest) lines.push(`ORIGINAL REQUEST: ${sanitizeForSpeech(it.originalRequest).slice(0, 1200)}`);
     if (it.latestReport) lines.push(`LATEST REPORT: ${sanitizeForSpeech(it.latestReport).slice(0, 1200)}`);
     const evidence = await voiceEvidenceFor(it);
@@ -298,12 +326,16 @@ async function briefFor(it) {
     const s2 = store.getSession(it.sessionId);
     const evidence = await voiceEvidenceFor(it);
     it._brief = await buildVoiceBrief({
-      sessionId: it.sessionId, project: it.project, tool: it.tool, category: it.category,
+      sessionId: it.sessionId, project: it.project, projectIdentity: it.projectIdentity, tool: it.tool, category: it.category,
       ...evidence,
       originalRequest: it.originalRequest,
       latestReport: it.latestReport || latestReportFor(s2),
       summary: it.summary, ask: s2?.question || '', screen: '', supervisorNote: supervisorNoteFor(it.sessionId),
     });
+    if (it._brief) {
+      it.module = it._brief.module || '';
+      it.workstream = it._brief.workstream || '';
+    }
   } catch { it._brief = null; }
   return it._brief;
 }
@@ -318,12 +350,12 @@ async function present(vs, greet) {
     say = greet ? 'You have nothing waiting right now. All caught up.' : 'What next?';
   } else {
     const n = vs.items.length;
-    const where = it.project && it.project !== 'adhoc' ? `${it.project} ${it.tool}` : it.tool;
+    const where = it.projectIdentity && it.projectIdentity !== 'adhoc' ? it.projectIdentity : it.tool;
     const lead = greet
       ? vs.onTheGo
-        ? `There ${n === 1 ? 'is' : 'are'} ${n} ${n === 1 ? 'update' : 'updates'} in Needs You. I only use a response that starts with Supercalm, so nearby conversation is ignored. First, ${where}.`
+        ? `New Needs You update.`
         : `You have ${n} ${n > 1 ? 'items' : 'item'} in Needs You. First up, ${where}.`
-      : `Next, ${where}.`;
+      : vs.onTheGo ? 'Next update.' : `Next, ${where}.`;
     // A grounded project-lead brief is worth a short pause. The local briefing model normally returns
     // in about 11 seconds; 14 seconds keeps /start inside the client's 30-second bound while avoiding
     // the robotic template on every first presentation.
@@ -386,27 +418,39 @@ async function brainReply(vs, userText) {
   const timer = setTimeout(() => ac.abort(), TURN_BUDGET_MS);
   try {
     const ctx = await stateContext(vs, userText);
-    const { obj } = await chatJson(
+    const { content } = await chat(
       // /turn records the current transcript in history before calling us. Appending userText again
       // made every spoken turn appear twice to the model, with two consecutive user roles; this was
       // especially confusing on the confirmation turn.
-      [{ role: 'system', content: SYS + (vs.onTheGo ? '\n' + ON_THE_GO_SYS : '') + '\n\n' + ctx }, ...vs.history],
-      { temperature: 0.3, max_tokens: 650, timeout_ms: 12000, signal: ac.signal },
+      [{ role: 'system', content: VOICE_SYSTEM_PROMPT + '\n\n' + ctx }, ...vs.history],
+      { max_tokens: 650, timeout_ms: 12000, signal: ac.signal },
       CONVERSATION_CHAIN,
     );
-    let action = ['await', 'send', 'next', 'stop'].includes(obj.action) ? obj.action : 'await';
-    let say = sanitizeForSpeech(String(obj.say || '')).trim() || 'Okay.';
+    const obj = parseVoiceBrainOutput(content, userText);
+    let action = ['await', 'send', 'next', 'stop', 'ignore'].includes(obj.action) ? obj.action : 'await';
+    let say = sanitizeForSpeech(String(obj.say || '')).trim();
     let message = obj.message ? String(obj.message) : '';
     // An STT transcript often loses question punctuation. This deterministic semantic guard covers
     // explicit detail/status/opinion questions and "I was asking..." corrections even if a model
     // violates the JSON policy: questions stay in the conversation and can never become agent input.
-    if (vs.onTheGo && isVoiceInformationQuestion(userText) && action === 'send') {
+    if (isVoiceInformationQuestion(userText) && ['send', 'ignore'].includes(action)) {
       action = 'await';
       message = '';
       if (/\b(?:send|forward|pass)(?:ing|ed)?\b.{0,35}\b(?:agent|session|feedback)\b/i.test(say)) {
         say = "I understood that as a question, so I didn't send it to the agent. I don't yet have a reliable answer from the available context.";
       }
     }
+    // Voice updates and manually-started Voice use the same deliberate delivery contract: a new
+    // instruction is restated first, and only a later confirmation crosses into the coding session.
+    // This is also the last safety boundary against nearby conversation that sounded task-related.
+    if (action === 'send' && !vs.pendingInstruction) {
+      action = 'await';
+      message = message || userText;
+      say = say && !/\b(?:sent|forwarded|passed)\b/i.test(say)
+        ? say
+        : `I understood that as: ${sanitizeForSpeech(message).slice(0, 220)}. Should I send that to the agent?`;
+    }
+    if (action !== 'ignore' && !say) say = 'Okay.';
     return {
       say,
       action,
@@ -415,7 +459,7 @@ async function brainReply(vs, userText) {
   } catch (e) {
     console.error('[aios] voice reply failed:', e.message);
     const it = vs.items[vs.pointer];
-    if (vs.onTheGo && isVoiceInformationQuestion(userText)) {
+    if (isVoiceInformationQuestion(userText)) {
       return {
         say: 'I heard your question, but the response service is temporarily unavailable. I did not send it to the agent.',
         action: 'await',
@@ -488,41 +532,26 @@ route('POST', '/api/voice/turn', async (req, res) => {
     }
     vs.emptyTurns = 0;
 
-    let userText = rawUserText;
-    if (vs.onTheGo) {
-      const addressed = addressedOnTheGoSpeech(rawUserText);
-      if (!addressed.addressed) {
-        // Do not retain nearby conversation in LLM history, decisions, messages, or delivery drafts.
-        // The client labels the visible live transcript as ignored and immediately resumes listening.
-        return json(res, 200, {
-          say: '',
-          done: false,
-          listen: true,
-          ignored: true,
-          ignoredReason: 'not-addressed',
-          current: cur(vs),
-        });
-      }
-      if (!addressed.message) {
-        return json(res, 200, {
-          say: "I'm listening. Say Supercalm, then your question or feedback in the same sentence.",
-          done: false,
-          listen: true,
-          ignored: true,
-          ignoredReason: 'wake-only',
-          current: cur(vs),
-        });
-      }
-      userText = addressed.message;
-    }
+    const userText = normalizeVoiceAddress(rawUserText);
 
     vs.history.push({ role: 'user', content: userText });
     // Confirmation is a state transition, not an open-ended reasoning task. Once the previous turn
     // established a pending instruction, "yes" (including "yes, and also ...") can be delivered
     // reliably even if every model provider is down on this turn.
     const r = confirmedPendingReply(vs.pendingInstruction, userText)
-      || (vs.onTheGo ? onTheGoControlReply(userText) : null)
+      || voiceControlReply(userText)
       || await brainReply(vs, userText);
+    if (r.action === 'ignore') {
+      vs.history.pop(); // nearby speech must not become context for the next real operator turn
+      return json(res, 200, {
+        say: '',
+        done: false,
+        listen: true,
+        ignored: true,
+        ignoredReason: 'not-addressed',
+        current: cur(vs),
+      });
+    }
     vs.history.push({ role: 'assistant', content: r.say });
     trim(vs.history);
     const currentItem = vs.items[vs.pointer];
@@ -642,6 +671,7 @@ route('POST', '/api/session/:id/brief', async (req, res, { id: sid }) => {
   const brief = await buildVoiceBrief({
     sessionId: sid,
     project: project?.name || 'adhoc',
+    projectIdentity: projectIdentityFor(project),
     tool: s2.tool, category: s2.category || 'review',
     ...evidence,
     originalRequest: originalRequestFrom(messages, s2.title || ''),

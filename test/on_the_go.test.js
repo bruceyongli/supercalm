@@ -46,7 +46,7 @@ assert.match(voice, /focusSessionId, source/, 'the focused on-the-go report reac
 assert.match(voiceServer, /a\.id === focusSessionId/, 'the newly announced project is presented before the older queue');
 assert.match(push, /sub\.aios\?\.onTheGo/, 'push delivery honors each device preference');
 assert.match(push, /onTheGoUrl: `\.\/\?on-the-go=1&focus=/, 'background notifications deep-link back to focused voice');
-assert.match(sw, /action: 'talk'/, 'supporting browsers expose a Talk now notification action');
+assert.match(sw, /action: 'talk'/, 'supporting browsers expose a Voice Assistant notification action');
 assert.match(sw, /silent: false/, 'the background notification asks the OS to use an audible alert');
 assert.match(dashboard, /id="dk-on-the-go"/, 'the canonical Needs You dashboard exposes the on-the-go switch');
 assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same on-the-go switch');
@@ -60,7 +60,10 @@ assert.match(phone, /previousId[\s\S]*nextId[\s\S]*V\.lastHeard = ''/, 'a phone 
 assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
 assert.match(voice, /NOW READING/, 'the distinct presentation identifies the sentence currently being spoken');
 assert.match(voice, /YOUR LAST RESPONSE/, 'the operator transcript remains a first-class part of the conversation');
-assert.match(voice, /Say “Supercalm…”/, 'the hands-free UI explains the addressed-speech boundary');
+assert.match(voice, /Ask a follow-up or give feedback naturally/,
+  'proactive reports continue as a normal Voice Assistant conversation');
+assert.match(voice, /api\/transcribe\?language=auto&polish=true/,
+  'Voice Assistant uses Spark transcript cleanup before intent reasoning');
 assert.match(voice, /markIgnoredSpeech\(state\.ignoredReason\)/,
   'nearby or silent speech is visibly ignored instead of becoming a response');
 assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');
@@ -77,18 +80,25 @@ assert.match(voiceServer, /latestReport/, 'spoken items retain the latest curate
 assert.match(voiceServer, /storyFor\(it\.sessionId, \{ rounds: 4 \}\)/,
   'briefing and follow-up answers use recent session conversation, not only the thin status card');
 assert.match(voiceServer, /getContext\(project\.id\)/,
-  'briefing knows the project’s maintained purpose and vocabulary');
+  'follow-up questions can use maintained project knowledge when the owner asks for it');
 assert.match(voiceServer, /taskCard\(runtime\.active_task_id\)/,
   'briefing knows the current task contract and verification criteria');
-assert.match(voiceServer, /addressedOnTheGoSpeech\(rawUserText\)/,
-  'unaddressed nearby conversation is rejected before reasoning or delivery');
-assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*qwen36-a3b-nvfp4-marlin/,
-  'follow-up reasoning starts with the responsive local model before provider fallbacks');
+assert.match(voiceServer, /normalizeVoiceAddress\(rawUserText\)/,
+  'proactive and manual speech enter the same conversation path');
+assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*claude-opus-5[\s\S]*gpt-5\.6-luna[\s\S]*qwen36-a3b-nvfp4-marlin/,
+  'follow-up reasoning prioritizes Opus 5 and retains GPT-5.6 and the local model as fallbacks');
+assert.doesNotMatch(voiceServer, /ON_THE_GO_SYS/,
+  'Voice updates does not maintain a separate lower-quality assistant prompt');
 assert.doesNotMatch(voiceServer, /onTheGoImmediateReply/,
   'no transcript bypasses contextual intent reasoning into immediate delivery');
 assert.match(voiceServer, /current: currentBeforeTurn/, 'delivery confirmation remains labeled with the session that received it');
 for (const content of [onTheGo, dashboard, phone, push, sw]) {
   assert.doesNotMatch(content, /\bRide mode\b/i, 'the bicycle example is not used as the feature name');
 }
+for (const content of [dashboard, phone, voice]) {
+  assert.doesNotMatch(content, />\s*ON THE GO\s*</i, 'the old activity-specific label is no longer user-facing');
+}
+assert.match(dashboard, /Voice updates/, 'the proactive control is named for what it does');
+assert.match(dashboard, /Voice Assistant/, 'the manual and proactive paths share one assistant identity');
 
 console.log('on_the_go.test ok');

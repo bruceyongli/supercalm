@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  addressedOnTheGoSpeech,
   asksForConfirmation,
   confirmationFrom,
   confirmedPendingReply,
   isVoiceInformationQuestion,
-  onTheGoControlReply,
+  normalizeVoiceAddress,
+  parseVoiceBrainOutput,
+  voiceControlReply,
   providerFailureReply,
 } from '../src/voice_turn.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
@@ -53,23 +54,32 @@ assert.equal(isVoiceInformationQuestion('I was asking for the details'), true,
   'a correction about an earlier question cannot become agent feedback');
 assert.equal(isVoiceInformationQuestion('Can you make the button larger on iPhone?'), false, 'a polite instruction is feedback, not an information question');
 assert.deepEqual(
-  addressedOnTheGoSpeech('Two people nearby are discussing option two.'),
-  { addressed: false, message: '' },
-  'nearby conversation never enters the assistant turn',
+  parseVoiceBrainOutput('The wake gate dropped that follow-up. Both entry points now share one conversation.', 'Can you tell me about this?'),
+  {
+    say: 'The wake gate dropped that follow-up. Both entry points now share one conversation.',
+    action: 'await',
+    message: '',
+    plain: true,
+  },
+  'a useful plain-language answer remains inside the assistant instead of becoming a provider failure',
 );
-assert.deepEqual(
-  addressedOnTheGoSpeech('People nearby are talking. Supercalm, what failed in verification?'),
-  { addressed: true, message: 'what failed in verification' },
-  'only speech after the wake phrase is accepted',
+assert.equal(
+  parseVoiceBrainOutput('{"say":"","action":"ignore","message":""}', 'I will meet you at the coffee shop.').action,
+  'ignore',
+  'structured ambient-speech classification is preserved',
 );
-assert.deepEqual(
-  addressedOnTheGoSpeech('Hey super calm, I prefer option two and larger mobile controls.'),
-  { addressed: true, message: 'I prefer option two and larger mobile controls' },
+assert.equal(normalizeVoiceAddress('Can you tell me about this?'), 'Can you tell me about this?',
+  'a natural follow-up reaches the assistant without a repeated wake phrase');
+assert.equal(
+  normalizeVoiceAddress('People nearby are talking. Supercalm, what failed in verification?'),
+  'what failed in verification',
+  'an optional address still isolates the words intended for the assistant in a noisy room',
 );
-assert.deepEqual(addressedOnTheGoSpeech('Supercalm'), { addressed: true, message: '' });
-assert.equal(onTheGoControlReply('stop').action, 'stop');
-assert.equal(onTheGoControlReply('next').action, 'next');
-assert.equal(onTheGoControlReply('I prefer option two.'), null,
+assert.equal(normalizeVoiceAddress('Hey super calm, I prefer option two and larger mobile controls.'),
+  'I prefer option two and larger mobile controls');
+assert.equal(voiceControlReply('stop').action, 'stop');
+assert.equal(voiceControlReply('next').action, 'next');
+assert.equal(voiceControlReply('I prefer option two.'), null,
   'feedback goes through contextual intent reasoning instead of an unconditional send shortcut');
 
 // Complete delivery boundary: a context-classified send reaches the shared delivery path, and
@@ -110,10 +120,14 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(voiceSource, /onTheGoImmediateReply\(userText\)/,
   'On the go no longer treats every transcript as immediate feedback');
-assert.match(voiceSource, /addressedOnTheGoSpeech\(rawUserText\)/,
-  'the server filters unaddressed nearby speech before history or delivery');
-assert.match(voiceSource, /isVoiceInformationQuestion\(userText\) && action === 'send'/,
+assert.match(voiceSource, /normalizeVoiceAddress\(rawUserText\)/,
+  'manual and proactive entry points normalize speech through the same conversation path');
+assert.match(voiceSource, /isVoiceInformationQuestion\(userText\)[\s\S]*\['send', 'ignore'\]/,
   'explicit questions have a deterministic never-send guard');
+assert.match(voiceSource, /action === 'send' && !vs\.pendingInstruction/,
+  'a new instruction is confirmed before either Voice entry point can deliver it');
+assert.doesNotMatch(voiceSource, /ON_THE_GO_SYS/,
+  'proactive announcements no longer use a weaker second assistant policy');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
 assert.match(voiceSource, /draft: String\(r\.message \|\| userText\)/, 'an attempted handoff keeps a recoverable private draft');
 assert.match(voiceSource, /requestAlive: voiceSessions\.has\(vs\.id\)/,

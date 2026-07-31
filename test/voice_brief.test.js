@@ -40,7 +40,9 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
 {
   const b = validateBrief({
     topic: 'Widget cache fix', kind: 'decision', quick: 'Cache fix ready; approve checkout?',
-    project: 'Widget Shop is the customer checkout service.',
+    identity: 'widget-shop/checkout',
+    module: 'Checkout cache',
+    workstream: 'Safe cache repair',
     request: 'Fix the widget cache and preserve local work.',
     updates: [{ requested: 'widget cache', latest: 'The cache fix passed all tests.' }],
     standard: 'The agent repaired the cache and wants approval for a git checkout that drops two local edits.',
@@ -49,21 +51,27 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
     options: [{ key: 'y', label: 'Approve checkout', spoken: 'Yes, approve the checkout' }, { key: 'zzzz', label: '' }],
   });
   assert.equal(b.kind, 'decision');
-  assert.match(b.project, /checkout service/);
+  assert.equal(b.identity, 'widget shop/checkout');
+  assert.equal(b.module, 'Checkout cache');
   assert.match(b.spoken, /I need your approval/);
   assert.equal(b.updates.length, 1);
   assert.ok(b.detail.length <= 1200);
   assert.equal(b.options.length, 1);
   assert.equal(validateBrief({ topic: 'x' }), null, 'no standard -> invalid');
+  assert.equal(validateBrief({ standard: 'Work is complete.', needs: 'No human input is required.' }).needs, '',
+    'a model cannot turn “nothing needed” into a fake attention request');
   assert.match(SYS_BRIEF, /Never say URLs, absolute file paths/);
   assert.match(SYS_BRIEF, /ORIGINAL REQUEST/);
   assert.match(SYS_BRIEF, /CURRENT TASK CONTRACT/);
   assert.match(SYS_BRIEF, /RECENT CONVERSATION/);
   assert.match(SYS_BRIEF, /trusted project lead/i);
+  assert.match(SYS_BRIEF, /owner already knows what their project is/i);
+  assert.match(SYS_BRIEF, /Never explain the product/i);
   assert.match(SYS_BRIEF, /EACH distinct requested deliverable/);
   assert.match(SYS_BRIEF, /decision\|input\|discussion\|review\|blocked\|progress/);
   const user = buildBriefUserText({
     project: 'shop',
+    projectIdentity: 'shop/storefront',
     tool: 'codex',
     category: 'review',
     projectContext: 'Shop is the customer checkout application.',
@@ -75,7 +83,8 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   });
   assert.match(user, /ORIGINAL REQUEST:[\s\S]*Fix checkout/);
   assert.match(user, /LATEST REPORT:[\s\S]*Checkout is fixed/);
-  assert.match(user, /PROJECT BACKGROUND[\s\S]*customer checkout/);
+  assert.match(user, /PROJECT \/ REPOSITORY IDENTITY: shop\/storefront/);
+  assert.doesNotMatch(user, /customer checkout application/, 'the automatic brief does not explain the owner’s own product');
   assert.match(user, /CURRENT TASK CONTRACT[\s\S]*repair checkout/);
   assert.match(user, /RECENT CONVERSATION[\s\S]*Apple Pay still fails/);
   assert.doesNotMatch(user, /raw terminal nonsense/, 'automatic voice briefs never ingest the terminal tail');
@@ -86,7 +95,9 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   const call = async () => JSON.stringify({
     topic: 'Deploy approval',
     kind: 'decision',
-    project: 'Shop is the customer checkout application.',
+    identity: 'shop/storefront',
+    module: 'Checkout',
+    workstream: 'Build 12 deployment',
     request: 'Deploy build 12 and verify checkout.',
     updates: [
       { requested: 'deploy build 12', latest: 'The release candidate is ready.' },
@@ -94,7 +105,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
     ],
     quick: 'q',
     standard: 'Approve the deploy of build 12?',
-    spoken: 'Shop handles customer checkout. You asked to deploy build 12 and verify checkout. The candidate is ready and checkout passed. I need your approval to deploy.',
+    spoken: 'You asked to deploy build 12 and verify checkout. The candidate is ready and checkout passed. I need your approval to deploy.',
     detail: 'd',
     needs: 'Say whether to deploy.',
     options: [{ key: 'y', label: 'Approve', spoken: 'Yes, deploy it' }],
@@ -102,6 +113,7 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   const b = await buildVoiceBrief({
     sessionId: 's_t',
     project: 'shop',
+    projectIdentity: 'shop/storefront',
     tool: 'codex',
     category: 'decision',
     originalRequest: 'Deploy build 12 and verify checkout.',
@@ -116,17 +128,18 @@ const { sanitizeForSpeech, validateBrief, buildVoiceBrief, speakBrief, speakOnTh
   assert.match(spoken, /Deploy approval\./);
   assert.match(spoken, /Options: y, Yes, deploy it\./);
   const onTheGo = speakOnTheGoBrief(b);
-  assert.match(onTheGo, /^Shop handles customer checkout\./);
+  assert.match(onTheGo, /^shop\/storefront\. Checkout\. Build 12 deployment\./i);
   assert.match(onTheGo, /candidate is ready and checkout passed/i);
   assert.match(onTheGo, /approval to deploy/i);
   assert.ok(onTheGo.split(/\s+/).length <= 95, 'the first on-the-go pass stays within one bounded spoken brief');
   assert.doesNotMatch(onTheGo, /Deploy approval/, 'on-the-go narration does not repeat the manual Voice title/summary format');
   // cache: second call with identical input returns the same object without invoking
-  const b2 = await buildVoiceBrief({ sessionId: 's_t', project: 'shop', tool: 'codex', category: 'decision', originalRequest: 'Deploy build 12 and verify checkout.', latestReport: 'The release candidate is ready and checkout tests passed.', summary: 'sum', ask: 'ask', screen: '', call: async () => { throw new Error('must not be called'); } });
+  const b2 = await buildVoiceBrief({ sessionId: 's_t', project: 'shop', projectIdentity: 'shop/storefront', tool: 'codex', category: 'decision', originalRequest: 'Deploy build 12 and verify checkout.', latestReport: 'The release candidate is ready and checkout tests passed.', summary: 'sum', ask: 'ask', screen: '', call: async () => { throw new Error('must not be called'); } });
   assert.equal(b2.topic, 'Deploy approval');
   // fail-open template on model failure
-  const b3 = await buildVoiceBrief({ sessionId: 's_t2', project: 'shop', tool: 'codex', category: 'action', summary: 'fix the login at https://x.co/y now', ask: '', screen: '', call: async () => { throw new Error('down'); } });
+  const b3 = await buildVoiceBrief({ sessionId: 's_t2', project: 'shop', projectIdentity: 'shop/storefront', tool: 'codex', category: 'action', summary: 'fix the login at https://x.co/y now', ask: '', screen: '', call: async () => { throw new Error('down'); } });
   assert.equal(b3.kind, 'input');
+  assert.equal(b3.identity, 'shop/storefront');
   assert.ok(!b3.standard.includes('https://'), 'fallback text is sanitized too');
 }
 

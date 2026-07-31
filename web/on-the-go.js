@@ -3,7 +3,7 @@ import { isVoiceModeActive, prepareVoiceMode, startVoiceMode, stopVoiceMode } fr
 import { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 export { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 
-// The on-the-go assistant connects three existing reliable paths:
+// Voice updates connects three existing reliable paths:
 //   foreground Needs You update -> chime -> hands-free voice concierge
 //   background/suspended PWA     -> Web Push -> notification tap -> focused concierge
 //   spoken reply                 -> the concierge's existing confirm + deliverReply flow
@@ -41,7 +41,7 @@ let currentNeeds = [];
 let initialObserved = false;
 let talking = false;
 let push = 'unknown';
-let detail = enabled ? 'Notifications on · voice activates for new foreground updates' : 'Off';
+let detail = enabled ? 'Voice updates on · announces new foreground reports' : 'Off';
 let listeners = new Set();
 let chimeContext = null;
 
@@ -128,7 +128,7 @@ async function speakNeeds(session, { manual = false } = {}) {
     detail = `Voice could not start · ${error?.message || error}`;
   } finally {
     talking = false;
-    if (enabled && !detail.startsWith('Voice could not')) detail = 'Listening for the next Needs You update';
+    if (enabled && !detail.startsWith('Voice could not')) detail = 'Voice updates on · waiting for the next Needs You report';
     emit();
     setTimeout(scan, 500);
   }
@@ -194,8 +194,8 @@ export async function toggleOnTheGo() {
   detail = voice?.mic === false
     ? 'Notifications on · microphone permission still needed for replies'
     : pushOn
-      ? 'On · speaks in foreground, notifies in background'
-      : 'On in foreground · install the PWA to enable background notifications';
+      ? 'Voice updates on · speaks in foreground, notifies in background'
+      : 'Voice updates on in foreground · install the PWA for background notifications';
   emit();
   scan({ manual: true });
   return onTheGoState();

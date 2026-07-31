@@ -63,7 +63,9 @@ await featureReady;
   const { addEvent } = await import('../src/store.js');
   const { setContext } = await import('../src/context_doc.js');
   const { createTask, upsertRuntime } = await import('../src/agents/supervisor/project_memory.js');
-  const { voiceEvidenceFor } = await import('../src/voice.js');
+  const { projectIdentityFor, voiceEvidenceFor } = await import('../src/voice.js');
+  assert.equal(projectIdentityFor({ name: 'aios', path: process.cwd() }), 'aios/supercalm',
+    'spoken orientation combines the operator’s project name with the repository product identity');
   db.prepare("INSERT INTO projects (id, name, path, created_at) VALUES ('p_voice_context', 'Calm Shop', '/missing/calm-shop', 1)").run();
   db.prepare(`
     INSERT INTO sessions
@@ -279,8 +281,10 @@ await featureReady;
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
   assert.ok(!/autofocus/i.test(ph.replace(/autoFocus="\{\{ true \}\}"/g, '')), 'nothing autofocuses');
   assert.match(ph, /stopped mid-queue: do NOT mark read/, 'read-on-completion semantics');
-  assert.match(ph, /addressed-intent reasoning/i,
-    'phone On the go separates questions and nearby speech from explicit agent feedback');
+  assert.match(ph, /shared concierge/i,
+    'phone Voice updates uses the same Voice Assistant conversation');
+  assert.match(ph, /api\/transcribe\?polish=true/,
+    'phone Voice Assistant uses conversational transcript cleanup before reasoning');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // The canonical shell defaults to phone HOME at phone widths, while sessions use the one shared

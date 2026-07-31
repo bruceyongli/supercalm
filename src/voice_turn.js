@@ -70,28 +70,57 @@ export function isVoiceInformationQuestion(text) {
   return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value);
 }
 
-// Browser microphones cannot identify the operator's voice among people nearby. On the go therefore
-// has a spoken address boundary, like a wake phrase: only words explicitly addressed to "Supercalm"
-// enter conversation history or become eligible for delivery. Text before the wake phrase is always
-// ignored, so a nearby conversation cannot become the payload merely because it later mentions us.
-export function addressedOnTheGoSpeech(text) {
-  const value = clean(text);
-  const match = WAKE.exec(value);
-  if (!match) return { addressed: false, message: '' };
-  const after = value.slice(match.index + match[0].length).replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, '');
-  return { addressed: true, message: clean(after) };
+// Strong conversational models sometimes answer an obvious follow-up directly despite the request
+// for JSON. Rejecting that useful answer made Voice say its response service had failed. Plain prose
+// is safe as an assistant-only "await" turn; it can never cross the delivery boundary. For a new
+// statement we also keep the original words as a pending draft so a later confirmation is explicit.
+export function parseVoiceBrainOutput(content, userText) {
+  const raw = clean(content);
+  if (!raw) throw new Error('empty voice model response');
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (match) {
+    try {
+      const parsed = JSON.parse(match[0]);
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {}
+  }
+  return {
+    say: raw,
+    action: 'await',
+    message: isVoiceInformationQuestion(userText) ? '' : clean(userText),
+    plain: true,
+  };
 }
 
-// Stop/next are safe deterministic conversation controls once the wake boundary has been crossed.
-// All feedback and questions go through the context-aware brain; the old "every statement = send"
-// shortcut turned nearby conversation and follow-up questions into agent instructions.
-export function onTheGoControlReply(userText) {
+// "Supercalm" remains a useful optional address when the room is noisy, but it is not a password for
+// every conversational turn. Once the assistant has briefed the owner and is visibly listening, a
+// natural follow-up such as "can you tell me about this?" must reach the same brain as manual Voice.
+export function normalizeVoiceAddress(text) {
+  const value = clean(text);
+  const match = WAKE.exec(value);
+  if (!match) return value;
+  const after = value.slice(match.index + match[0].length).replace(/^[\s,.;:!?-]+|[\s,.;:!?-]+$/g, '');
+  return clean(after) || value;
+}
+
+// Stop/next are shared deterministic controls. All feedback and questions otherwise go through the
+// same context-aware Voice Assistant brain, regardless of whether the conversation was manually
+// started or proactively announced.
+export function voiceControlReply(userText) {
   const message = clean(userText);
   if (!message) return null;
   if (STOP.test(message)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
   if (NEXT.test(message)) return { say: 'Okay, skipping this one.', action: 'next', message: '', deterministic: true };
   return null;
 }
+
+// Compatibility exports for older callers/tests during the user-facing rename. They intentionally
+// inherit the unified conversational behavior; there is no separate delivery-mode brain anymore.
+export function addressedOnTheGoSpeech(text) {
+  const message = normalizeVoiceAddress(text);
+  return { addressed: true, message };
+}
+export const onTheGoControlReply = voiceControlReply;
 
 // A provider outage is not a speech-recognition failure. Preserve the transcript as a pending
 // instruction and give the operator a deterministic next step; "send it" on the next turn then

@@ -225,7 +225,7 @@ async function markRead(ids, sid = null) {
   render();
 }
 
-// ---- spoken briefs (gpt-5.5 via /api/session/:id/brief) -------------------------------------------
+// ---- spoken briefs (shared Voice Assistant briefing route) -----------------------------------------
 const briefCache = new Map();
 async function fetchBrief(sid) {
   if (briefCache.has(sid)) return briefCache.get(sid);
@@ -281,10 +281,10 @@ async function playQueue(items, scope) {
   render();
 }
 
-// ---- interactive voice mode (home): the desktop concierge, hands-free on the phone ----------------
+// ---- Voice Assistant (home): the shared concierge, hands-free on the phone -------------------------
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
-// silence) → STT → addressed-intent reasoning → questions stay with the assistant; explicit feedback
-// reaches the agent. One tap in, zero after.
+// silence) → polished STT → shared intent reasoning → questions stay with the assistant; instructions
+// are restated and confirmed before they reach the agent. One tap in, zero after.
 const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
 function setVoiceCurrent(next) {
   const previousId = V.current?.sessionId || '';
@@ -375,7 +375,7 @@ async function voiceLoopListen() {
   V.state = 'thinking'; render();
   let text = '';
   try {
-    const r = await fetch('api/transcribe?polish=false', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
+    const r = await fetch('api/transcribe?polish=true', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
     const j = await r.json();
     text = (j.text || '').trim();
   } catch {}
@@ -664,7 +664,7 @@ function renderHome() {
   const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
   const playing = S.playScope === 'home' || V.on;
-  const playLabel = V.on ? '■ End voice session' : totalUnread ? '▶ Guided review' : 'Voice — ask anything';
+  const playLabel = V.on ? '■ End Voice Assistant' : totalUnread ? '▶ Start Voice Assistant' : 'Voice Assistant';
 
   const optionList = (s, questions) => {
     if (!questions.length) return '';
@@ -750,7 +750,7 @@ function renderHome() {
       <div class="ph-voicebar">
         <button class="playbig ${totalUnread || playing ? '' : 'inert'}" id="play-home">${playLabel}</button>
         <button class="ongobig ${onTheGoUi.enabled ? 'on' : ''}" id="on-the-go-mode" type="button" aria-pressed="${onTheGoUi.enabled ? 'true' : 'false'}" title="${esc(onTheGoUi.detail || '')}">
-          <span></span>${onTheGoUi.talking ? 'Talking…' : onTheGoUi.enabled ? 'On the go · on' : 'On the go'}
+          <span></span>${onTheGoUi.talking ? 'Talking…' : onTheGoUi.enabled ? 'Voice updates · on' : 'Voice updates'}
         </button>
       </div>
       ${onTheGoUi.enabled ? `<div class="ongo-note">${esc(onTheGoUi.detail)}</div>` : ''}
@@ -900,16 +900,14 @@ function renderSheet() {
   if (S.sheet === 'voicemode') {
     const st = V.state;
     const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
-    const project = V.current?.project || 'Project update';
+    const project = V.current?.projectIdentity || V.current?.project || 'Project update';
     const context = V.current
-      ? [V.onTheGo ? 'Say “Supercalm…”' : '', V.current.tool, V.current.category].filter(Boolean).join(' · ')
-      : V.onTheGo ? 'Say “Supercalm…” before responding' : 'Needs You';
+      ? [V.current.module, V.current.workstream, V.current.tool].filter(Boolean).join(' · ') || V.current.category
+      : 'Needs You';
     const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
     const heard = V.ignoredReason === 'no-speech'
       ? 'No response heard. Nothing was sent.'
-      : V.ignoredReason === 'wake-only'
-        ? 'Wake phrase heard; include your question or feedback after it.'
-        : V.lastHeard
+      : V.lastHeard
       ? `“${V.lastHeard.slice(0, 260)}”`
       : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
     const heardLabel = V.ignoredReason === 'no-speech'
@@ -921,7 +919,7 @@ function renderSheet() {
     <button class="scrim" data-voice-end aria-label="end"></button>
     <div class="sheet ongoing-sheet">
       <div class="ongo-sheet-head">
-        <div><span class="ongo-sheet-kicker">ON THE GO</span><div class="ongo-sheet-title">${esc(project)}</div></div>
+        <div><span class="ongo-sheet-kicker">VOICE ASSISTANT</span><div class="ongo-sheet-title">${esc(project)}</div></div>
         <div class="ongo-sheet-live"><i></i>${esc(label)}</div>
       </div>
       <div class="ongo-sheet-progress"><span>${esc(context || 'Needs You')}</span><b>${esc(progress)}</b></div>
@@ -933,7 +931,7 @@ function renderSheet() {
       ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
       <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
       <div class="sheetrow"><button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
-      <div class="footnote">start with “Supercalm” · nearby speech is ignored · then ask a question or give feedback</div>
+      <div class="footnote">ask follow-ups naturally · instructions are confirmed before anything is sent</div>
     </div>`;
     return `
     <button class="scrim" data-voice-end aria-label="end"></button>

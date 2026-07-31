@@ -25,7 +25,7 @@ self.addEventListener('push', (event) => {
       silent: false,
       renotify: true,
       actions: onTheGoUrl ? [
-        { action: 'talk', title: 'Talk now' },
+        { action: 'talk', title: 'Start Voice Assistant' },
         { action: 'open', title: 'Open' },
       ] : [],
     })

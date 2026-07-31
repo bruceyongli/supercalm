@@ -356,8 +356,8 @@ export function init(el) {
           <h1>Needs you <span class="dk-badge warn" id="dk-needs-count" hidden></span></h1>
           <div class="dk-page-actions">
             <button class="dk-refresh" id="dk-needs-refresh" title="Refresh Needs you from the server">↻ Refresh</button>
-            <button class="dk-voice" id="dk-voice" title="Hands-free pass over the needs-you queue">● Voice</button>
-            <button class="dk-ongo" id="dk-on-the-go" type="button" aria-pressed="false" title="Talk through new Needs You updates while you are on the go"><span></span> On the go</button>
+            <button class="dk-voice" id="dk-voice" title="Start a hands-free conversation about Needs You">● Voice Assistant</button>
+            <button class="dk-ongo" id="dk-on-the-go" type="button" aria-pressed="false" title="Automatically announce new Needs You updates"><span></span> Voice updates</button>
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
@@ -384,7 +384,7 @@ export function init(el) {
     if (!button) return;
     button.classList.toggle('on', state.enabled);
     button.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
-    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'On the go · on' : 'On the go'}`;
+    button.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'Voice updates · on' : 'Voice updates'}`;
     button.title = state.detail;
   });
   const refresh = $('#dk-needs-refresh');

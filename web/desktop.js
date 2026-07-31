@@ -278,7 +278,7 @@ if (onTheGoBtn) {
   subscribeOnTheGo((state) => {
     onTheGoBtn.classList.toggle('on', state.enabled);
     onTheGoBtn.setAttribute('aria-pressed', state.enabled ? 'true' : 'false');
-    onTheGoBtn.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'On the go · on' : 'On the go'}`;
+    onTheGoBtn.innerHTML = `<span></span> ${state.talking ? 'Talking…' : state.enabled ? 'Voice updates · on' : 'Voice updates'}`;
     onTheGoBtn.title = state.detail;
   });
 }

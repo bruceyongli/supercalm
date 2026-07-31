@@ -29,7 +29,7 @@ function unlockAudio() {
   } catch {}
 }
 
-// The on-the-go assistant calls this directly inside the operator's enable tap. That one gesture unlocks audio,
+// Voice updates calls this directly inside the operator's enable tap. That one gesture unlocks audio,
 // starts the notification permission prompt in parallel, and obtains microphone permission before a
 // future Needs You update arrives. The stream is released immediately; the real conversation opens a
 // fresh stream only while listening.
@@ -289,7 +289,10 @@ async function transcribe(blob, agentHint) {
   const t = setTimeout(() => ctrl.abort(), 30000); // never let STT wedge the loop
   try {
     const q = agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '';
-    const r = await fetch('api/transcribe?language=auto&polish=false' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
+    // Voice Assistant is conversational speech, not verbatim code dictation. Spark's polish pass fixes
+    // Whisper fragments and punctuation before intent reasoning; the raw transcript remains available
+    // in the server response for diagnostics.
+    const r = await fetch('api/transcribe?language=auto&polish=true' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
     if (r.ok) rememberSpeechLanguage(j.language);
     return r.ok ? (j.text || '').trim() : '';
@@ -390,9 +393,9 @@ function buildOverlay({ onTheGo = false } = {}) {
   root.className = onTheGo ? 'vm vm-ongo' : 'vm';
   root.innerHTML = onTheGo
     ? '<div class="ongo-shell">' +
-      '<div class="ongo-head"><div><span class="ongo-kicker">ON THE GO</span><h2 class="ongo-title">Project update</h2></div>' +
+      '<div class="ongo-head"><div><span class="ongo-kicker">VOICE ASSISTANT</span><h2 class="ongo-title">Project update</h2></div>' +
       '<div class="ongo-live"><i></i><span class="vm-state">Starting…</span></div></div>' +
-      '<div class="ongo-track"><div><span class="ongo-context">Say “Supercalm…” before responding</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
+      '<div class="ongo-track"><div><span class="ongo-context">Ask a follow-up or give feedback naturally</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
       '<div class="ongo-dialog">' +
       '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">NOW READING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
       '<section class="ongo-heard"><span class="ongo-label ongoing-heard-label">YOUR RESPONSE</span><div class="vm-heard empty">Your words will stay here.</div></section>' +
@@ -466,8 +469,8 @@ function updateProgress(cur) {
   ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
   if (ui.onTheGo) {
-    if (ui.title) ui.title.textContent = cur.project || 'Project update';
-    if (ui.context) ui.context.textContent = ['Say “Supercalm…”', cur.tool, cur.category].filter(Boolean).join(' · ');
+    if (ui.title) ui.title.textContent = cur.projectIdentity || cur.project || 'Project update';
+    if (ui.context) ui.context.textContent = [cur.module, cur.workstream, cur.tool].filter(Boolean).join(' · ') || cur.category || 'Needs You';
   }
 }
 function updateDelivery(delivery, sentCount = 0) {
@@ -540,6 +543,5 @@ function markIgnoredSpeech(reason = '') {
   if (!ui?.onTheGo || !ui.heard) return;
   ui.heard.classList.add('ignored');
   if (ui.heardLabel) ui.heardLabel.textContent = reason === 'no-speech' ? 'NO RESPONSE · NOTHING SENT' : 'HEARD NEARBY · NOT USED';
-  if (reason === 'no-speech') ui.heard.textContent = 'Still listening for “Supercalm…”';
-  else if (reason === 'wake-only') ui.heard.textContent = 'Wake phrase heard; include your question or feedback after it.';
+  if (reason === 'no-speech') ui.heard.textContent = 'Still listening for your reply.';
 }
