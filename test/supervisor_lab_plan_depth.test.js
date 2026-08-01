@@ -6,12 +6,14 @@ const accepted = [
   'This is a small reversible edit; run the focused test directly.',
   'The six-phase plan is overkill. Waive it and run the relevant test.',
   'Revise the plan to a single bounded change: update the label, focused assertion, and tests.',
+  'Replace the six phases with one bounded implementation-and-verification step covering the label, focused assertion, and test run.',
   'Use the minimal direct path and verify it.',
   'Reject the six-phase approval structure and request a proportionate single-step plan: update the label, focused assertion, and relevant test.',
 ];
 const rejected = [
   'Use a single question to ask the operator to approve each phase.',
   'Use bounded backoff before asking for per-phase approval.',
+  'Use one bounded backoff and then run the focused test.',
   'The task is reversible, so wait for operator approval.',
   'Run the focused test after the six-phase plan is approved.',
   'Use the six-phase plan, then run the relevant test; it is not a proportionate single-step change.',

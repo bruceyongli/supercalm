@@ -47,7 +47,10 @@ const artifactRoot = join(scratch, 'artifacts');
 await mkdir(join(process.cwd(), 'test-results'), { recursive: true });
 const linkedParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-worktree-'));
 const linkedRoot = join(linkedParent, 'linked');
-const externalParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-external-'));
+// Keep this standalone-repository fixture under a narrow home child so its authorization semantics
+// do not change when the suite itself is materialized below the host temp root. Temp artifacts are
+// intentionally governed by a separate exact-mention policy.
+const externalParent = await mkdtemp(join(homedir(), '.aios-session-file-external-'));
 const externalRoot = join(externalParent, 'standalone-repo');
 const otherRoot = join(externalParent, 'mentioned-only-repo');
 const writtenRoot = join(externalParent, 'written-output');
@@ -245,7 +248,8 @@ async function waitForRoutes() {
 
 // A bound native transcript can prove that the session operated in a separate standalone repository.
 // Exact absolute and relative report links work; mention alone, an unmentioned sibling, or a broad
-// sensitive workdir remains insufficient.
+// sensitive workdir remains insufficient. The fixture stays outside the test checkout so a promotion
+// subject materialized below the host temp root exercises the same standalone-repository policy.
 {
   const response = await fileRequest(externalReport);
   assert.equal(response.status, 200);

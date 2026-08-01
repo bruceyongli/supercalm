@@ -90,12 +90,13 @@ const REFUTE_SUFFIX = new RegExp('^(?:\\s+(?:is|are|was|were)\\s+(?:provided|ava
   + '|(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)(?:\\s+itself)?|would\\s+(?:itself\\s+)?be)\\s+(?:(?:factually|demonstrably|plainly|equally)\\s+)?(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate|contradicted|disproved|refuted)\\b'
   + '|(?:(?:claim|statement|phrase|wording)\\s+)?(?:(?:is|are|was|were)|would\\s+be)\\s+as\\s+(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate)\\s+as\\b'
   + '|(?:is|are|was|were)\\s+as\\s+(?:false|incorrect|wrong|unsupported|unverified|misleading|unfounded|baseless|overstated|over[-\\s]*broad|inaccurate)\\s+as\\b'
-  + '|(?:claim|statement|phrase|phrasing|wording)\\s+(?:(?:would|does|do)\\s+(?:(?:itself|also|equally|plainly|directly)\\s+)?)?(?:contradicts?|conflicts?\\s+with|misstates?|misreports?|misrepresents?|misdescribes?)\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
+  + '|(?:claim|statement|phrase|phrasing|wording)\\s+(?:(?:would|does|do)\\s+(?:(?:itself|also|equally|plainly|directly)\\s+)?)?(?:contradicts?|conflicts?\\s+with|misstates?|misreports?|misrepresents?|misdescribes?|falsif(?:y|ies))\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|contradicts?\\s+(?:the\\s+)?(?:(?:terminal|observed|served|rendered|provided|available)\\s+)?(?:[a-z0-9_/-]+\\s+){0,4}(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:would|does|do)\\s+(?:(?:equally|factually|demonstrably|plainly)\\s+)?(?:misstate|misreport|misrepresent)\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:misstates?|misreports?|misrepresents?)\\b[^.!?\\n]{0,80}\\b(?:record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:misstates?|misreports?|misrepresents?|misdescribes?)\\s+what(?:\'s|\\s+is)\\s+(?:on\\s+disk|in\\s+(?:the\\s+)?gallery|shown|present)\\b'
   + '|(?:would|does|do)\\s+contradict\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
+  + '|would\\s+falsif(?:y|ies)\\b[^.!?\\n]{0,80}\\b(?:reality|record|facts?|coverage|gallery|artifacts?|screenshots?|captures?|proof|evidence)\\b'
   + '|(?:is|was)\\s+not\\s+the\\s+(?:right|correct|accurate)\\s+(?:claim|description|conclusion|diagnosis)\\b'
   + ')', 'i');
 

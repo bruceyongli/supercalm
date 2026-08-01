@@ -66,7 +66,8 @@ process.env.MOCK_TMUX_LOG = logFile;
 const store = await import('../src/store.js');
 const { isolationResumeBlocked } = await import('../src/resume_policy.js');
 const { worktreePathFor } = await import('../src/worktrees.js');
-const { resume } = await import('../src/sessions.js');
+const { launch, resume } = await import('../src/sessions.js');
+const { TOOLS } = await import('../src/config.js');
 
 const calls = () => readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const newSessions = () => calls().filter((a) => a[0] === 'new-session');
@@ -176,7 +177,40 @@ await check('control: a restorable worktree resumes INTO the worktree with the d
 });
 
 // ---------------------------------------------------------------------------------------------
-// 5. ORDERING: the isolation refusal must precede the launch-contract check, or a manifest mismatch
+// 5. WRITE BOUNDARY: full autonomy removes approval prompts, but an isolated Codex session must
+//    retain workspace-write confinement. Git worktree selection alone does not stop an absolute
+//    path from targeting the canonical checkout (the s_1b45d012b0 incident).
+// ---------------------------------------------------------------------------------------------
+await check('launch: isolated full-autonomy Codex is no-approval but workspace-confined', async () => {
+  const sharedArgs = TOOLS.codex.argv('fixture', { autonomy: 'full' });
+  assert.ok(sharedArgs.includes('--dangerously-bypass-approvals-and-sandbox'), 'non-isolated full mode preserves its existing explicit semantics');
+  const isolatedArgs = TOOLS.codex.argv('fixture', { autonomy: 'full', isolated: true });
+  assert.ok(!isolatedArgs.includes('--dangerously-bypass-approvals-and-sandbox'));
+  assert.deepEqual(
+    isolatedArgs.slice(isolatedArgs.indexOf('-a'), isolatedArgs.indexOf('-a') + 4),
+    ['-a', 'never', '-s', 'workspace-write'],
+  );
+  const isolatedResumeArgs = TOOLS.codex.argv('', { autonomy: 'full', isolated: true, resume: true, resumeId: 'fixture-id' });
+  assert.ok(!isolatedResumeArgs.includes('sandbox_mode=danger-full-access'));
+  assert.ok(isolatedResumeArgs.includes('approval_policy=never'));
+  assert.ok(isolatedResumeArgs.includes('sandbox_mode=workspace-write'));
+
+  process.env.AIOS_ISOLATION = '1';
+  let launched;
+  try {
+    launched = await launch({ project: gitProject, tool: 'codex', task: 'write only in the assigned worktree', autonomy: 'full' });
+  } finally {
+    delete process.env.AIOS_ISOLATION;
+  }
+  assert.ok(launched.worktree_path, 'the execution fixture really launched into an assigned worktree');
+  const line = launchLine(launched.id);
+  assert.match(line, /'-a' 'never' '-s' 'workspace-write'/, 'the pane command enforces the filesystem write boundary');
+  assert.doesNotMatch(line, /dangerously-bypass-approvals-and-sandbox/, 'isolated full mode cannot escape the worktree through the danger flag');
+  assert.match(line, /AIOS_NO_DEPLOY=1/, 'the existing deploy interlock remains layered with filesystem confinement');
+});
+
+// ---------------------------------------------------------------------------------------------
+// 6. ORDERING: the isolation refusal must precede the launch-contract check, or a manifest mismatch
 //    (which `force` legitimately overrides) could mask it and let a forced resume through.
 // ---------------------------------------------------------------------------------------------
 await check('source: the isolation guard precedes verifyResume and startPane inside resume()', () => {
@@ -192,7 +226,7 @@ await check('source: the isolation guard precedes verifyResume and startPane ins
 });
 
 // ---------------------------------------------------------------------------------------------
-// 6. The supervisor's automatic exit-recovery must report a refused resume HONESTLY: no send, no
+// 7. The supervisor's automatic exit-recovery must report a refused resume HONESTLY: no send, no
 //    "recovered" claim. This drives the real recovery path with a resumeSession that throws exactly
 //    what the guard above throws.
 // ---------------------------------------------------------------------------------------------

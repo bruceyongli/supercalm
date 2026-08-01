@@ -42,6 +42,8 @@ allow('A blanket "no visual evidence" claim would also misstate the verified cov
   'captured Opus adverbial claim-would-also-misstate refutation');
 allow('A blanket "no visual evidence" claim would misdescribe the existing gallery.',
   'captured Opus claim-would-misdescribe refutation');
+allow('A blanket "no visual evidence" statement would falsify the existing gallery.',
+  'captured Opus statement-would-falsify refutation');
 allow('Blanket "no visual evidence" would misstate the verified mobile coverage.', 'captured direct-would-misstate refutation');
 allow('Blanket "no visual evidence" would equally misstate the record.',
   'captured Opus adverbial would-misstate refutation');
@@ -265,6 +267,8 @@ forbid('"No visual evidence" claim would also misstate nothing; the absence is r
   'adverbial claim-would-misstate still needs a positive proof object');
 forbid('"No visual evidence" claim would misdescribe the schedule; the absence is real.',
   'claim-would-misdescribe still needs a positive proof object');
+forbid('"No visual evidence" statement would falsify the schedule; the absence is real.',
+  'statement-would-falsify still needs a positive proof object');
 forbid('"No visual evidence" would be a false hope; the absence is real.',
   'modal false adjective only refutes when it closes as a claim/statement/wording');
 forbid('"No visual evidence" would be a false start; the absence is real.',

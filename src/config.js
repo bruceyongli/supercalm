@@ -193,7 +193,7 @@ export const TOOLS = {
     fastMode: true,
     live: { fast_mode: () => '/fast' }, // Codex exposes fast inference as an interactive slash toggle.
     env: ({ model, viaProxy } = {}) => toolEnv('codex', model, viaProxy),
-    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy } = {}) => {
+    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy, isolated = false } = {}) => {
       const a = resume ? ['codex', 'resume', resumeId || '--last'] : ['codex'];
       // viaProxy forces the proxy bridge even for native gpt-5.x (then an explicit model is required so the
       // bridge knows what to route). Foreign models bridge regardless.
@@ -209,11 +209,11 @@ export const TOOLS = {
       if (mcpUrl) a.push('-c', `mcp_servers.aios_wiki.url="${mcpUrl}"`);
       if (resume) {
         // the resume subcommand takes autonomy via -c overrides (the launch flags differ there)
-        if (autonomy === 'full') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=danger-full-access');
-        else if (autonomy === 'auto') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=workspace-write');
+        if (autonomy === 'full' && !isolated) a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=danger-full-access');
+        else if (autonomy === 'full' || autonomy === 'auto') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=workspace-write');
       } else {
-        if (autonomy === 'full') a.push('--dangerously-bypass-approvals-and-sandbox');
-        else if (autonomy === 'auto') a.push('-a', 'never', '-s', 'workspace-write');
+        if (autonomy === 'full' && !isolated) a.push('--dangerously-bypass-approvals-and-sandbox');
+        else if (autonomy === 'full' || autonomy === 'auto') a.push('-a', 'never', '-s', 'workspace-write');
       }
       // codex has no --append-system-prompt; on a fresh launch, prefix the data-wrapped project context
       // to the task as a clearly-delimited preamble (resume has no task to prefix).

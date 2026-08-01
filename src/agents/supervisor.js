@@ -1150,15 +1150,17 @@ async function runAnswer(ctx, cfg, ev, trigger, tries = 0, snapshot = null, sent
   if (ctx.__betweenTasks) sys += '\n\nBETWEEN TASKS: there is NO active contract on this session. Answer only narrow factual unblocks; any directive that starts, scopes, or closes work — this project\u2019s or any other\u2019s — must be action=escalate.'
   if (dod.text) sys += '\n\n' + SYS_ANSWER_DOD; // spec-aware: outrank the doc on goal, escalate conflicts
   const { parsed: modelParsed, raw, error, model } = await callJson(ctx, cfg, sys, userText);
-  const parsed = enforceCopilotCurrentCardReview(enforceAnswerSafety(modelParsed, {
+  const safetyParsed = enforceAnswerSafety(modelParsed, {
       question,
       summary: s?.summary,
       terminalTail: ev.terminal_tail,
       supervisorAutopilot: cfg.mode === 'autopilot',
-  }), {
+  });
+  const parsed = enforceCopilotCurrentCardReview(safetyParsed, {
       question,
       summary: s?.summary,
       supervisorMode: cfg.mode,
+      unsafeCardLifecycle: cardLifecycleDirective(safetyParsed?.answer),
   });
 
   const answer = scrubSupervisorText(clampLine(parsed?.answer, 1500));
@@ -2076,14 +2078,39 @@ async function maybeSuggestBoundary(ctx, cfg, st, t, lastOp, ev = null) {
     // Full auto is scoped to this operator-message path; Path 2 (work-derived, below) remains a
     // suggestion because commits alone cannot authorize a new product mission.
     const opGate = ON_MSG_CARDS ? BOUNDARY_PROMPT_MS : settle;
+    const BOUNDARY_RETRY_MS = 60_000;
     const autoManageCards = ON_MSG_CARDS && cfg.mode === 'autopilot';
-    if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= opGate && (!ON_MSG_CARDS || lastOp > SUPERVISOR_BOOT_TS)) {
-      applySupervisorState(ctx, { boundaryCheckTs: lastOp }); // one action per operator message (dedup, set before the call so a failure doesn't churn)
+    if (lastOp && lastOp > (st.boundaryCheckTs || 0) && t - lastOp >= opGate
+      && t - Number(st.boundaryRetryAt || 0) >= BOUNDARY_RETRY_MS
+      && (!ON_MSG_CARDS || lastOp > SUPERVISOR_BOOT_TS)) {
+      const previousCheckTs = Number(st.boundaryCheckTs || 0);
+      // Stamp before awaiting so overlapping ticks cannot classify the same message concurrently.
+      // A double transport failure restores the prior checkpoint below, preserving a bounded retry.
+      applySupervisorState(ctx, { boundaryCheckTs: lastOp, boundaryRetryAt: t });
       const latest = (recentOperatorSignals({ db, sessionId: ctx.sessionId })?.messages || [])[0]?.text || '';
       if (latest.trim() && latest.length >= 12) {
         const user = 'ACTIVE TASK CARD:\n' + cardMd.slice(0, 2500) + '\n\nOPERATOR MESSAGE (latest):\n' + latest.slice(0, 1500);
-        const { parsed } = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+        let decision = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+        if (decision.raw == null && !decision.parsed) {
+          ctx.log('boundary classifier transport failed; retrying once');
+          decision = await callJson(ctx, cfg, SYS_BOUNDARY, user);
+        }
+        const { parsed } = decision;
+        if (decision.raw == null && !parsed) {
+          // No model weighed in. Do not consume the operator message: restore the prior checkpoint
+          // and let a later tick retry after BOUNDARY_RETRY_MS instead of silently losing the task.
+          applySupervisorState(ctx, { boundaryCheckTs: previousCheckTs, boundaryRetryAt: t });
+          return;
+        }
         if (ctx.__betweenTasks && parsed?.fit === 'amend') parsed.fit = 'new'; // nothing to amend between tasks
+        const validFit = parsed?.fit === 'new' || parsed?.fit === 'amend' || parsed?.fit === 'none';
+        if (!validFit || ((parsed.fit === 'new' || parsed.fit === 'amend') && !(parsed.title || parsed.goal))) {
+          // The model replied but supplied no usable classification. callJson already spent its one
+          // parse retry; preserve the message for a later bounded reclassification.
+          applySupervisorState(ctx, { boundaryCheckTs: previousCheckTs, boundaryRetryAt: t });
+          return;
+        }
+        applySupervisorState(ctx, { boundaryCheckTs: lastOp, boundaryRetryAt: 0 });
         const projectId = ctx.session()?.project_id || ctx.__activeCard?.task?.project_id || null;
         const title = clampLine(parsed?.title || '', 120), goal = clampLine(parsed?.goal || '', 300);
         // actor 'operator' = the mutation is operator-authoritative (their composer message drove it; the

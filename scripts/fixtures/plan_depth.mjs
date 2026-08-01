@@ -1,7 +1,7 @@
 // Public Supervisor Gym oracle for choosing control depth. The two clauses are
 // intentionally independent: a response must classify the work as bounded AND
 // replace ceremony with direct, focused verification.
-const BOUNDED_TASK_SCOPE_LEXICAL_RX = /simple|one-line|small|reversible|overkill|unnecessary|disproportionate|minimal|single\s+bounded|proportionate\s+single[-\s]+step/gi;
+const BOUNDED_TASK_SCOPE_LEXICAL_RX = /simple|one-line|small|reversible|overkill|unnecessary|disproportionate|minimal|(?:single|one)\s+bounded\s+(?:change|task|implementation(?:-and-verification)?|step|work item)|proportionate\s+single[-\s]+step/gi;
 export const BOUNDED_TASK_SCOPE_RX = {
   test(input) {
     const value = String(input || '');

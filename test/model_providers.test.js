@@ -49,6 +49,10 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
 // ---- transport: openai-compatible + anthropic-native against a local mock --------------------------
 {
   const seen = [];
+  let transientDirectCalls = 0;
+  let retriedDirectCalls = 0;
+  let deniedDirectCalls = 0;
+  let terminatedCalls = 0;
   const mock = http.createServer((req, res) => {
     let b = '';
     req.on('data', (c) => (b += c));
@@ -56,9 +60,32 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
       seen.push({ path: req.url, auth: req.headers.authorization || '', xkey: req.headers['x-api-key'] || '', body: JSON.parse(b || '{}') });
       res.setHeader('content-type', 'application/json');
       if (req.url === '/v1/chat/completions') {
-        res.end(JSON.stringify({ model: 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
+        const body = b ? JSON.parse(b) : {};
+        if (body.model === 'm-terminated' && ++terminatedCalls === 1) {
+          res.statusCode = 502;
+          res.end(JSON.stringify({ error: { message: 'terminated' } }));
+        } else {
+          res.end(JSON.stringify({ model: body.model || 'm-one', choices: [{ message: { role: 'assistant', content: 'openai-style reply' } }], usage: { prompt_tokens: 5, completion_tokens: 3 } }));
+        }
       } else if (req.url === '/v1/messages') {
-        res.end(JSON.stringify({ model: 'claude-x', content: [{ type: 'text', text: 'anthropic-style reply' }], usage: { input_tokens: 7, output_tokens: 2 } }));
+        const body = b ? JSON.parse(b) : {};
+        if (body.model === 'claude-direct-denied') {
+          deniedDirectCalls++;
+          res.statusCode = 403;
+          res.end(JSON.stringify({ error: { message: 'permission denied by direct provider' } }));
+        } else if (body.model === 'claude-transient-retry' && ++retriedDirectCalls === 1) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'Internal server error' } }));
+        } else if (body.model === 'claude-transient' && ++transientDirectCalls === 1) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: { message: 'Internal server error' } }));
+        } else if (body.model === 'claude-opus-5' && 'temperature' in body) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: { message: '`temperature` is deprecated for this model.' } }));
+        } else {
+          const model = body.model || 'claude-x';
+          res.end(JSON.stringify({ model, content: [{ type: 'text', text: 'anthropic-style reply' }], usage: { input_tokens: 7, output_tokens: 2 } }));
+        }
       } else if (req.url === '/v1/models') {
         res.end(JSON.stringify({ data: [{ id: 'm-one' }, { id: 'm-two' }] }));
       } else {
@@ -72,6 +99,15 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   const out = await callProxyModel(routeForModel('m-one'), [{ role: 'system', content: 'sys' }, { role: 'user', content: 'hi' }]);
   assert.equal(out.content, 'openai-style reply');
   assert.equal(seen[0].auth, 'Bearer sk-secret-123', 'openai kind sends the provider key as bearer');
+  const recoveredTermination = await callProxyModel({
+    id: 'm-terminated',
+    model: 'm-terminated',
+    proxy: 'api',
+    kind: 'openai',
+    base: 'http://127.0.0.1:9999',
+  }, [{ role: 'user', content: 'retry a terminated transport' }], { retries: 1 });
+  assert.equal(recoveredTermination.model, 'm-terminated');
+  assert.equal(terminatedCalls, 2, 'a terminated model transport receives one bounded exact retry');
 
   upsertProvider({ name: 'AnthTest', kind: 'anthropic', base_url: 'http://127.0.0.1:9999', api_key: 'sk-ant-9', models: ['claude-x'] });
   const r2 = routeForModel('claude-x');
@@ -86,6 +122,103 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.equal(call.body.system, 'be terse', 'system split out natively');
   assert.equal(call.body.messages[0].content, 'multimodal', 'multimodal flattened to text (v1 transport)');
   assert.equal(out2.usage.prompt_tokens, 7, 'anthropic usage translated');
+
+  const opus = await callProxyModel({
+    id: 'claude-opus-5',
+    model: 'claude-opus-5',
+    proxy: 'api',
+    kind: 'anthropic',
+    base: 'http://127.0.0.1:9999',
+  }, [{ role: 'user', content: 'request compatibility' }], { retries: 0 });
+  assert.equal(opus.model, 'claude-opus-5', 'temperature repair preserves exact model identity');
+  const opusCalls = seen.filter((x) => x.path === '/v1/messages' && x.body.model === 'claude-opus-5');
+  assert.equal(opusCalls.length, 2, 'temperature incompatibility gets one bounded same-model retry');
+  assert.equal('temperature' in opusCalls[0].body, true);
+  assert.equal('temperature' in opusCalls[1].body, false, 'the repaired request removes only the rejected field');
+
+  // A Claude fleet organization-policy denial falls back to the credential-injecting AIOS
+  // Anthropic transport without changing the requested or returned exact model identity.
+  let deniedCalls = 0;
+  const denied = http.createServer((req, res) => {
+    deniedCalls++;
+    res.statusCode = 403;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: { message: 'OAuth authentication is currently not allowed for this organization.' } }));
+  });
+  await new Promise((ok) => denied.listen(0, '127.0.0.1', ok));
+  process.env.AIOS_CLAUDE_AGENT_BASE_URL = 'http://127.0.0.1:9999';
+  try {
+    const exact = await callProxyModel({
+      id: 'claude-x',
+      model: 'claude-x',
+      proxy: 'claude',
+      port: denied.address().port,
+    }, [{ role: 'user', content: 'identity preflight' }], { retries: 0 });
+    assert.equal(exact.model, 'claude-x');
+    assert.equal(exact.content, 'anthropic-style reply');
+    const exactAgain = await callProxyModel({
+      id: 'claude-x',
+      model: 'claude-x',
+      proxy: 'claude',
+      port: denied.address().port,
+    }, [{ role: 'user', content: 'identity preflight again' }], { retries: 0 });
+    assert.equal(exactAgain.model, 'claude-x');
+    assert.equal(deniedCalls, 1, 'the denied fleet route is attempted exactly once before the exact transport repair');
+
+    const transientRoute = {
+      id: 'claude-transient',
+      model: 'claude-transient',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    await assert.rejects(
+      callProxyModel(transientRoute, [{ role: 'user', content: 'first direct attempt fails' }], { retries: 0 }),
+      /Internal server error/,
+    );
+    const recovered = await callProxyModel(
+      transientRoute,
+      [{ role: 'user', content: 'next call stays on the repaired exact transport' }],
+      { retries: 0 },
+    );
+    assert.equal(recovered.model, 'claude-transient');
+    assert.equal(transientDirectCalls, 2, 'a transient direct-path failure remains retryable on a later call');
+    assert.equal(deniedCalls, 2, 'the transient exact route probes the denied fleet only once');
+
+    const retriedDirectRoute = {
+      id: 'claude-transient-retry',
+      model: 'claude-transient-retry',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    const retried = await callProxyModel(
+      retriedDirectRoute,
+      [{ role: 'user', content: 'bounded retry stays exact' }],
+      { retries: 1 },
+    );
+    assert.equal(retried.model, 'claude-transient-retry');
+    assert.equal(retriedDirectCalls, 2, 'the exact direct transport honors the caller retry budget');
+    assert.equal(deniedCalls, 3, 'the same-call retry does not revisit the denied fleet');
+
+    const deniedDirectRoute = {
+      id: 'claude-direct-denied',
+      model: 'claude-direct-denied',
+      proxy: 'claude',
+      port: denied.address().port,
+    };
+    await assert.rejects(
+      callProxyModel(deniedDirectRoute, [{ role: 'user', content: 'direct denial' }], { retries: 0 }),
+      /permission denied by direct provider/,
+    );
+    await assert.rejects(
+      callProxyModel(deniedDirectRoute, [{ role: 'user', content: 'must cool down' }], { retries: 0 }),
+      /cooling down after 403/,
+    );
+    assert.equal(deniedDirectCalls, 1, 'a direct-path access denial opens the cooldown instead of hammering');
+    assert.equal(deniedCalls, 4, 'the direct-denied exact route also probes the fleet only once');
+  } finally {
+    delete process.env.AIOS_CLAUDE_AGENT_BASE_URL;
+    await new Promise((ok) => denied.close(ok));
+  }
 
   // probe uses the provider's own protocol
   const probe = await probeProvider({ kind: 'openai', base_url: 'http://127.0.0.1:9999', api_key: 'k' });
@@ -114,6 +247,7 @@ const { callProxyModel, isVisionRoute } = await import('../src/agents/model.js')
   assert.match(am, /ANTHROPIC_API_KEY: prov\.api_key/, 'provider key reaches the claude env');
   const mj = readFileSync(new URL('../src/agents/model.js', import.meta.url), 'utf8');
   assert.match(mj, /if \(route\?\.base\) return callApiProvider/, 'base-URL routes bypass the fleet transport');
+  assert.match(mj, /async function callExactClaudeOAuth[\s\S]{0,400}kind: 'anthropic'/, 'Claude access denial retains an exact OAuth transport repair');
   const api = readFileSync(new URL('../src/models_api.js', import.meta.url), 'utf8');
   assert.match(api, /api\/models\/providers/, 'provider routes exist');
   assert.ok(api.indexOf("'/api/models/providers'") < api.indexOf('/api/models/providers/:id'), 'specific before :id (registration order)');
