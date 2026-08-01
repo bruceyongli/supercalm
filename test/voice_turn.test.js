@@ -6,6 +6,7 @@ import {
   confirmedPendingReply,
   createVoiceDialogueState,
   isVoiceInformationQuestion,
+  isVagueVoiceInstruction,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
   reconcileVoiceReply,
@@ -13,6 +14,7 @@ import {
   resolveVoiceTurn,
   scopedVoicePending,
   voiceControlReply,
+  voiceDraftGrounding,
   providerFailureReply,
 } from '../src/voice_turn.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
@@ -53,6 +55,11 @@ assert.doesNotMatch(failed.say, /trouble understanding|say that again/i);
 const recovered = confirmedPendingReply(failed.message, 'Send it');
 assert.equal(recovered.action, 'send');
 assert.equal(recovered.message, failed.message);
+const vagueFailure = providerFailureReply('Fix it.', 'AIOS');
+assert.equal(vagueFailure.message, '', 'a provider outage never turns an unresolved pronoun into a pending draft');
+assert.match(vagueFailure.say, /Nothing was sent/);
+assert.equal(providerFailureReply('Yes, go ahead ask the agent to', 'AIOS').message, '',
+  'a provider outage cannot save a clipped phrase for later confirmation');
 
 assert.equal(isVoiceInformationQuestion('What happened to the deployment?'), true);
 assert.equal(isVoiceInformationQuestion('Why is this session blocked'), true, 'STT does not need question punctuation');
@@ -94,6 +101,23 @@ assert.equal(voiceControlReply("I'll later do a review myself so nothing need th
 assert.equal(voiceControlReply("Don't send that.", { hasPending: true }).action, 'cancel');
 assert.equal(voiceControlReply('I prefer option two.'), null,
   'feedback goes through contextual intent reasoning instead of an unconditional send shortcut');
+
+assert.equal(isVagueVoiceInstruction('Fix it.'), true);
+assert.equal(isVagueVoiceInstruction('Make that smaller.'), true);
+assert.equal(isVagueVoiceInstruction('Fix the iPhone composer spacing.'), false);
+assert.deepEqual(voiceDraftGrounding('Fix it.', 'Fix it.'), { ok: false, reason: 'unresolved-reference' },
+  'the assistant cannot parrot an unresolved pronoun into confirmation');
+assert.deepEqual(
+  voiceDraftGrounding('Fix it.', 'Fix the extra space between the iPhone composer and keyboard.'),
+  { ok: true, reason: '' },
+  'a model-resolved reference becomes a standalone agent instruction',
+);
+assert.deepEqual(
+  voiceDraftGrounding('Please continue', 'Yes, go ahead ask the agent to'),
+  { ok: false, reason: 'incomplete' },
+  'a clipped live phrase cannot be staged and later delivered',
+);
+assert.deepEqual(voiceDraftGrounding('Use option A', 'Use option A.'), { ok: true, reason: '' });
 
 // Explicit dialogue state: a draft exists only while this exact item awaits confirmation.
 {
@@ -213,6 +237,12 @@ assert.match(voiceSource, /voiceTranscriptDisposition\(rawUserText[\s\S]*normali
   'manual and proactive entry points share transcript validation and conversation normalization');
 assert.match(voiceSource, /if \(!disposition\.accepted\)[\s\S]*voice-input-ignored[\s\S]*ignoredReason: disposition\.reason/,
   'the server rejects phone fragments before dialogue or model reasoning, including for stale PWA clients');
+assert.doesNotMatch(voiceSource, /(?:emptyTurns|fragmentTurns)\s*>=\s*3/,
+  'silence and unclear speech never terminate the conversation');
+assert.match(voiceSource, /api\/voice\/keepalive/,
+  'a silently listening client keeps its live conversation beyond the abandoned-session TTL');
+assert.match(voiceSource, /voiceDraftGrounding\(userText, message\)/,
+  'unresolved references and clipped drafts fail closed before confirmation or delivery');
 assert.match(voiceSource, /isVoiceInformationQuestion\(userText\)[\s\S]*\['send', 'ignore'\]/,
   'explicit questions have a deterministic never-send guard');
 assert.match(voiceSource, /action === 'send' && !pending/,

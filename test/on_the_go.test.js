@@ -87,6 +87,10 @@ assert.match(phone, /voiceTranscriptDisposition\(text, \{ spoken: V\.said \}\)/,
   'phone uses the shared transcript-quality boundary before sending a turn');
 assert.match(voice, /voiceTranscriptDisposition\(text, \{ spoken: lastSpoken \}\)/,
   'desktop uses the same transcript-quality boundary');
+assert.doesNotMatch(phone, /silentTurns\s*>=\s*3/,
+  'phone silence never closes an active Voice Assistant conversation');
+assert.match(phone, /api\/voice\/keepalive/,
+  'phone keeps the server conversation alive while local VAD hears nothing usable');
 assert.match(voice, /vm-interrupt/, 'desktop and iPad retain a tap-to-interrupt fallback');
 assert.match(phone, /data-voice-interrupt/, 'phone retains a reachable tap-to-interrupt fallback');
 assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');

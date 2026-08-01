@@ -14,12 +14,14 @@ import { attentionUnreadCount, getAttentionDismissal } from './attention_store.j
 import { asksForSessionOverview, isNeedsYouSession, isStaleSessionTitleEcho, latestAttentionReportFrom, latestReliableReport, originalRequestFrom } from './voice_attention.js';
 import {
   createVoiceDialogueState,
+  isVagueVoiceInstruction,
   isVoiceInformationQuestion,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
   resolveVoiceTurn,
   scopedVoicePending,
   providerFailureReply,
+  voiceDraftGrounding,
 } from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
 import { voiceTranscriptDisposition } from '../web/voice-input.js';
@@ -37,6 +39,8 @@ For the user's reply about the CURRENT item:
 - in a follow-up such as "tell me about this", "what happened here", or "why", "this" means the current update/workstream—not the product in general. Answer the useful detail behind the report.
 - When explaining an update, answer what broke, the cause when known, what changed for the user, and any remaining gap. Successful test counts, suite totals, commit ids, file counts, and deployment ceremony are supporting evidence—not the answer—unless the owner explicitly asks about verification or release mechanics. Failed verification remains important.
 - a correction such as "I was asking for details" means answer the earlier question; it is NEVER feedback to send to the coding agent.
+- Natural references such as "fix it", "change that", or "make it smaller" refer first to your IMMEDIATELY PRECEDING ASSISTANT TURN and the current work thread. Resolve the reference into a concrete target and change in both your restatement and "message". Never merely repeat the pronoun. If the preceding turn still leaves more than one plausible target, ask one specific clarification and leave "message" empty.
+- A draft sent for confirmation must stand alone for the coding agent. Never stage an unfinished phrase, a confirmation such as "yes, go ahead", or text ending in "ask the agent to".
 - skip / pass / later / next -> action "next".
 - stop / done / that's all -> action "stop".
 - speech that is clearly unrelated to this report or sounds like a nearby third-party conversation -> action "ignore", with empty "say" and "message".
@@ -275,6 +279,10 @@ async function stateContext(vs, userText = '') {
     lines.push(`CURRENT WORK THREAD: ${it.projectIdentity || it.project} · ${it.module || 'current module'} · ${it.workstream || it.category} · ${it.tool}.`);
     if (it.originalRequest) lines.push(`ORIGINAL REQUEST: ${sanitizeForSpeech(it.originalRequest).slice(0, 1200)}`);
     if (it.latestReport) lines.push(`LATEST REPORT: ${sanitizeForSpeech(it.latestReport).slice(0, 1200)}`);
+    const previousAssistant = [...vs.history].reverse().find((entry) => entry?.role === 'assistant' && String(entry.content || '').trim());
+    if (previousAssistant) {
+      lines.push(`IMMEDIATELY PRECEDING ASSISTANT TURN (primary reference anchor for "it/this/that"):\n${sanitizeForSpeech(previousAssistant.content).slice(0, 1600)}`);
+    }
     const evidence = await voiceEvidenceFor(it);
     if (evidence.projectContext) lines.push(`PROJECT BACKGROUND:\n${evidence.projectContext}`);
     if (evidence.taskContext) lines.push(`CURRENT TASK CONTRACT:\n${evidence.taskContext}`);
@@ -428,6 +436,7 @@ async function brainReply(vs, userText) {
   // gave up was still typed into the agent (double-send on the retry pass). Timeout → preserve what
   // the operator said and offer a deterministic "send it" next step; never blame their speech for
   // an upstream model/provider failure.
+  const it = vs.items[vs.pointer];
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), TURN_BUDGET_MS);
   try {
@@ -454,6 +463,18 @@ async function brainReply(vs, userText) {
         say = "I understood that as a question, so I didn't send it to the agent. I don't yet have a reliable answer from the available context.";
       }
     }
+    // A spoken pronoun is fine; an agent instruction containing the same unresolved pronoun is not.
+    // Give the conversational model the first chance to resolve it from the explicit previous-turn
+    // anchor above, then fail closed with a targeted clarification if its draft is still vague/clipped.
+    const draftVerdict = voiceDraftGrounding(userText, message);
+    if ((message || isVagueVoiceInstruction(userText)) && !draftVerdict.ok) {
+      action = 'await';
+      message = '';
+      const thread = [it?.module, it?.workstream].map((value) => sanitizeForSpeech(value || '').trim()).filter(Boolean).join(' — ');
+      say = draftVerdict.reason === 'unresolved-reference'
+        ? `I think "it" means the ${thread || 'issue in the update I just described'}, but I still don't have a concrete change to send. Which part should the agent change?`
+        : `That instruction sounded cut off, so I won't send it. Please finish what you want the agent to do.`;
+    }
     // Voice updates and manually-started Voice use the same deliberate delivery contract: a new
     // instruction is restated first, and only a later confirmation crosses into the coding session.
     // This is also the last safety boundary against nearby conversation that sounded task-related.
@@ -473,7 +494,6 @@ async function brainReply(vs, userText) {
     };
   } catch (e) {
     console.error('[aios] voice reply failed:', e.message);
-    const it = vs.items[vs.pointer];
     if (isVoiceInformationQuestion(userText)) {
       return {
         say: 'I heard your question, but the response service is temporarily unavailable. I did not send it to the agent.',
@@ -521,32 +541,12 @@ route('POST', '/api/voice/turn', async (req, res) => {
     touch(vs);
     const rawUserText = String(b.userText || '').trim();
     if (!rawUserText) {
-      if (vs.onTheGo) {
-        // Silence is not a conversational turn. Keep it out of history and never synthesize a
-        // response from it. After three quiet windows, end this pass silently; the persistent On the
-        // go switch can announce the next new Needs You report without draining the microphone.
-        vs.emptyTurns = (vs.emptyTurns || 0) + 1;
-        const done = vs.emptyTurns >= 3;
-        if (done) voiceSessions.delete(vs.id);
-        return json(res, 200, {
-          say: '',
-          done,
-          listen: !done,
-          ignored: true,
-          ignoredReason: 'no-speech',
-          current: cur(vs),
-        });
-      }
-      // Consecutive silent turns = capture is broken (mic denied, dead VAD, muted input) — a polite
-      // re-ask forever is an infinite nag loop. Three strikes → end the pass gracefully.
+      // Silence is not a conversational turn and never closes a call. Stay available without nagging;
+      // only the first miss in a manually-started conversation gets one short audible reassurance.
       vs.emptyTurns = (vs.emptyTurns || 0) + 1;
-      if (vs.emptyTurns >= 3) {
-        vs.lastSpoken = "I'm having trouble hearing you, so I'll stop here. Check the microphone and tap voice again when you're ready.";
-        voiceSessions.delete(vs.id);
-        return json(res, 200, { say: vs.lastSpoken, done: true, listen: false });
-      }
-      vs.lastSpoken = "Sorry, I didn't catch that — could you say it again?";
-      return json(res, 200, { say: vs.lastSpoken, done: false, listen: true });
+      const say = !vs.onTheGo && vs.emptyTurns === 1 ? "I didn't catch that. I'm still listening." : '';
+      if (say) vs.lastSpoken = say;
+      return json(res, 200, { say, done: false, listen: true, ignored: true, ignoredReason: 'no-speech', current: cur(vs) });
     }
     vs.emptyTurns = 0;
 
@@ -555,7 +555,6 @@ route('POST', '/api/voice/turn', async (req, res) => {
     const disposition = voiceTranscriptDisposition(rawUserText, { spoken: vs.lastSpoken || '' });
     if (!disposition.accepted) {
       vs.fragmentTurns = (vs.fragmentTurns || 0) + 1;
-      const done = vs.fragmentTurns >= 3;
       try {
         const currentItem = vs.items[vs.pointer];
         if (currentItem) store.addEvent(currentItem.sessionId, 'voice-input-ignored', {
@@ -564,11 +563,10 @@ route('POST', '/api/voice/turn', async (req, res) => {
           mode: vs.onTheGo ? 'on-the-go' : 'manual',
         });
       } catch {}
-      if (done) voiceSessions.delete(vs.id);
       return json(res, 200, {
-        say: done ? "I'm only hearing fragments, so I'll stop here. No feedback was sent." : '',
-        done,
-        listen: !done,
+        say: '',
+        done: false,
+        listen: true,
         ignored: true,
         ignoredReason: disposition.reason,
         current: cur(vs),
@@ -675,6 +673,17 @@ route('POST', '/api/voice/turn', async (req, res) => {
   } finally {
     vs.inflight = false;
   }
+});
+
+// Silent local VAD windows are intentionally not /turn calls, but they are still an active phone
+// conversation. This heartbeat keeps a listening call alive past the normal abandoned-session TTL.
+route('POST', '/api/voice/keepalive', async (req, res) => {
+  gcVoiceSessions();
+  const b = await readJson(req).catch(() => ({}));
+  const vs = voiceSessions.get(b.voiceId);
+  if (!vs) return json(res, 404, { error: 'no voice session' });
+  touch(vs);
+  json(res, 200, { ok: true, current: cur(vs) });
 });
 
 route('POST', '/api/voice/continue', async (req, res) => {

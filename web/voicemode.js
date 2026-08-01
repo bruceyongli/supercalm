@@ -1,5 +1,5 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage } from './common.js';
-import { unlockAudio as unlockPlayer, newPlayback, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
+import { unlockAudio as unlockPlayer, newPlayback, splitSentences, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 
@@ -86,6 +86,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
         const disposition = voiceTranscriptDisposition(interruption.text, { spoken: lastSpoken });
         if (!disposition.accepted) {
           markIgnoredSpeech(disposition.reason);
+          await keepVoiceAlive(disposition.reason);
           state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
           continue;
         }
@@ -122,6 +123,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
         const disposition = voiceTranscriptDisposition(text, { spoken: lastSpoken });
         if (!disposition.accepted) {
           markIgnoredSpeech(disposition.reason);
+          await keepVoiceAlive(disposition.reason);
           state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
           continue;
         }
@@ -138,6 +140,12 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
   } finally {
     end('complete');
   }
+}
+
+async function keepVoiceAlive(reason = '') {
+  if (!voiceId || stopFlag) return;
+  await post('api/voice/keepalive', { voiceId, reason }, 5000).catch(() => {});
+  await sleep(250); // avoid a hot retry loop when MediaRecorder is present but unusable
 }
 
 function post(path, body, ms = 30000) {
@@ -572,9 +580,7 @@ function setState(s, said) {
 }
 
 function spokenParts(text) {
-  return (String(text || '').match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(text || '')])
-    .map((part) => part.trim())
-    .filter(Boolean);
+  return splitSentences(text);
 }
 
 function paintSpokenText(text) {

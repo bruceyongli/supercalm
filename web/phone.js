@@ -12,7 +12,7 @@
 
 import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
-import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
+import { unlockAudio, newPlayback, splitSentences, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
@@ -353,7 +353,7 @@ function phoneVoiceConstraints() {
 async function voiceSay(text, { allowInterruption = false } = {}) {
   if (!text || V.stopFlag) return;
   V.state = 'speaking'; V.said = text;
-  V.segment = (String(text).match(/[^.!?]+[.!?]+|\S[^.!?]*$/) || [text])[0].trim();
+  V.segment = splitSentences(text)[0] || String(text);
   render();
   let live = null;
   let accepted = null;
@@ -416,14 +416,7 @@ async function voiceLoopListen() {
   const blob = await vadRecord(V.stream, { maxMs: 45000 });
   if (V.stopFlag) return;
   if (!blob || blob.size < 800) {
-    if (V.onTheGo) {
-      V.ignoredReason = 'no-speech';
-      V.silentTurns++;
-      render();
-      return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
-    }
-    await voiceSay("I didn't hear anything. Say skip, stop, or your reply.");
-    return voiceLoopListen();
+    return voiceMissedInput('no-speech');
   }
   V.state = 'thinking'; render();
   let text = '';
@@ -434,14 +427,7 @@ async function voiceLoopListen() {
   } catch {}
   if (V.stopFlag) return;
   if (!text) {
-    if (V.onTheGo) {
-      V.ignoredReason = 'no-speech';
-      V.silentTurns++;
-      render();
-      return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
-    }
-    await voiceSay('Sorry, I could not transcribe that. Try again.');
-    return voiceLoopListen();
+    return voiceMissedInput('no-speech');
   }
   return voiceSubmitTurn(text);
 }
@@ -449,11 +435,7 @@ async function voiceSubmitTurn(text) {
   if (V.stopFlag || !text) return;
   const disposition = voiceTranscriptDisposition(text, { spoken: V.said });
   if (!disposition.accepted) {
-    V.ignoredReason = disposition.reason;
-    V.lastHeard = '';
-    V.silentTurns++;
-    render();
-    return V.silentTurns >= 3 ? voiceModeEnd('quiet') : voiceLoopListen();
+    return voiceMissedInput(disposition.reason);
   }
   text = disposition.text;
   V.silentTurns = 0; V.lastHeard = text; V.ignoredReason = ''; render();
@@ -479,6 +461,21 @@ async function voiceSubmitTurn(text) {
     if (nextInterruption?.text) return voiceSubmitTurn(nextInterruption.text);
     return voiceLoopListen();
   } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
+}
+async function voiceMissedInput(reason) {
+  if (V.stopFlag) return;
+  V.ignoredReason = reason;
+  V.lastHeard = '';
+  V.silentTurns++;
+  render();
+  if (V.voiceId) {
+    await api('api/voice/keepalive', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, reason }),
+    }).catch(() => {});
+  }
+  // A broken recorder can resolve immediately; keep the assistant alive without creating a hot loop.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  return voiceLoopListen();
 }
 function voiceModeEnd(why) {
   const sentCount = V.sentCount;

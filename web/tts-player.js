@@ -89,10 +89,19 @@ export function preferredTtsFormat() {
   } catch {}
   return 'mp3';
 }
-const ttsPayload = (text, extra = {}) => ({ text, response_format: preferredTtsFormat(), ...extra });
+// TTS engines often interpret a dot between digits as a sentence break, producing multi-second gaps
+// in versions, dotted dates, decimals, and IP addresses. Spell only those numeric dots as one spoken
+// phrase; keep the visible transcript unchanged.
+export function textForTts(text) {
+  return String(text || '').replace(/(\d)\.(?=\d)/g, '$1 point ').replace(/\s{2,}/g, ' ');
+}
+const ttsPayload = (text, extra = {}) => ({ text: textForTts(text), response_format: preferredTtsFormat(), ...extra });
 
-function splitSentences(text) {
-  const raw = String(text).match(/[^.!?]+[.!?]+|\S[^.!?]*$/g) || [String(text)];
+export function splitSentences(text) {
+  const source = String(text || '');
+  // Punctuation is a sentence boundary only before whitespace/end. This keeps 2026.07.22, v0.3.286,
+  // file.js, and 3.14 in a single visual/audio segment.
+  const raw = source.match(/[\s\S]*?[.!?]+(?=\s|$)|[\s\S]+$/g) || [source];
   const out = [];
   for (const piece of raw.map((s) => s.trim()).filter(Boolean)) {
     if (out.length && (out[out.length - 1].length < 18 || piece.length < 12)) out[out.length - 1] += ' ' + piece;
@@ -319,7 +328,7 @@ function speakBrowser(text, h, onSegment) {
       const chunks = text.length > 240 ? splitSentences(text) : [text];
       const picked = chosenVoice();
       chunks.forEach((p, i) => {
-        const u = new SpeechSynthesisUtterance(p);
+        const u = new SpeechSynthesisUtterance(textForTts(p));
         if (picked) u.voice = picked;
         u.rate = ttsRate();
         u.onstart = () => { try { onSegment?.({ text: p, index: i, total: chunks.length }); } catch {} };

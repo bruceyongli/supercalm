@@ -73,6 +73,10 @@ const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happene
 const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
 const META_QUESTION = /\b(?:i (?:was|am|'m) (?:asking|wondering)|i asked|my question (?:was|is)|what i (?:asked|wanted to know))\b.{0,80}\b(?:detail|explain|why|what|how|status|happen|mean|think|recommend)/i;
 const WAKE = /\b(?:hey[\s,]+|okay[\s,]+|ok[\s,]+)?super[\s-]*calm\b/i;
+const REFERENTIAL_ACTION = /^(?:(?:yes|okay|ok|alright)[,\s]+)?(?:please\s+)?(?:just\s+)?(?:fix|change|update|improve|redo|remove|use|keep|make|do|handle|solve)\b(?:\s+(?:it|this|that|them|these|those|the issue|the problem|what you (?:said|described)))?/i;
+const UNRESOLVED_REFERENCE = /\b(?:it|this|that|them|these|those|what you (?:said|described))\b/i;
+const DANGLING_DRAFT = /\b(?:to|and|or|because|by|with)\s*[.!?]*$/i;
+const CONFIRMATION_AS_DRAFT = /^(?:yes|yeah|yep|okay|ok|sure|go ahead|send it|do it)\b/i;
 
 export function isVoiceInformationQuestion(text) {
   const value = clean(text);
@@ -80,6 +84,31 @@ export function isVoiceInformationQuestion(text) {
   const withoutPreface = value.replace(DISCOURSE_PREFIX, '');
   return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value)
     || INFO_QUESTION.test(withoutPreface) || META_QUESTION.test(withoutPreface);
+}
+
+// Short live replies often use the assistant's immediately preceding report as their object:
+// "fix it", "change that", "make it smaller". That is normal phone conversation, but the coding
+// agent must receive the resolved object—not a useless pronoun or a clipped confirmation fragment.
+export function isVagueVoiceInstruction(text) {
+  const value = clean(text).replace(DISCOURSE_PREFIX, '');
+  if (!REFERENTIAL_ACTION.test(value)) return false;
+  const words = value.split(/\s+/).filter(Boolean);
+  return UNRESOLVED_REFERENCE.test(value) || words.length <= 2;
+}
+
+export function voiceDraftGrounding(userText, draft) {
+  const message = clean(draft);
+  if (!message) return { ok: false, reason: 'empty' };
+  if (CONFIRMATION_AS_DRAFT.test(message) || DANGLING_DRAFT.test(message)) {
+    return { ok: false, reason: 'incomplete' };
+  }
+  if (isVagueVoiceInstruction(userText)) {
+    const same = message.toLowerCase() === clean(userText).toLowerCase();
+    if (same || UNRESOLVED_REFERENCE.test(message) || message.split(/\s+/).length < 3) {
+      return { ok: false, reason: 'unresolved-reference' };
+    }
+  }
+  return { ok: true, reason: '' };
 }
 
 export function isNavigationIntent(text) {
@@ -207,6 +236,17 @@ export const onTheGoControlReply = voiceControlReply;
 export function providerFailureReply(userText, project = '') {
   const instruction = clean(userText);
   const destination = clean(project);
+  const grounding = voiceDraftGrounding(instruction, instruction);
+  if (!grounding.ok) {
+    return {
+      say: grounding.reason === 'unresolved-reference'
+        ? `I heard you, but my response service is unavailable, so I can't safely resolve what "it" refers to. Nothing was sent.`
+        : `I heard you, but that instruction sounded incomplete and my response service is unavailable. Nothing was sent.`,
+      action: 'await',
+      message: '',
+      providerFailed: true,
+    };
+  }
   return {
     say: `I heard you, but my response service is temporarily unavailable. I saved what you said. Say send it to pass it to ${destination || 'the agent'}.`,
     action: 'await',
