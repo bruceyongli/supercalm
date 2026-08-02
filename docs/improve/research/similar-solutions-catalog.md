@@ -59,6 +59,7 @@ operating system.
 | [Vibe Kanban](#vibe-kanban) | Watch | Local agent workspace | Local | Many coding CLIs | Worktree per task attempt | Web UI; mobile status unclear | Not found | Task/attempt model and review loop |
 | [Codex app and cloud](#openai-codex-app-and-cloud) | Active | Workspace + cloud agent | Local + cloud | Codex | Built-in worktrees / cloud environments | Cross-surface session continuity | Not evaluated | Parallel task UX and automations |
 | [Claude Code Remote Control and web](#claude-code-remote-control-and-web) | Active | Remote companion + cloud agent | Local + cloud | Claude Code | Local session or isolated cloud task | Web and mobile app | Not evaluated | Local-source-of-truth remote control |
+| [Background Agents / Open-Inspect](#background-agents--open-inspect) | Active | Cloud agent + open control plane | Self-hosted control plane + cloud sandboxes | Multiple model providers | Isolated sandbox, branch, and PR | Web, Slack, GitHub, Linear, webhooks | Not found | Open event model, automation, and child agents |
 | [Cursor Background Agents](#cursor-background-agents) | Active | Cloud coding agent | Cloud VM | Cursor agent | Separate Git branch / PR handoff | Web and mobile | Not found | Async follow-up and environment setup |
 | [Happier](#happier-formerly-happy) | Active | Remote companion | Local | Claude Code, Codex, OpenCode, others | Existing local sessions | Mobile, web, desktop | Voice input | Encrypted, agent-agnostic remote access |
 | [Omnara](#omnara) | Watch | Remote companion + agent platform | Local + managed | Omnara agents / integrations | Git worktrees | Mobile, web, desktop, watch | Two-way voice | Phone-call-style steering and wrapper risk |
@@ -68,6 +69,7 @@ operating system.
 | [Jules](#google-jules) | Active | Cloud coding agent | Cloud | Jules | Session, plan, activities, source changes | Web / API | Not found | Async task API and plan approval |
 | [agents-deck](#agents-deck) | Active | Supervision layer | Local | Claude Code, Codex, Cursor, others | Git-native audit trail | Browser dashboard | Not found | Attention state and process guardrails |
 | [Agent Deck TUI](#agent-deck-tui) | Active | Local session manager | Local | Claude, Gemini, OpenCode, Codex, others | Optional git worktrees | Terminal; Telegram plugin | Not found | Lightweight multi-session visibility |
+| [Continue](#continue) | Retired/pivoted | Agent foundation + IDE/CLI | Local + CI | Continue | Workspace and PR checks | IDE and CLI | Not found | Composable agent configuration and lifecycle lesson |
 
 Blank or “not found” cells are research gaps, not proof that the feature is absent.
 
@@ -209,6 +211,26 @@ multiple places merely because the reference UI shows rich session metadata.
 **Sources:** [Codex app announcement](https://openai.com/index/introducing-the-codex-app/),
 [Codex product](https://openai.com/codex/)
 
+### Background Agents / Open-Inspect
+
+**Observed.** Background Agents is an MIT-licensed, self-hostable framework for asynchronous coding
+agents, based on the Open-Inspect repository and inspired by Ramp's Inspect. A Cloudflare Workers and
+Durable Objects control plane streams session events and integrates with GitHub; isolated sandboxes
+can run on several data-plane backends. Sessions can start from the web, Slack, GitHub, Linear, or
+webhooks, collaborate in real time, create attributed pull requests, and restore saved environments.
+Automations support schedules and external events, while parent agents can launch bounded child
+sessions in separate sandboxes and branches. The documented model integrations include both API and
+eligible subscription authentication.
+
+**Study for AIOS.** This is a high-priority architecture comparison, not merely a visual competitor.
+Review its Durable Object event model, sandbox bridge, snapshot restore, automation failure bounds,
+parent/child coordination, and explicit single-tenant security assumptions. Its separation of control
+plane from disposable execution environments could inform more structured AIOS adapters, while its
+team/multiplayer focus solves a different attention problem from AIOS's single-operator supervisor.
+
+**Sources:** [site](https://backgroundagents.dev/),
+[GitHub and architecture](https://github.com/ColeMurray/background-agents)
+
 ### Cursor Background Agents
 
 **Observed.** Cursor runs asynchronous agents in isolated Ubuntu-based cloud machines. They clone a
@@ -315,7 +337,7 @@ These leads overlap the scope but need a fresh primary-source review before bein
 | Emdash | Open-source multi-agent workspace | Current repository/docs; remote and review behavior |
 | Sculptor | Parallel-agent experiments and background suggestions | Current first-party documentation and availability |
 | 1Code | Desktop/multi-agent development environment | Canonical product/repository and execution model |
-| Ramp Inspect / Open Inspect | Supervisor-style inspection of agent work | Canonical release/docs and current availability |
+| Ramp Inspect | Origin of the Open-Inspect approach and supervisor-style inspection | Ramp's canonical architecture/release material and present availability |
 | Factory Droid | Autonomous software-development agent | Current orchestration, evidence, and mobile surfaces |
 | Google Antigravity | Agent-oriented development environment | Current official docs and task-isolation model |
 | Claude Deck | Browser command center for Claude Code/Codex and agent teams | Repository, state detection, and coordination semantics |
@@ -327,6 +349,25 @@ These leads overlap the scope but need a fresh primary-source review before bein
 New candidates should enter here rather than being presented as established facts.
 
 ## Retired or pivoted
+
+### Continue
+
+**State changed:** Continue has been acquired by Cursor. Its maintainers shipped a final 2.0.0 release
+and made the Apache-2.0 repository read-only, while leaving the source and documentation available as
+a foundation. Continue had provided a coding agent as a CLI, VS Code extension, and JetBrains plugin,
+with chat, read-only plan, and tool-using agent modes. Its YAML configuration composed models, scoped
+rules, prompts, and MCP tools, with explicit policies for asking or automatically allowing tool use.
+
+**Lesson:** Continue is adjacent rather than a multi-agent control plane, but its portable,
+source-controlled agent definition is worth retaining as a reference. It cleanly separates model,
+instructions, tools, execution mode, and permission policy. Its acquisition is also why lifecycle
+state belongs beside capability claims: polished documentation can remain online after active product
+development ends.
+
+**Sources:** [acquisition notice](https://continue.dev/),
+[final product documentation](https://docs.continue.dev/index),
+[configuration reference](https://docs.continue.dev/reference),
+[read-only repository](https://github.com/continuedev/continue)
 
 ### Omnara legacy CLI wrapper
 
@@ -341,6 +382,9 @@ internals needs an explicit compatibility budget and a structured fallback path.
 
 ## Change log
 
+- **2026-08-02:** Added Background Agents / Open-Inspect as an active, self-hostable cloud control
+  plane and promoted Open-Inspect out of the research queue. Added Continue as a retired/pivoted agent
+  foundation after its acquisition by Cursor and final open-source release.
 - **2026-08-02:** Created the evergreen catalog from the Orca review. Seeded direct workspaces,
   remote/conversational companions, cloud agents, a repeatable evaluation frame, and a verification
   queue. Separated the current Omnara platform from its retired CLI-wrapper architecture.
