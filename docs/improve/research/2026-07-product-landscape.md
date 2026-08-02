@@ -1,5 +1,9 @@
 # Research digest — product/OSS landscape (2026-07 sweep)
 
+> **Historical snapshot:** conclusions below reflect the July 2026 sweep. Maintain current product
+> facts and new candidates in the
+> [similar-solutions catalog](similar-solutions-catalog.md) rather than rewriting this dated record.
+
 **Strategic headline:** the "watch your agents from anywhere" layer is COMMODITIZING — Claude Code ships
 web + iOS + Remote Control natively; thin orchestrators died (Terragon 2/2026, vibe-kanban sunsetting,
 Omnara archived — their stated reason: CLI-wrapper churn treadmill, a warning for detect.js scraping).
