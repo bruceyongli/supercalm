@@ -285,7 +285,7 @@ export function makeContext(agent, session_id, extra = {}) {
       const s = getSession(session_id);
       const proj = s?.project_id ? getProject(s.project_id) : null;
       if (!proj?.path) throw new Error('no project path for this session');
-      const base = normalize(proj.path);
+      const base = normalize(sessionRepoPath(s, proj));
       const target = normalize(join(base, rel));
       if (target !== base && !target.startsWith(base + '/')) throw new Error('path escapes project');
       await writeFile(target, content ?? '', 'utf8');

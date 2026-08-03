@@ -94,6 +94,9 @@ assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /routine supervisory control-plan
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Co-pilot must inspect.*ANSWER with a concrete bounded coordination recommendation/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Autopilot must ANSWER.*designated Supervisor-plane actuators/i);
 assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Neither mode may alter another session's product goal/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /Git worktree selects checkout\/branch provenance[\s\S]{0,220}filesystem write boundary/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /no-approval workspace-write sandbox\/confinement/i);
+assert.match(SUPERVISOR_COORDINATION_ADDENDUM, /without resetting or cleaning possibly unrelated work/i);
 assert.match(RESERVED_APPROVAL_ADDENDUM, /RECENT_OPERATOR_SIGNALS/);
 
 const overloadAsk = {
@@ -104,10 +107,16 @@ assert.equal(isNonMutatingSupervisorCoordination({
   ...overloadAsk,
   answer: 'No. Recommend a bounded staggered retry with jitter, reduce concurrency to one session first, and preserve each retry budget.',
 }), true, 'bounded coordination of already-supervised sessions is a Co-pilot answer, not a product fork');
+assert.equal(isNonMutatingSupervisorCoordination({
+  ...overloadAsk,
+  answer: 'Do not retry every session now. Hold the other sessions and release them one at a time after the prior bounded retry succeeds.',
+}), true, 'releasing held sessions one at a time is control-plane pacing, not a software release');
 for (const [label, sample] of [
   ['retry herd', { ...overloadAsk, answer: 'Every session should retry immediately.' }],
+  ['refutation beside retry herd', { ...overloadAsk, answer: 'Do not retry every session now; every session should retry immediately after one second.' }],
   ['claimed actuation', { ...overloadAsk, answer: 'I already reduced concurrency and restarted the sessions.' }],
   ['reserved action', { ...overloadAsk, answer: 'Stagger the retries, then deploy the successful branch to production.' }],
+  ['software release', { ...overloadAsk, answer: 'Stagger the retries, then release the successful build to customers.' }],
   ['product mutation', {
     question: 'Four supervised sessions disagree about the product goal. Which scope should replace the current requirement?',
     terminalTail: 'Four supervised sessions are waiting.',

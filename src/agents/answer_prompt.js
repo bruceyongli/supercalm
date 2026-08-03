@@ -77,7 +77,9 @@ export const LEARNING_PROVENANCE_ADDENDUM = `LEARNING PROVENANCE — HARD RULE. 
 // Supervising several builders is the Supervisor's job, not a product-scope expansion. This clause
 // follows the strict session/project jurisdiction addendum in runAnswer so models do not confuse
 // control-plane pacing with authority to change another session's product work.
-export const SUPERVISOR_COORDINATION_ADDENDUM = `SUPERVISOR-PLANE COORDINATION — HARD BOUNDARY. Coordinating retry pacing, concurrency limits, fallback assignment, exclusive ownership, and handoffs among sessions already managed by this Supervisor is routine supervisory control-plane work, NOT another session's product work and NOT an operator product/scope fork. Do not escalate merely because a bounded recovery recommendation mentions several supervised sessions. Co-pilot must inspect the shared failure evidence and ANSWER with a concrete bounded coordination recommendation, while taking no retry/relaunch actuator action itself. Autopilot must ANSWER and may carry out the bounded coordination through designated Supervisor-plane actuators, subject to the same idempotency, retry-budget, and explicit-stop rules. Neither mode may alter another session's product goal, task content, card state, or reserved action under this authority.`;
+export const SUPERVISOR_COORDINATION_ADDENDUM = `SUPERVISOR-PLANE COORDINATION — HARD BOUNDARY. Coordinating retry pacing, concurrency limits, fallback assignment, exclusive ownership, and handoffs among sessions already managed by this Supervisor is routine supervisory control-plane work, NOT another session's product work and NOT an operator product/scope fork. Do not escalate merely because a bounded recovery recommendation mentions several supervised sessions. Co-pilot must inspect the shared failure evidence and ANSWER with a concrete bounded coordination recommendation, while taking no retry/relaunch actuator action itself. Autopilot must ANSWER and may carry out the bounded coordination through designated Supervisor-plane actuators, subject to the same idempotency, retry-budget, and explicit-stop rules. Neither mode may alter another session's product goal, task content, card state, or reserved action under this authority.
+
+WORKTREE WRITE BOUNDARY. A Git worktree selects checkout/branch provenance; by itself it does NOT prevent an absolute path from writing another checkout. If observed write_target is outside the assigned worktree: explicitly distinguish the Git checkout from the filesystem write boundary; stop/contain that writer, preserve and attribute the escaped diff without resetting or cleaning possibly unrelated work, require a no-approval workspace-write sandbox/confinement for the relaunched agent, reconcile only attributable changes into the assigned worktree, and rerun every invalidated gate.`;
 
 // Appended in Co-pilot/legacy modes, like RESERVED_APPROVAL_ADDENDUM. Born from the self-echo
 // incident (2026-07-09): an ops/admin session was DISCUSSING another session's task cards with the
@@ -190,9 +192,19 @@ export function isNonMutatingCurrentCardReview({ question = '', summary = '', an
 const SUPERVISED_FLEET_RX = /\b(?:supervised\s+sessions?|(?:two|three|four|five|multiple|several|parallel|all|\d+)\s+(?:already[-\s]+)?supervised\s+sessions?|sessions?\s+(?:already\s+)?(?:managed|supervised)\s+by\s+(?:this|the)\s+supervisor)\b/i;
 const SUPERVISOR_CONTROL_PLANE_RX = /\b(?:retry|back[\s-]*off|pace|pacing|concurr|fallback|ownership|owner|handoff|overload|capacity|circuit|throttl|queue|stagger|jitter|split[-\s]*brain)\b/i;
 const BOUNDED_COORDINATION_RX = /\b(?:bounded|stagger|jitter|back[\s-]*off|pace|serial|queue|circuit|retry\s+budget|idempoten|reduce[^.!?;\n]{0,35}concurr|(?:one|single)\s+session|one\s+at\s+a\s+time|exclusive\s+owner|designated\s+owner)\b/i;
-const PRODUCT_OR_RESERVED_COORDINATION_RX = /\b(?:task\s+card|product\s+(?:goal|scope|requirement)|user[-\s]*visible\s+(?:goal|scope|feature|requirement)|deploy(?:ment)?|release|publish|production|delete|spend|payment|credential|secret|public\s+announcement|customer\s+data)\b/i;
+const PRODUCT_OR_RESERVED_COORDINATION_RX = /\b(?:task\s+card|product\s+(?:goal|scope|requirement)|user[-\s]*visible\s+(?:goal|scope|feature|requirement)|deploy(?:ment)?|publish|production|delete|spend|payment|credential|secret|public\s+announcement|customer\s+data|release(?:\s+(?:the|this|a))?[^.!?;\n]{0,30}\b(?:build|candidate|version|product|feature|artifact|package|app|service)|release\s+(?:to|into)\s+(?:customers?|users?|public|production))\b/i;
 const RETRY_HERD_RX = /\b(?:every|all)\s+sessions?\b[^.!?;\n]{0,40}\bretry\b[^.!?;\n]{0,20}\b(?:now|immediately|simultaneously)\b|\bretry\s+(?:every|all)\s+sessions?\b[^.!?;\n]{0,20}\b(?:now|immediately|simultaneously)\b/i;
 const CLAIMED_COORDINATION_ACTUATION_RX = /\b(?:i|we|co-?pilot)\s+(?:have\s+|already\s+|have\s+already\s+)?(?:retried|resumed|relaunched|restarted|switched|assigned|transferred|reduced|staggered|queued)\b/i;
+
+function retryHerdAsserted(text) {
+  const rx = new RegExp(RETRY_HERD_RX.source, 'gi');
+  for (const match of String(text || '').matchAll(rx)) {
+    const prefix = String(text || '').slice(Math.max(0, match.index - 32), match.index);
+    if (/\b(?:(?:do|should|must|will)\s+not|don't|never(?:\s+\w+){0,2})\s*$/i.test(prefix)) continue;
+    return true;
+  }
+  return false;
+}
 
 export function isNonMutatingSupervisorCoordination({ question = '', summary = '', terminalTail = '', answer = '' } = {}) {
   const ask = [question, summary, terminalTail].filter(Boolean).join('\n');
@@ -200,7 +212,7 @@ export function isNonMutatingSupervisorCoordination({ question = '', summary = '
   if (!SUPERVISED_FLEET_RX.test(ask) || !SUPERVISOR_CONTROL_PLANE_RX.test(ask)) return false;
   if (!SUPERVISOR_CONTROL_PLANE_RX.test(reply) || !BOUNDED_COORDINATION_RX.test(reply)) return false;
   if (PRODUCT_OR_RESERVED_COORDINATION_RX.test([ask, reply].join('\n'))) return false;
-  if (RETRY_HERD_RX.test(reply) || CLAIMED_COORDINATION_ACTUATION_RX.test(reply)) return false;
+  if (retryHerdAsserted(reply) || CLAIMED_COORDINATION_ACTUATION_RX.test(reply)) return false;
   return true;
 }
 
@@ -213,16 +225,23 @@ export function isCurrentCardTransitionAsk({ question = '', summary = '' } = {})
 
 const COPILOT_CARD_REVIEW_ANSWER = 'Keep Supervisor task-card state unchanged. Cite the concrete acceptance-criteria and test evidence for the current card, producing any missing proof; I will review that evidence before recommending a transition.';
 
-// Both intended operating models tended to escalate a current-card question before doing Co-pilot's own
-// evidence review. This normalization is intentionally narrow: only an ordinary scope escalation on THIS
-// session's current card is converted. Integrity, goal-conflict, human-gate, cross-session, and arbitrary
-// product-choice escalations remain binding.
+// Both intended operating models either escalated a current-card question before doing Co-pilot's own
+// evidence review, or mixed that valid review with an unsafe future lifecycle directive. This normalization
+// is intentionally narrow: only an ordinary scope escalation, or an answer already classified as
+// non-reserved whose lifecycle scanner fired, is converted for THIS session's current card. Integrity,
+// goal-conflict, human-gate, cross-session, arbitrary product-choice, and bare mutation responses remain
+// binding/fail-closed.
 export function enforceCopilotCurrentCardReview(decision, context = {}) {
   if (!decision || context.supervisorMode !== 'copilot') return decision;
-  if (decision.action !== 'escalate' || String(decision.reason_code || '') !== 'scope') return decision;
   if (!isCurrentCardTransitionAsk(context)) return decision;
   if (detectsPendingPlanApproval(context)) return decision;
-  const rationale = [decision.reason, decision.recommendation].filter(Boolean).join('\n');
+  const reasonCode = String(decision.reason_code || '');
+  const unsafeAnswerReview = decision.action === 'answer'
+    && reasonCode === 'none'
+    && context.unsafeCardLifecycle === true;
+  const prematureScopeEscalation = decision.action === 'escalate' && reasonCode === 'scope';
+  if (!unsafeAnswerReview && !prematureScopeEscalation) return decision;
+  const rationale = [decision.answer, decision.reason, decision.recommendation].filter(Boolean).join('\n');
   if (!/\b(?:verify|verification|evidence|acceptance\s+criteria|test(?:s|ing|\s+(?:result|output)s?)?)\b/i.test(rationale)) return decision;
   return {
     ...decision,

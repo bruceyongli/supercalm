@@ -107,6 +107,37 @@ assert.match(DELEGATED_HOW_ADDENDUM, /NEVER overrides[\s\S]{0,220}(?:integrity|T
     ...currentAsk,
     supervisorMode: 'autopilot',
   }), prematureEscalation, 'Autopilot retains its independent task-transition policy');
+
+  const unsafeButReviewing = {
+    action: 'answer',
+    answer: 'Do not close the current card. Provide the acceptance-criteria evidence, then activate the next task card.',
+    recommendation: '',
+    reason_code: 'none',
+    reserved: false,
+    confidence: 0.85,
+    audience: 'builder_blocked',
+  };
+  assert.equal(cardLifecycleDirective(unsafeButReviewing.answer), true,
+    'the captured model shape contains a real lifecycle directive despite beginning with a hold');
+  const normalizedUnsafeReview = enforceCopilotCurrentCardReview(unsafeButReviewing, {
+    ...currentAsk,
+    supervisorMode: 'copilot',
+    unsafeCardLifecycle: true,
+  });
+  assert.equal(normalizedUnsafeReview.action, 'answer',
+    'a current-card evidence review is kept useful instead of being escalated');
+  assert.equal(cardLifecycleDirective(normalizedUnsafeReview.answer), false,
+    'the deterministic Co-pilot review removes the unsafe transition clause');
+  assert.match(normalizedUnsafeReview.answer, /state unchanged[\s\S]{0,120}(?:acceptance-criteria|test evidence)/i);
+  assert.equal(enforceCopilotCurrentCardReview({
+    ...unsafeButReviewing,
+    answer: 'Close the current card and activate the next task card.',
+  }, {
+    ...currentAsk,
+    supervisorMode: 'copilot',
+    unsafeCardLifecycle: true,
+  }).answer, 'Close the current card and activate the next task card.',
+  'a bare mutation without evidence-review intent still reaches the fail-closed lifecycle guard');
 }
 
 // ---- modeOf: legacy resolution (mode wins; observe_only only as fallback; NEVER default-merged) ----
@@ -208,6 +239,8 @@ assert.equal(sendPolicy('weird', 'answer', {}).allowed, true);
   const { readFileSync } = await import('node:fs');
   const sup = readFileSync(new URL('../src/agents/supervisor.js', import.meta.url), 'utf8');
   assert.match(sup, /cfg\.mode === 'autopilot' \? AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM : SCOPE_CARD_ADMIN_ADDENDUM/, 'runAnswer selects the mode-specific current-session task-management contract');
+  assert.match(sup, /unsafeCardLifecycle:\s*cardLifecycleDirective\(safetyParsed\?\.answer\)/,
+    'the live answer path normalizes a valid Co-pilot evidence review before the lifecycle guard can escalate it');
   assert.match(sup, /cardLifecycleDirective\(answer\)/, 'deterministic lifecycle guard runs on the drafted answer');
   assert.match(sup, /cfg\.mode === 'copilot' && copilotRecoveryDirective\(answer\)/,
     'Co-pilot answer text cannot bypass the state-changing recovery lane');

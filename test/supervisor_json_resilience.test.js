@@ -6,6 +6,7 @@ import { join } from 'node:path';
 process.env.AIOS_DATA = mkdtempSync(join(tmpdir(), 'aios-supervisor-json-'));
 
 const { __lab } = await import('../src/agents/supervisor.js');
+const { db } = await import('../src/store.js');
 
 function fakeCtx(responses, { vision = false } = {}) {
   const calls = [];
@@ -123,10 +124,54 @@ function boundaryCtx(responses) {
   };
   return { ctx, emits, calls, state: () => state };
 }
+
+function operatorBoundaryCtx(responses) {
+  const h = boundaryCtx(responses);
+  const messageAt = Date.now() + 1_000;
+  db.prepare("INSERT INTO messages (session_id, ts, direction, source, text) VALUES (?, ?, 'in', 'text', ?)")
+    .run(h.ctx.sessionId, messageAt, 'Design experiments and tests that eliminate the previously reported Supervisor failures.');
+  return { ...h, messageAt, observedAt: messageAt + 13_000 };
+}
 const CFG = { fallback_models: ['exact-model'] };
 const T = 1_000_000_000_000;
 const COMMITS = 'a1b2c3d feat(reports): add CSV export to the report page\ne4f5a6b test(reports): cover CSV export';
 const EV = { git: { commits_since_baseline: COMMITS } };
+
+// Operator-message boundary path: a null transport result receives one bounded same-model retry.
+// If both calls fail, the message checkpoint is restored and a later tick may retry after 60 seconds.
+{
+  const h = operatorBoundaryCtx([
+    new Error('shim fetch failed'),
+    '{"fit":"new","title":"Supervisor experiments","goal":"Eliminate the reported failures"}',
+  ]);
+  await __lab.maybeSuggestBoundary(h.ctx, { ...CFG, mode: 'copilot' }, h.ctx.getState(), h.observedAt, h.messageAt, { git: {} });
+  const s = h.state();
+  assert.equal(h.calls.length, 2, 'operator-boundary transport failure receives one bounded same-model retry');
+  assert.equal(s.pendingBoundary?.title, 'Supervisor experiments', 'the successful retry creates the concrete Co-pilot recommendation');
+  assert.equal(s.boundaryCheckTs, h.messageAt, 'a successful classification consumes the operator message once');
+  assert.equal(s.boundaryRetryAt, 0, 'successful classification clears the retry budget');
+}
+
+{
+  const h = operatorBoundaryCtx([
+    new Error('shim fetch failed'),
+    new Error('shim fetch failed again'),
+    '{"fit":"new","title":"Recovered boundary","goal":"Resume after transport recovery"}',
+  ]);
+  await __lab.maybeSuggestBoundary(h.ctx, { ...CFG, mode: 'copilot' }, h.ctx.getState(), h.observedAt, h.messageAt, { git: {} });
+  assert.equal(h.calls.length, 2, 'double transport failure is bounded to two classifier calls');
+  assert.equal(h.state().pendingBoundary, undefined, 'transport failure does not fabricate a task boundary');
+  assert.equal(h.state().boundaryCheckTs, 0, 'double failure restores the prior checkpoint instead of losing the directive');
+  assert.equal(h.state().boundaryRetryAt, h.observedAt, 'double failure records a retry budget timestamp');
+
+  await __lab.maybeSuggestBoundary(h.ctx, { ...CFG, mode: 'copilot' }, h.ctx.getState(), h.observedAt + 30_000, h.messageAt, { git: {} });
+  assert.equal(h.calls.length, 2, 'the next tick inside the retry window does not churn');
+
+  await __lab.maybeSuggestBoundary(h.ctx, { ...CFG, mode: 'copilot' }, h.ctx.getState(), h.observedAt + 61_000, h.messageAt, { git: {} });
+  assert.equal(h.calls.length, 3, 'the same unconsumed operator message is retried after the bounded window');
+  assert.equal(h.state().pendingBoundary?.title, 'Recovered boundary', 'the later successful retry recovers the task recommendation');
+  assert.equal(h.state().boundaryCheckTs, h.messageAt, 'recovered classification finally consumes the message');
+}
 
 // empty/unparseable model output (both bounded attempts) → deterministic fallback suggestion + fp judged.
 {

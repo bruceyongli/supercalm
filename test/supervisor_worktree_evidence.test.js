@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-worktree-evidence-data-'));
+process.env.AIOS_NO_LISTEN = '1';
 
 const root = await mkdtemp(join(tmpdir(), 'aios-worktree-evidence-repo-'));
 const canonical = join(root, 'canonical');
@@ -42,11 +43,25 @@ const evidence = await sessionContext(session, { baseRef: canonicalHead, include
 assert.equal(evidence.session.worktree_path, worktree, 'review evidence exposes its checkout provenance');
 assert.match(evidence.git.commits_since_baseline, /isolated progress/, 'review evidence reads worktree commits');
 
+// Supervisor-plane file writes must follow the same checkout resolver. A Git worktree is not a
+// filesystem boundary if a privileged helper silently writes the canonical project path instead.
+store.upsertGrant(session.id, 'fixture-writer', { caps: ['write-files'] });
+const { makeContext } = await import('../src/agents/context.js');
+const writer = makeContext({ id: 'fixture-writer', capabilities: ['write-files'] }, session.id);
+await writer.writeProjectFile('supervisor-owned.txt', 'isolated only\n');
+assert.equal(await readFile(join(worktree, 'supervisor-owned.txt'), 'utf8'), 'isolated only\n');
+await assert.rejects(
+  readFile(join(canonical, 'supervisor-owned.txt'), 'utf8'),
+  (error) => error?.code === 'ENOENT',
+  'the canonical checkout is not dirtied by a Supervisor write for an isolated session',
+);
+
 // Keep both Context probe call sites wired through the same resolver. This mutation lock catches a
 // future direct project.path regression even though importing Context in isolation boots session IO.
 const contextSource = await readFile(new URL('../src/agents/context.js', import.meta.url), 'utf8');
 assert.ok(contextSource.split('sessionRepoPath(s, proj)').length >= 3, 'runProbes and gitHead resolve the session checkout');
 assert.doesNotMatch(contextSource, /gitProbe\(proj\.path\)|gitHead\(proj\.path\)/, 'no direct shared-checkout probe remains');
+assert.doesNotMatch(contextSource, /const base = normalize\(proj\.path\)/, 'Supervisor writes never bypass session checkout provenance');
 
 // A recorded but unavailable worktree must fail closed, never fall back to plausible-looking state
 // from the shared checkout.
@@ -59,3 +74,4 @@ assert.equal(failedProbe.result.ok, false, 'stale worktree provenance fails clos
 assert.equal(await gitHead(missingPath), null, 'baseline does not silently substitute the shared HEAD');
 
 console.log('supervisor_worktree_evidence.test ok');
+process.exit(0); // importing the real Context also boots long-lived ancillary service scanners
