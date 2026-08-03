@@ -138,6 +138,30 @@ export function parseVoiceBrainOutput(content, userText) {
   };
 }
 
+// A model may infer that a short reply confirms an instruction even when the server never staged
+// that instruction (for example, after an earlier response was clipped). The server-owned dialogue
+// state is authoritative: preserve the model's useful standalone draft, but turn its claimed send
+// into an explicit confirmation turn. Reusing "Sending now. Moving on." here previously let the
+// reconciliation step discard the recovered draft as navigation without ever delivering it.
+export function requireVoiceConfirmation(reply, {
+  pending = '',
+  userText = '',
+  spokenMessage = '',
+} = {}) {
+  const out = { ...(reply || {}) };
+  if (out.action !== 'send' || clean(pending)) return out;
+  const message = clean(out.message) || clean(userText);
+  if (!message) return { ...out, action: 'await', message: '' };
+  const spoken = clean(spokenMessage) || message;
+  return {
+    ...out,
+    action: 'await',
+    message,
+    say: `I understood that as: ${spoken.slice(0, 220)}. Should I send that?`,
+    confirmationRequired: true,
+  };
+}
+
 // "Supercalm" remains a useful optional address when the room is noisy, but it is not a password for
 // every conversational turn. Once the assistant has briefed the owner and is visibly listening, a
 // natural follow-up such as "can you tell me about this?" must reach the same brain as manual Voice.

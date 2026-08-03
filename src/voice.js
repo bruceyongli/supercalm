@@ -19,6 +19,7 @@ import {
   isVoiceInformationQuestion,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
+  requireVoiceConfirmation,
   resolveVoiceTurn,
   scopedVoicePending,
   providerFailureReply,
@@ -532,13 +533,10 @@ async function brainReply(vs, userText) {
     // instruction is restated first, and only a later confirmation crosses into the coding session.
     // This is also the last safety boundary against nearby conversation that sounded task-related.
     const pending = scopedVoicePending(vs.dialogue, vs.items[vs.pointer]?.sessionId);
-    if (action === 'send' && !pending) {
-      action = 'await';
-      message = message || userText;
-      say = say && !/\b(?:sent|forwarded|passed)\b/i.test(say)
-        ? say
-        : `I understood that as: ${sanitizeForSpeech(message).slice(0, 220)}. Should I send that to the agent?`;
-    }
+    ({ action, say, message } = requireVoiceConfirmation(
+      { action, say, message },
+      { pending, userText, spokenMessage: sanitizeForSpeech(message || userText) },
+    ));
     if (action !== 'ignore' && !say) say = 'Okay.';
     return {
       say,
@@ -667,9 +665,10 @@ route('POST', '/api/voice/turn', async (req, res) => {
         mode: vs.onTheGo ? 'on-the-go' : 'manual',
         input_len: userText.length,
         has_message: !!r.message,
-        // Keep a private recoverable draft at the delivery boundary. Successful sends are also
-        // recorded as normal inbound messages; failed sends no longer erase the operator's words.
-        ...(r.action === 'send' ? { draft: String(r.message || userText).slice(0, 8000) } : {}),
+        // Keep a private recoverable draft from the confirmation boundary onward. Successful sends
+        // are also normal inbound messages; a closed client or state-machine fault must not erase a
+        // staged instruction before it reaches delivery.
+        ...(r.message ? { draft: String(r.message).slice(0, 8000) } : {}),
       });
     } catch {}
 

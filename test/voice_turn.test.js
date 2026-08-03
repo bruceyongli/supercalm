@@ -9,6 +9,7 @@ import {
   isVagueVoiceInstruction,
   normalizeVoiceAddress,
   parseVoiceBrainOutput,
+  requireVoiceConfirmation,
   reconcileVoiceReply,
   reduceVoiceDialogue,
   resolveVoiceTurn,
@@ -44,6 +45,37 @@ assert.equal(confirmedPendingReply(pending, 'Okay, moving on.'), null,
   'navigation can never be appended to a stale agent draft');
 assert.equal(asksForConfirmation('I understood the change. Should I send that?'), true);
 assert.equal(asksForConfirmation('Here is more detail about the report.'), false);
+
+// Exact lost-reply regression: a model recovered a complete instruction and said it was sending and
+// moving on, but the server had no scoped pending draft. That must become a real confirmation, retain
+// the draft, and stage it for a deterministic "yes" instead of reconciling to navigation.
+{
+  const recoveredDraft = 'Run a driven end-to-end interaction test and capture the grounded answer.';
+  const restaged = requireVoiceConfirmation({
+    action: 'send',
+    say: 'Sending it now. Moving on to the next item.',
+    message: recoveredDraft,
+  }, { pending: '', userText: 'Okay, send that now.', spokenMessage: recoveredDraft });
+  assert.equal(restaged.action, 'await');
+  assert.equal(restaged.message, recoveredDraft);
+  assert.match(restaged.say, /Should I send that\?$/);
+  assert.doesNotMatch(restaged.say, /sending|moving on/i);
+  const staged = reduceVoiceDialogue(createVoiceDialogueState(), {
+    sessionId: 's_recovered',
+    userText: 'Okay, send that now.',
+    reply: restaged,
+  });
+  assert.equal(staged.phase, 'confirming');
+  assert.equal(scopedVoicePending(staged, 's_recovered'), recoveredDraft);
+  const approved = await resolveVoiceTurn({
+    dialogue: staged,
+    sessionId: 's_recovered',
+    userText: 'Yes, send it.',
+    brain: async () => { throw new Error('confirmation must not call the model'); },
+  });
+  assert.equal(approved.reply.action, 'send');
+  assert.equal(approved.reply.message, recoveredDraft);
+}
 
 // Exact outage recovery: the transcript is preserved, then confirmation succeeds locally without
 // calling another model and without repeating "I had trouble understanding."
@@ -245,7 +277,7 @@ assert.match(voiceSource, /voiceDraftGrounding\(userText, message\)/,
   'unresolved references and clipped drafts fail closed before confirmation or delivery');
 assert.match(voiceSource, /isVoiceInformationQuestion\(userText\)[\s\S]*\['send', 'ignore'\]/,
   'explicit questions have a deterministic never-send guard');
-assert.match(voiceSource, /action === 'send' && !pending/,
+assert.match(voiceSource, /requireVoiceConfirmation\(/,
   'a new instruction is confirmed before either Voice entry point can deliver it');
 assert.doesNotMatch(voiceSource, /vs\.pendingInstruction/,
   'unscoped pending text has been replaced by explicit per-session dialogue state');
@@ -255,7 +287,8 @@ assert.match(voiceTurnSource, /voiceControlReply\(userText, \{ hasPending: !!pen
 assert.doesNotMatch(voiceSource, /ON_THE_GO_SYS/,
   'proactive announcements no longer use a weaker second assistant policy');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
-assert.match(voiceSource, /draft: String\(r\.message \|\| userText\)/, 'an attempted handoff keeps a recoverable private draft');
+assert.match(voiceSource, /r\.message \? \{ draft: String\(r\.message\)/,
+  'a staged instruction is recoverable before the final delivery turn');
 assert.match(voiceSource, /requestAlive: voiceSessions\.has\(vs\.id\)/,
   'an active voice session owns delivery even after the HTTP upload stream closes');
 assert.doesNotMatch(voiceSource, /requestAlive:\s*!req\.destroyed/,
