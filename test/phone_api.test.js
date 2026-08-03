@@ -283,8 +283,20 @@ await featureReady;
   assert.match(ph, /stopped mid-queue: do NOT mark read/, 'read-on-completion semantics');
   assert.match(ph, /shared concierge/i,
     'phone Voice updates uses the same Voice Assistant conversation');
-  assert.match(ph, /api\/transcribe\?polish=true/,
-    'phone Voice Assistant uses conversational transcript cleanup before reasoning');
+  assert.match(ph, /from '\.\/voicemode\.js'/,
+    'phone imports the same gesture-unlocked Voice client as desktop and the installed PWA');
+  const adapter = ph.slice(ph.indexOf('setOnTheGoVoiceAdapter({'), ph.indexOf('subscribeOnTheGo('));
+  assert.match(adapter, /active: isVoiceModeActive/);
+  assert.match(adapter, /startVoiceMode\(options\)/);
+  assert.doesNotMatch(adapter, /voiceModeStart\(/,
+    'phone never routes Voice updates back through its older suspended-AudioContext loop');
+  assert.match(ph, /startVoiceMode\(\{ source: 'manual' \}\)/,
+    'the manual phone button also uses the shared Voice client');
+  const sharedVoice = readFileSync(new URL('../web/voicemode.js', import.meta.url), 'utf8');
+  assert.match(sharedVoice, /api\/transcribe\?language=auto&polish=true/,
+    'the shared Voice client keeps conversational transcript cleanup before reasoning');
+  assert.match(sharedVoice, /speakSmart\(text, handle,[\s\S]*continuous: true/,
+    'Voice Assistant replies are synthesized as one continuous utterance');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // The canonical shell defaults to phone HOME at phone widths, while sessions use the one shared

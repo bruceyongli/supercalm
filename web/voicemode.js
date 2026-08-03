@@ -261,6 +261,9 @@ async function speak(text, { allowInterruption = false } = {}) {
     live.start();
   }
   const playback = speakSmart(text, handle, {
+    // A live assistant reply is one utterance, not a report playlist. Sentence-streamed clips
+    // introduced audible gaps and made iOS sound as if the assistant stopped and restarted.
+    continuous: true,
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
     onSegment: focusSpokenSegment,

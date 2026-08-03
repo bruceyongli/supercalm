@@ -261,7 +261,10 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
 function speakSingle(text, h, extra = {}, onSlow, onSegment) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
-    let done = false, cap = null, stall = null, playedSome = false, segmentShown = false;
+    let done = false, cap = null, stall = null, playedSome = false, shownSegment = -1;
+    const segments = splitSentences(text);
+    const segmentWeights = segments.map((part) => Math.max(1, part.length));
+    const totalWeight = segmentWeights.reduce((sum, weight) => sum + weight, 0);
     const ctrl = new AbortController();
     const slow = onSlow ? setTimeout(() => { if (!playedSome && !done) { try { onSlow(); } catch {} } }, 4500) : null;
     const finish = (err) => {
@@ -275,6 +278,23 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment) {
       err && !h.stopped && !playedSome ? reject(err) : resolve();
     };
     const armStall = (ms) => { if (stall) clearTimeout(stall); stall = setTimeout(finish, ms); };
+    // Single-shot audio stays one uninterrupted file. Advance only the visual reading marker from
+    // playback time so a long live answer remains easy to follow without chopping its audio up.
+    const showProgress = (audio) => {
+      let index = 0;
+      if (segments.length > 1 && Number.isFinite(audio.duration) && audio.duration > 0 && Number.isFinite(audio.currentTime)) {
+        const target = Math.max(0, Math.min(1, audio.currentTime / audio.duration)) * totalWeight;
+        let covered = 0;
+        index = segments.findIndex((_, at) => {
+          covered += segmentWeights[at];
+          return target < covered;
+        });
+        if (index < 0) index = segments.length - 1;
+      }
+      if (index === shownSegment) return;
+      shownSegment = index;
+      try { onSegment?.({ text: segments[index] || text, index, total: segments.length || 1 }); } catch {}
+    };
     cap = setTimeout(() => finish(new Error('tts timeout')), 12000 + (text.length * 130) / ttsRate());
     (async () => {
       try {
@@ -286,12 +306,14 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment) {
         const a = getPlayer();
         a.onended = () => { try { URL.revokeObjectURL(url); } catch {} finish(); };
         a.onerror = () => { try { URL.revokeObjectURL(url); } catch {} finish(new Error('audio playback failed')); };
-        a.onplaying = a.ontimeupdate = () => {
+        a.onplaying = () => {
           playedSome = true;
-          if (!segmentShown) {
-            segmentShown = true;
-            try { onSegment?.({ text, index: 0, total: 1 }); } catch {}
-          }
+          showProgress(a);
+          armStall(3500);
+        };
+        a.ontimeupdate = () => {
+          playedSome = true;
+          showProgress(a);
           armStall(3500);
         };
         a.onpause = () => { if (h.stopped) finish(); };
@@ -318,14 +340,14 @@ function chosenVoice() {
     return vs.find((v) => v.voiceURI === id) || vs.find((v) => v.name === id) || null;
   } catch { return null; }
 }
-function speakBrowser(text, h, onSegment) {
+function speakBrowser(text, h, onSegment, continuous = false) {
   return new Promise((resolve) => {
     if (!text || h.stopped || typeof speechSynthesis === 'undefined') return resolve();
     let done = false, cap = null, poll = null, started = false;
     const fin = () => { if (done) return; done = true; if (cap) clearTimeout(cap); if (poll) clearInterval(poll); resolve(); };
     try {
       speechSynthesis.cancel();
-      const chunks = text.length > 240 ? splitSentences(text) : [text];
+      const chunks = continuous ? [text] : text.length > 240 ? splitSentences(text) : [text];
       const picked = chosenVoice();
       chunks.forEach((p, i) => {
         const u = new SpeechSynthesisUtterance(textForTts(p));
@@ -357,14 +379,14 @@ let streamUnavailable = false;
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
 //   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment } = {}) {
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment, continuous = false } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
-  if (mode === 'browser') return speakBrowser(text, h, onSegment);
+  if (mode === 'browser') return speakBrowser(text, h, onSegment, continuous);
   try {
     const long = text.length > 220 || splitSentences(text).length > 2;
-    if (long && !streamUnavailable) {
+    if (!continuous && long && !streamUnavailable) {
       return await speakStream(text, h, ttsExtra, onSlow, onSegment).catch((e) => {
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
@@ -377,7 +399,7 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
   } catch {
     if (h.stopped) return;
     try { onFallback?.(); } catch {}
-    return speakBrowser(text, h, onSegment);
+    return speakBrowser(text, h, onSegment, continuous);
   }
 }
 

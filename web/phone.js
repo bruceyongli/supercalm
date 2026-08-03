@@ -13,6 +13,7 @@
 import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, splitSentences, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
+import { isVoiceModeActive, startVoiceMode, stopVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
@@ -323,14 +324,20 @@ function phoneVoiceThreadLabel(cur) {
   return parts.slice(0, 2).join(' · ');
 }
 let onTheGoUi = onTheGoState();
+// Phone used to override the shared adapter with the legacy implementation below. That second loop
+// created its VAD AudioContext after the initiating tap, so iOS left it suspended and loud replies
+// repeatedly became "no response". Keep phone/PWA/desktop on the one gesture-unlocked Voice client.
 setOnTheGoVoiceAdapter({
-  active: () => V.on,
-  start: ({ focusSessionId = null } = {}) => voiceModeStart(focusSessionId, { onTheGo: true }),
-  stop: () => voiceModeEnd('on-the-go-off'),
+  active: isVoiceModeActive,
+  start: (options = {}) => { stopSpeech(); return startVoiceMode(options); },
+  stop: stopVoiceMode,
 });
 subscribeOnTheGo((state) => {
   onTheGoUi = state;
   if (S.home && S.screen === 'home') renderSoft();
+});
+window.addEventListener('aios:voice-mode-end', () => {
+  if (S.screen === 'home') renderSoft();
 });
 
 async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
@@ -749,8 +756,9 @@ function renderHome() {
     .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
   const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
   const totalUnread = needs.length; // one KEY message per session (the curated latest ask) — raw out-message counts are noisy
-  const playing = S.playScope === 'home' || V.on;
-  const playLabel = V.on ? '■ End Voice Assistant' : totalUnread ? '▶ Start Voice Assistant' : 'Voice Assistant';
+  const voiceActive = isVoiceModeActive();
+  const playing = S.playScope === 'home' || voiceActive;
+  const playLabel = voiceActive ? '■ End Voice Assistant' : totalUnread ? '▶ Start Voice Assistant' : 'Voice Assistant';
 
   const optionList = (s, questions) => {
     if (!questions.length) return '';
@@ -1139,8 +1147,9 @@ function wire() {
     toast(ok ? 'Needs you refreshed' : 'Refresh failed — showing the last known list');
   });
   $('#play-home')?.addEventListener('click', () => {
-    if (V.on) return voiceModeEnd('user');
-    voiceModeStart(); // interactive conversation: present → listen → confirm → send → next
+    if (isVoiceModeActive()) return stopVoiceMode();
+    stopSpeech();
+    startVoiceMode({ source: 'manual' }); // the same gesture-unlocked client used by desktop + PWA updates
   });
   $('#on-the-go-mode')?.addEventListener('click', async () => {
     const button = $('#on-the-go-mode');
