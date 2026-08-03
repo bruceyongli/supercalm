@@ -218,7 +218,7 @@ try {
   });
   await page.locator('.vm-ongo .ongo-report').waitFor();
   assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'VOICE ASSISTANT');
-  assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'NOW READING');
+  assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'BRIEFING');
   assert.match(await page.locator('.vm-ongo .ongo-context').textContent(), /follow-up|feedback/i,
     'the proactive report invites the same natural conversation as manual Voice');
   assert.equal(await page.locator('.vm-ongo .ongo-segment.current').count(), 1,
@@ -238,10 +238,13 @@ try {
     document.querySelector('.vm-state').textContent = 'Speaking…';
     document.querySelector('.ongo-title').textContent = 'aios/supercalm';
     document.querySelector('.ongo-context').textContent = 'Voice Assistant · report quality · Codex';
+    const sources = document.querySelector('.ongo-sources');
+    sources.hidden = false;
+    sources.innerHTML = '<span class="ongo-source">Voice conversation plan</span><span class="ongo-source">Browser audit</span>';
     document.querySelector('.vm-prog-label').textContent = '2 of 3';
     document.querySelector('.vm-bar > i').style.width = '66%';
     document.querySelector('.vm-said').innerHTML = [
-      '<span class="ongo-segment done">You asked: simplify On-the-go and Needs You.</span>',
+      '<span class="ongo-segment done">The goal was to simplify Voice Assistant and Needs You.</span>',
       '<span class="ongo-segment current">Update: the brief is shorter and the current sentence stays highlighted.</span>',
       '<span class="ongo-segment">I need your input: review the new layout.</span>',
     ].join('');

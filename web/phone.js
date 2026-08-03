@@ -287,7 +287,7 @@ async function playQueue(items, scope) {
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
 // silence) → polished STT → shared intent reasoning → questions stay with the assistant; instructions
 // are restated and confirmed before they reach the agent. One tap in, zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0 };
+const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0, responseGrounded: false };
 let phoneInterrupt = null;
 function setVoiceCurrent(next) {
   const previousId = V.current?.sessionId || '';
@@ -300,6 +300,7 @@ function setVoiceCurrent(next) {
     V.ignoredReason = '';
     V.delivery = null;
     V.segment = '';
+    V.responseGrounded = false;
   }
 }
 function paintVoiceSegment(text) {
@@ -309,6 +310,17 @@ function paintVoiceSegment(text) {
 function paintVoiceHeard(text) {
   const line = app.querySelector('.ongo-sheet-heard span');
   if (line && text) line.textContent = `“${text.slice(0, 260)}”`;
+}
+function phoneVoiceThreadLabel(cur) {
+  const parts = [];
+  for (const value of [cur?.topic, cur?.module, cur?.workstream]) {
+    const clean = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (parts.some((part) => part.toLowerCase() === key || part.toLowerCase().includes(key) || key.includes(part.toLowerCase()))) continue;
+    parts.push(clean);
+  }
+  return parts.slice(0, 2).join(' · ');
 }
 let onTheGoUi = onTheGoState();
 setOnTheGoVoiceAdapter({
@@ -326,7 +338,7 @@ async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
   unlockAudio(); // gesture-unlock the shared player before any await
   stopSpeech();
   try { V.stream = await navigator.mediaDevices.getUserMedia(phoneVoiceConstraints()); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.ignoredReason = ''; V.silentTurns = 0; V.delivery = null; V.sentCount = 0; S.sheet = 'voicemode';
+  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.ignoredReason = ''; V.silentTurns = 0; V.delivery = null; V.sentCount = 0; V.responseGrounded = false; S.sheet = 'voicemode';
   render();
   try {
     const r = await api('api/voice/start', {
@@ -446,6 +458,7 @@ async function voiceSubmitTurn(text) {
     V.ignoredReason = r.ignored ? (r.ignoredReason || 'not-addressed') : '';
     V.delivery = r.delivery || V.delivery;
     V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
+    V.responseGrounded = !!r.grounded;
     const interruption = await voiceSay(r.say, { allowInterruption: !r.done });
     render();
     if (V.stopFlag) return;
@@ -980,7 +993,7 @@ function renderSheet() {
     const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
     const project = V.current?.projectIdentity || V.current?.project || 'Project update';
     const context = V.current
-      ? [V.current.module, V.current.workstream, V.current.tool].filter(Boolean).join(' · ') || V.current.category
+      ? phoneVoiceThreadLabel(V.current) || V.current.category
       : 'Needs You';
     const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
     const heard = V.ignoredReason === 'no-speech'
@@ -997,6 +1010,10 @@ function renderSheet() {
       : V.ignoredReason
         ? 'HEARD NEARBY · NOT USED'
         : V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE';
+    const sourceNames = [...new Set((V.current?.sourceNames || []).map((name) => String(name || '').trim()).filter(Boolean))].slice(0, 4);
+    const spokenLabel = V.lastHeard
+      ? V.responseGrounded ? 'SOURCE-GROUNDED RESPONSE' : 'ASSISTANT RESPONSE'
+      : 'BRIEFING';
     if (V.onTheGo) return `
     <button class="scrim" data-voice-end aria-label="end"></button>
     <div class="sheet ongoing-sheet">
@@ -1005,8 +1022,9 @@ function renderSheet() {
         <div class="ongo-sheet-live"><i></i>${esc(label)}</div>
       </div>
       <div class="ongo-sheet-progress"><span>${esc(context || 'Needs You')}</span><b>${esc(progress)}</b></div>
+      ${sourceNames.length ? `<div class="ongo-sheet-sources" aria-label="Report sources">${sourceNames.map((name) => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
       <div class="ongo-sheet-report">
-        <span>NOW READING</span>
+        <span>${spokenLabel}</span>
         <p>${esc(V.segment || 'Preparing a clear update…')}</p>
       </div>
       <div class="ongo-sheet-heard ${V.ignoredReason ? 'ignored' : ''}"><b>${heardLabel}</b><span>${esc(heard)}</span></div>

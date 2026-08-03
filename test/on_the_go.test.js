@@ -71,7 +71,9 @@ assert.doesNotMatch(phone, /onSegment:[\s\S]{0,180}V\.segment = segment;\s*rende
   'sentence synchronization never rebuilds the full phone app');
 assert.match(phone, /previousId[\s\S]*nextId[\s\S]*V\.lastHeard = ''/, 'a phone transcript is cleared when the next session is actually presented');
 assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
-assert.match(voice, /NOW READING/, 'the distinct presentation identifies the sentence currently being spoken');
+assert.match(voice, /BRIEFING/, 'the first pass is labeled as a briefing instead of generic reading');
+assert.match(voice, /SOURCE-GROUNDED RESPONSE/, 'follow-up turns identify source-grounded conversation');
+assert.match(voice, /ongo-sources/, 'approved report documents are visible without exposing file paths');
 assert.match(voice, /YOUR LAST RESPONSE/, 'the operator transcript remains a first-class part of the conversation');
 assert.match(voice, /Ask a follow-up or give feedback naturally/,
   'proactive reports continue as a normal Voice Assistant conversation');
@@ -111,6 +113,11 @@ assert.match(voiceServer, /getContext\(project\.id\)/,
   'follow-up questions can use maintained project knowledge when the owner asks for it');
 assert.match(voiceServer, /taskCard\(runtime\.active_task_id\)/,
   'briefing knows the current task contract and verification criteria');
+assert.match(voiceServer, /buildVoiceSourcePack[\s\S]*sessions\.resolveSessionFile/,
+  'linked report documents reuse the session file viewer authorization boundary');
+assert.match(voiceServer, /LINKED REPORT SOURCES/,
+  'interactive answers receive the relevant approved source sections');
+assert.doesNotMatch(voice, /cur\.tool\].*join/, 'the UI no longer repeats the provider beside the human work context');
 assert.match(voiceServer, /voiceTranscriptDisposition\(rawUserText[\s\S]*normalizeVoiceAddress\(disposition\.text\)/,
   'proactive and manual speech enter the same validated conversation path');
 assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*claude-opus-5[\s\S]*gpt-5\.6-luna[\s\S]*qwen36-a3b-nvfp4-marlin/,

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-brief-'));
-const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
+const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, rephraseRequestForSpeech, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
 
 // ---- the sanitizer kills exactly the unspeakable junk the operator named --------------------------
 {
@@ -78,6 +78,8 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   assert.match(SYS_BRIEF, /OUTCOME FIRST/);
   assert.match(SYS_BRIEF, /routine release evidence/i);
   assert.match(SYS_BRIEF, /EACH distinct requested deliverable/);
+  assert.match(SYS_BRIEF, /HUMAN RESTATEMENT/);
+  assert.match(SYS_BRIEF, /LINKED SOURCE MATERIAL/);
   assert.match(SYS_BRIEF, /decision\|input\|discussion\|review\|blocked\|progress/);
   const user = buildBriefUserText({
     project: 'shop',
@@ -89,6 +91,7 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
     recentConversation: 'Operator: Keep Apple Pay working.\nAgent report: Card checkout passes, Apple Pay still fails.',
     originalRequest: 'Fix checkout and improve mobile.',
     latestReport: 'Checkout is fixed; mobile needs approval.',
+    sourceContext: 'SOURCE: Payment audit\nSECTION: Limitation\nApple Pay remains outside the validated scope.',
     screen: '├ raw terminal nonsense should never appear',
   });
   assert.match(user, /ORIGINAL REQUEST:[\s\S]*Fix checkout/);
@@ -97,6 +100,7 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   assert.doesNotMatch(user, /customer checkout application/, 'the automatic brief does not explain the owner’s own product');
   assert.match(user, /CURRENT TASK CONTRACT[\s\S]*repair checkout/);
   assert.match(user, /RECENT CONVERSATION[\s\S]*Apple Pay still fails/);
+  assert.match(user, /LINKED SOURCE MATERIAL[\s\S]*outside the validated scope/);
   assert.doesNotMatch(user, /raw terminal nonsense/, 'automatic voice briefs never ingest the terminal tail');
 }
 
@@ -147,7 +151,7 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   assert.match(spoken, /Deploy approval\./);
   assert.match(spoken, /Options: y, Yes, deploy it\./);
   const onTheGo = speakOnTheGoBrief(b);
-  assert.match(onTheGo, /^shop\/storefront\. Checkout\. Build 12 deployment\./i);
+  assert.match(onTheGo, /^For shop storefront, this is about Checkout — Build 12 deployment\./i);
   assert.match(onTheGo, /candidate is ready and checkout passed/i);
   assert.match(onTheGo, /approval to deploy/i);
   assert.ok(onTheGo.split(/\s+/).length <= 95, 'the first on-the-go pass stays within one bounded spoken brief');
@@ -163,6 +167,34 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   const b4 = await buildVoiceBrief({ sessionId: 's_t3', project: 'shop', projectIdentity: 'shop/storefront', tool: 'codex', category: 'review', originalRequest: 'Fix the voice report.', latestReport: 'All browser checks and 119 suites passed.', call: async () => { throw new Error('down'); } });
   assert.doesNotMatch(b4.spoken, /119|suites passed/i, 'the fail-open path also refuses to report release ceremony as the outcome');
   assert.match(b4.spoken, /not how the requested issue changed/i);
+}
+
+{
+  const dictated = 'a link this report contains some files, super important part of the report. If I ask to tell me the details, would our on the go assistant voice report the plan? Can the assistant read docs and keep an interactive conversation?';
+  assert.equal(
+    rephraseRequestForSpeech(dictated),
+    'Let the Voice Assistant read linked report documents, explain their important details naturally, and answer grounded follow-up questions.',
+    'the deterministic opening interprets a long dictated request instead of replaying it',
+  );
+  const copied = await buildVoiceBrief({
+    sessionId: 's_literal_echo',
+    project: 'aios',
+    projectIdentity: 'aios/supercalm',
+    tool: 'codex',
+    category: 'review',
+    originalRequest: dictated,
+    latestReport: 'The assistant can now load approved linked documents for follow-up questions.',
+    sourceContext: 'SOURCE: Compiler plan\nSECTION: Method\nUse evidence anchors and deterministic proof closure.',
+    call: async () => JSON.stringify({
+      topic: 'Voice document context', kind: 'review', identity: 'aios/supercalm', module: 'Voice Assistant',
+      workstream: dictated, request: dictated, updates: [], quick: 'Linked documents are now available.',
+      standard: 'Linked documents are now available for conversational answers.', spoken: `You asked: ${dictated}`,
+      needs: '', options: [],
+    }),
+  });
+  assert.match(copied.request, /^Let the Voice Assistant read linked report documents/);
+  assert.doesNotMatch(copied.spoken, /a link this report contains|If I ask/i);
+  assert.doesNotMatch(copied.workstream, /a link this report contains/i);
 }
 
 {

@@ -550,7 +550,10 @@ async function registeredProjectWorktreeContaining(s, target) {
   return '';
 }
 
-async function resolveSessionFile(s, rawRequested) {
+// Shared with the Voice Assistant's source-grounding layer. Keep every caller behind this one
+// resolver so a document mentioned in a report gets exactly the same project/worktree/transcript
+// authorization as the interactive file viewer.
+export async function resolveSessionFile(s, rawRequested) {
   const requested = normalizeSessionFileRequest(rawRequested);
   if (!requested) return null;
   const root = projectFileRoot(s);

@@ -70,7 +70,10 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
       if (state.delivery) updateDelivery(state.delivery, state.sentCount);
-      if (state.acceptedText) setHeard(state.acceptedText);
+      if (state.acceptedText) {
+        setHeard(state.acceptedText);
+        if (ui?.spokenLabel) ui.spokenLabel.textContent = state.grounded ? 'SOURCE-GROUNDED RESPONSE' : 'ASSISTANT RESPONSE';
+      }
       if (state.ignored) markIgnoredSpeech(state.ignoredReason);
       if (state.done && ui) ui.bar.style.width = '100%';
       // Ignored nearby speech and silent windows are intentionally silent responses: keep listening
@@ -480,8 +483,9 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="ongo-head"><div><span class="ongo-kicker">VOICE ASSISTANT</span><h2 class="ongo-title">Project update</h2></div>' +
       '<div class="ongo-live"><i></i><span class="vm-state">Starting…</span></div></div>' +
       '<div class="ongo-track"><div><span class="ongo-context">Ask a follow-up or give feedback naturally</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
+      '<div class="ongo-sources" aria-label="Report sources" hidden></div>' +
       '<div class="ongo-dialog">' +
-      '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">NOW READING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
+      '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">BRIEFING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
       '<section class="ongo-heard"><span class="ongo-label ongoing-heard-label">YOUR RESPONSE</span><div class="vm-heard empty">Your words will stay here.</div></section>' +
       '<div class="ongo-delivery" hidden></div></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
@@ -518,6 +522,7 @@ function buildOverlay({ onTheGo = false } = {}) {
     delivery: root.querySelector('.ongo-delivery'),
     title: root.querySelector('.ongo-title'),
     context: root.querySelector('.ongo-context'),
+    sources: root.querySelector('.ongo-sources'),
     spokenLabel: root.querySelector('.ongoing-spoken-label'),
     heardLabel: root.querySelector('.ongoing-heard-label'),
     interrupt: root.querySelector('.vm-interrupt'),
@@ -552,14 +557,40 @@ function updateProgress(cur) {
       ui.delivery.hidden = true;
       ui.delivery.textContent = '';
     }
+    if (ui.spokenLabel) ui.spokenLabel.textContent = 'BRIEFING';
   }
   ui.sessionId = cur.sessionId || ui.sessionId || '';
   ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
   if (ui.onTheGo) {
     if (ui.title) ui.title.textContent = cur.projectIdentity || cur.project || 'Project update';
-    if (ui.context) ui.context.textContent = [cur.module, cur.workstream, cur.tool].filter(Boolean).join(' · ') || cur.category || 'Needs You';
+    if (ui.context) ui.context.textContent = voiceThreadLabel(cur) || cur.category || 'Needs You';
+    renderVoiceSources(cur.sourceNames || []);
   }
+}
+
+function voiceThreadLabel(cur) {
+  const parts = [];
+  for (const value of [cur.topic, cur.module, cur.workstream]) {
+    const clean = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!clean) continue;
+    const key = clean.toLowerCase();
+    if (parts.some((part) => part.toLowerCase() === key || part.toLowerCase().includes(key) || key.includes(part.toLowerCase()))) continue;
+    parts.push(clean);
+  }
+  return parts.slice(0, 2).join(' · ');
+}
+
+function renderVoiceSources(names) {
+  if (!ui?.sources) return;
+  const clean = [...new Set((Array.isArray(names) ? names : []).map((name) => String(name || '').trim()).filter(Boolean))].slice(0, 4);
+  ui.sources.hidden = !clean.length;
+  ui.sources.replaceChildren(...clean.map((name) => {
+    const chip = document.createElement('span');
+    chip.className = 'ongo-source';
+    chip.textContent = name;
+    return chip;
+  }));
 }
 function updateDelivery(delivery, sentCount = 0) {
   if (!ui?.delivery || !delivery) return;
