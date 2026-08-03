@@ -117,6 +117,8 @@ assert.match(voiceServer, /buildVoiceSourcePack[\s\S]*sessions\.resolveSessionFi
   'linked report documents reuse the session file viewer authorization boundary');
 assert.match(voiceServer, /LINKED REPORT SOURCES/,
   'interactive answers receive the relevant approved source sections');
+assert.match(voiceServer, /evidence\.requestContext \|\| it\.originalRequest[\s\S]*evidence\.reportContext \|\| it\.latestReport/,
+  'the deadline fallback uses the same full current request and report instead of a thin status card');
 assert.doesNotMatch(voice, /cur\.tool\].*join/, 'the UI no longer repeats the provider beside the human work context');
 assert.match(voiceServer, /voiceTranscriptDisposition\(rawUserText[\s\S]*normalizeVoiceAddress\(disposition\.text\)/,
   'proactive and manual speech enter the same validated conversation path');

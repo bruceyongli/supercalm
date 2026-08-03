@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 process.env.AIOS_DATA = await mkdtemp(join(tmpdir(), 'aios-brief-'));
-const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, rephraseRequestForSpeech, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
+const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation, validateBrief, buildVoiceBrief, speakBrief, speakOnTheGoBrief, rephraseRequestForSpeech, requestThreadForSpeech, SYS_BRIEF, buildBriefUserText } = await import('../src/voice_brief.js');
 
 // ---- the sanitizer kills exactly the unspeakable junk the operator named --------------------------
 {
@@ -113,6 +113,19 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   assert.doesNotMatch(deDuplicated, /AIOS Supercalm|Voice Assistant|Report quality/);
 }
 
+{
+  const thread = requestThreadForSpeech(
+    'Is there something learning able, is there novel idea worth to explore more, is there better alternative new idea?',
+    { project: 'supercalm', tool: 'codex' },
+  );
+  assert.deepEqual(thread, {
+    request: 'Explore reusable lessons, novel ideas, and better alternatives worth pursuing.',
+    topic: 'Research opportunities',
+    module: 'Research review',
+    workstream: 'Novel ideas and alternatives',
+  }, 'awkward speech transcripts become a concise human statement of research intent');
+}
+
 // ---- generation with an injected model + template fail-open ---------------------------------------
 {
   const call = async () => JSON.stringify({
@@ -167,6 +180,15 @@ const { sanitizeForSpeech, stripRoutineProcessEvidence, stripRepeatedOrientation
   const b4 = await buildVoiceBrief({ sessionId: 's_t3', project: 'shop', projectIdentity: 'shop/storefront', tool: 'codex', category: 'review', originalRequest: 'Fix the voice report.', latestReport: 'All browser checks and 119 suites passed.', call: async () => { throw new Error('down'); } });
   assert.doesNotMatch(b4.spoken, /119|suites passed/i, 'the fail-open path also refuses to report release ceremony as the outcome');
   assert.match(b4.spoken, /not how the requested issue changed/i);
+  const b5 = await buildVoiceBrief({
+    sessionId: 's_t4', project: 'supercalm', projectIdentity: 'aios/supercalm', tool: 'codex', category: 'review',
+    originalRequest: 'Is there something learning able, is there novel idea worth to explore more, is there better alternative new idea?',
+    latestReport: 'We found an anchored evidence-proof policy compiler worth implementing next.',
+    call: async () => { throw new Error('down'); },
+  });
+  assert.equal(b5.workstream, 'Novel ideas and alternatives');
+  assert.match(speakOnTheGoBrief(b5), /explore reusable lessons[\s\S]*anchored evidence proof policy compiler/i,
+    'provider failure still yields a human request restatement and the actual latest outcome');
 }
 
 {

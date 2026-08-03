@@ -157,6 +157,9 @@ export function rephraseRequestForSpeech(value) {
   if (sourceVoice) {
     return 'Let the Voice Assistant read linked report documents, explain their important details naturally, and answer grounded follow-up questions.';
   }
+  if (/\b(?:learn|learning)\w*\b/.test(lower) && /\b(?:novel|alternative|explore|idea)\w*\b/.test(lower)) {
+    return 'Explore reusable lessons, novel ideas, and better alternatives worth pursuing.';
+  }
   clean = clean
     .replace(/^(?:(?:okay|ok|well|so|anyway|by the way)[,.:;]?\s+)+/i, '')
     .replace(/^(?:please\s+)?(?:can|could|would)\s+(?:you|we)\s+/i, '')
@@ -169,6 +172,24 @@ export function rephraseRequestForSpeech(value) {
   const words = result.split(' ');
   if (words.length > 32) result = words.slice(0, 32).join(' ').replace(/[,;:—-]$/, '') + '…';
   return result;
+}
+
+export function requestThreadForSpeech(value, { project = '', tool = '' } = {}) {
+  const request = rephraseRequestForSpeech(value);
+  const lower = request.toLowerCase();
+  if (/^let the voice assistant read linked report documents/.test(lower)) {
+    return { request, topic: 'Document-aware voice', module: 'Voice Assistant', workstream: 'Source-grounded document conversations' };
+  }
+  if (/^explore reusable lessons, novel ideas/.test(lower)) {
+    return { request, topic: 'Research opportunities', module: 'Research review', workstream: 'Novel ideas and alternatives' };
+  }
+  const words = request.split(/\s+/).filter(Boolean);
+  return {
+    request,
+    topic: `${project || tool || 'Agent'} update`,
+    module: /\bvoice assistant\b/i.test(request) ? 'Voice Assistant' : '',
+    workstream: words.slice(0, 12).join(' ').replace(/[,;:—-]$/, '') + (words.length > 12 ? '…' : ''),
+  };
 }
 
 function echoesRawRequest(generated, original) {
@@ -285,7 +306,7 @@ export async function buildVoiceBrief({
       if (echoesRawRequest(brief.workstream, cleanOriginal)) brief.workstream = brief.topic;
       if (echoesRawRequest(brief.spoken, cleanOriginal)) {
         brief.spoken = [
-          brief.request ? `The goal was to ${brief.request.replace(/^(?:let|make|improve|build|fix|add|allow|create)\b/i, (word) => word.toLowerCase())}.` : '',
+          brief.request ? `The goal was to ${brief.request.replace(/^(?:explore|let|make|improve|build|fix|add|allow|create)\b/i, (word) => word.toLowerCase())}.` : '',
           brief.standard,
           brief.needs,
         ].filter(Boolean).join(' ');
@@ -309,25 +330,31 @@ export async function buildVoiceBrief({
   } catch {}
   if (!brief) {
     // fail-open: a sanitized template beats silence
-    const sentence = (value, max) => sanitizeForSpeech(value).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '').slice(0, max);
+    const sentence = (value, max) => {
+      const clean = sanitizeForSpeech(value).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      if (clean.length <= max) return clean;
+      const clipped = clean.slice(0, max - 1);
+      const cut = clipped.lastIndexOf(' ');
+      return (cut > max * 0.65 ? clipped.slice(0, cut) : clipped).replace(/[,;:—-]$/, '') + '…';
+    };
     const rawGist = sentence(cleanLatest, 260);
     const gist = sentence(stripRoutineProcessEvidence(cleanLatest), 260)
       || (rawGist ? 'The report only gave routine release verification, not how the requested issue changed' : '');
-    const request = sentence(rephraseRequestForSpeech(cleanOriginal), 320);
-    const sourceGroundedVoice = /^Let the Voice Assistant read linked report documents/i.test(request);
+    const thread = requestThreadForSpeech(cleanOriginal, { project, tool });
+    const request = sentence(thread.request, 320);
     const need = ['decision', 'action'].includes(category) ? sentence(ask || summary, 160) : '';
     brief = {
-      topic: sourceGroundedVoice ? 'Document-aware voice' : `${project || tool} update`,
+      topic: thread.topic,
       kind: category === 'decision' ? 'decision' : category === 'action' ? 'input' : 'review',
       identity: sentence(projectIdentity || project || 'adhoc', 100),
-      module: sourceGroundedVoice ? 'Voice Assistant' : '',
-      workstream: sourceGroundedVoice ? 'Source-grounded document conversations' : sentence(request || gist, 110),
+      module: thread.module,
+      workstream: thread.workstream || sentence(request || gist, 110),
       request,
       updates: gist ? [{ requested: (request || 'the request').slice(0, 100), latest: gist }] : [],
       quick: gist.slice(0, 140),
       standard: gist,
       spoken: [
-        request ? `The goal was to ${request.replace(/^(?:let|make|improve|build|fix|add|allow|create)\b/i, (word) => word.toLowerCase())}` : '',
+        request ? `The goal was to ${request.replace(/^(?:explore|let|make|improve|build|fix|add|allow|create)\b/i, (word) => word.toLowerCase())}` : '',
         gist ? `Here is what changed: ${gist}` : '',
         need ? `What I need from you: ${need}` : '',
       ].filter(Boolean).join('. ').replace(/([.!?])\./g, '$1').slice(0, 720),

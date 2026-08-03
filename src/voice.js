@@ -5,7 +5,7 @@ import * as store from './store.js';
 import * as sessions from './sessions.js';
 import { chat } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
-import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech, stripRoutineProcessEvidence, rephraseRequestForSpeech } from './voice_brief.js';
+import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech, stripRoutineProcessEvidence, requestThreadForSpeech } from './voice_brief.js';
 import { buildVoiceSourcePack, voiceSourceContext, voiceSourceSummary } from './voice_sources.js';
 import { listWiki, readWiki, searchWiki } from './wiki.js';
 import { getContext } from './context_doc.js';
@@ -432,17 +432,26 @@ async function present(vs, greet) {
         if (brief.needs && !brief.options?.length) say += ` ${brief.needs}`;
       }
     } else {
-      let request = rephraseRequestForSpeech(it.originalRequest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
-      const rawLatest = sanitizeForSpeech(it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      // The model-backed brief has a strict presentation deadline. If providers are slow, the source
+      // evidence normally finished first; use that full current round instead of regressing to the
+      // thin Needs You card (which can be empty or hold an awkwardly transcribed prompt).
+      const evidence = it._evidence || await voiceEvidenceFor(it).catch(() => ({}));
+      const thread = requestThreadForSpeech(evidence.requestContext || it.originalRequest, { project: it.project, tool: it.tool });
+      it.topic ||= thread.topic;
+      it.module ||= thread.module;
+      it.workstream ||= thread.workstream;
+      let request = thread.request.replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
+      const rawLatest = sanitizeForSpeech(evidence.reportContext || it.latestReport || it.summary).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '');
       let latest = stripRoutineProcessEvidence(rawLatest).replace(/\s+/g, ' ').trim().replace(/[.!?]+$/, '')
         || (rawLatest ? 'The report only gave routine release verification, not how the requested issue changed' : '');
       const requestCap = vs.onTheGo ? 90 : 150;
       const latestCap = vs.onTheGo ? 120 : 180;
       if (request.length > requestCap) request = request.slice(0, requestCap).replace(/\s+\S*$/, '') + '…';
       if (latest.length > latestCap) latest = latest.slice(0, latestCap).replace(/\s+\S*$/, '') + '…';
+      const spokenRequest = request.replace(/^(?:explore|let|make|improve|build|fix|add|allow|create)\b/i, (word) => word.toLowerCase());
       say = vs.onTheGo
-        ? `${lead} ${request ? `The goal was to ${request}.` : ''} ${latest ? `Update: ${latest}.` : ''} What would you like the agent to do?`
-        : `${lead} Here's what happened. ${request ? `You originally asked: ${request}.` : ''} ${latest ? `The latest report says: ${latest}.` : ''} What would you like to do?`;
+        ? `${lead} ${spokenRequest ? `The goal was to ${spokenRequest}.` : ''} ${latest ? `Update: ${latest}.` : ''} What would you like the agent to do?`
+        : `${lead} Here's what happened. ${spokenRequest ? `The current goal is to ${spokenRequest}.` : ''} ${latest ? `The latest report says: ${latest}.` : ''} What would you like to do?`;
     }
   }
   return say;
