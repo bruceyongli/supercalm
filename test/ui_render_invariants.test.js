@@ -189,4 +189,15 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   }
 }
 
+// Project cleanup is visible on the canonical SPA page, not only the retired classic dashboard.
+// Folder deletion stays opt-in and sends the exact registered path as a second server-side guard.
+{
+  const pj = read('views/projects.js');
+  assert.match(pj, /data-pj-delete=/, 'every non-live project row exposes Delete');
+  assert.match(pj, /data-pj-delete-folder/, 'the delete confirmation offers an explicit folder checkbox');
+  assert.match(pj, /delete_folder: choice\.deleteFolder/, 'folder deletion is false unless that checkbox is selected');
+  assert.match(pj, /confirm_path: choice\.deleteFolder \? project\.path/, 'folder deletion confirms the exact registered path');
+  assert.match(pj, /temporary · auto-clean/, 'session-owned test projects are visibly tagged while live');
+}
+
 console.log('ui_render_invariants: no-flash guard + stopped-in-page-body + one unified rail width + story-switch race guard + fresh-install add-project + honest setup/upgrade orientation');

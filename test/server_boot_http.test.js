@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +16,7 @@ const freePort = () => new Promise((resolve, reject) => {
 });
 const port = await freePort();
 const data = await mkdtemp(join(tmpdir(), 'aios-server-boot-'));
+const projectRoot = await mkdtemp(join(tmpdir(), 'aios-server-projects-'));
 const child = spawn(process.execPath, ['src/server.js'], {
   cwd: new URL('../', import.meta.url),
   env: {
@@ -64,7 +65,7 @@ try {
   assert(performance.routes.some((row) => row.route === 'GET /api/version' && row.requests >= 1));
   assert(performance.routes.some((row) => row.route === 'GET static' && row.requests >= 3));
 
-  const newProjectPath = join(data, 'projects', 'created-by-api');
+  const newProjectPath = join(projectRoot, 'created-by-api');
   const createdResponse = await fetch(base + '/api/projects', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -79,6 +80,16 @@ try {
     'POST /api/projects creates a missing folder and initializes Git before persisting it');
   const projects = await fetch(base + '/api/projects').then((response) => response.json());
   assert(projects.some((project) => project.id === createdProject.id && project.path === newProjectPath));
+  const deletedResponse = await fetch(base + `/api/projects/${createdProject.id}`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ delete_folder: true, confirm_path: newProjectPath }),
+  });
+  assert.equal(deletedResponse.status, 200);
+  const deletedProject = await deletedResponse.json();
+  assert.equal(deletedProject.folderDeleted, true);
+  await assert.rejects(stat(newProjectPath), (error) => error?.code === 'ENOENT',
+    'DELETE /api/projects/:id removes the exact project folder only after explicit path confirmation');
 
   const db = new DatabaseSync(join(data, 'aios.db'), { readOnly: true });
   const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((row) => row.id));
@@ -87,6 +98,7 @@ try {
     '0001_sessions_complete_shape',
     '0002_message_read_state',
     '0003_attention_dismissals',
+    '0004_project_lifecycle',
     '0100_project_helpers_complete_shape',
     '0101_session_labels_semantic_grouping',
     '0102_session_label_preferences',
@@ -107,6 +119,7 @@ try {
     new Promise((resolve) => setTimeout(resolve, 2000)),
   ]);
   if (child.exitCode == null) child.kill('SIGKILL');
+  await rm(projectRoot, { recursive: true, force: true });
 }
 
 console.log('server_boot_http.test ok');

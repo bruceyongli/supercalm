@@ -65,6 +65,9 @@ async function graphSnapshots(projects, { force = false } = {}) {
         project_id: p.id,
         name: p.name,
         path: p.path,
+        lifecycle: p.lifecycle || 'persistent',
+        owner_session_id: p.owner_session_id || null,
+        auto_delete_folder: !!p.auto_delete_folder,
         ok: !!s.ok,
         status: s.meta?.status || 'missing',
         stale: !!s.staleness?.stale,
@@ -74,7 +77,7 @@ async function graphSnapshots(projects, { force = false } = {}) {
         counts: s.counts || {},
       };
     } catch (e) {
-      return { project_id: p.id, name: p.name, path: p.path, ok: false, status: 'error', stale: true, stale_reasons: [String(e.message || e).slice(0, 120)], counts: {} };
+      return { project_id: p.id, name: p.name, path: p.path, lifecycle: p.lifecycle || 'persistent', owner_session_id: p.owner_session_id || null, auto_delete_folder: !!p.auto_delete_folder, ok: false, status: 'error', stale: true, stale_reasons: [String(e.message || e).slice(0, 120)], counts: {} };
     }
   })).then((rows) => {
     rows.sort((a, b) => Number(b.name === 'aios') - Number(a.name === 'aios') || a.name.localeCompare(b.name));

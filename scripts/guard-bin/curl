@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Agent-originated AIOS session launches carry durable parent ownership automatically. This is a
+# narrow wrapper: every other curl invocation is delegated byte-for-byte without leaking session ids.
+set -u
+
+guard_bin="$(cd "$(dirname "$0")" 2>/dev/null && pwd -P || true)"
+clean_path=""
+old_ifs="$IFS"
+IFS=:
+for entry in ${PATH:-}; do
+  [ -n "$entry" ] || entry="."
+  resolved="$(cd "$entry" 2>/dev/null && pwd -P || true)"
+  [ -n "$guard_bin" ] && [ "$resolved" = "$guard_bin" ] && continue
+  clean_path="${clean_path:+$clean_path:}$entry"
+done
+IFS="$old_ifs"
+
+real="$(PATH="$clean_path" command -v curl 2>/dev/null || true)"
+if [ -z "$real" ]; then
+  printf 'Supercalm session guard: cannot find the real curl executable\n' >&2
+  exit 127
+fi
+
+base="${AIOS_URL:-}"
+base="${base%/}"
+parent="${AIOS_SESSION_ID:-}"
+session_create=0
+has_parent_header=0
+for arg in "$@"; do
+  case "$arg" in
+    *[Xx]-[Aa][Ii][Oo][Ss]-[Pp][Aa][Rr][Ee][Nn][Tt]-[Ss][Ee][Ss][Ss][Ii][Oo][Nn]:*) has_parent_header=1 ;;
+  esac
+  if [ -n "$base" ]; then
+    case "$arg" in
+      "$base/api/session"|"$base/api/session/"|"$base/api/session?"*) session_create=1 ;;
+    esac
+  fi
+done
+
+if [ "$session_create" -eq 1 ] && [ "$has_parent_header" -eq 0 ] && [ -n "$parent" ]; then
+  PATH="$clean_path" exec "$real" -H "x-aios-parent-session: $parent" "$@"
+fi
+PATH="$clean_path" exec "$real" "$@"

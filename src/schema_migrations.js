@@ -111,4 +111,21 @@ export const CORE_MIGRATIONS = [
       `);
     },
   },
+  {
+    id: '0004_project_lifecycle',
+    description: 'Track persistent versus session-owned temporary projects and child-session ownership',
+    up(db) {
+      ensureColumn(db, 'projects', 'lifecycle', "TEXT NOT NULL DEFAULT 'persistent'");
+      ensureColumn(db, 'projects', 'owner_session_id', 'TEXT');
+      ensureColumn(db, 'projects', 'created_directory', 'INTEGER NOT NULL DEFAULT 0');
+      ensureColumn(db, 'projects', 'auto_delete_folder', 'INTEGER NOT NULL DEFAULT 0');
+      ensureColumn(db, 'sessions', 'parent_session_id', 'TEXT');
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_projects_lifecycle
+          ON projects(lifecycle, created_at);
+        CREATE INDEX IF NOT EXISTS idx_sessions_parent
+          ON sessions(parent_session_id, started_at);
+      `);
+    },
+  },
 ];

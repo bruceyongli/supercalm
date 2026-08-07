@@ -30,6 +30,29 @@ const PROJECTS_CSS = `
     .pj-rel-btn { background: #16202c; border: 1px solid #2a3a4c; border-radius: 6px; color: #9fb0c0; padding: 3px 9px; cursor: pointer; font-size: 11px; }
     .pj-rel-btn:hover { border-color: #2fd6be; color: #d7e2ee; }
     .pj-isogap { display: block; font-size: 11px; color: #e2b23e; margin-top: 2px; }
+    .pj-delete { color: #8a95a5; border-color: #2a3440; }
+    .pj-delete:hover { color: #ff8585; border-color: #e5484d88; }
+    .pj-delete:disabled { opacity: .35; cursor: not-allowed; }
+    .pj-temp { color: #b6a7ff; border-color: #8d79e655; }
+    .pj-temp-group { margin-top: 16px; border-top: 1px solid #222d39; padding-top: 10px; }
+    .pj-temp-group summary { padding: 7px 2px 11px; color: #7f8a99; font-size: 12px; cursor: pointer; user-select: none; }
+    .pj-delete-layer { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 20px; background: rgba(4,7,11,.74); backdrop-filter: blur(5px); }
+    .pj-delete-card { width: min(460px, 100%); padding: 20px; border: 1px solid #303a48; border-radius: 14px; background: #111821; box-shadow: 0 22px 70px #000a; }
+    .pj-delete-card h2 { margin: 0 0 7px; color: #edf3fa; font: 600 20px/1.25 'IBM Plex Sans', sans-serif; }
+    .pj-delete-card p { margin: 0 0 14px; color: #9aa7b5; font-size: 13px; line-height: 1.5; }
+    .pj-delete-path { display: block; margin: 10px 0 14px; padding: 8px 10px; border-radius: 7px; background: #0a1017; color: #798696; font: 11px/1.45 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
+    .pj-delete-folder { display: flex; align-items: flex-start; gap: 9px; padding: 11px; border: 1px solid #5d3034; border-radius: 9px; color: #e9b5b7; font-size: 12.5px; line-height: 1.4; cursor: pointer; }
+    .pj-delete-folder input { margin-top: 2px; accent-color: #e5484d; }
+    .pj-delete-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+    .pj-delete-confirm.danger { background: #9f2f34; border-color: #bd4248; color: white; }
+    @media (max-width: 700px) {
+      .pj-wrap { padding: 20px 14px; }
+      .pj-row { align-items: flex-start; flex-wrap: wrap; }
+      .pj-main { flex-basis: 100%; }
+      .pj-rel input { width: 100% !important; min-width: 0 !important; }
+      .pj-delete-card { padding: 17px; }
+      .pj-delete-actions button { flex: 1; }
+    }
 `;
 
 let host = null;
@@ -40,15 +63,17 @@ async function load(force = false) {
   try { health = await api(`api/product/health${force ? '?fresh=1' : ''}`); } catch {}
   const home = getHome();
   const liveByPath = {};
-  for (const s of home.sessions || []) if (s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
-  const rows = (health.graphs || []).map((p) => {
+  for (const s of home.sessions || []) if (s.status === 'starting' || s.status === 'working' || s.status === 'waiting') liveByPath[s.project_id || ''] = (liveByPath[s.project_id || ''] || 0) + 1;
+  const projectRow = (p) => {
     const ready = p.status === 'ready';
     const counts = p.counts || {};
     const live = liveByPath[p.project_id] || 0;
+    const temporary = p.lifecycle === 'temporary';
     return `
-    <div class="dk-row pj-row" data-pj-row>
+    <div class="dk-row pj-row" data-pj-row="${esc(p.project_id)}">
       <div class="pj-main">
         <span class="pj-l1"><b class="dk-row-name">${esc(p.name)}</b>${live ? `<span class="dk-badge warn">${live} live</span>` : ''}
+          ${temporary ? '<span class="dk-chip pj-temp">temporary · auto-clean</span>' : ''}
           <span class="dk-chip" style="color:${ready ? '#2fd6be' : '#8a95a5'};border-color:currentColor">${ready ? '● graph ready' : '○ not indexed'}</span>
           ${p.stale ? `<span class="dk-chip" style="color:#e2b23e;border-color:#e2b23e55" title="${esc((p.stale_reasons || []).join(', '))}">head changed</span>` : ''}
         </span>
@@ -74,8 +99,16 @@ async function load(force = false) {
       </div>
       <button class="dk-reply-btn" data-pj-index="${esc(p.project_id)}">${ready ? (p.stale ? 're-index' : 'index ✓') : 'index'}</button>
       <button class="dk-new sm" data-pj-launch="${esc(p.project_id)}">+ session</button>
+      <button class="dk-reply-btn pj-delete" data-pj-delete="${esc(p.project_id)}" ${live ? 'disabled' : ''} title="${live ? 'Stop live sessions before deleting' : 'Delete project'}">Delete</button>
     </div>`;
-  }).join('');
+  };
+  const graphs = health.graphs || [];
+  const persistentRows = graphs.filter((p) => p.lifecycle !== 'temporary').map(projectRow).join('');
+  const temporary = graphs.filter((p) => p.lifecycle === 'temporary');
+  const temporaryRows = temporary.length
+    ? `<details class="pj-temp-group"><summary>Temporary work (${temporary.length}) · cleaned automatically after its sessions finish</summary>${temporary.map(projectRow).join('')}</details>`
+    : '';
+  const rows = persistentRows + temporaryRows;
   const list = $('#pj-list');
   if (!list) return;
   list.innerHTML = rows || '<div class="dk-allclear">No projects yet — start a session and type a new path; the project is created on the spot.</div>';
@@ -87,6 +120,28 @@ async function load(force = false) {
   // "+ session" opens the launch modal HERE with that project preselected. It used to navigate to the
   // legacy desktop page with a #launch= hash that nothing handles — a silent dead end.
   for (const b of document.querySelectorAll('[data-pj-launch]')) b.onclick = () => openLaunch({ projectId: b.dataset.pjLaunch });
+  for (const b of document.querySelectorAll('[data-pj-delete]')) b.onclick = async () => {
+    const project = (health.graphs || []).find((item) => item.project_id === b.dataset.pjDelete);
+    if (!project) return;
+    const choice = await confirmProjectDelete(project);
+    if (!choice) return;
+    const previous = b.textContent;
+    b.disabled = true;
+    b.textContent = 'deleting…';
+    try {
+      const result = await api(`api/projects/${project.project_id}`, {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ delete_folder: choice.deleteFolder, confirm_path: choice.deleteFolder ? project.path : '' }),
+      });
+      if (choice.deleteFolder && !result?.folderDeleted && !result?.folderMissing) throw new Error('project was unlisted but the folder was not removed');
+      await load(true);
+    } catch (error) {
+      b.disabled = false;
+      b.textContent = previous;
+      alert('Delete failed: ' + (error.message || error));
+    }
+  };
   const postHelpers = (pid, patch) => api(`api/project/${pid}/helpers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
   for (const c of document.querySelectorAll('[data-pj-iso]')) c.onchange = async () => {
     const pid = c.dataset.pjIso, want = c.checked;
@@ -162,6 +217,40 @@ async function load(force = false) {
       relStatus(p.project_id, t);
     }).catch(() => {});
   }
+}
+
+function confirmProjectDelete(project) {
+  return new Promise((resolveChoice) => {
+    const layer = document.createElement('div');
+    layer.className = 'pj-delete-layer';
+    layer.setAttribute('role', 'dialog');
+    layer.setAttribute('aria-modal', 'true');
+    layer.innerHTML = `
+      <div class="pj-delete-card">
+        <h2>Delete ${esc(project.name)}?</h2>
+        <p>This removes the project from AIOS. Existing session records stay.</p>
+        <code class="pj-delete-path">${esc(project.path)}</code>
+        <label class="pj-delete-folder">
+          <input type="checkbox" data-pj-delete-folder>
+          <span><b>Also permanently delete the project folder</b><br>This removes every file inside it and cannot be undone.</span>
+        </label>
+        <div class="pj-delete-actions">
+          <button class="dk-reply-btn" data-pj-delete-cancel>Cancel</button>
+          <button class="dk-new sm pj-delete-confirm" data-pj-delete-confirm>Delete from AIOS</button>
+        </div>
+      </div>`;
+    host?.appendChild(layer);
+    const folder = layer.querySelector('[data-pj-delete-folder]');
+    const confirm = layer.querySelector('[data-pj-delete-confirm]');
+    const finish = (choice) => { layer.remove(); resolveChoice(choice); };
+    folder.onchange = () => {
+      confirm.textContent = folder.checked ? 'Delete folder + project' : 'Delete from AIOS';
+      confirm.classList.toggle('danger', folder.checked);
+    };
+    confirm.onclick = () => finish({ deleteFolder: folder.checked });
+    layer.querySelector('[data-pj-delete-cancel]').onclick = () => finish(null);
+    layer.onclick = (event) => { if (event.target === layer) finish(null); };
+  });
 }
 
 export function init(el) {

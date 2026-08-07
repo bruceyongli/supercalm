@@ -54,6 +54,7 @@ import {
 } from './attention_store.js';
 import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
 import { prepareProjectDirectory } from './project_init.js';
+import { cleanupTemporaryProject, sweepTemporaryProjects } from './project_cleanup.js';
 import { agentInputReady } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
@@ -93,6 +94,14 @@ const CLAUDE_QUOTA_FALLBACK = process.env.AIOS_CLAUDE_QUOTA_FALLBACK !== '0';
 const CLAUDE_QUOTA_FALLBACK_MODEL = process.env.AIOS_CLAUDE_QUOTA_FALLBACK_MODEL || 'gpt-5.6-sol';
 const CLAUDE_QUOTA_STREAK = Number(process.env.AIOS_CLAUDE_QUOTA_STREAK || 2); // consecutive rate_limit polls before firing
 const BOOL_TRUE = new Set(['1', 'true', 'yes', 'on']);
+const CHILD_SESSION_HYGIENE = `<aios_session_hygiene>
+If you start another AIOS session for a subtask or test, do not register an ad-hoc persistent project.
+Use POST $AIOS_URL/api/session/$AIOS_SESSION_ID/child. Omit temporary_project to share this project;
+set temporary_project=true for an isolated disposable test. AIOS owns and automatically removes that
+temporary project and its managed folder when its sessions finish. After collecting a child result,
+POST $AIOS_URL/api/session/<child-id>/kill so its lifecycle is complete. Do not leave test-project
+cleanup for the operator.
+</aios_session_hygiene>`;
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
 const reg = new Map();
@@ -942,7 +951,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
 
   // A Git worktree chooses the checkout; `isolated` also tells capable CLIs to enforce that checkout
   // as their filesystem write boundary. Full autonomy still means no approval prompts inside it.
-  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, isolated };
+  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, isolated, appendPrompt: CHILD_SESSION_HYGIENE };
   // Launch-path features — ALL flag-gated (default OFF) + precondition-checked. When a flag is off or a
   // precondition fails, the corresponding opt stays undefined and the launch line is byte-identical to
   // before. This is the "default-inert" boundary that keeps the live fleet safe.
@@ -957,7 +966,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
     }
     if (helperEnabled(project?.id, 'contextInject')) {
       const block = contextBlock(project.id);
-      if (block) argvOpts.appendPrompt = block;
+      if (block) argvOpts.appendPrompt += `\n\n${block}`;
     }
     if (helperEnabled(project?.id, 'wiki')) {
       // Wire the read-only wiki MCP server (streamable HTTP) into this launch, scoped by a per-project token.
@@ -974,7 +983,13 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   } catch (e) {
     console.error('[aios] launch-feature wiring skipped:', e?.message || e);
   }
-  const argv = TOOLS[tool].argv(task, argvOpts);
+  // Antigravity has no system-prompt flag, so give it the same fresh-launch hygiene preamble that
+  // Codex builds in its argv adapter. Keep this here because launch-owned policy belongs to the
+  // session lifecycle, not the global tool configuration.
+  const launchTask = tool === 'agy' && argvOpts.appendPrompt && task && !resume
+    ? `${argvOpts.appendPrompt}\n\n---\n\n${task}`
+    : task;
+  const argv = TOOLS[tool].argv(launchTask, argvOpts);
   const cmd = argv.map(shquote).join(' ');
   // per-tool env. For claude this is resolved per-launch (auto-detect): external proxy if
   // reachable, else Supercalm's own dashboard login via the local shim, else the CLI's own
@@ -1014,7 +1029,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   }
 }
 
-function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null }) {
+function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null }) {
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
   const activeFastMode = tool === 'codex' && modelSupportsFast(model || TOOLS[tool].model) && !!fastMode;
   const sid = id('s');
@@ -1025,6 +1040,7 @@ function reserveLaunch({ project, tool, task, effort = null, autonomy = null, mo
   const session = store.createSession({
     id: sid,
     project_id: project?.id || null,
+    parent_session_id: parentSessionId || null,
     tool,
     tmux: paneName,
     title: task ? task.slice(0, 100) : '(interactive)',
@@ -1186,6 +1202,7 @@ async function failLaunch(spec, error) {
   store.addEvent(spec.sid, 'launch-error', { error: message, elapsed_ms: now() - spec.ticket.startedAt });
   emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
   bus.emit('event', { type: 'launch-error', session: spec.sid, error: message });
+  scheduleTemporaryProjectCleanup(spec.project?.id);
   return failed;
 }
 
@@ -1332,6 +1349,7 @@ function markExited(entry, code) {
     emitSessionStatus(updated, { previousStatus: s.status, source: 'exit' });
     bus.emit('changed');
     bus.emit('event', { type: 'exit', session: entry.id });
+    scheduleTemporaryProjectCleanup(s.project_id);
   }
   for (const res of entry.subscribers) {
     try {
@@ -1340,6 +1358,16 @@ function markExited(entry, code) {
   }
   reg.delete(entry.id);
   return true;
+}
+
+function scheduleTemporaryProjectCleanup(projectId) {
+  if (!projectId) return;
+  setImmediate(() => cleanupTemporaryProject(projectId).then((result) => {
+    if (result?.removed) {
+      console.log(`[aios] removed temporary project ${projectId}${result.folderDeleted ? ' and its managed folder' : ''}`);
+      bus.emit('changed');
+    }
+  }).catch((error) => console.error(`[aios] temporary project cleanup failed (${projectId}):`, error?.message || error)));
 }
 
 // Reconcile DB <-> tmux on startup: resume live sessions, retire dead ones.
@@ -1369,11 +1397,13 @@ export async function discover() {
       });
       store.addEvent(s.id, 'launch-error', { error: 'service restarted during launch' });
       emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
+      scheduleTemporaryProjectCleanup(s.project_id);
     } else if (alive.has(s.tmux)) {
       register(s);
     } else {
       store.updateSession(s.id, { status: 'exited', ended_at: now() });
       store.addEvent(s.id, 'exit', { code: null, reason: 'tmux gone on restart' });
+      scheduleTemporaryProjectCleanup(s.project_id);
     }
   }
   console.log(`[aios] discovered ${reg.size} live session(s)`);
@@ -2562,11 +2592,77 @@ async function buildTimeline(s) {
   };
 }
 
+function launchSettings(body, tool, fallback = null) {
+  const T = TOOLS[tool];
+  const autonomy = AUTONOMY_LEVELS.includes(body.autonomy) ? body.autonomy : (fallback?.autonomy || DEFAULT_AUTONOMY);
+  const effort = T.efforts.length ? (T.efforts.includes(body.effort) ? body.effort : (T.efforts.includes(fallback?.effort) ? fallback.effort : T.defaultEffort)) : null;
+  const model = cleanModelId(body.model) || fallback?.model || T.model || null;
+  const fastMode = tool === 'codex' && modelSupportsFast(model) && boolParam(body.fastMode ?? body.fast_mode ?? fallback?.fast_mode);
+  const orchestration = T.orchestrations?.length
+    ? (T.orchestrations.includes(body.orchestration) ? body.orchestration : (T.orchestrations.includes(fallback?.orchestration) ? fallback.orchestration : T.defaultOrchestration))
+    : null;
+  return { effort, autonomy, model, fastMode, orchestration };
+}
+
+route('POST', '/api/session/:id/child', async (req, res, { id: parentId }) => {
+  const parent = store.getSession(parentId);
+  if (!parent) return json(res, 404, { error: 'no such parent session' });
+  const b = await readJson(req).catch(() => ({}));
+  const tool = TOOLS[b.tool] ? b.tool : parent.tool;
+  if (!TOOLS[tool]) return json(res, 400, { error: 'unknown or missing tool' });
+  let project = parent.project_id ? store.getProject(parent.project_id) : null;
+  let temporaryProject = null;
+  if (boolParam(b.temporary_project)) {
+    const projectId = id('p');
+    const label = String(b.name || 'disposable test').replace(/\s+/g, ' ').trim().slice(0, 80) || 'disposable test';
+    const path = join(tmpdir(), 'aios-temporary-projects', parentId, `${slug(label)}-${projectId.slice(-8)}`);
+    let prepared;
+    try {
+      prepared = await prepareProjectDirectory(path);
+      project = temporaryProject = store.createProject({
+        id: projectId,
+        name: `${store.getProject(parent.project_id)?.name || 'AIOS'} · ${label}`,
+        path: prepared.path,
+        lifecycle: 'temporary',
+        owner_session_id: parentId,
+        created_directory: prepared.createdDirectory,
+        auto_delete_folder: true,
+      });
+      store.addEvent(parentId, 'temporary-project-created', { project_id: project.id, path: project.path });
+      bus.emit('changed');
+    } catch (error) {
+      if (temporaryProject) await cleanupTemporaryProject(temporaryProject.id).catch(() => {});
+      return json(res, 400, { error: String(error.message || error), code: error.code || 'temporary-project-create-failed' });
+    }
+  }
+  if (!project) return json(res, 409, { error: 'parent session project is no longer registered' });
+  if (project.lifecycle === 'deleting') return json(res, 409, { error: 'project is being deleted' });
+  const settings = launchSettings(b, tool, parent);
+  try {
+    const child = queueLaunch({
+      project,
+      tool,
+      task: b.task ? String(b.task) : null,
+      ...settings,
+      parentSessionId: parentId,
+    });
+    store.addEvent(parentId, 'child-session-created', { child_session_id: child.id, project_id: project.id, temporary_project: project.lifecycle === 'temporary' });
+    json(res, 202, decorate(child));
+  } catch (error) {
+    if (temporaryProject) await cleanupTemporaryProject(temporaryProject.id).catch(() => {});
+    json(res, 400, { error: String(error.message || error) });
+  }
+});
+
 route('POST', '/api/session', async (req, res) => {
   const b = await readJson(req);
   const tool = b.tool;
   if (!TOOLS[tool]) return json(res, 400, { error: 'unknown or missing tool' });
+  const suppliedParent = String(req.headers['x-aios-parent-session'] || b.parent_session_id || '').split(',')[0].trim();
+  const parent = suppliedParent ? store.getSession(suppliedParent) : null;
+  if (suppliedParent && !parent) return json(res, 400, { error: 'invalid parent session', code: 'invalid-parent-session' });
   let project = null;
+  let createdTemporaryProject = null;
   if (b.project_id) project = store.getProject(b.project_id);
   if (!project && b.path) {
     let prepared;
@@ -2578,22 +2674,41 @@ route('POST', '/api/session', async (req, res) => {
     const p = prepared.path;
     // honor the launch modal's optional Name field (it was sent and silently ignored before)
     const name = String(b.name || '').trim() || basename(p) || p;
-    project = store.getProjectByPath(p) || store.createProject({ id: id('p'), name, path: p });
+    project = store.getProjectByPath(p);
+    if (!project) {
+      // Any NEW project registered by an existing AIOS session is disposable by default. The curl
+      // wrapper injects the parent header automatically, so an agent cannot accidentally clutter the
+      // permanent project list. Only folders AIOS itself created are automatically removed.
+      project = store.createProject({
+        id: id('p'),
+        name,
+        path: p,
+        lifecycle: parent ? 'temporary' : 'persistent',
+        owner_session_id: parent?.id || null,
+        created_directory: prepared.createdDirectory,
+        auto_delete_folder: !!(parent && prepared.createdDirectory),
+      });
+      if (parent) {
+        createdTemporaryProject = project;
+        store.addEvent(parent.id, 'temporary-project-created', { project_id: project.id, path: project.path, source: 'session-api' });
+      }
+      bus.emit('changed');
+    }
     // "Build knowledge base after launch" (modal checkbox — previously a dead control): kick the
     // wiki rebuild fire-and-forget so the launch reply never waits on it; failures are non-fatal.
     if (boolParam(b.kb)) rebuildWiki(project).catch((e) => console.error('[aios] kb build on project create failed:', e?.message || e));
   }
   if (!project) return json(res, 400, { error: 'project_id or path required' });
-  const T = TOOLS[tool];
-  const autonomy = AUTONOMY_LEVELS.includes(b.autonomy) ? b.autonomy : DEFAULT_AUTONOMY;
-  const effort = T.efforts.length ? (T.efforts.includes(b.effort) ? b.effort : T.defaultEffort) : null;
-  const model = cleanModelId(b.model) || T.model || null;
-  const fastMode = tool === 'codex' && modelSupportsFast(model) && boolParam(b.fastMode ?? b.fast_mode);
-  const orchestration = T.orchestrations?.length ? (T.orchestrations.includes(b.orchestration) ? b.orchestration : T.defaultOrchestration) : null;
+  if (project.lifecycle === 'deleting') return json(res, 409, { error: 'project is being deleted' });
+  if (project.lifecycle === 'temporary' && project.owner_session_id && parent && project.owner_session_id !== parent.id) {
+    return json(res, 409, { error: 'temporary project belongs to another parent session' });
+  }
+  const settings = launchSettings(b, tool);
   try {
-    const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, effort, autonomy, model, fastMode, orchestration });
+    const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, ...settings, parentSessionId: parent?.id || null });
     json(res, 202, decorate(s));
   } catch (e) {
+    if (createdTemporaryProject) await cleanupTemporaryProject(createdTemporaryProject.id).catch(() => {});
     json(res, 400, { error: String(e.message || e) });
   }
 });
@@ -3324,6 +3439,7 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
     }
   }
   store.addEvent(sid, 'stop', { parked: true });
+  scheduleTemporaryProjectCleanup(s.project_id);
   bus.emit('changed');
   json(res, 200, {
     ok: true,
@@ -3347,6 +3463,7 @@ export async function killSession(sid) {
     const updated = store.updateSession(sid, { status: 'exited', question: null, ended_at: now(), last_activity: now() });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'kill' });
   }
+  scheduleTemporaryProjectCleanup(s.project_id);
   return store.getSession(sid);
 }
 
@@ -3480,6 +3597,8 @@ async function boot() {
   await ensureServer();
   await tmuxOk('set-option', '-g', 'history-limit', '200000');
   await discover();
+  const swept = await sweepTemporaryProjects();
+  if (swept.some((result) => result?.removed)) bus.emit('changed');
   // Never overlap poll ticks: an auto-fallback relaunch (or a slow tmux) can make one tick outlast POLL_MS,
   // and two concurrent pollOnce runs over the same reg could double-fire a fallback. Skip a tick if the
   // previous is still running (also hardens the pre-existing codex fallback against the same race).

@@ -13,6 +13,7 @@ import { confinedPath } from './static_path.js';
 import { tierOf, queueTier, QUEUE_TIER_ORDER } from './agents/supervisor/engagement.js';
 import { bootPayload, createBootState, loadSequentially, trafficAllowed } from './startup.js';
 import { prepareProjectDirectory } from './project_init.js';
+import { removeProject } from './project_cleanup.js';
 
 // A request failure is caught at the request boundary below. An error that escapes that boundary means
 // process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
@@ -306,7 +307,7 @@ route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
 // projection small lets the shell prefetch it without putting /api/state on the click path.
 route('GET', '/api/launch-options', (req, res) => json(res, 200, {
   ok: true,
-  projects: store.listProjects(),
+  projects: store.listLaunchProjects(),
   tools: launchTools(),
   defaults: { autonomy: DEFAULT_AUTONOMY },
   autonomyLevels: AUTONOMY_LEVELS,
@@ -340,17 +341,22 @@ route('POST', '/api/projects', async (req, res) => {
   const path = prepared.path;
   const existing = store.getProjectByPath(path);
   if (existing) return json(res, 200, { ...existing, ...prepared });
-  const p = store.createProject({ id: id('p'), name, path });
+  const p = store.createProject({ id: id('p'), name, path, created_directory: prepared.createdDirectory });
   bus.emit('changed');
   json(res, 201, { ...p, ...prepared });
 });
-route('DELETE', '/api/projects/:id', (req, res, { id: pid }) => {
-  const p = store.getProject(pid);
-  if (!p) return json(res, 404, { error: 'no such project' });
-  if (store.liveSessionsForProject(pid) > 0) return json(res, 409, { error: 'project has live sessions — kill them first' });
-  store.deleteProject(pid);
-  bus.emit('changed');
-  json(res, 200, { ok: true });
+route('DELETE', '/api/projects/:id', async (req, res, { id: pid }) => {
+  const b = await readJson(req).catch(() => ({}));
+  try {
+    const result = await removeProject(pid, {
+      deleteFolder: b.delete_folder === true,
+      confirmPath: b.confirm_path || '',
+    });
+    bus.emit('changed');
+    json(res, 200, result);
+  } catch (error) {
+    json(res, Number(error.status) || 400, { error: String(error.message || error), code: error.code || 'project-delete-failed' });
+  }
 });
 
 // ---------------------------------------------------------------------------

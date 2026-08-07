@@ -33,31 +33,36 @@ db.exec(`
   PRAGMA busy_timeout = 4000;
 
   CREATE TABLE IF NOT EXISTS projects (
-    id         TEXT PRIMARY KEY,
-    name       TEXT NOT NULL,
-    path       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    id                 TEXT PRIMARY KEY,
+    name               TEXT NOT NULL,
+    path               TEXT NOT NULL,
+    created_at         INTEGER NOT NULL,
+    lifecycle          TEXT NOT NULL DEFAULT 'persistent',
+    owner_session_id   TEXT,
+    created_directory  INTEGER NOT NULL DEFAULT 0,
+    auto_delete_folder INTEGER NOT NULL DEFAULT 0
   );
 
   CREATE TABLE IF NOT EXISTS sessions (
-    id            TEXT PRIMARY KEY,
-    project_id    TEXT,
-    tool          TEXT NOT NULL,
-    tmux          TEXT NOT NULL,
-    title         TEXT,
-    status        TEXT NOT NULL DEFAULT 'starting',
-    question      TEXT,
-    autonomy      TEXT,
-    effort        TEXT,
-    model         TEXT,
-    fast_mode     INTEGER NOT NULL DEFAULT 0,
-    orchestration TEXT,
-    summary       TEXT,
-    category      TEXT,
-    started_at    INTEGER NOT NULL,
-    last_activity INTEGER NOT NULL,
-    ended_at      INTEGER,
-    exit_code     INTEGER
+    id                TEXT PRIMARY KEY,
+    project_id        TEXT,
+    parent_session_id TEXT,
+    tool              TEXT NOT NULL,
+    tmux              TEXT NOT NULL,
+    title             TEXT,
+    status            TEXT NOT NULL DEFAULT 'starting',
+    question          TEXT,
+    autonomy          TEXT,
+    effort            TEXT,
+    model             TEXT,
+    fast_mode         INTEGER NOT NULL DEFAULT 0,
+    orchestration     TEXT,
+    summary           TEXT,
+    category          TEXT,
+    started_at        INTEGER NOT NULL,
+    last_activity     INTEGER NOT NULL,
+    ended_at          INTEGER,
+    exit_code         INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS events (
@@ -114,27 +119,52 @@ db.exec(`
 export const appliedMigrations = applyMigrations(db, CORE_MIGRATIONS);
 
 // ---- projects ---------------------------------------------------------------
-const _insProject = db.prepare('INSERT INTO projects (id,name,path,created_at) VALUES (?,?,?,?)');
+const _insProject = db.prepare(`
+  INSERT INTO projects
+    (id,name,path,created_at,lifecycle,owner_session_id,created_directory,auto_delete_folder)
+  VALUES (?,?,?,?,?,?,?,?)
+`);
 const _allProjects = db.prepare('SELECT * FROM projects ORDER BY name');
+const _launchProjects = db.prepare("SELECT * FROM projects WHERE lifecycle = 'persistent' ORDER BY name");
 const _getProject = db.prepare('SELECT * FROM projects WHERE id = ?');
 const _projectByPath = db.prepare('SELECT * FROM projects WHERE path = ?');
 
-export function createProject({ id, name, path }) {
-  _insProject.run(id, name, path, now());
+export function createProject({
+  id,
+  name,
+  path,
+  lifecycle = 'persistent',
+  owner_session_id = null,
+  created_directory = false,
+  auto_delete_folder = false,
+}) {
+  _insProject.run(
+    id,
+    name,
+    path,
+    now(),
+    lifecycle === 'temporary' ? 'temporary' : 'persistent',
+    owner_session_id || null,
+    created_directory ? 1 : 0,
+    auto_delete_folder ? 1 : 0
+  );
   return _getProject.get(id);
 }
 export const listProjects = () => _allProjects.all();
+export const listLaunchProjects = () => _launchProjects.all();
 export const getProject = (id) => _getProject.get(id);
 export const getProjectByPath = (p) => _projectByPath.get(p);
 const _delProject = db.prepare('DELETE FROM projects WHERE id = ?');
+const _setProjectLifecycle = db.prepare('UPDATE projects SET lifecycle = ? WHERE id = ?');
 const _liveForProject = db.prepare("SELECT COUNT(*) n FROM sessions WHERE project_id = ? AND status IN ('starting','working','waiting')");
 export const deleteProject = (id) => _delProject.run(id);
+export const setProjectLifecycle = (id, lifecycle) => _setProjectLifecycle.run(lifecycle, id);
 export const liveSessionsForProject = (id) => _liveForProject.get(id).n;
 
 // ---- sessions ---------------------------------------------------------------
 const _insSession = db.prepare(
-  `INSERT INTO sessions (id,project_id,tool,tmux,title,status,autonomy,effort,model,fast_mode,orchestration,started_at,last_activity)
-   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  `INSERT INTO sessions (id,project_id,parent_session_id,tool,tmux,title,status,autonomy,effort,model,fast_mode,orchestration,started_at,last_activity)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 );
 const _getSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
 const _getSessionByTmux = db.prepare('SELECT * FROM sessions WHERE tmux = ?');
@@ -145,7 +175,7 @@ const _liveSessions = db.prepare(
 
 export function createSession(s) {
   const t = now();
-  _insSession.run(s.id, s.project_id ?? null, s.tool, s.tmux, s.title ?? null, s.status ?? 'starting', s.autonomy ?? null, s.effort ?? null, s.model ?? null, s.fast_mode ? 1 : 0, s.orchestration ?? null, t, t);
+  _insSession.run(s.id, s.project_id ?? null, s.parent_session_id ?? null, s.tool, s.tmux, s.title ?? null, s.status ?? 'starting', s.autonomy ?? null, s.effort ?? null, s.model ?? null, s.fast_mode ? 1 : 0, s.orchestration ?? null, t, t);
   return _getSession.get(s.id);
 }
 export const getSession = (id) => _getSession.get(id);
@@ -153,7 +183,7 @@ export const getSessionByTmux = (t) => _getSessionByTmux.get(t);
 export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
 
-const SESSION_FIELDS = ['project_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
   const keys = Object.keys(patch).filter((k) => SESSION_FIELDS.includes(k));
   if (!keys.length) return getSession(id);

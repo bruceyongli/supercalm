@@ -5,6 +5,12 @@ import { CORE_MIGRATIONS } from '../src/schema_migrations.js';
 
 const db = new DatabaseSync(':memory:');
 db.exec(`
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
   CREATE TABLE sessions (
     id TEXT PRIMARY KEY,
     tool TEXT NOT NULL,
@@ -24,12 +30,16 @@ db.exec(`
 `);
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle']);
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
 assert.equal(db.prepare("SELECT applied_at FROM schema_migrations WHERE id='0001_sessions_complete_shape'").get().applied_at, 1234);
 const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((row) => row.name));
 assert(sessionColumns.has('revision'));
 assert(sessionColumns.has('worktree_path'));
+assert(sessionColumns.has('parent_session_id'));
+const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((row) => row.name));
+assert(projectColumns.has('lifecycle'));
+assert(projectColumns.has('auto_delete_folder'));
 const messageColumns = new Set(db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name));
 assert(messageColumns.has('read_at'));
 assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='attention_dismissals'").get().n, 1);
@@ -53,7 +63,7 @@ assert.deepEqual(applyMigrations(db, CORE_MIGRATIONS), [], 'recorded migrations 
   legacy.prepare("INSERT INTO sessions (id,tool,tmux,status,category,started_at,last_activity) VALUES ('s_old','codex','tmx','waiting','review',1,1)").run();
   legacy.prepare("INSERT INTO messages (session_id,ts,direction,source,text,read_at) VALUES ('s_old',1,'out','detect','same report',10)").run();
   legacy.prepare("INSERT INTO messages (session_id,ts,direction,source,text) VALUES ('s_old',2,'out','detect','same report')").run();
-  assert.deepEqual(applyMigrations(legacy, CORE_MIGRATIONS.slice(2)), ['0003_attention_dismissals']);
+  assert.deepEqual(applyMigrations(legacy, CORE_MIGRATIONS.slice(2, 3)), ['0003_attention_dismissals']);
   const recovered = legacy.prepare("SELECT * FROM attention_dismissals WHERE session_id='s_old'").get();
   assert.equal(recovered.report_id, 2);
   assert.equal(recovered.dismissed_at, 10);
