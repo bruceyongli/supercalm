@@ -159,10 +159,15 @@ const port = 31000 + Math.floor(Math.random() * 7000);
 process.env.AIOS_PORT = String(port);
 
 const store = await import('../src/store.js');
+const { prepareSessionStorage } = await import('../src/session_storage.js');
 store.createProject({ id: 'p_files', name: 'files', path: projectRoot });
 store.createSession({ id: 's_files', project_id: 'p_files', tool: 'codex', tmux: 'tmx_files', status: 'exited' });
 store.updateSession('s_files', { codex_uuid: codexUuid });
 store.addMessage('s_files', 'out', 'reply', `Generated image: ${artifact}`);
+const managedStorage = await prepareSessionStorage('s_files');
+const managedArtifact = join(managedStorage.artifacts, 'durable-report.md');
+await writeFile(managedArtifact, '# Durable session report\n');
+store.addMessage('s_files', 'out', 'reply', `Durable report: ${managedArtifact}`);
 const { featureReady } = await import('../src/server.js');
 await featureReady;
 
@@ -227,6 +232,16 @@ async function waitForRoutes() {
   const missing = join(artifactRoot, 'not-written-yet.md');
   store.addMessage('s_files', 'out', 'reply', `Pending report: ${missing}`);
   assert.equal((await fileRequest(missing)).status, 404);
+}
+
+// AIOS-managed durable artifacts are scoped to their owning session and remain openable after its
+// disposable scratch directory has been cleaned.
+{
+  const response = await fileRequest(managedArtifact);
+  assert.equal(response.status, 200);
+  const meta = await response.json();
+  assert.equal(meta.path, managedArtifact);
+  assert.equal(meta.contentKind, 'text');
 }
 
 // A full path explicitly reported by this session can be read from another Git-registered worktree of

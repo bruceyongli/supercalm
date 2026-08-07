@@ -43,6 +43,12 @@ assert.match(sessions, /temporary_project=true[\s\S]*automatically removes/,
   'every launched agent receives the temporary-project cleanup contract');
 assert.match(sessions, /lifecycle: parent \? 'temporary' : 'persistent'/,
   'fallback generic session launches from agent curl cannot create permanent list clutter');
+assert.match(sessions, /AIOS_SESSION_TMPDIR[\s\S]*AIOS_SESSION_ARTIFACTS/,
+  'every agent receives separate disposable and durable session storage instructions');
+assert.match(sessions, /guardAgentArgv\(TOOLS\[tool\]\.argv/,
+  'the outer agent process receives the home-root creation boundary');
+assert.match(sessions, /scheduleSessionStorageCleanup\(entry\.id\)/,
+  'an unexpected agent exit cleans its managed scratch directory');
 
 rmSync(root, { recursive: true, force: true });
 

@@ -55,6 +55,14 @@ import {
 import { initialMonitorLastChange, observeMonitorSnapshot } from './session_monitor_state.js';
 import { prepareProjectDirectory } from './project_init.js';
 import { cleanupTemporaryProject, sweepTemporaryProjects } from './project_cleanup.js';
+import {
+  cleanupSessionStorage,
+  guardAgentArgv,
+  prepareSessionStorage,
+  sessionStorageEnv,
+  sessionStoragePaths,
+  sweepSessionStorage,
+} from './session_storage.js';
 import { agentInputReady } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
@@ -101,6 +109,11 @@ set temporary_project=true for an isolated disposable test. AIOS owns and automa
 temporary project and its managed folder when its sessions finish. After collecting a child result,
 POST $AIOS_URL/api/session/<child-id>/kill so its lifecycle is complete. Do not leave test-project
 cleanup for the operator.
+
+All disposable files, QA screenshots, downloads, and test output must go under $AIOS_SESSION_TMPDIR.
+Anything the operator needs to open after the session belongs under $AIOS_SESSION_ARTIFACTS instead.
+Never create ad-hoc files or folders directly in $HOME. AIOS provides these dedicated locations and
+enforces the home-root boundary; create permanent projects through AIOS rather than under home yourself.
 </aios_session_hygiene>`;
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
@@ -602,6 +615,12 @@ export async function resolveSessionFile(s, rawRequested) {
   if (projectWorktree && await sessionMentionsFile(s, requested, compared)) {
     return { target: compared, displayPath: requested, scope: 'project-worktree' };
   }
+  const managedStorage = sessionStoragePaths(s.id);
+  for (const [scope, managedRoot] of [['session-artifact', managedStorage.artifacts], ['session-temp', managedStorage.tmp]]) {
+    if (pathInside(managedRoot, compared) && (!target || await sessionMentionsFile(s, requested, compared))) {
+      return { target: compared, displayPath: requested, scope };
+    }
+  }
   const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, compared));
   if (inTemp) {
     if (!target || await sessionMentionsFile(s, requested, target)) {
@@ -937,6 +956,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const isolated = !!cwd && cwd !== project?.path;
   const name = paneName || `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
   const logFile = join(LOG_DIR, sid + '.log');
+  await prepareSessionStorage(sid);
   if (!resume) await writeFile(logFile, ''); // resume keeps appending to the same record
   resizeApplied.delete(sid); // fresh/resumed pane: forget the old window size so the next /resize re-applies
 
@@ -989,7 +1009,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const launchTask = tool === 'agy' && argvOpts.appendPrompt && task && !resume
     ? `${argvOpts.appendPrompt}\n\n---\n\n${task}`
     : task;
-  const argv = TOOLS[tool].argv(launchTask, argvOpts);
+  const argv = guardAgentArgv(TOOLS[tool].argv(launchTask, argvOpts));
   const cmd = argv.map(shquote).join(' ');
   // per-tool env. For claude this is resolved per-launch (auto-detect): external proxy if
   // reachable, else Supercalm's own dashboard login via the local shim, else the CLI's own
@@ -997,6 +1017,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const baseEnv = tool === 'claude' ? (await resolveClaudeEnv({ model })).env : TOOLS[tool].env || {};
   const envMap = typeof baseEnv === 'function' ? baseEnv({ model, effort, autonomy, fastMode, resume, viaProxy }) : baseEnv;
   const toolEnv = Object.entries(envMap).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
+  const storageEnv = Object.entries(sessionStorageEnv(sid)).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
   // canonical main checkout). This is defense in depth: capable CLIs (currently Codex) also receive an
   // actual workspace-write boundary above; wrappers alone remain a speed-bump for tools without one.
@@ -1011,7 +1032,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // Codex has no Claude-style PreToolUse hook, so put the best-effort deploy wrappers first for every
   // tool. They are inert when neither AIOS_NO_DEPLOY nor a release contract is present.
   const guardBin = join(ROOT, 'scripts', 'guard-bin');
-  const line = `export PATH=${shquote(guardBin)}:"${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${noDeploy}${deployEnv}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
+  const line = `export PATH=${shquote(guardBin)}:"${TOOL_PATH}:$PATH"; ${toolEnv ? toolEnv + ' ' : ''}${storageEnv} ${noDeploy}${deployEnv}AIOS_SESSION_ID=${sid} AIOS_URL=${SELF_URL} ${cmd}`;
   // NEVER type the full launch line into the pane: a long task pushes it past the kernel's
   // canonical-mode line limit (MAX_CANON = 1024 on macOS) — the freshly-spawned shell hasn't
   // entered raw mode yet, so everything beyond 1KB is silently dropped and the truncated,
@@ -1196,6 +1217,7 @@ async function failLaunch(spec, error) {
     await removeWorktree({ repoPath: spec.project.path, path: spec.worktree.path, branch: spec.worktree.branch })
       .catch((e) => console.error('[aios] failed launch worktree cleanup failed:', e?.message || e));
   }
+  scheduleSessionStorageCleanup(spec.sid);
   if (error?.code === 'launch-cancelled' || !current || current.status !== 'starting') return current;
   const message = String(error?.message || error || 'launch failed').slice(0, 500);
   const failed = store.updateSession(spec.sid, { status: 'error', summary: `Launch failed: ${message}`, question: null, ended_at: now(), exit_code: -1, last_activity: now() });
@@ -1350,6 +1372,7 @@ function markExited(entry, code) {
     bus.emit('changed');
     bus.emit('event', { type: 'exit', session: entry.id });
     scheduleTemporaryProjectCleanup(s.project_id);
+    scheduleSessionStorageCleanup(entry.id);
   }
   for (const res of entry.subscribers) {
     try {
@@ -1368,6 +1391,12 @@ function scheduleTemporaryProjectCleanup(projectId) {
       bus.emit('changed');
     }
   }).catch((error) => console.error(`[aios] temporary project cleanup failed (${projectId}):`, error?.message || error)));
+}
+
+function scheduleSessionStorageCleanup(sessionId) {
+  if (!sessionId) return;
+  setImmediate(() => cleanupSessionStorage(sessionId)
+    .catch((error) => console.error(`[aios] session scratch cleanup failed (${sessionId}):`, error?.message || error)));
 }
 
 // Reconcile DB <-> tmux on startup: resume live sessions, retire dead ones.
@@ -1398,12 +1427,14 @@ export async function discover() {
       store.addEvent(s.id, 'launch-error', { error: 'service restarted during launch' });
       emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
       scheduleTemporaryProjectCleanup(s.project_id);
+      scheduleSessionStorageCleanup(s.id);
     } else if (alive.has(s.tmux)) {
       register(s);
     } else {
       store.updateSession(s.id, { status: 'exited', ended_at: now() });
       store.addEvent(s.id, 'exit', { code: null, reason: 'tmux gone on restart' });
       scheduleTemporaryProjectCleanup(s.project_id);
+      scheduleSessionStorageCleanup(s.id);
     }
   }
   console.log(`[aios] discovered ${reg.size} live session(s)`);
@@ -3440,6 +3471,7 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   }
   store.addEvent(sid, 'stop', { parked: true });
   scheduleTemporaryProjectCleanup(s.project_id);
+  scheduleSessionStorageCleanup(sid);
   bus.emit('changed');
   json(res, 200, {
     ok: true,
@@ -3464,6 +3496,7 @@ export async function killSession(sid) {
     emitSessionStatus(updated, { previousStatus: s.status, source: 'kill' });
   }
   scheduleTemporaryProjectCleanup(s.project_id);
+  scheduleSessionStorageCleanup(sid);
   return store.getSession(sid);
 }
 
@@ -3599,6 +3632,9 @@ async function boot() {
   await discover();
   const swept = await sweepTemporaryProjects();
   if (swept.some((result) => result?.removed)) bus.emit('changed');
+  const liveSessionIds = store.listLiveSessions().map((session) => session.id);
+  const sweptScratch = await sweepSessionStorage(liveSessionIds);
+  if (sweptScratch.length) console.log(`[aios] removed ${sweptScratch.length} orphaned session scratch director${sweptScratch.length === 1 ? 'y' : 'ies'}`);
   // Never overlap poll ticks: an auto-fallback relaunch (or a slow tmux) can make one tick outlast POLL_MS,
   // and two concurrent pollOnce runs over the same reg could double-fire a fallback. Skip a tick if the
   // previous is still running (also hardens the pre-existing codex fallback against the same race).
