@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const session = read('web/session.js');
+const sessionStyles = read('web/styles.css');
 const reviewBackend = read('src/agents/review.js');
 const reviewPanel = read('web/agents/review.js');
 const settings = read('web/views/settings.js');
@@ -25,6 +26,12 @@ assert.doesNotMatch(session, /permission-impact|permission-scope/, 'the composer
 assert.doesNotMatch(session, /titleTags|model · effort · autonomy|first session running/,
   'the session header does not repeat composer configuration or revive the stale onboarding banner');
 assert.match(session, /session-actions-menu/, 'rare stop and kill controls live in the session overflow menu');
+assert.match(session, /shell\.classList\.toggle\('session-actions-open', open\)/,
+  'opening the dots menu elevates its header stacking context');
+const actionsLayer = Number(sessionStyles.match(/\.session-shell\.session-actions-open > header\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
+const toolsLayer = Number(sessionStyles.match(/\.dock-tools-menu\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
+assert.ok(actionsLayer > toolsLayer,
+  'the open dots-menu header paints above the Tools menu/rail stacking layer');
 assert.match(session, /composer-settings-toggle/, 'phone keeps one compact run-settings summary in the composer');
 assert.match(read('web/agents/host.js'), />Tools</, 'the session exposes one named Tools entry instead of an unlabeled glyph strip');
 

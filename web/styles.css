@@ -626,6 +626,11 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   padding: 5px; border: 1px solid var(--line2); border-radius: 10px; background: #10161f;
   box-shadow: 0 18px 44px rgba(0, 0, 0, .46);
 }
+/* `header` has backdrop-filter, so it is a stacking context even after the session-grid override
+   resets its own z-index to auto. Elevate the CONTEXT while this menu is open: otherwise the menu's
+   z-index:80 remains trapped below later-painted terminal/dock siblings (operator screenshot,
+   2026-08-11). Keep it below app modal/voice layers (99+). */
+.session-shell.session-actions-open > header { position: relative; z-index: 82; }
 .session-actions-menu[hidden] { display: none; }
 .session-actions-menu button {
   width: 100%; display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px;

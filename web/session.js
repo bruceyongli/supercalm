@@ -271,6 +271,10 @@ function setSessionActionsOpen(open) {
   if (!trigger || !menu) return;
   trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
   menu.hidden = !open;
+  // The global header uses backdrop-filter, which creates a stacking context. Raise that whole
+  // context while the overflow menu is open; raising only the absolutely-positioned menu cannot
+  // put it above later grid siblings such as the terminal and Tools rail.
+  shell.classList.toggle('session-actions-open', open);
 }
 $('#session-more')?.addEventListener('click', (event) => {
   event.stopPropagation();
