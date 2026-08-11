@@ -83,6 +83,14 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
    system maxfiles 65536 (persisted via /Library/LaunchDaemons/limit.maxfiles.plist) + 8192 for
    ai.aios.server (SoftResourceLimits in its plist) — the old 256 default let ~100 leaked sockets
    wedge tailscaled.
+10. **Never exec-wrap a launch, and Full means FULL.** macOS seatbelt does not nest: wrapping the
+   tool argv in `sandbox-exec` (2026-08-11) made codex — which applies its own profile in
+   workspace-write — die on EVERY command (`sandbox_apply: Operation not permitted`) and broke
+   claude's home-root config writes; the whole fleet bricked. Likewise autonomy=full must never be
+   silently downgraded to workspace-write for worktree sessions (that downgrade + the wrapper was
+   the fatal pair). The argv reaches the tool binary unwrapped; isolation is provenance + the
+   AIOS_NO_DEPLOY interlock + supervision, not a write jail. Regression-pinned in
+   `test/launch_autonomy_profile.test.js` + `test/session_hygiene_guard.test.js`.
 On each →waiting transition, a local-proxy LLM (default `claude-haiku-4-5` on port 8789; override via
 `AIOS_SUMMARY_PORT`/`AIOS_SUMMARY_MODEL`) reads the screen and returns `{category, summary}` where
 category ∈ action|decision|review|working. The needs-you queue shows the clean summary + a category
@@ -180,12 +188,16 @@ refuses from a linked worktree / non-`main` / `AIOS_NO_DEPLOY=1` (multi-agent sa
 
 ## Autonomy, effort & model (`config.js` TOOLS.argv)
 Per-session `{autonomy: ask|auto|full, effort, model}` map to each tool's verified flags.
-Autonomy default full: codex `--dangerously-bypass-approvals-and-sandbox` (self-trusts dir);
+Autonomy default full: codex `--dangerously-bypass-approvals-and-sandbox` (self-trusts dir; ALSO in
+worktree-isolated sessions — see gotcha #10, resume uses `-c sandbox_mode=danger-full-access`);
 claude `--dangerously-skip-permissions` (one-time bypass warning, then persisted; per-dir trust
-auto-confirmed); agy `--dangerously-skip-permissions` (but needs login). Effort is per-tool —
-claude `low..max` (default `max`, flag `--effort`), codex `minimal..xhigh` (default `xhigh`,
-`-c model_reasoning_effort=`); agy has none. Model: claude `--model opus` (Opus 4.8), codex
-`-c model=gpt-5.5`. Codex also has a stored **Fast** mode: launch/resume uses
+auto-confirmed); agy `--dangerously-skip-permissions` (but needs login). codex `auto` = `-a never
+-s workspace-write` (the confined tier). Effort is per-tool — claude `low..max` (default `max`,
+flag `--effort`), codex `minimal..xhigh` (default `xhigh`, `-c model_reasoning_effort=`); agy has
+none. Model defaults are LIVE (`defaultToolModel()` in `model_catalog.js`): each tool defaults to
+the newest flagship its provider's scanned catalog recommends (ordered `recommended` list → flags →
+catalog order; env pins `AIOS_{CLAUDE,CODEX,AGY}_MODEL` win) — never hardcode a default model.
+Codex also has a stored **Fast** mode: launch/resume uses
 `-c service_tier=fast`, and live toggles send `/fast` in the TUI. All three stored on the session
 row and shown in the UI.
 

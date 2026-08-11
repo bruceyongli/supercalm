@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { codexProviderArgs, isNativeModel, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
+import { codexProviderArgs, defaultToolModel, isNativeModel, modelDisplayLabel, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..');
@@ -125,7 +125,15 @@ export const AUTONOMY_LEVELS = ['ask', 'auto', 'full'];
 // `--append-system-prompt` flag (survives resume since it's rebuilt from the stored row, like
 // --effort/--model) and, on first launch, also seed the literal "ultracode" keyword into the task.
 export const ORCHESTRATION_LEVELS = ['off', 'workflow', 'ultracode'];
-const DEFAULT_CODEX_MODEL = process.env.AIOS_CODEX_MODEL || 'gpt-5.5';
+// Tool default models are LIVE: they follow the scanned catalog (model_scan.js rescans the fleet),
+// so a newly-released flagship becomes the default for fresh sessions without a code change. An
+// env pin (AIOS_CODEX_MODEL / AIOS_CLAUDE_MODEL / AIOS_AGY_MODEL) wins; the literal fallbacks only
+// matter if the catalog somehow yields nothing. Must stay lazy — the first scan lands after boot.
+const codexDefaultModel = () => process.env.AIOS_CODEX_MODEL || defaultToolModel('codex') || 'gpt-5.5';
+const toolModelLabel = (tool, id) => {
+  const m = toolModels(tool).find((x) => x.id === id);
+  return m?.modelLabel || m?.label || modelDisplayLabel(id) || String(id || '');
+};
 const ORCH_PROMPT = {
   workflow:
     'Orchestration preference: when a task genuinely benefits from multi-agent work — broad search/fan-out, parallel review across dimensions, a large migration, or independent/adversarial verification — author and run a dynamic workflow (spawn subagents) instead of doing everything in one context. For simple or conversational turns, just work directly.',
@@ -146,8 +154,8 @@ export const TOOLS = {
   claude: {
     label: 'Claude Code',
     color: '#d08770',
-    model: process.env.AIOS_CLAUDE_MODEL || 'opus',
-    modelLabel: 'Opus 4.8',
+    get model() { return process.env.AIOS_CLAUDE_MODEL || defaultToolModel('claude') || 'opus'; },
+    get modelLabel() { return toolModelLabel('claude', this.model); },
     // getter: the catalog is live (model_scan.js rescans the proxy fleet), so each
     // /api/state read sees newly-discovered models without a restart
     get models() { return toolModels('claude'); },
@@ -183,8 +191,8 @@ export const TOOLS = {
   codex: {
     label: 'Codex',
     color: '#88c0d0',
-    model: DEFAULT_CODEX_MODEL,
-    modelLabel: 'gpt-5.5',
+    get model() { return codexDefaultModel(); },
+    get modelLabel() { return toolModelLabel('codex', this.model); },
     get models() { return toolModels('codex'); },
     efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     defaultEffort: 'xhigh',
@@ -193,27 +201,33 @@ export const TOOLS = {
     fastMode: true,
     live: { fast_mode: () => '/fast' }, // Codex exposes fast inference as an interactive slash toggle.
     env: ({ model, viaProxy } = {}) => toolEnv('codex', model, viaProxy),
-    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy, isolated = false } = {}) => {
+    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy } = {}) => {
       const a = resume ? ['codex', 'resume', resumeId || '--last'] : ['codex'];
       // viaProxy forces the proxy bridge even for native gpt-5.x (then an explicit model is required so the
       // bridge knows what to route). Foreign models bridge regardless.
-      const m = model || (viaProxy ? DEFAULT_CODEX_MODEL : null);
+      const m = model || (viaProxy ? codexDefaultModel() : null);
       if (m) a.push(...codexProviderArgs(m, viaProxy));
       if (m) a.push('-c', `model=${m}`);
       if (effort) a.push('-c', `model_reasoning_effort=${effort}`);
-      if (fastMode && modelSupportsFast(model || DEFAULT_CODEX_MODEL)) a.push('-c', 'service_tier=fast');
+      if (fastMode && modelSupportsFast(model || codexDefaultModel())) a.push('-c', 'service_tier=fast');
       // Supercalm notify program (turn-complete reporting), scoped to this launch. Gated + precondition-checked
       // by the caller (codexNotify flag); null when not ready, leaving the launch unchanged.
       if (notifyArg) a.push('-c', notifyArg);
       // Supercalm wiki MCP server (read-only project knowledge) as a streamable-HTTP MCP server.
       if (mcpUrl) a.push('-c', `mcp_servers.aios_wiki.url="${mcpUrl}"`);
+      // Full means FULL — no approvals AND no filesystem sandbox, worktree or not (operator
+      // directive 2026-08-11). The old isolated→workspace-write downgrade made codex start its own
+      // seatbelt, which macOS refuses to nest under any outer profile (`sandbox_apply: Operation
+      // not permitted`) — every isolated full session died on its first command. `auto` remains
+      // the no-approval, workspace-confined tier; worktree escape risk for `full` is handled by
+      // supervision + the AIOS_NO_DEPLOY interlock, not a write jail.
       if (resume) {
         // the resume subcommand takes autonomy via -c overrides (the launch flags differ there)
-        if (autonomy === 'full' && !isolated) a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=danger-full-access');
-        else if (autonomy === 'full' || autonomy === 'auto') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=workspace-write');
+        if (autonomy === 'full') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=danger-full-access');
+        else if (autonomy === 'auto') a.push('-c', 'approval_policy=never', '-c', 'sandbox_mode=workspace-write');
       } else {
-        if (autonomy === 'full' && !isolated) a.push('--dangerously-bypass-approvals-and-sandbox');
-        else if (autonomy === 'full' || autonomy === 'auto') a.push('-a', 'never', '-s', 'workspace-write');
+        if (autonomy === 'full') a.push('--dangerously-bypass-approvals-and-sandbox');
+        else if (autonomy === 'auto') a.push('-a', 'never', '-s', 'workspace-write');
       }
       // codex has no --append-system-prompt; on a fresh launch, prefix the data-wrapped project context
       // to the task as a clearly-delimited preamble (resume has no task to prefix).
@@ -225,8 +239,8 @@ export const TOOLS = {
   agy: {
     label: 'Antigravity',
     color: '#b48ead',
-    model: process.env.AIOS_AGY_MODEL || 'gemini-pro-agent',
-    modelLabel: 'Gemini 3.1 Pro (High)',
+    get model() { return process.env.AIOS_AGY_MODEL || defaultToolModel('agy') || 'gemini-pro-agent'; },
+    get modelLabel() { return toolModelLabel('agy', this.model); },
     get models() { return toolModels('agy'); },
     efforts: [], // agy exposes no effort flag
     defaultEffort: null,

@@ -389,6 +389,27 @@ export function toolModels(tool) {
   });
 }
 
+// The DEFAULT model for a tool's fresh sessions: the newest flagship its own provider serves.
+// Ranking follows the LIVE catalog, so a new model generation becomes the default without a code
+// change (the operator's standing ask — no stale hardcoded defaults): the provider's ordered
+// `recommended` list leads (applyCatalog: subscription-CLI priority first, fleet catalog second),
+// then models flagged recommended, then catalog order. Chat models only — utility/image/role
+// entries (auto-review, whisper, …) can never become a session default. Operator pins are an
+// AVAILABILITY guarantee, deliberately NOT a ranking override: ranking pins first would freeze the
+// default at an old pick, recreating the exact stale-default bug this function exists to fix.
+export function defaultToolModel(tool) {
+  const provider = PROVIDERS.find((p) => (p.nativeFor || []).includes(tool));
+  if (!provider) return null;
+  const chat = provider.models.filter((m) => (m.kind || 'chat') === 'chat' && !m.role);
+  const byId = new Map(chat.map((m) => [m.id, m]));
+  const ranked = [
+    ...(provider.recommended || []).map((id) => byId.get(id)).filter(Boolean),
+    ...chat.filter((m) => m.recommended),
+    ...chat,
+  ];
+  return ranked[0]?.id || null;
+}
+
 // User API-provider routes (model_providers.js pushes these — push, not pull, to avoid a cycle).
 // Consulted FIRST in routeForModel: a user-added model id wins over a fleet id of the same name,
 // and "<provider-name>/<model>" always addresses the user provider explicitly.

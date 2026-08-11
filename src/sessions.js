@@ -57,7 +57,6 @@ import { prepareProjectDirectory } from './project_init.js';
 import { cleanupTemporaryProject, sweepTemporaryProjects } from './project_cleanup.js';
 import {
   cleanupSessionStorage,
-  guardAgentArgv,
   prepareSessionStorage,
   sessionStorageEnv,
   sessionStoragePaths,
@@ -113,7 +112,7 @@ cleanup for the operator.
 All disposable files, QA screenshots, downloads, and test output must go under $AIOS_SESSION_TMPDIR.
 Anything the operator needs to open after the session belongs under $AIOS_SESSION_ARTIFACTS instead.
 Never create ad-hoc files or folders directly in $HOME. AIOS provides these dedicated locations and
-enforces the home-root boundary; create permanent projects through AIOS rather than under home yourself.
+sweeps them when a session ends; create permanent projects through AIOS rather than under home yourself.
 </aios_session_hygiene>`;
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
@@ -969,9 +968,12 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
     await tmux('set-option', '-t', name, 'history-limit', '200000').catch(() => {});
     await tmux('pipe-pane', '-t', name, `cat >> "${logFile}"`);
 
-  // A Git worktree chooses the checkout; `isolated` also tells capable CLIs to enforce that checkout
-  // as their filesystem write boundary. Full autonomy still means no approval prompts inside it.
-  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, isolated, appendPrompt: CHILD_SESSION_HYGIENE };
+  // A Git worktree chooses the checkout (provenance + branch); it is NOT a write jail. Full
+  // autonomy means genuinely full even in a worktree (operator directive 2026-08-11) — the old
+  // isolated→workspace-write downgrade started an inner seatbelt that cannot coexist with any
+  // outer profile and bricked every isolated codex session. Escape risk is handled by supervision
+  // + the AIOS_NO_DEPLOY interlock below.
+  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, appendPrompt: CHILD_SESSION_HYGIENE };
   // Launch-path features — ALL flag-gated (default OFF) + precondition-checked. When a flag is off or a
   // precondition fails, the corresponding opt stays undefined and the launch line is byte-identical to
   // before. This is the "default-inert" boundary that keeps the live fleet safe.
@@ -1009,7 +1011,11 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const launchTask = tool === 'agy' && argvOpts.appendPrompt && task && !resume
     ? `${argvOpts.appendPrompt}\n\n---\n\n${task}`
     : task;
-  const argv = guardAgentArgv(TOOLS[tool].argv(launchTask, argvOpts));
+  // The argv MUST reach the tool binary unwrapped. A 2026-08-11 regression wrapped every launch in
+  // an exec-level seatbelt profile: macOS forbids nested profiles, so codex (which applies its own
+  // in workspace-write) died on every command, and claude broke on home-root config writes. Any
+  // future confinement must go through the tool's OWN sandbox settings, never an exec wrapper.
+  const argv = TOOLS[tool].argv(launchTask, argvOpts);
   const cmd = argv.map(shquote).join(' ');
   // per-tool env. For claude this is resolved per-launch (auto-detect): external proxy if
   // reachable, else Supercalm's own dashboard login via the local shim, else the CLI's own
@@ -1019,9 +1025,8 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const toolEnv = Object.entries(envMap).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   const storageEnv = Object.entries(sessionStorageEnv(sid)).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
-  // canonical main checkout). This is defense in depth: capable CLIs (currently Codex) also receive an
-  // actual workspace-write boundary above; wrappers alone remain a speed-bump for tools without one.
-  // Integration is an operator-gated action.
+  // canonical main checkout). This — not a filesystem sandbox — is the isolation interlock: full-autonomy
+  // agents run unsandboxed by operator policy. Integration is an operator-gated action.
   const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
   // Deploy-source contract (release_targets, set in the Projects UI): injected so both Claude's hook
   // and the cross-tool command wrappers can block a DIRECT deploy from the wrong tree/branch.

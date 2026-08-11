@@ -45,8 +45,10 @@ assert.match(sessions, /lifecycle: parent \? 'temporary' : 'persistent'/,
   'fallback generic session launches from agent curl cannot create permanent list clutter');
 assert.match(sessions, /AIOS_SESSION_TMPDIR[\s\S]*AIOS_SESSION_ARTIFACTS/,
   'every agent receives separate disposable and durable session storage instructions');
-assert.match(sessions, /guardAgentArgv\(TOOLS\[tool\]\.argv/,
-  'the outer agent process receives the home-root creation boundary');
+assert.match(sessions, /const argv = TOOLS\[tool\]\.argv\(/,
+  'launch argv reaches the tool binary directly');
+assert.doesNotMatch(sessions, /guardAgentArgv|sandbox-exec/,
+  'launches are NEVER exec-wrapped: macOS seatbelt cannot nest, so a wrapped codex/claude dies on every command (2026-08-11 fleet outage)');
 assert.match(sessions, /scheduleSessionStorageCleanup\(entry\.id\)/,
   'an unexpected agent exit cleans its managed scratch directory');
 

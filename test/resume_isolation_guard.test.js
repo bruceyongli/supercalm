@@ -177,23 +177,23 @@ await check('control: a restorable worktree resumes INTO the worktree with the d
 });
 
 // ---------------------------------------------------------------------------------------------
-// 5. WRITE BOUNDARY: full autonomy removes approval prompts, but an isolated Codex session must
-//    retain workspace-write confinement. Git worktree selection alone does not stop an absolute
-//    path from targeting the canonical checkout (the s_1b45d012b0 incident).
+// 5. AUTONOMY CONTRACT: full autonomy is genuinely full — the bypass flag with or without a
+//    worktree (operator directive 2026-08-11). The previous isolated→workspace-write downgrade
+//    made codex start its own seatbelt, which macOS refuses to nest under any outer profile —
+//    every isolated full session died with `sandbox_apply: Operation not permitted`. Worktree
+//    isolation is checkout provenance; the deploy interlock (AIOS_NO_DEPLOY) asserted below is
+//    what still stands between an isolated agent and the live deployment.
 // ---------------------------------------------------------------------------------------------
-await check('launch: isolated full-autonomy Codex is no-approval but workspace-confined', async () => {
+await check('launch: isolated full-autonomy Codex keeps the full bypass + the deploy interlock', async () => {
   const sharedArgs = TOOLS.codex.argv('fixture', { autonomy: 'full' });
-  assert.ok(sharedArgs.includes('--dangerously-bypass-approvals-and-sandbox'), 'non-isolated full mode preserves its existing explicit semantics');
+  assert.ok(sharedArgs.includes('--dangerously-bypass-approvals-and-sandbox'), 'non-isolated full mode keeps its explicit semantics');
   const isolatedArgs = TOOLS.codex.argv('fixture', { autonomy: 'full', isolated: true });
-  assert.ok(!isolatedArgs.includes('--dangerously-bypass-approvals-and-sandbox'));
-  assert.deepEqual(
-    isolatedArgs.slice(isolatedArgs.indexOf('-a'), isolatedArgs.indexOf('-a') + 4),
-    ['-a', 'never', '-s', 'workspace-write'],
-  );
+  assert.ok(isolatedArgs.includes('--dangerously-bypass-approvals-and-sandbox'), 'isolated full mode is not silently downgraded');
+  assert.ok(!isolatedArgs.includes('workspace-write'), 'no inner seatbelt for full — workspace-write is the auto tier');
   const isolatedResumeArgs = TOOLS.codex.argv('', { autonomy: 'full', isolated: true, resume: true, resumeId: 'fixture-id' });
-  assert.ok(!isolatedResumeArgs.includes('sandbox_mode=danger-full-access'));
   assert.ok(isolatedResumeArgs.includes('approval_policy=never'));
-  assert.ok(isolatedResumeArgs.includes('sandbox_mode=workspace-write'));
+  assert.ok(isolatedResumeArgs.includes('sandbox_mode=danger-full-access'), 'resume restores the same full profile');
+  assert.ok(!isolatedResumeArgs.includes('sandbox_mode=workspace-write'));
 
   process.env.AIOS_ISOLATION = '1';
   let launched;
@@ -204,9 +204,10 @@ await check('launch: isolated full-autonomy Codex is no-approval but workspace-c
   }
   assert.ok(launched.worktree_path, 'the execution fixture really launched into an assigned worktree');
   const line = launchLine(launched.id);
-  assert.match(line, /'-a' 'never' '-s' 'workspace-write'/, 'the pane command enforces the filesystem write boundary');
-  assert.doesNotMatch(line, /dangerously-bypass-approvals-and-sandbox/, 'isolated full mode cannot escape the worktree through the danger flag');
-  assert.match(line, /AIOS_NO_DEPLOY=1/, 'the existing deploy interlock remains layered with filesystem confinement');
+  assert.match(line, /dangerously-bypass-approvals-and-sandbox/, 'the pane command carries the full bypass');
+  assert.doesNotMatch(line, /workspace-write/, 'no leftover confinement flags');
+  assert.doesNotMatch(line, /sandbox-exec/, 'the launch line is never exec-wrapped (seatbelt cannot nest)');
+  assert.match(line, /AIOS_NO_DEPLOY=1/, 'the deploy interlock remains the isolation guarantee');
 });
 
 // ---------------------------------------------------------------------------------------------

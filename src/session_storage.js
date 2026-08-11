@@ -1,7 +1,5 @@
-import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readdir, rm, rmdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { join, resolve, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { DATA_DIR } from './config.js';
 
 const STORAGE_ROOT = join(DATA_DIR, 'session-storage');
@@ -75,24 +73,11 @@ export async function sweepSessionStorage(liveSessionIds = []) {
   return removed;
 }
 
-function regexQuote(value) {
-  return String(value).replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
-}
-
-export function homeCreationGuardProfile(home = homedir()) {
-  const resolvedHome = resolve(home);
-  const canonicalHome = existsSync(resolvedHome) ? realpathSync(resolvedHome) : resolvedHome;
-  // Block only NEW direct children of home. Existing configuration and every nested project remain
-  // writable; ad-hoc ~/qa-*, ~/tmp-* and similar pollution cannot be created by the agent process.
-  return `(version 1)\n(allow default)\n(deny file-write-create (regex #"^${regexQuote(canonicalHome)}/[^/]+$"))`;
-}
-
-export function guardAgentArgv(argv, {
-  platform = process.platform,
-  executable = '/usr/bin/sandbox-exec',
-  enabled = process.env.AIOS_SESSION_HOME_GUARD !== '0',
-  home = homedir(),
-} = {}) {
-  if (!enabled || platform !== 'darwin' || !existsSync(executable)) return [...argv];
-  return [executable, '-p', homeCreationGuardProfile(home), ...argv];
-}
+// NO exec-level sandbox wrapper lives here anymore — learned the hard way (2026-08-11 fleet
+// outage). Launches were once wrapped in a seatbelt profile denying new direct children of $HOME.
+// macOS seatbelt does not nest: codex in workspace-write applies its OWN profile and died on every
+// command with `sandbox_apply: Operation not permitted`, and claude broke on home-root config
+// writes (~/.claude.json temp/lock files are new direct children of $HOME). The home-root boundary
+// is now policy, not enforcement: the dedicated TMPDIR env above, the hygiene prompt injected at
+// launch, and the sweeps below. If enforcement ever returns, it must use each tool's OWN sandbox
+// configuration — the launch argv must always reach the tool binary unwrapped.

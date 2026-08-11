@@ -1,22 +1,26 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const fixture = await mkdtemp(join(tmpdir(), 'aios-session-storage-'));
 process.env.AIOS_DATA = join(fixture, 'data');
 
+const storage = await import('../src/session_storage.js');
 const {
   cleanupSessionStorage,
-  guardAgentArgv,
-  homeCreationGuardProfile,
   prepareSessionStorage,
   sessionStorageEnv,
   sessionStoragePaths,
   sweepSessionStorage,
-} = await import('../src/session_storage.js');
+} = storage;
+
+// The exec-level seatbelt wrapper must STAY deleted: macOS seatbelt does not nest, so wrapping a
+// tool that applies its own profile (codex workspace-write) kills every command it runs, and the
+// home-root create-deny broke claude's own config writes (2026-08-11 fleet outage).
+assert.equal(storage.guardAgentArgv, undefined, 'no exec-wrapper export may return');
+assert.equal(storage.homeCreationGuardProfile, undefined, 'no seatbelt profile builder may return');
 
 try {
   const prepared = await prepareSessionStorage('s_keep');
@@ -42,27 +46,6 @@ try {
   assert.equal(existsSync(prepared.root), false);
   assert.equal(existsSync(prepared.artifacts), true, 'reported artifacts survive disposable scratch cleanup');
   await assert.rejects(() => prepareSessionStorage('../escape'), /invalid session id/);
-
-  if (process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec')) {
-    const fakeHome = join(fixture, 'home');
-    const existing = join(fakeHome, 'existing-project');
-    await mkdir(existing, { recursive: true });
-    const direct = join(fakeHome, 'qa-pollution.png');
-    const nested = join(existing, 'allowed.txt');
-    const probe = spawnSync('/usr/bin/sandbox-exec', [
-      '-p', homeCreationGuardProfile(fakeHome),
-      process.execPath,
-      '-e',
-      `const fs=require('node:fs');try{fs.writeFileSync(${JSON.stringify(direct)},'blocked')}catch{};fs.writeFileSync(${JSON.stringify(nested)},'allowed')`,
-    ], { encoding: 'utf8' });
-    assert.equal(probe.status, 0, probe.stderr);
-    assert.equal(existsSync(direct), false, 'agent cannot create a new direct child in home');
-    assert.equal(existsSync(nested), true, 'agent can still write inside an existing assigned project');
-    assert.deepEqual(
-      guardAgentArgv(['codex', '--version'], { platform: 'darwin', executable: '/usr/bin/sandbox-exec', home: fakeHome }).slice(0, 2),
-      ['/usr/bin/sandbox-exec', '-p'],
-    );
-  }
 } finally {
   await rm(fixture, { recursive: true, force: true });
 }
