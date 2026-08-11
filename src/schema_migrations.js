@@ -128,4 +128,56 @@ export const CORE_MIGRATIONS = [
       `);
     },
   },
+  {
+    id: '0005_session_runtime_recovery',
+    description: 'Persist intended session state and runtime ownership for restart recovery',
+    up(db) {
+      ensureColumn(db, 'sessions', 'desired_status', 'TEXT');
+      ensureColumn(db, 'sessions', 'runtime_status', 'TEXT');
+      ensureColumn(db, 'sessions', 'runtime_boot_id', 'TEXT');
+      ensureColumn(db, 'sessions', 'runtime_heartbeat_at', 'INTEGER');
+      ensureColumn(db, 'sessions', 'status_reason', 'TEXT');
+      ensureColumn(db, 'sessions', 'recovery_attempts', 'INTEGER NOT NULL DEFAULT 0');
+      const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((row) => row.name));
+      const attentionColumns = ['question', 'summary', 'category'].filter((name) => sessionColumns.has(name));
+      const wasWaiting = attentionColumns.length
+        ? attentionColumns.map((name) => `${name} IS NOT NULL`).join(' OR ')
+        : '0';
+
+      // Before this migration `status` carried both operator intent and process observation. Preserve
+      // the exact visible state as the initial intent; boot reconciliation will claim live rows and
+      // can then distinguish a missing process from an explicit stop recorded after the cutover.
+      db.exec(`
+        UPDATE sessions
+        SET desired_status = COALESCE(desired_status, CASE
+              -- Recover rows the pre-migration startup code already flattened to exited during a
+              -- host/service restart. That path kept the waiting fields and wrote this exact durable
+              -- exit reason; explicit Stop/Kill wrote different lifecycle events and stay exited.
+              WHEN status = 'exited'
+                AND COALESCE((
+                  SELECT payload FROM events e
+                  WHERE e.session_id = sessions.id AND e.type = 'exit'
+                  ORDER BY e.id DESC LIMIT 1
+                ), '') LIKE '%tmux gone on restart%'
+              THEN CASE WHEN ${wasWaiting} THEN 'waiting' ELSE 'working' END
+              ELSE status
+            END),
+            runtime_status = COALESCE(runtime_status, CASE
+              WHEN status = 'starting' THEN 'starting'
+              WHEN status IN ('working', 'waiting') THEN 'running'
+              WHEN status = 'exited' THEN 'exited'
+              ELSE 'error'
+            END),
+            runtime_heartbeat_at = COALESCE(runtime_heartbeat_at, last_activity),
+            status_reason = COALESCE(status_reason, 'migration')
+        WHERE desired_status IS NULL
+           OR runtime_status IS NULL
+           OR runtime_heartbeat_at IS NULL
+           OR status_reason IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_sessions_desired_runtime
+          ON sessions(desired_status, runtime_status, last_activity DESC);
+      `);
+    },
+  },
 ];

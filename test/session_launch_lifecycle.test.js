@@ -76,6 +76,7 @@ process.env.MOCK_TMUX_RACE = raceFile;
 process.env.MOCK_TMUX_RACE_DONE = raceDoneFile;
 
 const store = await import('../src/store.js');
+const { BOOT_ID } = await import('../src/config.js');
 const { queueLaunch, killSession, discover, resume } = await import('../src/sessions.js');
 const project = store.createProject({ id: 'p_launch', name: 'Launch lifecycle', path: projectPath });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -113,6 +114,7 @@ await waitFor(() => names().includes(pending.tmux), 'partially-created pane');
 await killSession(pending.id);
 await delay(500);
 assert.equal(store.getSession(pending.id).status, 'exited');
+assert.equal(store.getSession(pending.id).desired_status, 'exited', 'explicit kill is durable and cannot reboot-recover');
 assert.ok(!names().includes(pending.tmux), 'kill-during-launch leaves no pane behind');
 
 // A service restart has no background launch continuation. If the durable Starting pane exists,
@@ -122,7 +124,49 @@ store.createSession({ id: 's_restart_launch', project_id: project.id, tool: 'cod
 writeFileSync(stateFile, JSON.stringify([...names(), 'aios-restart-partial']));
 await discover();
 assert.equal(store.getSession('s_restart_launch').status, 'error');
+assert.equal(store.getSession('s_restart_launch').desired_status, 'error');
 assert.ok(!names().includes('aios-restart-partial'), 'restart recovery kills a partially-created pane');
+
+// A host reboot loses tmux but not SQLite. Missing working/waiting panes must relaunch their exact
+// conversations and restore the durable visible state; an explicit exited session must stay stopped.
+store.createSession({ id: 's_reboot_working', project_id: project.id, tool: 'codex', tmux: 'gone-working', status: 'working' });
+store.createSession({ id: 's_reboot_waiting', project_id: project.id, tool: 'codex', tmux: 'gone-waiting', status: 'waiting' });
+store.updateSession('s_reboot_waiting', { question: 'Choose the deployment target', summary: 'Deployment target needed', category: 'decision' });
+store.createSession({ id: 's_explicit_stop', project_id: project.id, tool: 'codex', tmux: 'gone-stopped', status: 'exited', desired_status: 'exited', status_reason: 'operator-stop' });
+await discover();
+const rebootWorking = store.getSession('s_reboot_working');
+const rebootWaiting = store.getSession('s_reboot_waiting');
+assert.equal(rebootWorking.status, 'working');
+assert.equal(rebootWorking.desired_status, 'working');
+assert.equal(rebootWorking.runtime_status, 'running');
+assert.equal(rebootWorking.runtime_boot_id, BOOT_ID);
+assert.ok(names().includes(rebootWorking.tmux), 'working session gets a replacement pane');
+assert.equal(rebootWaiting.status, 'waiting', 'Needs You state survives process recovery');
+assert.equal(rebootWaiting.desired_status, 'waiting');
+assert.equal(rebootWaiting.runtime_status, 'running');
+assert.equal(rebootWaiting.question, 'Choose the deployment target');
+assert.ok(names().includes(rebootWaiting.tmux), 'waiting session is ready to accept the eventual reply');
+assert.equal(store.getSession('s_explicit_stop').status, 'exited');
+assert.ok(!names().includes('gone-stopped'), 'explicitly stopped session is not restarted');
+assert.equal(store.eventsFor('s_reboot_working', 10)[0]?.type, 'boot-recovery-complete');
+
+// A failed recovery remains durably recoverable, but records its bounded attempt. A later boot pass
+// can retry and resets the budget only after the replacement pane is actually established.
+writeFileSync(modeFile, 'fail-pipe');
+store.createSession({ id: 's_reboot_retry', project_id: project.id, tool: 'codex', tmux: 'gone-retry', status: 'working' });
+await discover();
+const firstRecoveryFailure = store.getSession('s_reboot_retry');
+assert.equal(firstRecoveryFailure.status, 'error');
+assert.equal(firstRecoveryFailure.desired_status, 'working');
+assert.equal(firstRecoveryFailure.runtime_status, 'error');
+assert.equal(firstRecoveryFailure.recovery_attempts, 1);
+writeFileSync(modeFile, 'ok');
+await discover();
+assert.equal(store.getSession('s_reboot_retry').status, 'working');
+assert.equal(store.getSession('s_reboot_retry').recovery_attempts, 0);
+await killSession('s_reboot_working');
+await killSession('s_reboot_waiting');
+await killSession('s_reboot_retry');
 
 // A settings/model relaunch intentionally kills and recreates the pane. Reproduce a poll that sees that
 // gap but returns only after resume has published the replacement: its stale result must not retire it.

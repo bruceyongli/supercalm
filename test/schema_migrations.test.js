@@ -27,16 +27,48 @@ db.exec(`
     source TEXT,
     text TEXT NOT NULL
   );
+  CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    payload TEXT
+  );
 `);
+db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) VALUES ('s_live','codex','live-pane','working',1,2)").run();
+db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) VALUES ('s_stopped','codex','old-pane','exited',1,3)").run();
+db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) VALUES ('s_rebooted','codex','lost-pane','exited',1,4)").run();
+db.prepare("INSERT INTO events (session_id,ts,type,payload) VALUES ('s_rebooted',4,'exit','{\"code\":null,\"reason\":\"tmux gone on restart\"}')").run();
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery']);
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
 assert.equal(db.prepare("SELECT applied_at FROM schema_migrations WHERE id='0001_sessions_complete_shape'").get().applied_at, 1234);
 const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((row) => row.name));
 assert(sessionColumns.has('revision'));
 assert(sessionColumns.has('worktree_path'));
 assert(sessionColumns.has('parent_session_id'));
+assert(sessionColumns.has('desired_status'));
+assert(sessionColumns.has('runtime_status'));
+assert(sessionColumns.has('runtime_boot_id'));
+assert(sessionColumns.has('runtime_heartbeat_at'));
+assert(sessionColumns.has('status_reason'));
+assert(sessionColumns.has('recovery_attempts'));
+assert.deepEqual(
+  { ...db.prepare("SELECT desired_status, runtime_status, runtime_heartbeat_at FROM sessions WHERE id='s_live'").get() },
+  { desired_status: 'working', runtime_status: 'running', runtime_heartbeat_at: 2 },
+  'migration preserves a live session as recoverable intent',
+);
+assert.deepEqual(
+  { ...db.prepare("SELECT desired_status, runtime_status FROM sessions WHERE id='s_stopped'").get() },
+  { desired_status: 'exited', runtime_status: 'exited' },
+  'migration preserves a deliberate historical stop as stopped',
+);
+assert.equal(
+  db.prepare("SELECT desired_status FROM sessions WHERE id='s_rebooted'").get().desired_status,
+  'working',
+  'migration recovers sessions the old startup code flattened after a reboot',
+);
 const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((row) => row.name));
 assert(projectColumns.has('lifecycle'));
 assert(projectColumns.has('auto_delete_folder'));

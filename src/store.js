@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, existsSync, statSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { DATA_DIR, LOG_DIR, DB_PATH } from './config.js';
+import { DATA_DIR, LOG_DIR, DB_PATH, BOOT_ID } from './config.js';
 import { worktreeDbVerdict } from './db_guard.js';
 import { now } from './util.js';
 import { applyMigrations } from './migrations.js';
@@ -51,6 +51,12 @@ db.exec(`
     tmux              TEXT NOT NULL,
     title             TEXT,
     status            TEXT NOT NULL DEFAULT 'starting',
+    desired_status    TEXT,
+    runtime_status    TEXT,
+    runtime_boot_id   TEXT,
+    runtime_heartbeat_at INTEGER,
+    status_reason     TEXT,
+    recovery_attempts INTEGER NOT NULL DEFAULT 0,
     question          TEXT,
     autonomy          TEXT,
     effort            TEXT,
@@ -156,15 +162,23 @@ export const getProject = (id) => _getProject.get(id);
 export const getProjectByPath = (p) => _projectByPath.get(p);
 const _delProject = db.prepare('DELETE FROM projects WHERE id = ?');
 const _setProjectLifecycle = db.prepare('UPDATE projects SET lifecycle = ? WHERE id = ?');
-const _liveForProject = db.prepare("SELECT COUNT(*) n FROM sessions WHERE project_id = ? AND status IN ('starting','working','waiting')");
+// Project cleanup follows durable intent, not a momentary missing process. An unexpectedly exited
+// session still owns its temporary project until recovery succeeds or the operator explicitly stops it.
+const _liveForProject = db.prepare(`
+  SELECT COUNT(*) n FROM sessions
+  WHERE project_id = ?
+    AND (COALESCE(desired_status, status) IN ('starting','working','waiting')
+      OR runtime_status IN ('starting','running','recovering','stopping'))
+`);
 export const deleteProject = (id) => _delProject.run(id);
 export const setProjectLifecycle = (id, lifecycle) => _setProjectLifecycle.run(lifecycle, id);
 export const liveSessionsForProject = (id) => _liveForProject.get(id).n;
 
 // ---- sessions ---------------------------------------------------------------
 const _insSession = db.prepare(
-  `INSERT INTO sessions (id,project_id,parent_session_id,tool,tmux,title,status,autonomy,effort,model,fast_mode,orchestration,started_at,last_activity)
-   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+  `INSERT INTO sessions
+    (id,project_id,parent_session_id,tool,tmux,title,status,desired_status,runtime_status,runtime_boot_id,runtime_heartbeat_at,status_reason,recovery_attempts,autonomy,effort,model,fast_mode,orchestration,started_at,last_activity)
+   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 );
 const _getSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
 const _getSessionByTmux = db.prepare('SELECT * FROM sessions WHERE tmux = ?');
@@ -172,24 +186,70 @@ const _allSessions = db.prepare('SELECT * FROM sessions ORDER BY last_activity D
 const _liveSessions = db.prepare(
   "SELECT * FROM sessions WHERE status IN ('starting','working','waiting') ORDER BY last_activity DESC"
 );
+const _expectedLiveSessions = db.prepare(
+  "SELECT * FROM sessions WHERE COALESCE(desired_status, status) IN ('starting','working','waiting') ORDER BY last_activity DESC"
+);
+
+const ACTIVE_SESSION_STATUSES = new Set(['starting', 'working', 'waiting']);
+function runtimeStatusFor(status) {
+  if (status === 'starting') return 'starting';
+  if (status === 'working' || status === 'waiting') return 'running';
+  if (status === 'exited') return 'exited';
+  return 'error';
+}
 
 export function createSession(s) {
   const t = now();
-  _insSession.run(s.id, s.project_id ?? null, s.parent_session_id ?? null, s.tool, s.tmux, s.title ?? null, s.status ?? 'starting', s.autonomy ?? null, s.effort ?? null, s.model ?? null, s.fast_mode ? 1 : 0, s.orchestration ?? null, t, t);
+  const status = s.status ?? 'starting';
+  const desiredStatus = s.desired_status ?? status;
+  const runtimeStatus = s.runtime_status ?? runtimeStatusFor(status);
+  _insSession.run(
+    s.id, s.project_id ?? null, s.parent_session_id ?? null, s.tool, s.tmux, s.title ?? null,
+    status, desiredStatus, runtimeStatus, s.runtime_boot_id ?? BOOT_ID,
+    s.runtime_heartbeat_at ?? t, s.status_reason ?? 'launch', s.recovery_attempts ?? 0,
+    s.autonomy ?? null, s.effort ?? null, s.model ?? null, s.fast_mode ? 1 : 0,
+    s.orchestration ?? null, t, t
+  );
   return _getSession.get(s.id);
 }
 export const getSession = (id) => _getSession.get(id);
 export const getSessionByTmux = (t) => _getSessionByTmux.get(t);
 export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
+export const listExpectedLiveSessions = () => _expectedLiveSessions.all();
 
-const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'desired_status', 'runtime_status', 'runtime_boot_id', 'runtime_heartbeat_at', 'status_reason', 'recovery_attempts', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
-  const keys = Object.keys(patch).filter((k) => SESSION_FIELDS.includes(k));
+  const next = { ...patch };
+  // One durable write path owns lifecycle semantics. UI actions, agent hooks, polling, and resumes all
+  // already call updateSession; keeping the intent/runtime projection here prevents a new status writer
+  // from silently bypassing restart recovery. Terminal observations deliberately do NOT overwrite
+  // desired_status: an unexpected `exited` must retain the prior working/waiting intent.
+  if (Object.hasOwn(next, 'status')) {
+    if (ACTIVE_SESSION_STATUSES.has(next.status) && !Object.hasOwn(next, 'desired_status')) {
+      next.desired_status = next.status;
+    }
+    if (!Object.hasOwn(next, 'runtime_status')) next.runtime_status = runtimeStatusFor(next.status);
+    if (!Object.hasOwn(next, 'status_reason')) next.status_reason = 'status-update';
+    if (ACTIVE_SESSION_STATUSES.has(next.status)) {
+      if (!Object.hasOwn(next, 'runtime_boot_id')) next.runtime_boot_id = BOOT_ID;
+      if (!Object.hasOwn(next, 'runtime_heartbeat_at')) next.runtime_heartbeat_at = now();
+    }
+  }
+  const keys = Object.keys(next).filter((k) => SESSION_FIELDS.includes(k));
   if (!keys.length) return getSession(id);
   const set = keys.map((k) => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE sessions SET ${set}, revision = revision + 1 WHERE id = ?`).run(...keys.map((k) => patch[k]), id);
+  db.prepare(`UPDATE sessions SET ${set}, revision = revision + 1 WHERE id = ?`).run(...keys.map((k) => next[k]), id);
   return getSession(id);
+}
+
+const _touchSessionRuntime = db.prepare(
+  "UPDATE sessions SET runtime_status = 'running', runtime_boot_id = ?, runtime_heartbeat_at = ? WHERE id = ? AND COALESCE(desired_status, status) IN ('starting','working','waiting')"
+);
+// Runtime heartbeats are deliberately not public session revisions: they prove process ownership for
+// boot recovery without causing SSE/UI churn every few seconds.
+export function touchSessionRuntime(id, bootId = BOOT_ID, timestamp = now()) {
+  return (_touchSessionRuntime.run(bootId, timestamp, id).changes || 0) > 0;
 }
 
 // Transcripts other sessions have bound via hooks (claude_transcript). The story picker treats these

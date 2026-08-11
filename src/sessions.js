@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
 import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
-import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT } from './config.js';
+import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT, BOOT_ID } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
@@ -78,6 +78,8 @@ const TAIL_MS = 250;
 const TERMINAL_SNAPSHOT_LINES = Math.max(200, Math.min(20000, Number(process.env.AIOS_TERMINAL_SNAPSHOT_LINES || 6000)));
 const TERMINAL_LOG_MAX_BYTES = Math.max(32 * 1024, Math.min(4 * 1024 * 1024, Number(process.env.AIOS_TERMINAL_LOG_MAX_BYTES || 512 * 1024)));
 const LIMIT_CHECK_MS = Number(process.env.AIOS_USAGE_LIMIT_CHECK_MS || 15000);
+const RUNTIME_HEARTBEAT_MS = Math.max(5000, Number(process.env.AIOS_SESSION_HEARTBEAT_MS || 15000));
+const BOOT_RECOVERY_MAX_ATTEMPTS = Math.max(1, Number(process.env.AIOS_BOOT_RECOVERY_MAX_ATTEMPTS || 3));
 const QUOTA_CACHE_MS = Number(process.env.AIOS_USAGE_QUOTA_CACHE_MS || 30000);
 const ATTACHMENT_MAX_BYTES = Number(process.env.AIOS_ATTACHMENT_MAX_BYTES || 24 * 1024 * 1024);
 const ASSET_PREVIEW_CHARS = Number(process.env.AIOS_ASSET_PREVIEW_CHARS || 360);
@@ -867,6 +869,7 @@ function register(s) {
     lastHash: null,
     lastChange: initialMonitorLastChange(s),
     startedAt: now(), // (re)launch time — the SHELLS-exit check is graced for LAUNCH_GRACE_MS after this
+    lastRuntimeHeartbeat: Number(s.runtime_heartbeat_at) || 0,
   };
   try {
     entry.offset = existsSync(entry.logFile) ? statSync(entry.logFile).size : 0;
@@ -1183,7 +1186,9 @@ async function completeLaunch(spec) {
     assertLaunchActive(spec);
   }
   const s = store.updateSession(sid, {
-    status: 'working', tmux: name, last_activity: now(),
+    status: 'working', desired_status: 'working', runtime_status: 'running',
+    runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(), status_reason: 'launch-ready',
+    recovery_attempts: 0, tmux: name, last_activity: now(),
     ...(wt ? { worktree_path: wt.path, branch: wt.branch } : {}),
   });
   // Publish registry ownership and retire the cancellation ticket immediately after the durable Working
@@ -1225,7 +1230,11 @@ async function failLaunch(spec, error) {
   scheduleSessionStorageCleanup(spec.sid);
   if (error?.code === 'launch-cancelled' || !current || current.status !== 'starting') return current;
   const message = String(error?.message || error || 'launch failed').slice(0, 500);
-  const failed = store.updateSession(spec.sid, { status: 'error', summary: `Launch failed: ${message}`, question: null, ended_at: now(), exit_code: -1, last_activity: now() });
+  const failed = store.updateSession(spec.sid, {
+    status: 'error', desired_status: 'error', runtime_status: 'error',
+    runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(), status_reason: 'launch-failed',
+    summary: `Launch failed: ${message}`, question: null, ended_at: now(), exit_code: -1, last_activity: now(),
+  });
   store.addEvent(spec.sid, 'launch-error', { error: message, elapsed_ms: now() - spec.ticket.startedAt });
   emitSessionStatus(failed, { previousStatus: 'starting', source: 'launch-error' });
   bus.emit('event', { type: 'launch-error', session: spec.sid, error: message });
@@ -1251,7 +1260,7 @@ export function queueLaunch(args) {
 }
 
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
-async function resumeNow(sid, { force = false, waitForInput = false } = {}) {
+async function resumeNow(sid, { force = false, waitForInput = false, preserveStatus = null, recoveryReason = 'resume' } = {}) {
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
@@ -1265,6 +1274,16 @@ async function resumeNow(sid, { force = false, waitForInput = false } = {}) {
   // (status not exited); an exited session must relaunch even though its pane lingers.
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
+  const durableStatus = ['working', 'waiting'].includes(preserveStatus)
+    ? preserveStatus
+    : (['working', 'waiting'].includes(s.desired_status) ? s.desired_status : 'working');
+  store.updateSession(sid, {
+    desired_status: durableStatus,
+    runtime_status: 'recovering',
+    runtime_boot_id: BOOT_ID,
+    runtime_heartbeat_at: now(),
+    status_reason: recoveryReason,
+  });
   const project = s.project_id ? store.getProject(s.project_id) : null;
   // Isolated session: reuse its worktree (re-`git worktree add` if the registration was pruned). Its
   // cwd wins over project.path for the pane AND the codex rollout lookup.
@@ -1327,8 +1346,21 @@ async function resumeNow(sid, { force = false, waitForInput = false } = {}) {
     resumeId,
     cwd,
   });
-  store.addEvent(sid, 'resume', { tmux: name, resumeId });
-  const updated = store.updateSession(sid, { status: 'working', tmux: name, ended_at: null, exit_code: null, question: null, last_activity: now() });
+  store.addEvent(sid, 'resume', { tmux: name, resumeId, reason: recoveryReason, restored_status: durableStatus });
+  const updated = store.updateSession(sid, {
+    status: durableStatus,
+    desired_status: durableStatus,
+    runtime_status: 'running',
+    runtime_boot_id: BOOT_ID,
+    runtime_heartbeat_at: now(),
+    status_reason: recoveryReason,
+    recovery_attempts: 0,
+    tmux: name,
+    ended_at: null,
+    exit_code: null,
+    ...(durableStatus === 'waiting' ? {} : { question: null }),
+    last_activity: now(),
+  });
   // Replace the registry generation so a poll that observed the intentional kill/recreate gap cannot
   // retire the new pane when its stale `has-session = false` result arrives. Keep terminal subscribers
   // attached across the relaunch; only the lifecycle generation changes.
@@ -1336,12 +1368,15 @@ async function resumeNow(sid, { force = false, waitForInput = false } = {}) {
   reg.delete(sid);
   const resumedEntry = register(updated);
   if (previousEntry) resumedEntry.subscribers = previousEntry.subscribers;
+  // A resumed waiting session briefly renders its startup/loading screen before the old prompt. Keep
+  // the durable Needs You state through that grace instead of letting one transitional poll erase it.
+  if (durableStatus === 'waiting') resumedEntry.preserveWaitingUntil = now() + LAUNCH_GRACE_MS;
   // grace window: a freshly relaunched pane reprints the old conversation (which may include 401s
   // from before the relaunch) before the first new exchange — don't let detect.js re-flag it as
   // authNeeded during that reprint. Cleared naturally once a healthy ⏺/⎿ line appears (see detect.js).
   const re = reg.get(sid);
   if (re) re.authGraceUntil = now() + AUTH_GRACE_MS;
-  emitSessionStatus(updated, { previousStatus: s.status, source: 'resume' });
+  emitSessionStatus(updated, { previousStatus: s.status, source: recoveryReason === 'boot-recovery' ? 'boot-recovery' : 'resume' });
   bus.emit('changed');
   bus.emit('event', { type: 'resume', session: sid });
   if (!waitForInput) return updated;
@@ -1365,19 +1400,26 @@ export function resume(sid, options = {}) {
   return attempt;
 }
 
-function markExited(entry, code) {
+function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
   // pollOnce works from a snapshot of registry entries and awaits tmux. A model/settings relaunch can
   // replace an entry while that await is in flight. Never let the old generation mark or delete the new one.
   if (reg.get(entry.id) !== entry) return false;
   const s = store.getSession(entry.id);
   if (s && s.status !== 'exited') {
-    const updated = store.updateSession(entry.id, { status: 'exited', question: null, ended_at: now(), exit_code: code, last_activity: now() });
-    store.addEvent(entry.id, 'exit', { code });
+    const updated = store.updateSession(entry.id, {
+      status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
+      runtime_heartbeat_at: now(), status_reason: reason,
+      ...(reason.startsWith('operator-') ? { question: null } : {}),
+      ended_at: now(), exit_code: code, last_activity: now(),
+    });
+    store.addEvent(entry.id, 'exit', { code, reason, desired_status: updated.desired_status });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'exit' });
     bus.emit('changed');
     bus.emit('event', { type: 'exit', session: entry.id });
-    scheduleTemporaryProjectCleanup(s.project_id);
-    scheduleSessionStorageCleanup(entry.id);
+    if (!['starting', 'working', 'waiting'].includes(updated.desired_status)) {
+      scheduleTemporaryProjectCleanup(s.project_id);
+      scheduleSessionStorageCleanup(entry.id);
+    }
   }
   for (const res of entry.subscribers) {
     try {
@@ -1404,7 +1446,70 @@ function scheduleSessionStorageCleanup(sessionId) {
     .catch((error) => console.error(`[aios] session scratch cleanup failed (${sessionId}):`, error?.message || error)));
 }
 
-// Reconcile DB <-> tmux on startup: resume live sessions, retire dead ones.
+async function recoverMissingSession(s) {
+  const intended = s.desired_status || s.status;
+  const desired = ['working', 'waiting'].includes(intended) ? intended : 'working';
+  const attempt = (Number(s.recovery_attempts) || 0) + 1;
+  if (attempt > BOOT_RECOVERY_MAX_ATTEMPTS) {
+    const failed = store.updateSession(s.id, {
+      status: 'error', desired_status: 'error', runtime_status: 'error',
+      runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(), status_reason: 'boot-recovery-exhausted',
+      summary: `Automatic restart recovery stopped after ${BOOT_RECOVERY_MAX_ATTEMPTS} failed attempts. Resume this session manually.`,
+      ended_at: now(), exit_code: -1,
+    });
+    store.addEvent(s.id, 'boot-recovery-exhausted', { attempts: attempt - 1, desired_status: desired });
+    emitSessionStatus(failed, { previousStatus: s.status, source: 'boot-recovery-exhausted' });
+    return { recovered: false, exhausted: true };
+  }
+
+  store.updateSession(s.id, {
+    desired_status: desired,
+    runtime_status: 'recovering',
+    runtime_boot_id: BOOT_ID,
+    runtime_heartbeat_at: now(),
+    status_reason: 'boot-recovery',
+    recovery_attempts: attempt,
+  });
+  store.addEvent(s.id, 'boot-recovery-start', {
+    attempt,
+    previous_boot_id: s.runtime_boot_id || null,
+    previous_runtime_status: s.runtime_status || null,
+    desired_status: desired,
+  });
+  try {
+    const recovered = await resume(s.id, {
+      force: true,
+      preserveStatus: desired,
+      recoveryReason: 'boot-recovery',
+    });
+    store.addEvent(s.id, 'boot-recovery-complete', { attempt, restored_status: desired, tmux: recovered.tmux });
+    return { recovered: true, session: recovered };
+  } catch (error) {
+    const message = String(error?.message || error || 'unknown recovery failure').slice(0, 500);
+    const failed = store.updateSession(s.id, {
+      status: 'error',
+      // Retain the pre-reboot intent while retries remain. A later service restart can retry; reaching
+      // the durable budget above parks it instead of creating an infinite reboot/relaunch loop.
+      desired_status: desired,
+      runtime_status: 'error',
+      runtime_boot_id: BOOT_ID,
+      runtime_heartbeat_at: now(),
+      status_reason: 'boot-recovery-failed',
+      recovery_attempts: attempt,
+      summary: `Automatic restart recovery failed: ${message}`,
+      ended_at: now(),
+      exit_code: -1,
+    });
+    store.addEvent(s.id, 'boot-recovery-failed', { attempt, error: message, desired_status: desired });
+    emitSessionStatus(failed, { previousStatus: s.status, source: 'boot-recovery-failed' });
+    console.error(`[aios] boot recovery failed (${s.id}, attempt ${attempt}/${BOOT_RECOVERY_MAX_ATTEMPTS}):`, message);
+    return { recovered: false, error };
+  }
+}
+
+// Reconcile durable intent <-> tmux on startup. A service/host restart may destroy the process, but
+// it must not turn the last operator/agent state into a deliberate stop. Existing panes are adopted by
+// this boot; missing working/waiting panes are relaunched with the same conversation and visible state.
 export async function discover() {
   let names = [];
   try {
@@ -1413,7 +1518,9 @@ export async function discover() {
     names = []; // no tmux server yet
   }
   const alive = new Set(names);
-  for (const s of store.listLiveSessions()) {
+  let recovered = 0;
+  let failedRecovery = 0;
+  for (const s of store.listExpectedLiveSessions()) {
     if (s.status === 'starting') {
       // server.listen can accept a launch while this asynchronous boot reconciliation is still in
       // flight. A current-process ticket owns that row; completeLaunch will publish or clean it.
@@ -1424,6 +1531,11 @@ export async function discover() {
       if (alive.has(s.tmux)) await tmuxOk('kill-session', '-t', s.tmux);
       const failed = store.updateSession(s.id, {
         status: 'error',
+        desired_status: 'error',
+        runtime_status: 'error',
+        runtime_boot_id: BOOT_ID,
+        runtime_heartbeat_at: now(),
+        status_reason: 'launch-interrupted',
         summary: 'Launch interrupted by service restart. Start a new session to retry.',
         question: null,
         ended_at: now(),
@@ -1434,15 +1546,27 @@ export async function discover() {
       scheduleTemporaryProjectCleanup(s.project_id);
       scheduleSessionStorageCleanup(s.id);
     } else if (alive.has(s.tmux)) {
-      register(s);
+      const desired = ['working', 'waiting'].includes(s.desired_status) ? s.desired_status : s.status;
+      const adopted = store.updateSession(s.id, {
+        ...(s.status !== desired ? { status: desired } : {}),
+        desired_status: desired,
+        runtime_status: 'running',
+        runtime_boot_id: BOOT_ID,
+        runtime_heartbeat_at: now(),
+        status_reason: 'boot-adopted',
+        recovery_attempts: 0,
+        ended_at: null,
+        exit_code: null,
+      });
+      register(adopted);
+      store.addEvent(s.id, 'boot-adopted', { previous_boot_id: s.runtime_boot_id || null, restored_status: desired });
     } else {
-      store.updateSession(s.id, { status: 'exited', ended_at: now() });
-      store.addEvent(s.id, 'exit', { code: null, reason: 'tmux gone on restart' });
-      scheduleTemporaryProjectCleanup(s.project_id);
-      scheduleSessionStorageCleanup(s.id);
+      const result = await recoverMissingSession(s);
+      if (result.recovered) recovered++;
+      else failedRecovery++;
     }
   }
-  console.log(`[aios] discovered ${reg.size} live session(s)`);
+  console.log(`[aios] discovered ${reg.size} live session(s); recovered ${recovered}; recovery failures ${failedRecovery}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1619,6 +1743,10 @@ async function pollOnce() {
       markExited(entry, null);
       continue;
     }
+    if (now() - (entry.lastRuntimeHeartbeat || 0) >= RUNTIME_HEARTBEAT_MS) {
+      const heartbeatAt = now();
+      if (store.touchSessionRuntime(s.id, BOOT_ID, heartbeatAt)) entry.lastRuntimeHeartbeat = heartbeatAt;
+    }
     const cmd = await paneCmd(entry.tmux);
     if (SHELLS.has(cmd)) {
       // Grace: a just-(re)launched pane is briefly at the shell before `. launch.sh` execs the agent.
@@ -1743,6 +1871,10 @@ async function pollOnce() {
         }
       }
     }
+    if (s.status === 'waiting' && status === 'working' && now() < (entry.preserveWaitingUntil || 0)) {
+      status = 'waiting';
+      question = s.question;
+    }
     // debounce waiting to avoid flicker on animated TUIs: require 2 consecutive polls
     if (status === 'waiting') {
       entry.waitStreak = (entry.waitStreak || 0) + 1;
@@ -1758,7 +1890,10 @@ async function pollOnce() {
 }
 function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false } = {}) {
   const patch = {};
-  if (status && status !== s.status) patch.status = status;
+  if (status && status !== s.status) {
+    patch.status = status;
+    patch.status_reason = source;
+  }
   const questionChanged = (question ?? null) !== (s.question ?? null);
   if (questionChanged) patch.question = question ?? null;
   if (activityBump) patch.last_activity = now();
@@ -1858,7 +1993,7 @@ export function paneSig(sid) {
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
   const before = store.getSession(sid);
-  const updated = store.updateSession(sid, { status: 'working', question: null, summary: null, category: null, stage: null, parked: 0, degraded: 0, last_activity: now() });
+  const updated = store.updateSession(sid, { status: 'working', status_reason: 'reply', question: null, summary: null, category: null, stage: null, parked: 0, degraded: 0, last_activity: now() });
   const entry = reg.get(sid);
   if (entry) {
     entry.lastChange = now();
@@ -1946,6 +2081,7 @@ function applyAuthNeeded(s) {
   const question = reauthQuestion(s);
   const patch = {};
   if (s.status !== 'waiting') patch.status = 'waiting';
+  if (s.status !== 'waiting') patch.status_reason = 'auth-needed';
   if (s.summary !== summary) patch.summary = summary;
   if (s.category !== 'action') patch.category = 'action';
   if ((s.question ?? null) !== question) patch.question = question;
@@ -3174,7 +3310,10 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
   if (!(await tmuxOk('has-session', '-t', s.tmux))) {
     if (s.status !== 'exited') {
-      const updated = store.updateSession(sid, { status: 'exited', ended_at: now() });
+      const updated = store.updateSession(sid, {
+        status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
+        runtime_heartbeat_at: now(), status_reason: 'missing-pane-on-input', ended_at: now(),
+      });
       emitSessionStatus(updated, { previousStatus: s.status, source: 'stopped-input' });
       bus.emit('changed');
     }
@@ -3364,7 +3503,10 @@ route('POST', '/api/session/:id/type', async (req, res, { id: sid }) => {
   if (!data) return json(res, 400, { error: 'data required' });
   if (!(await tmuxOk('has-session', '-t', s.tmux))) {
     if (s.status !== 'exited') {
-      const updated = store.updateSession(sid, { status: 'exited', ended_at: now() });
+      const updated = store.updateSession(sid, {
+        status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
+        runtime_heartbeat_at: now(), status_reason: 'missing-pane-on-type', ended_at: now(),
+      });
       emitSessionStatus(updated, { previousStatus: s.status, source: 'stopped-type' });
       bus.emit('changed');
     }
@@ -3449,6 +3591,16 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
   if (!s) return json(res, 404, { error: 'no such session' });
   const pending = pendingLaunches.get(sid);
   if (pending) pending.cancelled = true;
+  // Persist intent BEFORE touching the process. If the host dies during the stop sequence, the next
+  // boot sees an explicit operator stop and must not mistake it for a recoverable crash.
+  store.updateSession(sid, {
+    desired_status: 'exited',
+    runtime_status: s.status === 'exited' ? 'exited' : 'stopping',
+    runtime_boot_id: BOOT_ID,
+    runtime_heartbeat_at: now(),
+    status_reason: 'operator-stop',
+    recovery_attempts: 0,
+  });
   // A manual Stop is the operator taking over: disable the Supervisor auto-pilot first so it can't
   // relaunch/re-nudge the agent after we halt it. Stays off until re-enabled from the Supervisor tab.
   let supervisorDisabled = false;
@@ -3468,9 +3620,13 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
       await tmuxOk('kill-session', '-t', s.tmux);
     }
     const entry = reg.get(sid);
-    if (entry) markExited(entry, null);
+    if (entry) markExited(entry, null, { reason: 'operator-stop' });
     else {
-      const updated = store.updateSession(sid, { status: 'exited', question: null, ended_at: now(), last_activity: now() });
+      const updated = store.updateSession(sid, {
+        status: 'exited', desired_status: 'exited', runtime_status: 'exited',
+        runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(), status_reason: 'operator-stop',
+        question: null, ended_at: now(), last_activity: now(),
+      });
       emitSessionStatus(updated, { previousStatus: s.status, source: 'stop' });
     }
   }
@@ -3492,12 +3648,25 @@ export async function killSession(sid) {
   if (!s) return null;
   const pending = pendingLaunches.get(sid);
   if (pending) pending.cancelled = true;
+  // Kill is also expected lifecycle intent. Commit it before the process signal for crash consistency.
+  store.updateSession(sid, {
+    desired_status: 'exited',
+    runtime_status: s.status === 'exited' ? 'exited' : 'stopping',
+    runtime_boot_id: BOOT_ID,
+    runtime_heartbeat_at: now(),
+    status_reason: 'operator-kill',
+    recovery_attempts: 0,
+  });
   store.addEvent(sid, 'kill', { manual: true });
   if (!s.tmux.startsWith('pending-')) await tmuxOk('kill-session', '-t', s.tmux);
   const entry = reg.get(sid);
-  if (entry) markExited(entry, null);
+  if (entry) markExited(entry, null, { reason: 'operator-kill' });
   else {
-    const updated = store.updateSession(sid, { status: 'exited', question: null, ended_at: now(), last_activity: now() });
+    const updated = store.updateSession(sid, {
+      status: 'exited', desired_status: 'exited', runtime_status: 'exited',
+      runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(), status_reason: 'operator-kill',
+      question: null, ended_at: now(), last_activity: now(),
+    });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'kill' });
   }
   scheduleTemporaryProjectCleanup(s.project_id);
@@ -3637,7 +3806,7 @@ async function boot() {
   await discover();
   const swept = await sweepTemporaryProjects();
   if (swept.some((result) => result?.removed)) bus.emit('changed');
-  const liveSessionIds = store.listLiveSessions().map((session) => session.id);
+  const liveSessionIds = store.listExpectedLiveSessions().map((session) => session.id);
   const sweptScratch = await sweepSessionStorage(liveSessionIds);
   if (sweptScratch.length) console.log(`[aios] removed ${sweptScratch.length} orphaned session scratch director${sweptScratch.length === 1 ? 'y' : 'ies'}`);
   // Never overlap poll ticks: an auto-fallback relaunch (or a slow tmux) can make one tick outlast POLL_MS,

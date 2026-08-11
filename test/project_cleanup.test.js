@@ -49,7 +49,13 @@ try {
   store.createSession({ id: 's_child', project_id: 'p_temp', parent_session_id: 's_parent', tool: 'codex', tmux: 'fixture', status: 'working' });
   const live = await cleanupTemporaryProject('p_temp');
   assert.equal(live.reason, 'live-sessions', 'temporary projects stay while any child session is live');
-  store.updateSession('s_child', { status: 'exited', ended_at: Date.now() });
+  store.updateSession('s_child', {
+    status: 'exited',
+    desired_status: 'exited',
+    runtime_status: 'exited',
+    status_reason: 'expected-completion',
+    ended_at: Date.now(),
+  });
   const cleaned = await cleanupTemporaryProject('p_temp');
   assert.equal(cleaned.folderDeleted, true);
   assert.equal(store.getProject('p_temp'), undefined, 'finished temporary projects disappear from the project list');
