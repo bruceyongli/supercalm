@@ -647,7 +647,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
-  --dock-rail-w: 58px;    /* one labelled Tools entry (the last column) */
+  --dock-rail-w: 58px;    /* the one-click labelled agent rail (the last column) */
   --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
   --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
@@ -842,41 +842,25 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
   padding: 8px 2px; background: transparent; border: 0; z-index: 6;
 }
-.dock-tools-trigger {
-  width: 54px; min-height: 48px; display: grid; place-items: center; gap: 2px; padding: 5px 2px;
-  border: 0; border-radius: 9px; background: transparent; color: var(--dim); font: inherit; cursor: pointer;
+/* One-click rail buttons (operator: the Tools menu hid every agent two clicks deep): minimal
+   line-icon + a tiny label per agent, so the rail is decodable at a glance with no menu hop. */
+.agent-dock-rail .dock-glyphs { gap: 4px; padding: 0; }
+.agent-dock-rail .dock-glyph,
+.agent-dock-rail .dock-gear {
+  position: relative; width: 54px; height: auto; min-height: 44px;
+  display: grid; justify-items: center; align-content: center; gap: 3px; padding: 5px 1px;
+  background: transparent; border: 0; color: var(--dim); border-radius: 9px; font: inherit; cursor: pointer;
 }
-.dock-tools-trigger svg { width: 19px; height: 19px; }
-.dock-tools-trigger span { font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
-.dock-tools-trigger:hover, .dock-tools-trigger.on, .dock-tools-trigger[aria-expanded="true"] { color: var(--blue); background: rgba(88,166,255,.1); }
-.dock-tools-menu {
-  position: absolute; z-index: 81; top: 8px; right: calc(100% + 6px); width: 286px;
-  display: grid; gap: 2px; padding: 6px; border: 1px solid var(--line2); border-radius: 11px;
-  background: #10161f; box-shadow: 0 18px 48px rgba(0,0,0,.5);
-}
-.dock-tools-menu[hidden] { display: none; }
-.dock-tool-option, .agent-dock-rail .dock-tool-option.side-agents-btn {
-  position: relative; width: 100%; height: auto; min-height: 46px; display: grid;
-  grid-template-columns: 28px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 9px;
-  border: 0; border-radius: 8px; background: transparent; color: var(--muted); font: inherit; text-align: left; cursor: pointer;
-}
-.dock-tool-option:hover, .dock-tool-option:focus-visible, .dock-tool-option.on { color: var(--ink); background: rgba(255,255,255,.06); outline: 0; }
-.dock-tool-option svg { width: 20px; height: 20px; justify-self: center; }
-.dock-tool-option > span:not(.side-tab-dot) { min-width: 0; display: grid; gap: 1px; }
-.dock-tool-option b { color: var(--ink); font-size: 12px; }
-.dock-tool-option small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dim); font-size: 10px; }
-.dock-tool-option .side-tab-dot { position: static; margin: 0; }
-.agent-dock-rail .dock-glyphs { gap: 6px; padding: 0; }
-.agent-dock-rail .dock-glyph { position: relative; width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
-.agent-dock-rail .dock-glyph svg { width: 20px; height: 20px; display: block; }
-.agent-dock-rail .dock-glyph-letter { font-size: 14px; font-weight: 800; }
-.agent-dock-rail .dock-glyph:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
-.agent-dock-rail .dock-glyph.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
-.agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 3px; right: 3px; margin: 0; }
-.agent-dock-rail .dock-gear { width: 36px; height: 36px; background: transparent; border: 0; color: var(--dim); border-radius: 9px; }
+.agent-dock-rail .dock-glyph svg { width: 19px; height: 19px; display: block; }
 .agent-dock-rail .dock-gear svg { width: 18px; height: 18px; }
-.agent-dock-rail .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
-.agent-dock-rail .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
+.dock-glyph-label {
+  max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 700 8.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
+}
+.agent-dock-rail .dock-glyph-letter { font-size: 14px; font-weight: 800; line-height: 19px; }
+.agent-dock-rail .dock-glyph:hover, .agent-dock-rail .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
+.agent-dock-rail .dock-glyph.on, .agent-dock-rail .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
+.agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 3px; right: 7px; margin: 0; }
 /* Drawer closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
 .session-shell:not(.dock-open) .session-usage-panel { padding: 0; border-width: 0; overflow: hidden; }
 /* Scrim + compact overlay (≤1194px): the drawer slides over the log, dim scrim, tap/esc/✕ closes. */
@@ -901,8 +885,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     padding: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: auto;
     z-index: 45; box-shadow: -18px 0 48px rgba(1, 4, 9, 0.5);
   }
-  /* Touch targets ≥38–40px on iPad/compact (design). */
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 40px; height: 40px; }
+  /* Touch targets ≥38–40px on iPad/compact (design); labels keep the vertical rail decodable. */
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 54px; min-height: 44px; }
   .main-tabs button { width: 38px; height: 38px; min-width: 38px; }
   .story-toggle [data-mode] { min-height: 38px; }
   .session-title-icon { width: 34px; min-width: 34px; min-height: 34px; }
@@ -1674,13 +1658,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
      Blur restores the dock immediately through session-viewport's keyboard-open class. */
   .session-shell.keyboard-open > .agent-dock-rail { display: none; }
   .session-shell.keyboard-open .footer-composer { padding-bottom: 0; }
-  .dock-tools-trigger { width: auto; min-width: 72px; min-height: 44px; grid-template-columns: 18px auto; gap: 6px; padding: 4px 10px; }
-  .dock-tools-trigger span { font-size: 10px; }
-  .dock-tools-menu { position: fixed; left: 8px; right: 8px; top: auto; bottom: calc(50px + env(safe-area-inset-bottom)); width: auto; max-height: min(68dvh, 520px); overflow: auto; }
   .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 2px; }
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; height: 40px; }
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { justify-content: center; padding: 0; }
-  .agent-dock-rail .dock-glyph::after, .agent-dock-rail .dock-gear::after { display: none; }
+  /* Slim one-row bar (operator: the bar ate too much of the screen): icon-only, labels via title. */
+  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; min-height: 40px; padding: 0; }
+  .agent-dock-rail .dock-glyph-label { display: none; }
   /* The drawer opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
      on a 390px phone — unusable). Sits above the scrim; the ✕ / scrim / esc close it. */
   .session-shell.dock-open .session-usage-panel,

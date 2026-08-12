@@ -308,7 +308,7 @@ function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth() - 58); // one clearly-labelled session-tools entry
+  return Math.max(640, window.innerWidth - railWidth() - 58); // the one-click labelled agent rail
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {

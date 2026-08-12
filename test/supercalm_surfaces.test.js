@@ -29,10 +29,16 @@ assert.match(session, /session-actions-menu/, 'rare stop and kill controls live 
 assert.match(session, /shell\.classList\.toggle\('session-actions-open', open\)/,
   'opening the dots menu elevates its header stacking context');
 const actionsLayer = Number(sessionStyles.match(/\.session-shell\.session-actions-open > header\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
-const toolsLayer = Number(sessionStyles.match(/\.dock-tools-menu\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
-assert.ok(actionsLayer > toolsLayer,
-  'the open dots-menu header paints above the Tools menu/rail stacking layer');
+const railLayer = Number(sessionStyles.match(/\.agent-dock-rail\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
+assert.ok(actionsLayer > railLayer,
+  'the open dots-menu header paints above the agent rail stacking layer');
 assert.match(session, /composer-settings-toggle/, 'phone keeps one compact run-settings summary in the composer');
-assert.match(read('web/agents/host.js'), />Tools</, 'the session exposes one named Tools entry instead of an unlabeled glyph strip');
+// Operator 2026-08-11: the Tools menu hid every agent two clicks deep. The rail is one-click labelled
+// entries, and the drawer PARKS — its open/closed state persists across sessions and reloads.
+const host = read('web/agents/host.js');
+assert.match(host, /dock-glyph-label/, 'the agent rail shows labelled one-click entries (decodable, no menu hop)');
+assert.doesNotMatch(host, /dock-tools-menu/, 'no intermediate Tools menu gates the agent panels');
+assert.match(host, /aios_dock_parked/, 'the drawer parks: open/closed state persists across sessions');
+assert.match(host, /localStorage\.getItem\(PREF_PARKED\) === '1'/, 'a parked drawer is restored on mount');
 
 console.log('supercalm_surfaces.test ok');
