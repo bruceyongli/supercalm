@@ -2846,6 +2846,15 @@ const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 let attachments = [];
 let attachmentSeq = 0;
 
+function showComposerNotice(message) {
+  const el = $('#mic-status');
+  if (!el) return;
+  const text = String(message || '');
+  el.textContent = text;
+  clearTimeout(showComposerNotice.timer);
+  showComposerNotice.timer = setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 7000);
+}
+
 attachBtns.forEach((btn) => {
   btn.innerHTML =
     '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>';
@@ -3409,7 +3418,9 @@ async function sendInput() {
     requestScope.guard(requestToken);
     if (r.status === 409) {
       cancelEcho();
-      showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
+      const j = await r.json().catch(() => ({}));
+      if (j.busy) showComposerNotice(j.error || 'Session is still resuming. Your draft was kept.');
+      else showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
     } else if (!r.ok) {
       cancelEcho();
       const j = await r.json().catch(() => ({}));

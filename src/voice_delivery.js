@@ -42,6 +42,11 @@ export async function deliverVoiceFeedback({
       delivery.status = result.stopped ? 'stopped' : 'missing';
       return { sent: false, say: 'That session has stopped, so I could not send it. You can resume it from the dashboard. Moving on.', delivery };
     }
+    if (result?.busy) {
+      delivery.status = 'busy';
+      delivery.reason = result.reason || 'input-not-ready';
+      return { sent: false, retry: true, say: 'That session is still resuming, so I did not send your feedback. I kept this item here; try again when it is ready.', delivery };
+    }
     delivery.status = 'sent';
     delivery.length = message.length;
     return { sent: true, say: `Sent your feedback to ${delivery.project}. Moving on.`, delivery };

@@ -691,6 +691,24 @@ route('POST', '/api/voice/turn', async (req, res) => {
         try { store.addEvent(it.sessionId, 'voice-reply', { len: outcome.delivery.length, mode: vs.onTheGo ? 'on-the-go' : 'manual' }); } catch {}
       }
       try { if (it) store.addEvent(it.sessionId, 'voice-delivery', outcome.delivery); } catch {}
+      if (outcome.retry) {
+        const retryMessage = String(r.message || userText).trim();
+        // Delivery did not cross the session boundary, so restore the confirmed draft instead of
+        // letting the normal send reducer erase it. "Yes, send it" can retry without the operator
+        // reconstructing a long spoken instruction.
+        vs.dialogue = { phase: 'confirming', pending: { sessionId: it.sessionId, text: retryMessage } };
+        vs.lastSpoken = outcome.say;
+        if (vs.history.at(-1)?.role === 'assistant') vs.history[vs.history.length - 1] = { role: 'assistant', content: outcome.say };
+        return json(res, 200, {
+          say: outcome.say,
+          done: false,
+          listen: true,
+          current: currentBeforeTurn,
+          delivery: outcome.delivery,
+          sentCount: vs.sentCount || 0,
+          ...(vs.onTheGo ? { acceptedText: userText } : {}),
+        });
+      }
       vs.pointer++;
       return json(res, 200, {
         say: outcome.say,

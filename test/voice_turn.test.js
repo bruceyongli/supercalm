@@ -250,6 +250,19 @@ assert.equal(
     reply: { message: 'feedback' },
     getSession: () => ({ status: 'waiting' }),
     answeredElsewhere: () => false,
+    deliverReply: async () => ({ busy: true, reason: 'resume-choice' }),
+  });
+  assert.equal(outcome.sent, false);
+  assert.equal(outcome.retry, true);
+  assert.equal(outcome.delivery.status, 'busy');
+  assert.match(outcome.say, /still resuming/i);
+}
+{
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_target', project: 'AIOS' },
+    reply: { message: 'feedback' },
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
     deliverReply: async () => { throw new Error('tmux unavailable'); },
   });
   assert.equal(outcome.sent, false);
@@ -287,6 +300,8 @@ assert.match(voiceTurnSource, /voiceControlReply\(userText, \{ hasPending: !!pen
 assert.doesNotMatch(voiceSource, /ON_THE_GO_SYS/,
   'proactive announcements no longer use a weaker second assistant policy');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
+assert.match(voiceSource, /if \(outcome\.retry\)[\s\S]*phase: 'confirming'[\s\S]*pending: \{ sessionId: it\.sessionId, text: retryMessage \}/,
+  'a retryable delivery keeps the confirmed voice draft scoped to the same session');
 assert.match(voiceSource, /r\.message \? \{ draft: String\(r\.message\)/,
   'a staged instruction is recoverable before the final delivery turn');
 assert.match(voiceSource, /requestAlive: voiceSessions\.has\(vs\.id\)/,

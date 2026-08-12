@@ -62,7 +62,7 @@ import {
   sessionStoragePaths,
   sweepSessionStorage,
 } from './session_storage.js';
-import { agentInputReady } from './agent_input_ready.js';
+import { agentInputReady, askMenuTypeDigit, operatorInputDisposition } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -763,21 +763,10 @@ function resizeCandidate(sid, t = now()) {
   return { clientId: owner.clientId, cols, rows };
 }
 
-// Send literal text then Enter (the main "reply" path).
-// Detect a Claude AskUserQuestion menu and return the digit of its "Type something"
-// custom-answer option — so a free-text reply becomes a real answer instead of being
-// typed onto the highlighted preset (which silently loses the user's words).
-function askMenuTypeDigit(screen) {
-  const t = stripAnsi(screen || '');
-  if (!/Enter to select|to navigate/.test(t)) return null; // not an interactive selection menu
-  const m = t.match(/(\d+)\.\s*Type something/i);
-  return m ? m[1] : null;
-}
-
 // askSubmitStepPending (detect_classify.js, pure): the multi-question AskUserQuestion "✔ Submit"
 // parking detector — sendText confirms it after a menu answer so answers actually deliver.
 
-export async function sendText(name, text) {
+export async function sendText(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false } = {}) {
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -796,6 +785,10 @@ export async function sendText(name, text) {
     try {
       screen = await tmux('capture-pane', '-p', '-t', name);
     } catch {}
+  }
+  if (requireOperatorTarget) {
+    const target = operatorInputDisposition(screen, { menuAnswer, allowActive });
+    if (!target.ready) return { accepted: false, reason: target.reason };
   }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
@@ -820,6 +813,7 @@ export async function sendText(name, text) {
     const after = await tmux('capture-pane', '-p', '-t', name).catch(() => '');
     if (askSubmitStepPending(after)) await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
   }
+  return { accepted: true };
 }
 
 // Send a single named control key. Accepts friendly aliases.
@@ -3325,9 +3319,13 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     // A multi-question AskUserQuestion advances its TUI after each answer and exposes Submit only after
     // the last one. Feed every selected answer in order, but perform bookkeeping/noteReply once after
     // the whole prompt is complete so Needs you does not vanish after question one.
-    for (const part of sends) await sendText(s.tmux, part);
+    for (const part of sends) {
+      const delivered = await sendText(s.tmux, part, { requireOperatorTarget: true, menuAnswer: true, allowActive: s.status === 'working' });
+      if (delivered?.accepted === false) return { busy: true, reason: delivered.reason };
+    }
   } else {
-    await sendText(s.tmux, text);
+    const delivered = await sendText(s.tmux, text, { requireOperatorTarget: true, allowActive: s.status === 'working' });
+    if (delivered?.accepted === false) return { busy: true, reason: delivered.reason };
   }
   try { store.addMessage(sid, 'in', source, text); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
@@ -3346,6 +3344,13 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   if (!text.trim()) return json(res, 400, { error: 'text required' });
   const r = await deliverReply(sid, text, { source: b.source || 'text', attachments: attachments.length });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+  if (r.busy) return json(res, 409, {
+    error: r.reason === 'resume-choice'
+      ? 'Session is still on its recovery screen. Your draft was kept; choose a resume option or send again when the composer is ready.'
+      : 'Session is still resuming. Your draft was kept; send again when the composer is ready.',
+    busy: true,
+    reason: r.reason,
+  });
   if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });
 });
@@ -3370,6 +3375,7 @@ route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {
   }).join('\n');
   const r = await deliverReply(sid, text, { source: 'text', segments });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+  if (r.busy) return json(res, 409, { error: 'Session input is not ready yet. Your selections were not dismissed.', busy: true, reason: r.reason });
   if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });
 });

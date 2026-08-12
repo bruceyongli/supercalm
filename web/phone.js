@@ -625,6 +625,11 @@ async function sendReply(text) {
   try {
     const r = await fetch(`api/session/${S.sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: t, source: 'text' }) });
     if (r.status === 409) {
+      const j = await r.json().catch(() => ({}));
+      if (j.busy) {
+        toast(j.error || 'Session is still resuming — your reply was kept');
+        return;
+      }
       await api(`api/session/${S.sid}/resume`, { method: 'POST' }).catch(() => {});
       toast('Resuming — send again in a moment');
       return;

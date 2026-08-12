@@ -96,7 +96,7 @@ const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf
 {
   const sessions = read('src/sessions.js');
   const deliver = sessions.slice(sessions.indexOf('export async function deliverReply'), sessions.indexOf("route('POST', '/api/session/:id/input'"));
-  assert.match(deliver, /for \(const part of sends\) await sendText/, 'multi-question answers advance the TUI in question order');
+  assert.match(deliver, /for \(const part of sends\) \{[\s\S]*await sendText\(s\.tmux, part/, 'multi-question answers advance the TUI in question order');
   assert.ok(deliver.indexOf('for (const part of sends)') < deliver.indexOf('noteReply(sid)'), 'Needs you clears only after every selected answer is delivered');
   assert.match(sessions, /\/api\/session\/:id\/answers/, 'structured answers endpoint exists');
 

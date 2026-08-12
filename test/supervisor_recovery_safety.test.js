@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { agentInputReady, pendingComposerDraft } from '../src/agent_input_ready.js';
+import { agentInputReady, claudeResumePrompt, operatorInputDisposition, pendingComposerDraft } from '../src/agent_input_ready.js';
 import { emptyKernelState, evaluateSend, rebaseKernelForNewPane } from '../src/agents/send_kernel.js';
 import { recoveryAttempt } from '../src/agents/exit_recovery.js';
 
@@ -10,6 +10,27 @@ assert.equal(agentInputReady('old transcript\n❯ Ask Claude something\nbypass p
 assert.equal(agentInputReady('› old operator request\ngpt-5.5 xhigh · /tmp/lab'), false, 'a recent transcript prompt is not a composer');
 assert.equal(agentInputReady('› Implement {feature}\nStarting MCP servers (0/2)…'), false, 'placeholder without the ready footer is startup, not readiness');
 assert.equal(agentInputReady('› quoted old prompt\n' + 'startup\n'.repeat(20)), false, 'a stale prompt outside the visible tail is not readiness');
+
+const claudeResume = `Resuming the full session will consume a substantial portion of your usage limits. We recommend resuming from a summary.
+❯ 1. Resume from summary (recommended)
+2. Resume full session as-is
+3. Don't ask me again
+Enter to confirm   Esc to cancel`;
+assert.equal(claudeResumePrompt(claudeResume), true, 'the Claude post-recovery resume modal is recognized');
+assert.equal(agentInputReady(claudeResume), false, 'a resume modal is not a text composer');
+assert.deepEqual(operatorInputDisposition(claudeResume), { ready: false, reason: 'resume-choice' }, 'free text is held at a resume modal');
+assert.deepEqual(operatorInputDisposition(claudeResume, { menuAnswer: true }), { ready: true, target: 'choice-menu' }, 'an explicit options-form answer may operate the resume modal');
+assert.deepEqual(operatorInputDisposition('Compacting conversation…\nLoading'), { ready: false, reason: 'input-not-ready' }, 'startup and compaction screens reject programmatic text');
+assert.deepEqual(
+  operatorInputDisposition('⏺ Working…\nesc to interrupt\n⏵⏵ bypass permissions on', { allowActive: true }),
+  { ready: true, target: 'active-agent' },
+  'an authenticated operator can still interrupt or steer a live working turn',
+);
+assert.deepEqual(
+  operatorInputDisposition('Compacting conversation…\nesc to interrupt\n⏵⏵ bypass permissions on', { allowActive: true }),
+  { ready: false, reason: 'input-not-ready' },
+  'a transient compaction screen cannot masquerade as an interruptible turn',
+);
 assert.deepEqual(pendingComposerDraft('agent report\n❯ cut over\n'), { marker: '❯', text: 'cut over' });
 assert.equal(pendingComposerDraft('agent report\n❯ Ask Claude something\n'), null, 'idle placeholder is not an operator draft');
 

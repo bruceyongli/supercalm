@@ -274,6 +274,7 @@ route('POST', '/api/session/:id/teach/:standardId/retry', async (req, res, { id:
   ].join('\n');
   const result = await deliverReply(sessionId, message, { source: 'text' });
   if (result?.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
+  if (result?.busy) return json(res, 409, { error: 'session input is not ready yet', busy: true, reason: result.reason });
   if (result?.missing) return json(res, 404, { error: 'no such session' });
   noteStandardsUsed(session.project_id, [standardId], { sessionId });
   addEvent(sessionId, 'project-rule-retry', { standard_id: standardId });
