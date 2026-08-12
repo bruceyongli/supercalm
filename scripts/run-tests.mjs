@@ -5,13 +5,32 @@
 // alone). Adding a test is now just adding a file. Each suite remains its own process with scratch
 // AIOS_DATA; a small worker pool removes the old ~4 minute serialization cost. Output is buffered per
 // suite so parallel children cannot interleave unreadably, and every completion reports its duration.
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { worktreeDbVerdict } from '../src/db_guard.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+
+// AIOS worktree agent sessions run with TMPDIR inside the canonical live data dir
+// (~/aios/data/session-storage/<sid>/tmp). Tests mkdtemp their scratch AIOS_DATA from os.tmpdir(),
+// and the store's worktree guard rightly refuses to boot a DB inside the live data tree — so
+// `npm test` failed for EVERY worktree agent before a single suite ran. Re-point this run's TMPDIR
+// at the system scratch dir so every tmpdir()-derived path (ours below + each test's own mkdtemp)
+// lands outside the live tree. The safety guard itself stays untouched; non-worktree runs and
+// already-safe TMPDIRs are unaffected.
+try {
+  const gitMarker = join(ROOT, '.git');
+  if (process.platform !== 'win32' && existsSync(gitMarker) && statSync(gitMarker).isFile()) {
+    const probe = worktreeDbVerdict({ gitMarkerContent: readFileSync(gitMarker, 'utf8'), dbPath: join(tmpdir(), 'probe.db'), repoRoot: ROOT });
+    if (probe.refuse) {
+      process.env.TMPDIR = '/tmp';
+      console.log(`run-tests: TMPDIR was inside the canonical live data dir (${probe.canonicalData}); using /tmp for this run`);
+    }
+  }
+} catch {}
 const files = readdirSync(join(ROOT, 'test'))
   .filter((f) => f.endsWith('.test.js'))
   .sort()
