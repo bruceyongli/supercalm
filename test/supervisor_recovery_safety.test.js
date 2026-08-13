@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { agentInputReady, claudeResumePrompt, codexComposerPlaceholder, operatorInputDisposition, pendingComposerDraft } from '../src/agent_input_ready.js';
+import {
+  agentInputReady,
+  claudeResumePrompt,
+  codexComposerPlaceholder,
+  operatorInputDisposition,
+  operatorInputPlan,
+  pendingComposerDraft,
+  pendingDraftMatches,
+} from '../src/agent_input_ready.js';
 import { emptyKernelState, evaluateSend, rebaseKernelForNewPane } from '../src/agents/send_kernel.js';
 import { recoveryAttempt } from '../src/agents/exit_recovery.js';
 
@@ -40,6 +48,23 @@ assert.deepEqual(pendingComposerDraft('agent report\n❯ cut over\n'), { marker:
 assert.equal(pendingComposerDraft('agent report\n❯ Ask Claude something\n'), null, 'idle placeholder is not an operator draft');
 assert.equal(pendingComposerDraft('agent report\n› Run /review on my current changes\ngpt-5.6-sol xhigh · /tmp/lab'), null,
   'a rotating Codex placeholder is not an unsubmitted operator draft');
+assert.deepEqual(
+  operatorInputDisposition('agent report\n❯ rename that garbled session title\n⏵⏵ bypass permissions on'),
+  { ready: false, reason: 'pending-draft', draft: 'rename that garbled session title' },
+  'a native Terminal draft is identified accurately instead of mislabeled as a resuming session',
+);
+assert.equal(pendingDraftMatches('rename that garbled session…', 'rename that garbled session title so it is readable'), true,
+  'Claude capture-pane ellipsis still identifies a retry of the same draft');
+assert.deepEqual(
+  operatorInputPlan('agent report\n❯ same request\n⏵⏵ bypass permissions on', 'same request'),
+  { ready: true, target: 'existing-draft', draft: 'same request' },
+  'retrying the same Story text submits the settled Terminal draft rather than retyping it',
+);
+assert.deepEqual(
+  operatorInputPlan('agent report\n❯ older draft\n⏵⏵ bypass permissions on', 'new Story request', { replacePendingDraft: true }),
+  { ready: true, target: 'replace-draft', draft: 'older draft' },
+  'an explicit replacement makes a different Story request deliverable',
+);
 
 const recoveryWindow = 15 * 60_000;
 const episode = { exitRecoveryKey: 'exit-1', exitRecoveryAttempt: 1, exitRecoveryLastAt: 5_000, exitRecoveryResolved: false };

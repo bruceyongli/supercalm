@@ -45,7 +45,10 @@ export async function deliverVoiceFeedback({
     if (result?.busy) {
       delivery.status = 'busy';
       delivery.reason = result.reason || 'input-not-ready';
-      return { sent: false, retry: true, say: 'That session is still resuming, so I did not send your feedback. I kept this item here; try again when it is ready.', delivery };
+      const say = delivery.reason === 'pending-draft'
+        ? 'That session has an unfinished Terminal draft, so I did not replace it with your feedback. I kept this item here; finish or clear that draft, then try again.'
+        : 'That session is still resuming, so I did not send your feedback. I kept this item here; try again when it is ready.';
+      return { sent: false, retry: true, say, delivery };
     }
     delivery.status = 'sent';
     delivery.length = message.length;

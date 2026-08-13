@@ -103,7 +103,16 @@ const server = createServer(async (req, res) => {
   }
   const input = path.match(/^\/aios\/api\/session\/([^/]+)\/input$/);
   if (input && req.method === 'POST') {
-    inputBodies.push({ sid: input[1], ...JSON.parse(await readBody(req)) });
+    const body = JSON.parse(await readBody(req));
+    inputBodies.push({ sid: input[1], ...body });
+    if (body.text === 'Send this Story request.' && body.replace_pending !== true) {
+      return sendJson(res, {
+        error: 'Terminal has a different unfinished draft. Your Story message was kept.',
+        busy: true,
+        reason: 'pending-draft',
+        pendingDraft: 'Preserve this unfinished Terminal draft.',
+      }, 409);
+    }
     return sendJson(res, { ok: true });
   }
   if (path === '/aios/api/transcribe' && req.method === 'POST') return sendJson(res, { error: 'forced transcription failure' }, 503);
@@ -375,6 +384,19 @@ try {
   await phone.waitForFunction(() => document.querySelector('#reply')?.value === '');
   assert.equal(inputBodies.at(-1)?.sid, 's_done', 'the visible Send delivers the long reply to the current session');
   assert.equal(inputBodies.at(-1)?.attachments?.length, 1, 'the same send includes the uploaded phone attachment');
+  await phone.locator('#reply').fill('Send this Story request.');
+  await phone.locator('#send').click();
+  await phone.waitForFunction(() => document.querySelector('#reply')?.value === 'Preserve this unfinished Terminal draft.');
+  assert.deepEqual(inputBodies.slice(-2).map((body) => ({ text: body.text, replace: body.replace_pending })), [
+    { text: 'Send this Story request.', replace: false },
+    { text: 'Send this Story request.', replace: true },
+  ], 'Story automatically retries through a different unfinished Terminal draft');
+  assert.match(await phone.locator('#composer-notice').innerText(), /kept the unfinished Terminal draft here/i,
+    'the composer reports the accurate unified-draft outcome instead of claiming the session is resuming');
+  await phone.screenshot({ path: join(outDir, 'phone-story-terminal-draft.png'), fullPage: true });
+  assert.equal(await phone.locator('#reply').inputValue(), 'Preserve this unfinished Terminal draft.',
+    'the displaced Terminal draft moves into the visible Story composer instead of becoming phone-inaccessible history');
+  await phone.locator('#reply').fill('');
   await phone.locator('.brand a').click();
   await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
   assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'the canonical session Back returns to phone home');

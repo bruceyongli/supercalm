@@ -62,7 +62,7 @@ import {
   sessionStoragePaths,
   sweepSessionStorage,
 } from './session_storage.js';
-import { agentInputReady, askMenuTypeDigit, operatorInputDisposition } from './agent_input_ready.js';
+import { agentInputReady, askMenuTypeDigit, operatorInputPlan } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -766,7 +766,7 @@ function resizeCandidate(sid, t = now()) {
 // askSubmitStepPending (detect_classify.js, pure): the multi-question AskUserQuestion "✔ Submit"
 // parking detector — sendText confirms it after a menu answer so answers actually deliver.
 
-export async function sendText(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false } = {}) {
+export async function sendText(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false } = {}) {
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -786,9 +786,16 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
       screen = await tmux('capture-pane', '-p', '-t', name);
     } catch {}
   }
+  let inputTarget = null;
   if (requireOperatorTarget) {
-    const target = operatorInputDisposition(screen, { menuAnswer, allowActive });
-    if (!target.ready) return { accepted: false, reason: target.reason };
+    inputTarget = operatorInputPlan(screen, text, { menuAnswer, allowActive, replacePendingDraft });
+    if (!inputTarget.ready) return { accepted: false, reason: inputTarget.reason, pendingDraft: inputTarget.draft || '' };
+  }
+  if (inputTarget?.target === 'existing-draft') {
+    // A prior attempt reached Claude's composer but its Enter did not land. Do not erase and retype the
+    // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
+    await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+    return { accepted: true, submittedExisting: true };
   }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
@@ -3298,7 +3305,7 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
 // Returns { ok:true } | { stopped:true } | { missing:true }; throws only when tmux delivery itself
 // fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
 // not re-announce the reply as failed — the caller would re-deliver it.
-export async function deliverReply(sid, text, { source = 'text', attachments = 0, segments = null } = {}) {
+export async function deliverReply(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false } = {}) {
   const s = store.getSession(sid);
   if (!s) return { missing: true };
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
@@ -3324,8 +3331,14 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
       if (delivered?.accepted === false) return { busy: true, reason: delivered.reason };
     }
   } else {
-    const delivered = await sendText(s.tmux, text, { requireOperatorTarget: true, allowActive: s.status === 'working' });
-    if (delivered?.accepted === false) return { busy: true, reason: delivered.reason };
+    const delivered = await sendText(s.tmux, text, {
+      requireOperatorTarget: true,
+      allowActive: s.status === 'working',
+      replacePendingDraft,
+    });
+    if (delivered?.accepted === false) {
+      return { busy: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
+    }
   }
   try { store.addMessage(sid, 'in', source, text); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
@@ -3342,14 +3355,21 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   const attachments = normalizeAttachmentMeta(b.attachments);
   const text = textWithAttachmentBlock(b.text, attachments);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
-  const r = await deliverReply(sid, text, { source: b.source || 'text', attachments: attachments.length });
+  const r = await deliverReply(sid, text, {
+    source: b.source || 'text',
+    attachments: attachments.length,
+    replacePendingDraft: b.replace_pending === true,
+  });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
   if (r.busy) return json(res, 409, {
     error: r.reason === 'resume-choice'
       ? 'Session is still on its recovery screen. Your draft was kept; choose a resume option or send again when the composer is ready.'
-      : 'Session is still resuming. Your draft was kept; send again when the composer is ready.',
+      : r.reason === 'pending-draft'
+        ? 'Terminal has a different unfinished draft. Your Story message was kept.'
+        : 'Session is still resuming. Your draft was kept; send again when the composer is ready.',
     busy: true,
     reason: r.reason,
+    pendingDraft: r.reason === 'pending-draft' ? r.pendingDraft : undefined,
   });
   if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });

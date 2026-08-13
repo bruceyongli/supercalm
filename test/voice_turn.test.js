@@ -263,6 +263,20 @@ assert.equal(
     reply: { message: 'feedback' },
     getSession: () => ({ status: 'waiting' }),
     answeredElsewhere: () => false,
+    deliverReply: async () => ({ busy: true, reason: 'pending-draft' }),
+  });
+  assert.equal(outcome.sent, false);
+  assert.equal(outcome.retry, true);
+  assert.match(outcome.say, /unfinished Terminal draft/i);
+  assert.doesNotMatch(outcome.say, /still resuming/i,
+    'voice reports the real draft conflict rather than a false recovery state');
+}
+{
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_target', project: 'AIOS' },
+    reply: { message: 'feedback' },
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
     deliverReply: async () => { throw new Error('tmux unavailable'); },
   });
   assert.equal(outcome.sent, false);

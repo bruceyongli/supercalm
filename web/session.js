@@ -3440,27 +3440,50 @@ async function sendInput() {
       import('./story-view.js').then((m) => m.cancelComposerSend?.(echo)).catch(() => {});
     }
   };
-  try {
+  const postInput = async (replacePending = false) => {
     const r = await fetch(`api/session/${requestToken.id}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text, attachments: uploaded, source: uploaded.length ? 'text+attachments' : 'text' }),
+      body: JSON.stringify({
+        text,
+        attachments: uploaded,
+        source: uploaded.length ? 'text+attachments' : 'text',
+        replace_pending: replacePending,
+      }),
       signal: requestToken.signal,
     });
     requestScope.guard(requestToken);
+    return { r, json: r.ok ? {} : await r.json().catch(() => ({})) };
+  };
+  try {
+    let result = await postInput();
+    let preservedTerminalDraft = '';
+    // Story and Terminal are two views of one session. If Terminal has a different unfinished native
+    // draft, preserve it in ↑ history and let this explicit Story send replace it automatically.
+    if (result.r.status === 409 && result.json.reason === 'pending-draft' && result.json.pendingDraft) {
+      preservedTerminalDraft = String(result.json.pendingDraft);
+      result = await postInput(true);
+    }
+    const { r, json: j } = result;
     if (r.status === 409) {
       cancelEcho();
-      const j = await r.json().catch(() => ({}));
       if (j.busy) showComposerNotice(j.error || 'Session is still resuming. Your draft was kept.');
       else showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
     } else if (!r.ok) {
       cancelEcho();
-      const j = await r.json().catch(() => ({}));
       alert('Send failed: ' + (j.error || r.status));
     } else {
+      if (preservedTerminalDraft) rememberHistory(preservedTerminalDraft);
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
       reply.value = '';
       clearAttachments();
+      if (preservedTerminalDraft) {
+        // Put the displaced native draft where the operator can actually see/edit it—even on an iPhone
+        // keyboard with no ArrowUp key. History remains a second recovery path, not the only one.
+        setComposer(preservedTerminalDraft);
+        persistDraft();
+        showComposerNotice('Sent. I kept the unfinished Terminal draft here.');
+      }
     }
   } catch (e) {
     if (isSessionAbort(e)) return;
@@ -3584,13 +3607,16 @@ function persistDraft() {
   const v = histIdx === null ? reply.value : histStash;
   try { v ? localStorage.setItem(DRAFT_KEY, v) : localStorage.removeItem(DRAFT_KEY); } catch {}
 }
-function pushHistory(text) {
+function rememberHistory(text) {
   const t = String(text || '').trim();
   if (t && cmdHistory[cmdHistory.length - 1] !== t) { // dedupe consecutive repeats, like a shell
     cmdHistory.push(t);
     if (cmdHistory.length > HIST_MAX) cmdHistory = cmdHistory.slice(-HIST_MAX);
     try { localStorage.setItem(HIST_KEY, JSON.stringify(cmdHistory)); } catch {}
   }
+}
+function pushHistory(text) {
+  rememberHistory(text);
   histIdx = null;
   histStash = '';
   try { localStorage.removeItem(DRAFT_KEY); } catch {}

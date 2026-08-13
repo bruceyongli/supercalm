@@ -59,6 +59,16 @@ export function pendingComposerDraft(screen) {
   return null;
 }
 
+export function pendingDraftMatches(pending, requested) {
+  const visible = String(pending || '').replace(/\s+/g, ' ').trim();
+  const wanted = String(requested || '').replace(/\s+/g, ' ').trim();
+  if (!visible || !wanted) return false;
+  if (visible === wanted) return true;
+  // Claude truncates a long composer line with a real ellipsis in capture-pane. The visible prefix is
+  // still enough to recognize a retry of that same message, so submit it instead of clearing/retyping.
+  return visible.endsWith('…') && wanted.startsWith(visible.slice(0, -1).trimEnd());
+}
+
 export function agentInputReady(screen) {
   const clean = cleanAgentScreen(screen);
   const tail = clean.split('\n').slice(-24);
@@ -91,8 +101,25 @@ export function operatorInputDisposition(screen, { menuAnswer = false, allowActi
   if (transientInputScreen(screen)) return { ready: false, reason: 'input-not-ready' };
   if (askMenuTypeDigit(screen)) return { ready: true, target: 'custom-answer' };
   if (menuAnswer && numberedChoicePrompt(screen)) return { ready: true, target: 'choice-menu' };
+  const pending = pendingComposerDraft(screen);
+  if (pending) return { ready: false, reason: 'pending-draft', draft: pending.text };
   // Both coding TUIs accept an operator steering/interruption while a turn is running. Preserve that
   // path, but only when the durable session state says it is working and a real agent footer is visible.
   if (allowActive && activeAgentScreen(screen)) return { ready: true, target: 'active-agent' };
   return { ready: false, reason: 'input-not-ready' };
+}
+
+// Resolve an explicit operator send against the native TUI composer. A pending Terminal draft is not a
+// recovery screen: retrying the same text should press Enter on it, while a genuinely different Story
+// message needs an explicit replace flag so the caller can preserve the displaced draft first.
+export function operatorInputPlan(screen, requested, opts = {}) {
+  const disposition = operatorInputDisposition(screen, opts);
+  if (disposition.ready || disposition.reason !== 'pending-draft') return disposition;
+  if (pendingDraftMatches(disposition.draft, requested)) {
+    return { ready: true, target: 'existing-draft', draft: disposition.draft };
+  }
+  if (opts.replacePendingDraft) {
+    return { ready: true, target: 'replace-draft', draft: disposition.draft };
+  }
+  return disposition;
 }
