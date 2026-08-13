@@ -14,6 +14,7 @@ const fixture = `<!doctype html>
 <body class="session-page">
   <main id="view" class="dk-view">
     <div class="session-shell">
+      <header><nav class="agent-tab-strip"></nav></header>
       <main class="session-main">
         <section class="story-panel"></section>
         <div class="message-box footer-composer">
@@ -30,7 +31,6 @@ const fixture = `<!doctype html>
           </div>
         </div>
       </main>
-      <nav class="agent-dock-rail"></nav>
     </div>
   </main>
   <script type="module">
@@ -128,13 +128,14 @@ try {
       inlineHeight: shell.style.height,
       top: Math.round(rect.top),
       bottom: Math.round(rect.bottom),
-      dockDisplay: getComputedStyle(document.querySelector('.agent-dock-rail')).display,
+      // the agent menu is a header strip now — no bottom dock exists to double the keyboard row
+      stripDisplay: getComputedStyle(document.querySelector('.agent-tab-strip')).display,
       composerPaddingBottom: getComputedStyle(document.querySelector('.footer-composer')).paddingBottom,
     };
   });
   assert.deepEqual(open, {
     classOpen: true, inlineHeight: '480px', top: 394, bottom: 874,
-    dockDisplay: 'none', composerPaddingBottom: '0px',
+    stripDisplay: 'flex', composerPaddingBottom: '0px',
   },
     'the keyboard-open shell occupies the panned visual viewport instead of disappearing above it');
 
@@ -149,11 +150,11 @@ try {
       transform: shell.style.transform,
       top: Math.round(rect.top),
       height: Math.round(rect.height),
-      dockDisplay: getComputedStyle(document.querySelector('.agent-dock-rail')).display,
+      stripDisplay: getComputedStyle(document.querySelector('.agent-tab-strip')).display,
     };
   });
   assert.deepEqual(after, {
-    classOpen: false, inlineHeight: '', transform: '', top: 0, height: 874, dockDisplay: 'flex',
+    classOpen: false, inlineHeight: '', transform: '', top: 0, height: 874, stripDisplay: 'flex',
   }, 'blur clears stale keyboard geometry and restores the full-height page');
 } finally {
   await browser.close();

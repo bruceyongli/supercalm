@@ -28,17 +28,23 @@ assert.doesNotMatch(session, /titleTags|model · effort · autonomy|first sessio
 assert.match(session, /session-actions-menu/, 'rare stop and kill controls live in the session overflow menu');
 assert.match(session, /shell\.classList\.toggle\('session-actions-open', open\)/,
   'opening the dots menu elevates its header stacking context');
-const actionsLayer = Number(sessionStyles.match(/\.session-shell\.session-actions-open > header\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
-const railLayer = Number(sessionStyles.match(/\.agent-dock-rail\s*\{[^}]*z-index:\s*(\d+)/s)?.[1]);
-assert.ok(actionsLayer > railLayer,
-  'the open dots-menu header paints above the agent rail stacking layer');
+const toolbarBase = Number(sessionStyles.match(/\.session-toolbar \{ position: relative; z-index: (\d+);/s)?.[1]);
+const actionsLayer = Number(sessionStyles.match(/\.session-shell\.session-actions-open \.session-toolbar \{ z-index: (\d+); \}/s)?.[1]);
+assert.ok(toolbarBase > 0 && actionsLayer > toolbarBase,
+  'the session toolbar (and its open dots-menu) paints above the log surface');
 assert.match(session, /composer-settings-toggle/, 'phone keeps one compact run-settings summary in the composer');
-// Operator 2026-08-11: the Tools menu hid every agent two clicks deep. The rail is one-click labelled
-// entries, and the drawer PARKS — its open/closed state persists across sessions and reloads.
+// Operator 2026-08-11/12: the Tools menu hid every agent two clicks deep, and the right rail ate view
+// width. The agent menu is a one-click labelled tab strip in the HEADER (three panels: sidenav ·
+// session · agent panel); the panel PARKS — open/closed state AND per-tab width persist everywhere.
 const host = read('web/agents/host.js');
-assert.match(host, /dock-glyph-label/, 'the agent rail shows labelled one-click entries (decodable, no menu hop)');
+assert.match(session, /class="agent-tab-strip" id="side-tabs"/, 'the agent menu is a header tab strip, not a side rail');
+assert.match(session, /class="session-toolbar"/, 'the view switch + session actions live at the top of the session column');
+assert.match(host, /dock-glyph-label/, 'the agent strip shows labelled one-click entries (decodable, no menu hop)');
 assert.doesNotMatch(host, /dock-tools-menu/, 'no intermediate Tools menu gates the agent panels');
-assert.match(host, /aios_dock_parked/, 'the drawer parks: open/closed state persists across sessions');
-assert.match(host, /localStorage\.getItem\(PREF_PARKED\) === '1'/, 'a parked drawer is restored on mount');
+assert.match(host, /aios_dock_parked/, 'the panel parks: open/closed state persists across sessions');
+assert.match(host, /localStorage\.getItem\(PREF_PARKED\) === '1'/, 'a parked panel is restored on mount');
+assert.match(host, /onTabChange\(id\)/, 'the host reports the active tab so the session view can restore its width');
+assert.match(session, /PREF_PANEL_FRACTIONS/, 'panel width parks per tab');
+assert.match(session, /panelFractions\[activeSideTab\] = /, 'drag-resize saves the width under the active tab');
 
 console.log('supercalm_surfaces.test ok');

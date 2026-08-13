@@ -43,11 +43,12 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   let homeEl = null;
   const modules = new Map(); // id -> { el, inst, papi, dirty }
   const base = document.baseURI;
-  // Agent dock (session view only, `dock:true`): a one-click labelled icon rail is always visible;
-  // ONE drawer opens on demand. The drawer PARKS: wherever the operator leaves it (open on a tab /
-  // closed) persists and is restored on every session view and reload — "the panel stays where you
-  // put it". Desktop push mode only: compact widths overlay the log, so they never auto-open and
-  // never change the parked preference. An explicit ?sideTab= deep link opens on any width.
+  // Agent dock (session view only, `dock:true`): a one-click labelled tab strip sits at the top
+  // (session header, above the right panel); ONE panel opens on demand. The panel PARKS: wherever
+  // the operator leaves it (open on a tab / closed) persists and is restored on every session view
+  // and reload — "the panel stays where you put it". Desktop push mode only: compact widths overlay
+  // the log, so they never auto-open and never change the parked preference. An explicit ?sideTab=
+  // deep link opens on any width.
   // Non-dock callers (the phone panels sheet) keep the classic always-open tab strip — `open` stays
   // true so tabs highlight + refresh() renders the Agents home. `shellEl`/`scrimEl` are null off the
   // session view; every use is guarded.
@@ -78,9 +79,10 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
   function renderTabs() {
     const tabs = tabbable();
     if (dock) {
-      // One-click rail (operator: the Tools menu hid every agent two clicks deep): a labelled icon
-      // button per active agent + the gear. The tiny labels cure the "unlabeled glyph strip" the
-      // menu was added for; a click opens THAT agent's drawer directly (click again to close).
+      // One-click strip (operator: the Tools menu hid every agent two clicks deep): a labelled icon
+      // button per active agent + the gear, horizontal in the session header. The labels cure the
+      // "unlabeled glyph strip" the menu was added for; a click opens THAT agent's panel directly
+      // (click again to close).
       tabsEl.innerHTML =
         `<div class="rail-mini-col dock-glyphs">${tabs.map(glyphBtn).join('')}</div>` +
         `<button class="side-agents-btn dock-gear" data-tab="agents" title="Agents — activate, permissions & create" aria-label="Agents">${GEAR_SVG}<span class="dock-glyph-label">Agents</span></button>`;
@@ -172,7 +174,7 @@ export function initAgentPanel({ sessionId, tabsEl, panelsEl, legacy = {}, onTab
     } else {
       await mountModule(id);
     }
-    onTabChange();
+    onTabChange(id); // the id lets the session view restore this tab's parked width
   }
 
   async function mountModule(id) {

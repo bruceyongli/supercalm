@@ -19,32 +19,36 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         <span class="title" id="s-title"></span>
         <span class="status-txt" id="s-status"></span>
         <div class="spacer"></div>
-        <div class="story-toggle workspace-tabs" data-story-toggle role="tablist" aria-label="Session workspace">
-          <button data-mode="story" type="button" title="Plain-language story of the session">Story</button>
-          <button data-mode="terminal" type="button" title="Raw terminal">Terminal</button>
-          <button data-mode="files" data-optional-workspace type="button" title="Files changed or referenced by this session" hidden>Files</button>
-          <button data-mode="preview" data-optional-workspace type="button" title="Preview session-produced files" hidden>Preview</button>
-          <span class="workspace-add-wrap">
-            <button class="workspace-add" id="workspace-add" type="button" title="Open a workspace tool" aria-label="Open workspace tool" aria-expanded="false">+</button>
-            <span class="workspace-menu" id="workspace-menu" role="menu" hidden>
-              <button type="button" data-workspace-add="files" role="menuitem"><b>Files</b><span>Browse the session worktree</span></button>
-              <button type="button" data-workspace-add="preview" role="menuitem"><b>Preview</b><span>See images, markdown, and HTML</span></button>
-              <button type="button" data-workspace-agent="review" role="menuitem"><b>Review</b><span>Ask Council, then decide what to send</span></button>
-              <button type="button" data-workspace-agent="inspector" role="menuitem"><b>Evidence</b><span>Inspect a failed check on demand</span></button>
-            </span>
-          </span>
-        </div>
-        <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
-        <span class="session-actions">
-          <button class="btn ghost sm session-more" id="session-more" type="button" title="Session actions" aria-label="Session actions" aria-expanded="false">•••</button>
-          <span class="session-actions-menu" id="session-actions-menu" role="menu" hidden>
-            <button type="button" id="b-stop" role="menuitem"><b>Stop &amp; park</b><span>Frees the pane and stays resumable</span></button>
-            <button type="button" id="b-kill" class="danger" role="menuitem"><b>Kill session</b><span>Ends the agent process</span></button>
-          </span>
-        </span>
+        <nav class="agent-tab-strip" id="side-tabs" aria-label="Session tools"></nav>
       </header>
 
       <main class="session-main">
+        <div class="session-toolbar" id="session-toolbar">
+          <div class="story-toggle workspace-tabs" data-story-toggle role="tablist" aria-label="Session workspace">
+            <button data-mode="story" type="button" title="Plain-language story of the session">Story</button>
+            <button data-mode="terminal" type="button" title="Raw terminal">Terminal</button>
+            <button data-mode="files" data-optional-workspace type="button" title="Files changed or referenced by this session" hidden>Files</button>
+            <button data-mode="preview" data-optional-workspace type="button" title="Preview session-produced files" hidden>Preview</button>
+            <span class="workspace-add-wrap">
+              <button class="workspace-add" id="workspace-add" type="button" title="Open a workspace tool" aria-label="Open workspace tool" aria-expanded="false">+</button>
+              <span class="workspace-menu" id="workspace-menu" role="menu" hidden>
+                <button type="button" data-workspace-add="files" role="menuitem"><b>Files</b><span>Browse the session worktree</span></button>
+                <button type="button" data-workspace-add="preview" role="menuitem"><b>Preview</b><span>See images, markdown, and HTML</span></button>
+                <button type="button" data-workspace-agent="review" role="menuitem"><b>Review</b><span>Ask Council, then decide what to send</span></button>
+                <button type="button" data-workspace-agent="inspector" role="menuitem"><b>Evidence</b><span>Inspect a failed check on demand</span></button>
+              </span>
+            </span>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn sm" id="b-resume" title="Resume this stopped session" hidden>Resume</button>
+          <span class="session-actions">
+            <button class="btn ghost sm session-more" id="session-more" type="button" title="Session actions" aria-label="Session actions" aria-expanded="false">•••</button>
+            <span class="session-actions-menu" id="session-actions-menu" role="menu" hidden>
+              <button type="button" id="b-stop" role="menuitem"><b>Stop &amp; park</b><span>Frees the pane and stays resumable</span></button>
+              <button type="button" id="b-kill" class="danger" role="menuitem"><b>Kill session</b><span>Ends the agent process</span></button>
+            </span>
+          </span>
+        </div>
         <div id="term" class="term main-view-panel" data-main-panel="terminal"></div>
         <section id="story-panel" class="story-panel main-view-panel" data-main-panel="story" data-story-panel hidden aria-live="polite"></section>
         <section id="scrollback" class="scrollback-view main-view-panel" data-main-panel="scrollback" hidden aria-live="polite">
@@ -133,7 +137,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         </div>
       </main>
 
-      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize agent drawer"></div>
+      <div class="usage-resizer" id="usage-resizer" role="separator" aria-orientation="vertical" aria-label="Resize agent panel"></div>
       <aside class="session-usage-panel" id="session-usage-panel">
         <button class="dock-drawer-x" id="dock-drawer-x" type="button" title="Close panel" aria-label="Close panel">✕</button>
         <div id="side-panels">
@@ -141,7 +145,6 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           <section class="side-tab-panel session-usage" id="s-usage" aria-live="polite" hidden></section>
         </div>
       </aside>
-      <nav class="agent-dock-rail" id="side-tabs" aria-label="Session tools"></nav>
       <div class="agent-dock-scrim" id="agent-dock-scrim" hidden></div>
     </div>`;
 
@@ -220,17 +223,29 @@ const PREF_MAP_GENERATE_TARGET = 'aios.session.mapGenerateTarget';
 const PREF_MAP_UPDATE_TARGET = 'aios.session.mapUpdateTarget';
 const RESIZE_CLIENT_KEY = 'aios.session.resizeClientId';
 const RESIZE_INTERACTIVE_WINDOW_MS = 30000;
-const PREF_USAGE_FRACTION = 'aios.session.usagePanelFraction';
+const PREF_USAGE_FRACTION = 'aios.session.usagePanelFraction'; // legacy single width — the fallback for tabs without their own
+const PREF_PANEL_FRACTIONS = 'aios.session.panelFractions'; // per-tab parked widths: {tabId: fraction}
 const RAIL_PINNED_W = 280; // keep in sync with --session-rail-width
-// The usage/main split is stored as a FRACTION of the available width (innerWidth minus the pinned
+// The panel/main split is stored as a FRACTION of the available width (innerWidth minus the pinned
 // rail), so it scales across screen sizes and shifts proportionally when the rail is pinned/unpinned.
-let usagePanelFraction = (() => {
+// Width PARKS PER TAB: each agent tab remembers its own width (Graph wide, Council narrow, …); the
+// host reports the active tab through onTabChange(id) and drag-saves key that tab.
+const defaultPanelFraction = (() => {
   const f = Number(localStorage.getItem(PREF_USAGE_FRACTION));
   if (Number.isFinite(f) && f > 0) return f;
   const oldPx = Number(localStorage.getItem(PREF_USAGE_WIDTH)); // migrate legacy px preference
   if (Number.isFinite(oldPx) && oldPx > 0) return Math.min(0.85, Math.max(0.2, oldPx / Math.max(640, window.innerWidth)));
   return 0.5;
 })();
+let panelFractions = (() => {
+  try {
+    const o = JSON.parse(localStorage.getItem(PREF_PANEL_FRACTIONS) || '{}');
+    return o && typeof o === 'object' && !Array.isArray(o) ? o : {};
+  } catch { return {}; }
+})();
+let activeSideTab = localStorage.getItem('aios_side_tab') || 'map'; // the host confirms via onTabChange(id)
+const panelFractionFor = (tab) => (Number.isFinite(Number(panelFractions[tab])) ? Number(panelFractions[tab]) : defaultPanelFraction);
+let usagePanelFraction = panelFractionFor(activeSideTab);
 
 function randomClientId() {
   if (crypto?.randomUUID) return crypto.randomUUID();
@@ -309,7 +324,7 @@ function railWidth() {
   return shell.classList.contains('rail-pinned') ? RAIL_PINNED_W : shell.classList.contains('rail-mini') ? 56 : 0;
 }
 function availableWidth() {
-  return Math.max(640, window.innerWidth - railWidth() - 58); // the one-click labelled agent rail
+  return Math.max(640, window.innerWidth - railWidth()); // no right rail — the agent menu lives in the header
 }
 // Clamp the fraction so neither pane becomes unusable (usage >= 320px, main >= 420px).
 function clampFraction(f) {
@@ -322,7 +337,10 @@ function applyUsageWidth({ save = false } = {}) {
   usagePanelFraction = clampFraction(usagePanelFraction);
   const px = Math.round(usagePanelFraction * availableWidth());
   shell.style.setProperty('--usage-panel-width', `${px}px`);
-  if (save) localStorage.setItem(PREF_USAGE_FRACTION, String(Number(usagePanelFraction.toFixed(4))));
+  if (save) {
+    panelFractions[activeSideTab] = Number(usagePanelFraction.toFixed(4)); // park this tab's width
+    localStorage.setItem(PREF_PANEL_FRACTIONS, JSON.stringify(panelFractions));
+  }
   setTimeout(syncSize, 80);
 }
 function setRailPinned(pinned, { save = true } = {}) {
@@ -2035,8 +2053,16 @@ function mountAgentPanel() {
     tabsEl: $('#side-tabs'),
     panelsEl: $('#side-panels'),
     legacy: { usage: { load: loadUsage } }, // map is now a real panel module (web/agents/map.js)
-    onTabChange: () => setTimeout(syncSize, 80),
-    dock: true, // compact icon rail + slide-over drawer (session view); phone.js keeps the classic tab strip
+    onTabChange: (tabId) => {
+      // Per-tab parked width: switching tabs restores THAT tab's remembered split before the resize.
+      if (tabId && tabId !== activeSideTab) {
+        activeSideTab = tabId;
+        usagePanelFraction = panelFractionFor(tabId);
+        applyUsageWidth();
+      }
+      setTimeout(syncSize, 80);
+    },
+    dock: true, // header tab strip + right panel (session view); phone.js keeps the classic tab strip
   });
 }
 mountAgentPanel();

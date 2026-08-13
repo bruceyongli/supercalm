@@ -48,8 +48,9 @@ assert.match(session, /function replyHeightCap\(\)[\s\S]*viewportHeight \* 0\.22
   'the live auto-grow path caps the reply against the visible viewport');
 assert.match(styles, /grid-template-columns: 40px minmax\(0, 1fr\) 40px 40px/,
   'the phone composer keeps attach, one settings summary, mic, and send on one compact row');
-assert.match(styles, /\.session-shell\.keyboard-open > \.agent-dock-rail \{ display: none; \}/,
-  'the workspace Tools dock leaves the keyboard-open viewport instead of doubling the bottom bar');
+assert.doesNotMatch(styles, /agent-dock-rail/,
+  'no bottom/side workspace dock exists to double the keyboard-open bottom bar — the agent menu is a header strip');
+assert.match(styles, /\.agent-tab-strip \{/, 'the agent tab strip has its header styles');
 assert.match(styles, /\.session-shell\.keyboard-open \.footer-composer \{ padding-bottom: 0; \}/,
   'the keyboard-open composer does not retain a second iPhone safe-area gap');
 assert.match(session, /composer-settings-toggle/,

@@ -634,11 +634,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   padding: 5px; border: 1px solid var(--line2); border-radius: 10px; background: #10161f;
   box-shadow: 0 18px 44px rgba(0, 0, 0, .46);
 }
-/* `header` has backdrop-filter, so it is a stacking context even after the session-grid override
-   resets its own z-index to auto. Elevate the CONTEXT while this menu is open: otherwise the menu's
-   z-index:80 remains trapped below later-painted terminal/dock siblings (operator screenshot,
-   2026-08-11). Keep it below app modal/voice layers (99+). */
-.session-shell.session-actions-open > header { position: relative; z-index: 82; }
+/* The ••• menu lives in .session-toolbar (z-index above the log siblings), so no header-context
+   elevation is needed anymore; the menu's own z-index resolves inside the raised toolbar. Keep the
+   toolbar's z below app modal/voice layers (99+). */
+.session-shell.session-actions-open .session-toolbar { z-index: 82; }
 .session-actions-menu[hidden] { display: none; }
 .session-actions-menu button {
   width: 100%; display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px;
@@ -655,15 +654,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell {
   --usage-panel-width: 50vw;
   --session-rail-width: var(--rail-width, 280px); /* unified with the shared shell (desktop.css :root) — one rail width everywhere */
-  --dock-rail-w: 58px;    /* the one-click labelled agent rail (the last column) */
-  --dock-resizer-w: 0px;  /* drawer resizer — 8px only when the drawer is open on desktop */
-  --dock-drawer-w: 0px;   /* drawer — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
+  --dock-resizer-w: 0px;  /* panel resizer — a 1px shared border line only while the panel is open on desktop */
+  --dock-drawer-w: 0px;   /* right panel — usage-panel-width only when open on desktop; a fixed overlay ≤1194px */
   display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
-  /* Header + body; the shared sidebar spans both rows. */
+  grid-template-columns: minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w);
+  /* Header + body; the shared sidebar spans both rows. Three panels: sidenav · session · agent panel. */
   grid-template-rows: auto minmax(0, 1fr);
   height: 100dvh;
-  padding: 0; /* edge-to-edge (design): full-bleed log/header/rail, no outer gutter */
+  padding: 0; /* edge-to-edge (design): full-bleed log/header/panel, no outer gutter */
   gap: 0;
   overflow: hidden;
 }
@@ -672,16 +670,15 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-shell > header { grid-column: 1 / -1; grid-row: 1; position: static; z-index: auto; border-radius: 12px 12px 0 0; margin: 0; }
 .session-shell.rail-pinned > header { grid-column: 2 / -1; }
 .session-shell.rail-pinned {
-  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w) var(--dock-rail-w);
+  grid-template-columns: var(--session-rail-width) minmax(0, 1fr) var(--dock-resizer-w) var(--dock-drawer-w);
 }
-/* Desktop: opening a drawer gives its columns width (push + drag-resize via #usage-resizer). ≤1194px the
-   drawer is a fixed overlay instead (below), so these stay 0 and the full-bleed log is never squeezed. */
+/* Desktop: opening the panel gives its columns width (push + drag-resize via #usage-resizer — the 1px
+   line IS the panel's border). ≤1194px the panel is a fixed overlay instead (below), so these stay 0
+   and the full-bleed log is never squeezed. */
 @media (min-width: 1195px) {
-  .session-shell.dock-open { --dock-resizer-w: 8px; --dock-drawer-w: var(--usage-panel-width); }
-  /* the open drawer's minimum lives on the track (not the child) so the closed drawer stays 0-wide */
-  .session-shell.dock-open .session-usage-panel { min-width: 320px; border-radius: 0; border-right: 0; }
-  /* separate the rail from the open drawer so the two don't read as one crammed strip (gpt A) */
-  .session-shell.dock-open .agent-dock-rail { background: var(--bg); border-left: 1px solid var(--line); }
+  .session-shell.dock-open { --dock-resizer-w: 1px; --dock-drawer-w: var(--usage-panel-width); }
+  /* the open panel's minimum lives on the track (not the child) so the closed panel stays 0-wide */
+  .session-shell.dock-open .session-usage-panel { min-width: 320px; }
 }
 /* The session hosts the shared app-shell sidebar (web/shell.js `.dk-side`) in grid column 1. desktop.css
    gives .dk-side height:100vh (overflows past the session header) and rounded-less chrome; fit it to the
@@ -700,16 +697,21 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-main {
   grid-column: 1;
   grid-row: 2;
-  display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
+  display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; /* toolbar · log · tools · composer */
   min-width: 0; min-height: 0; height: 100%; padding: 0; gap: 8px;
   max-width: none; margin: 0;
 }
+/* The session's own top toolbar: Story⇄Terminal (+ workspace tools) left, rare lifecycle actions
+   right — moved out of the global header so the header's right end belongs to the agent tab strip.
+   Raised so its dropdown menus (workspace +, •••) paint over the log surface below. */
+.session-toolbar { position: relative; z-index: 7; display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 8px 0; }
+.session-toolbar .spacer { flex: 1 1 auto; }
 .session-shell.rail-pinned .session-main { grid-column: 2; }
 .session-shell.conversation-mode .session-main,
 .session-shell.agent-mode .session-main,
 .session-shell.scrollback-mode .session-main {
   grid-column: 1;
-  grid-template-rows: minmax(0, 1fr) max-content max-content;
+  grid-template-rows: auto minmax(0, 1fr) max-content max-content;
 }
 .session-shell.rail-pinned.conversation-mode .session-main { grid-column: 2; }
 .session-shell.rail-pinned.agent-mode .session-main { grid-column: 2; }
@@ -785,29 +787,23 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   grid-template-columns: 10px 0; gap: 0; padding: 8px 0; border-color: transparent; background: transparent;
 }
 .usage-resizer {
-  grid-column: 2; cursor: col-resize; position: relative; min-width: 8px; height: 100%;
+  grid-column: 2; cursor: col-resize; position: relative; width: 1px; height: 100%;
+  background: var(--line); z-index: 6;
 }
 .session-shell.rail-pinned .usage-resizer { grid-column: 3; }
-/* No divider when the drawer is closed — its 8px min-width would otherwise sit (grip dots and all) on
-   top of the rail. It reappears, grippable, the moment a drawer opens. */
+/* No divider when the panel is closed. It reappears the moment a panel opens. */
 .session-shell:not(.dock-open) .usage-resizer { display: none; }
-.usage-resizer::before {
-  content: ""; position: absolute; inset: 0 3px; border-radius: 999px; background: var(--line);
-}
-/* centered 3-dot grip so the divider reads as draggable (operator: "you removed the adjustable width").
-   It only shows while a drawer is open — the resizer column is 0-wide when closed. */
-.usage-resizer::after {
-  content: ""; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  width: 4px; height: 4px; border-radius: 50%; background: var(--muted);
-  box-shadow: 0 -7px 0 var(--muted), 0 7px 0 var(--muted); pointer-events: none;
-}
-.usage-resizer:hover::before, .session-shell.resizing .usage-resizer::before { background: var(--blue); }
-.usage-resizer:hover::after, .session-shell.resizing .usage-resizer::after { background: var(--blue); box-shadow: 0 -7px 0 var(--blue), 0 7px 0 var(--blue); }
+/* The visible 1px line IS the panel's border (operator: one shared line, not a gap + pill). The grab
+   target is a wider invisible hit zone straddling it — clicks on the ::before box hit the resizer. */
+.usage-resizer::before { content: ""; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px; }
+.usage-resizer:hover, .session-shell.resizing .usage-resizer { background: var(--blue); }
 .session-usage-panel {
-  /* min-width:0 so the CLOSED drawer collapses to its 0px column instead of overflowing 320px onto the
-     rail (gpt: put the min on the OPEN track, not the child — see the dock-open rule in @media ≥1195). */
+  /* min-width:0 so the CLOSED panel collapses to its 0px column instead of overflowing 320px
+     (gpt: put the min on the OPEN track, not the child — see the dock-open rule in @media ≥1195).
+     Frameless on purpose: the resizer line is its left border and each agent panel's own cards are
+     the only frame (a drawer border here double-framed the Graph panel). */
   grid-column: 3; grid-row: 2; min-width: 0; min-height: 0; height: 100%; overflow: auto;
-  border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); padding: 8px;
+  border: 0; border-radius: 0; background: var(--panel2); padding: 8px;
 }
 .session-shell.rail-pinned .session-usage-panel { grid-column: 4; }
 .side-tabs {
@@ -841,41 +837,43 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .side-tab-panel { display: grid; gap: 8px; }
 .side-tab-panel[hidden] { display: none !important; }
 
-/* ---- Agent dock: compact icon rail (always visible) + one slide-over drawer ----------------------- */
-/* minimal dock rail (design): icons float on the right edge — no boxed rail, no boxed glyphs */
-.agent-dock-rail {
-  position: relative;
-  grid-column: -2 / -1; grid-row: 2; align-self: stretch;
-  width: var(--dock-rail-w); min-width: var(--dock-rail-w);
-  display: flex; flex-direction: column; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px 2px; background: transparent; border: 0; z-index: 6;
+/* ---- Agent tab strip (header) + the right panel ------------------------------------------------- */
+/* The agent menu lives at the TOP (operator: the right rail ate view width): a horizontal one-click
+   labelled tab per active agent + the gear, right-aligned in the session header so it sits directly
+   above the right panel — a clear three-panel view: sidenav · session · agent panel. */
+.agent-tab-strip {
+  flex: 0 0 auto; min-width: 0; margin-left: 8px;
+  display: flex; align-items: center; gap: 2px;
 }
-/* One-click rail buttons (operator: the Tools menu hid every agent two clicks deep): minimal
-   line-icon + a tiny label per agent, so the rail is decodable at a glance with no menu hop. */
-.agent-dock-rail .dock-glyphs { gap: 4px; padding: 0; }
-.agent-dock-rail .dock-glyph,
-.agent-dock-rail .dock-gear {
-  position: relative; width: 54px; height: auto; min-height: 44px;
-  display: grid; justify-items: center; align-content: center; gap: 3px; padding: 5px 1px;
-  background: transparent; border: 0; color: var(--dim); border-radius: 9px; font: inherit; cursor: pointer;
+.agent-tab-strip .dock-glyphs { display: flex; flex-direction: row; align-items: center; gap: 2px; padding: 0; }
+.agent-tab-strip .dock-glyph,
+.agent-tab-strip .dock-gear {
+  position: relative; width: auto; height: auto; min-height: 30px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+  background: transparent; border: 0; color: var(--dim); border-radius: 8px; font: inherit; cursor: pointer;
 }
-.agent-dock-rail .dock-glyph svg { width: 19px; height: 19px; display: block; }
-.agent-dock-rail .dock-gear svg { width: 18px; height: 18px; }
+.agent-tab-strip .dock-glyph svg { width: 16px; height: 16px; display: block; }
+.agent-tab-strip .dock-gear svg { width: 15px; height: 15px; }
 .dock-glyph-label {
-  max-width: 52px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 700 8.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
+  max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: 700 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
 }
-.agent-dock-rail .dock-glyph-letter { font-size: 14px; font-weight: 800; line-height: 19px; }
-.agent-dock-rail .dock-glyph:hover, .agent-dock-rail .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
-.agent-dock-rail .dock-glyph.on, .agent-dock-rail .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); border: 0; }
-.agent-dock-rail .dock-glyph .side-tab-dot { position: absolute; top: 3px; right: 7px; margin: 0; }
-/* Drawer closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
-.session-shell:not(.dock-open) .session-usage-panel { padding: 0; border-width: 0; overflow: hidden; }
-/* Scrim + compact overlay (≤1194px): the drawer slides over the log, dim scrim, tap/esc/✕ closes. */
+.agent-tab-strip .dock-glyph-letter { font-size: 13px; font-weight: 800; line-height: 16px; }
+.agent-tab-strip .dock-glyph:hover, .agent-tab-strip .dock-gear:hover { color: var(--ink); background: rgba(255, 255, 255, 0.05); }
+.agent-tab-strip .dock-glyph.on, .agent-tab-strip .dock-gear.on { color: var(--blue); background: rgba(88, 166, 255, 0.12); }
+.agent-tab-strip .dock-glyph .side-tab-dot { position: absolute; top: 2px; right: 4px; margin: 0; }
+/* Mid widths: icon-only tabs (tooltips carry the names) except the lit one keeps its label. */
+@media (max-width: 1500px) {
+  .agent-tab-strip .dock-glyph-label { display: none; }
+  .agent-tab-strip .dock-glyph.on .dock-glyph-label { display: block; }
+}
+/* Panel closed: collapse the 0-width column cleanly — keep the map canvas mounted (no display:none). */
+.session-shell:not(.dock-open) .session-usage-panel { padding: 0; overflow: hidden; }
+/* Scrim + compact overlay (≤1194px): the panel slides over the log, dim scrim, tap/esc/✕ closes. */
 .agent-dock-scrim { position: fixed; inset: 0; background: rgba(3, 6, 10, 0.55); z-index: 44; }
 .agent-dock-scrim[hidden] { display: none; }
-/* Explicit ✕ inside the drawer — compact widths only (reviewers: the overlay drawer had no visible
-   dismiss; on desktop the rail glyph/esc close it and the ✕ stays hidden). */
+/* Explicit ✕ inside the panel — compact widths only (reviewers: the overlay panel had no visible
+   dismiss; on desktop the strip tab/esc close it and the ✕ stays hidden). */
 .dock-drawer-x {
   display: none; position: sticky; top: 0; float: right; z-index: 7;
   width: 40px; height: 40px; margin: 0 0 4px 8px; place-items: center;
@@ -888,13 +886,13 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 @media (max-width: 1194px) {
   .usage-resizer { display: none; }
   .session-shell.dock-open .session-usage-panel {
-    position: fixed; top: 62px; bottom: 8px; right: calc(var(--dock-rail-w) + 8px);
+    position: fixed; top: 62px; bottom: 8px; right: 8px;
     width: min(var(--usage-panel-width, 420px), calc(100vw - 140px));
     padding: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: auto;
     z-index: 45; box-shadow: -18px 0 48px rgba(1, 4, 9, 0.5);
   }
-  /* Touch targets ≥38–40px on iPad/compact (design); labels keep the vertical rail decodable. */
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 54px; min-height: 44px; }
+  /* Touch targets ≥38px on iPad/compact (design). */
+  .agent-tab-strip .dock-glyph, .agent-tab-strip .dock-gear { min-height: 38px; }
   .main-tabs button { width: 38px; height: 38px; min-width: 38px; }
   .story-toggle [data-mode] { min-height: 38px; }
   .session-title-icon { width: 34px; min-width: 34px; min-height: 34px; }
@@ -1638,39 +1636,23 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .footer-composer { padding-bottom: env(safe-area-inset-bottom); }
 .footer-composer textarea { min-height: 42px; }
 
-/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + compact rail +
-   overlay drawer), so only true phone widths (≤600) fall back to the stacked block layout. */
+/* Retargeted 1050→600 for the agent dock: 601–1194px keeps the dock grid (full-bleed log + header
+   strip + overlay panel), so only true phone widths (≤600) fall back to the stacked block layout. */
 @media (max-width: 600px) {
-  /* Phone session layout: a flex column with EXPLICIT order — header · main · tool bar.
-     (Was display:block, which let the agent-dock rail and the drawer panel fall into page flow BELOW
-     the composer as a loose stack of icons — the "agent panel is dead space on mobile" bug.) */
+  /* Phone session layout: a flex column with EXPLICIT order — header · main. The agent menu is the
+     header strip (no bottom bar: the old one ate screen height and doubled up over the keyboard). */
   .session-shell, .session-shell.rail-pinned {
     display: flex; flex-direction: column;
     overflow: auto;
   }
   .session-shell > header { order: 0; }
   .session-shell > .session-main { order: 1; }
-  .session-shell > .agent-dock-rail { order: 2; }
-  .session-shell > .session-usage-panel { order: 3; }
-  /* The single Tools entry becomes a pinned bottom bar and opens the same drawer as desktop. */
-  .session-shell > .agent-dock-rail {
-    position: sticky; bottom: 0; z-index: 30;
-    margin-top: auto; /* short content: pin the bar to the viewport bottom, not adrift mid-page */
-    flex-direction: row; align-items: center; justify-content: flex-end; width: 100%; min-width: 0;
-    gap: 2px; padding: 2px 8px calc(2px + env(safe-area-inset-bottom)); /* slim: one compact row (operator: the bar ate too much of the screen) */
-    background: rgba(10, 14, 20, 0.96); border-top: 1px solid var(--line);
-    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  }
-  /* The keyboard is the active bottom surface. Hiding the workspace dock while typing prevents it
-     (plus iOS's still-reported safe-area inset) from becoming a second empty row above the keyboard.
-     Blur restores the dock immediately through session-viewport's keyboard-open class. */
-  .session-shell.keyboard-open > .agent-dock-rail { display: none; }
+  .session-shell > .session-usage-panel { order: 2; }
   .session-shell.keyboard-open .footer-composer { padding-bottom: 0; }
-  .agent-dock-rail .rail-mini-col.dock-glyphs { flex-direction: row; padding: 0; gap: 2px; }
-  /* Slim one-row bar (operator: the bar ate too much of the screen): icon-only, labels via title. */
-  .agent-dock-rail .dock-glyph, .agent-dock-rail .dock-gear { width: 42px; min-height: 40px; padding: 0; }
-  .agent-dock-rail .dock-glyph-label { display: none; }
-  /* The drawer opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
+  /* Icon-only strip on phones (tooltips carry the names); big enough to tap. */
+  .agent-tab-strip { max-width: 100%; overflow-x: auto; }
+  .agent-tab-strip .dock-glyph, .agent-tab-strip .dock-gear { min-height: 38px; padding: 4px 8px; }
+  /* The panel opens as a full-width bottom sheet (the ≤1194px rule pins a ~250px floating side panel
      on a 390px phone — unusable). Sits above the scrim; the ✕ / scrim / esc close it. */
   .session-shell.dock-open .session-usage-panel,
   .session-shell.rail-pinned.dock-open .session-usage-panel {
@@ -1688,7 +1670,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
      takes ALL leftover space (each panel scrolls internally), composer + tools stay content-sized. */
   .session-main, .session-shell.rail-pinned .session-main {
     flex: 1 1 auto; height: auto; min-height: 0; margin-bottom: 0;
-    grid-template-rows: minmax(0, 1fr) max-content max-content;
+    grid-template-rows: auto minmax(0, 1fr) max-content max-content; /* toolbar · log · tools · composer */
   }
   .session-shell.conversation-mode .session-main,
   .session-shell.rail-pinned.conversation-mode .session-main,
@@ -1700,7 +1682,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   }
   .message-box { max-height: none; overflow: visible; }
   .usage-resizer { display: none; }
-  /* CLOSED drawer: fully hidden on phones. It sits in the flex flow (order 4, after the agent bar), so
+  /* CLOSED panel: fully hidden on phones. It sits in the flex flow (after the main column), so
      anything short of display:none leaves the mounted panel content rendering full-width in the page
      after a ✕/scrim close — the operator-reported "panel stuck open with no way to close". */
   .session-shell:not(.dock-open) .session-usage-panel, .session-shell.rail-pinned:not(.dock-open) .session-usage-panel {
@@ -1762,11 +1744,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
     gap: 7px 9px; padding-left: 10px; padding-right: 10px;
   }
   .session-shell > header .brand { grid-column: 1; grid-row: 1; min-width: 0; }
-  .session-shell > header .title { grid-column: 2; grid-row: 1; min-width: 0; }
-  .session-shell > header .session-actions,
-  .session-shell > header #b-resume { grid-column: 3; grid-row: 1; justify-self: end; }
+  .session-shell > header .title { grid-column: 2 / 4; grid-row: 1; min-width: 0; }
   .session-shell > header .status-txt { grid-column: 1; grid-row: 2; align-self: center; }
-  .session-shell > header .story-toggle { grid-column: 2 / 4; grid-row: 2; justify-self: end; }
+  /* The agent strip takes the header's second row end (where the view toggle used to sit). */
+  .session-shell > header .agent-tab-strip { grid-column: 2 / 4; grid-row: 2; justify-self: end; margin-left: 0; }
   header .spacer { display: none; }
   .btn { padding: 5px 10px; min-height: 38px; font-size: 12px; } /* 30px was under every touch-target guideline */
   .clock { display: none; }
@@ -2850,7 +2831,7 @@ body.map-expanded-open { overflow: hidden; }
   border: 1px solid #2a3442; border-radius: 11px; background: #10161f; box-shadow: 0 18px 48px rgba(0, 0, 0, .48);
 }
 .workspace-menu[hidden] { display: none; }
-.session-shell.workspace-menu-open > header { position: relative; z-index: 41; }
+.session-shell.workspace-menu-open .session-toolbar { z-index: 41; }
 .workspace-menu > button {
   width: 100%; display: grid; gap: 2px; padding: 9px 10px; border: 0; border-radius: 7px;
   background: transparent; color: #d9e2ec; text-align: left; cursor: pointer;
