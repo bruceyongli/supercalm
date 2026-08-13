@@ -387,17 +387,24 @@ try {
   assert.equal(inputBodies.at(-1)?.attachments?.length, 1, 'the same send includes the uploaded phone attachment');
   await phone.locator('#reply').fill('Send this Story request.');
   await phone.locator('#send').click();
-  await phone.waitForFunction(() => document.querySelector('#reply')?.value === 'Preserve this unfinished Terminal draft.');
+  await phone.waitForFunction(() => document.querySelector('#reply')?.value === '');
   assert.deepEqual(inputBodies.slice(-2).map((body) => ({ text: body.text, replace: body.replace_pending })), [
     { text: 'Send this Story request.', replace: false },
     { text: 'Send this Story request.', replace: true },
   ], 'Story automatically retries through a different unfinished Terminal draft');
-  assert.match(await phone.locator('#composer-notice').innerText(), /kept the unfinished Terminal draft here/i,
-    'the composer reports the accurate unified-draft outcome instead of claiming the session is resuming');
+  assert.equal(await phone.locator('#composer-notice').innerText(), '',
+    'saving a displaced Terminal draft does not create a new attention notice');
   await phone.screenshot({ path: join(outDir, 'phone-story-terminal-draft.png'), fullPage: true });
+  await phone.locator('#reply').press('ArrowUp');
+  assert.equal(await phone.locator('#reply').inputValue(), 'Send this Story request.',
+    'ArrowUp first recalls the latest sent Story input');
+  await phone.locator('#reply').press('ArrowUp');
   assert.equal(await phone.locator('#reply').inputValue(), 'Preserve this unfinished Terminal draft.',
-    'the displaced Terminal draft moves into the visible Story composer instead of becoming phone-inaccessible history');
-  await phone.locator('#reply').fill('');
+    'a displaced Terminal draft is silently retained in the same per-session input history');
+  await phone.locator('#reply').press('ArrowDown');
+  await phone.locator('#reply').press('ArrowDown');
+  assert.equal(await phone.locator('#reply').inputValue(), '',
+    'ArrowDown past the newest history item restores the empty live composer');
   await phone.locator('.brand a').click();
   await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
   assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'the canonical session Back returns to phone home');

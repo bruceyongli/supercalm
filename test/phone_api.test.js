@@ -294,8 +294,10 @@ await featureReady;
     'the manual phone button also uses the shared Voice client');
   assert.match(ph, /result\.json\.reason === 'pending-draft'[\s\S]*post\(true\)/,
     'the standalone phone composer also reconciles an unfinished Terminal draft');
-  assert.match(ph, /Kept the unfinished Terminal draft here/,
-    'phone keeps the displaced native draft visible after the new message sends');
+  assert.match(ph, /composerHistoryRemember\(S\.sid, preservedTerminalDraft\)/,
+    'phone silently retains the displaced native draft in per-session composer history');
+  assert.doesNotMatch(ph, /Kept the unfinished Terminal draft here/,
+    'phone does not turn the saved native draft into a new attention message');
   assert.doesNotMatch(ph, /Session is still resuming/,
     'phone never invents a resuming lifecycle state for a blocked input');
   const sharedVoice = readFileSync(new URL('../web/voicemode.js', import.meta.url), 'utf8');

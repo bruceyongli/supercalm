@@ -3477,13 +3477,9 @@ async function sendInput() {
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
       reply.value = '';
       clearAttachments();
-      if (preservedTerminalDraft) {
-        // Put the displaced native draft where the operator can actually see/edit it—even on an iPhone
-        // keyboard with no ArrowUp key. History remains a second recovery path, not the only one.
-        setComposer(preservedTerminalDraft);
-        persistDraft();
-        showComposerNotice('Sent. I kept the unfinished Terminal draft here.');
-      }
+      // A displaced native draft is recoverable through the same per-session ↑/↓ history as sent
+      // composer text. Do not turn that safety copy into a new visible draft or attention message.
+      showComposerNotice('');
     }
   } catch (e) {
     if (isSessionAbort(e)) return;

@@ -649,12 +649,14 @@ async function sendReply(text) {
       return;
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    draftSet(S.sid, preservedTerminalDraft);
-    S.text = preservedTerminalDraft;
-    S.typing = !!preservedTerminalDraft;
-    S.draft = preservedTerminalDraft;
+    if (preservedTerminalDraft) composerHistoryRemember(S.sid, preservedTerminalDraft);
+    composerHistoryRemember(S.sid, t);
+    draftSet(S.sid, '');
+    S.text = '';
+    S.typing = false;
+    S.draft = '';
     S.sheet = null;
-    toast(preservedTerminalDraft ? 'Sent. Kept the unfinished Terminal draft here.' : 'Sent');
+    toast('Sent');
     render();
     loadDetail(S.sid); loadHome();
   } catch (e) {
@@ -681,8 +683,20 @@ async function sendKey(k) {
 // an unsent draft even follows you between phone and desktop). Typing in one session never bleeds into
 // another, and switching back restores your in-progress prompt. (Bug this fixes: S.text was one global.)
 const draftKey = (sid) => 'aios_draft_' + sid;
+const historyKey = (sid) => 'aios_hist_' + sid;
 const draftGet = (sid) => { try { return (sid && localStorage.getItem(draftKey(sid))) || ''; } catch { return ''; } };
 const draftSet = (sid, v) => { try { if (!sid) return; v ? localStorage.setItem(draftKey(sid), v) : localStorage.removeItem(draftKey(sid)); } catch {} };
+const composerHistoryRemember = (sid, value) => {
+  const text = String(value || '').trim();
+  if (!sid || !text) return;
+  try {
+    let entries = JSON.parse(localStorage.getItem(historyKey(sid)) || '[]');
+    if (!Array.isArray(entries)) entries = [];
+    entries = entries.filter((entry) => typeof entry === 'string');
+    if (entries[entries.length - 1] !== text) entries.push(text);
+    localStorage.setItem(historyKey(sid), JSON.stringify(entries.slice(-200)));
+  } catch {}
+};
 
 // ---- navigation (history-backed so hardware/gesture back works in the PWA) ----------------------
 function nav(screen, sid = null, push = true) {
