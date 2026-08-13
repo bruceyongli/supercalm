@@ -269,10 +269,12 @@ route('POST', '/api/session/:id/agents/:agentId/:action', async (req, res, { id:
   const gid = gidFor(rec.meta, sid);
   // Using an agent (running an action) implies consent to its low-risk caps (observe/think) so doc
   // generate + manual review work before the agent is formally enabled. High-risk caps still require
-  // an explicit grant via the consent UI.
+  // an explicit grant via the consent UI. Carry the agent's defaultEnabled into the implied grant:
+  // upsertGrant's new-row default is enabled=false, which silently flipped default-ON agents (Council,
+  // Knowledge, …) to inactive — and OUT of the tab strip — the first time their panel ran an action.
   if (!getGrant(gid, agentId)) {
     const declared = rec.meta.capabilities || [];
-    upsertGrant(gid, agentId, { caps: declared.filter((c) => !HIGH_RISK_CAPS.has(c)) });
+    upsertGrant(gid, agentId, { enabled: !!rec.meta.defaultEnabled, caps: declared.filter((c) => !HIGH_RISK_CAPS.has(c)) });
   }
   if (isInflight(gid, agentId)) return json(res, 409, { error: 'agent is busy' });
   const body = await readJson(req).catch(() => ({}));
