@@ -2872,7 +2872,9 @@ body.map-expanded-open { overflow: hidden; }
 }
 .story-toggle .workspace-add:hover, .story-toggle .workspace-add[aria-expanded="true"] { color: #dce5ef; background: #151c26; border-color: #293442; }
 .workspace-menu {
-  position: absolute; top: 36px; right: 0; z-index: 60; width: 260px; padding: 6px;
+  /* The + sits near the workspace's LEFT edge. Opening leftward (`right:0`) put 78px of this menu
+     behind the desktop rail and beyond the tablet viewport. Open into the available content instead. */
+  position: absolute; top: 36px; left: 0; right: auto; z-index: 60; width: 260px; padding: 6px;
   border: 1px solid #2a3442; border-radius: 11px; background: #10161f; box-shadow: 0 18px 48px rgba(0, 0, 0, .48);
 }
 .workspace-menu[hidden] { display: none; }

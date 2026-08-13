@@ -264,6 +264,35 @@ try {
   await page.screenshot({ path: join(outDir, 'dismissed-section.png'), fullPage: true });
   await page.close();
 
+  // The workspace + is close to the content's left edge. Its menu must open rightward: the old
+  // right-aligned rule placed it outside a tablet viewport and underneath the 280px desktop rail.
+  for (const width of [800, 1320]) {
+    const workspace = await browser.newPage({ viewport: { width, height: 900 } });
+    await workspace.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
+    await workspace.goto(base + 'session?id=s_done', { waitUntil: 'domcontentloaded' });
+    await workspace.locator('#workspace-add').waitFor();
+    await workspace.locator('#workspace-add').click();
+    const geometry = await workspace.evaluate(() => {
+      const menu = document.querySelector('#workspace-menu').getBoundingClientRect();
+      const content = document.querySelector('#view').getBoundingClientRect();
+      const first = document.querySelector('#workspace-menu button').getBoundingClientRect();
+      return {
+        menuLeft: menu.left,
+        menuRight: menu.right,
+        contentLeft: content.left,
+        viewportRight: window.innerWidth,
+        firstLeft: first.left,
+      };
+    });
+    assert.ok(geometry.menuLeft >= geometry.contentLeft,
+      `${width}px: workspace menu does not hide behind the sidebar or outside the content viewport`);
+    assert.ok(geometry.menuRight <= geometry.viewportRight,
+      `${width}px: workspace menu stays inside the right edge`);
+    assert.ok(geometry.firstLeft >= geometry.menuLeft,
+      `${width}px: workspace menu labels are not clipped at the left edge`);
+    await workspace.close();
+  }
+
   for (const relative of ['usage']) {
     const usage = await browser.newPage({ viewport: { width: 1320, height: 900 } });
     await usage.route(/fonts\.(googleapis|gstatic)\.com/, (route) => route.abort());
