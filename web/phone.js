@@ -624,11 +624,24 @@ async function sendReply(text) {
   if (!t || !S.sid) return;
   stopSpeech();
   try {
-    const r = await fetch(`api/session/${S.sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: t, source: 'text' }) });
+    const post = async (replacePending = false) => {
+      const response = await fetch(`api/session/${S.sid}/input`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: t, source: 'text', replace_pending: replacePending }),
+      });
+      return { response, json: response.ok ? {} : await response.json().catch(() => ({})) };
+    };
+    let result = await post();
+    let preservedTerminalDraft = '';
+    if (result.response.status === 409 && result.json.reason === 'pending-draft' && result.json.pendingDraft) {
+      preservedTerminalDraft = String(result.json.pendingDraft);
+      result = await post(true);
+    }
+    const { response: r, json: j } = result;
     if (r.status === 409) {
-      const j = await r.json().catch(() => ({}));
-      if (j.busy) {
-        toast(j.error || 'Session is still resuming — your reply was kept');
+      if (j.inputBlocked || j.busy) {
+        toast(j.error || 'The agent did not accept the message — your reply was kept');
         return;
       }
       await api(`api/session/${S.sid}/resume`, { method: 'POST' }).catch(() => {});
@@ -636,8 +649,13 @@ async function sendReply(text) {
       return;
     }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    draftSet(S.sid, ''); S.text = ''; S.typing = false; S.draft = ''; S.sheet = null;
-    toast('Sent — session resumed');
+    draftSet(S.sid, preservedTerminalDraft);
+    S.text = preservedTerminalDraft;
+    S.typing = !!preservedTerminalDraft;
+    S.draft = preservedTerminalDraft;
+    S.sheet = null;
+    toast(preservedTerminalDraft ? 'Sent. Kept the unfinished Terminal draft here.' : 'Sent');
+    render();
     loadDetail(S.sid); loadHome();
   } catch (e) {
     toast('Send failed: ' + (e.message || e));

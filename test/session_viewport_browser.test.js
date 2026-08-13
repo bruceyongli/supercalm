@@ -103,7 +103,7 @@ try {
     const settings = document.querySelector('.composer-settings-toggle');
     const send = document.querySelector('#send');
     notice.hidden = false;
-    notice.textContent = 'Session is still resuming. Your draft was kept; send again when the composer is ready.';
+    notice.textContent = "The agent's input box could not be identified safely. Your draft was kept.";
     const composerRect = composer.getBoundingClientRect();
     const noticeRect = notice.getBoundingClientRect();
     const settingsRect = settings.getBoundingClientRect();

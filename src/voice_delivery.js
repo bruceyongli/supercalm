@@ -42,12 +42,20 @@ export async function deliverVoiceFeedback({
       delivery.status = result.stopped ? 'stopped' : 'missing';
       return { sent: false, say: 'That session has stopped, so I could not send it. You can resume it from the dashboard. Moving on.', delivery };
     }
-    if (result?.busy) {
-      delivery.status = 'busy';
-      delivery.reason = result.reason || 'input-not-ready';
+    if (result?.inputBlocked || result?.busy) {
+      delivery.status = 'input-blocked';
+      delivery.reason = result.reason || 'input-unavailable';
       const say = delivery.reason === 'pending-draft'
         ? 'That session has an unfinished Terminal draft, so I did not replace it with your feedback. I kept this item here; finish or clear that draft, then try again.'
-        : 'That session is still resuming, so I did not send your feedback. I kept this item here; try again when it is ready.';
+        : delivery.reason === 'resume-choice'
+          ? 'That session is on a recovery-choice screen, so I did not send your feedback. I kept this item here; choose a recovery option, then try again.'
+          : delivery.reason === 'agent-starting'
+            ? 'That agent is still starting, so I kept your feedback here. Try again when its input box appears.'
+            : delivery.reason === 'agent-compacting'
+              ? 'That agent is compacting its context, so I kept your feedback here. Try again when it finishes.'
+              : delivery.reason === 'agent-loading'
+                ? 'That agent is loading its session, so I kept your feedback here. Try again when its input box appears.'
+                : "I couldn't identify a safe agent input box, so I did not send your feedback. I kept this item here; open Terminal to inspect the current screen.";
       return { sent: false, retry: true, say, delivery };
     }
     delivery.status = 'sent';

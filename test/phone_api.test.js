@@ -292,6 +292,12 @@ await featureReady;
     'phone never routes Voice updates back through its older suspended-AudioContext loop');
   assert.match(ph, /startVoiceMode\(\{ source: 'manual' \}\)/,
     'the manual phone button also uses the shared Voice client');
+  assert.match(ph, /result\.json\.reason === 'pending-draft'[\s\S]*post\(true\)/,
+    'the standalone phone composer also reconciles an unfinished Terminal draft');
+  assert.match(ph, /Kept the unfinished Terminal draft here/,
+    'phone keeps the displaced native draft visible after the new message sends');
+  assert.doesNotMatch(ph, /Session is still resuming/,
+    'phone never invents a resuming lifecycle state for a blocked input');
   const sharedVoice = readFileSync(new URL('../web/voicemode.js', import.meta.url), 'utf8');
   assert.match(sharedVoice, /api\/transcribe\?language=auto&polish=true/,
     'the shared Voice client keeps conversational transcript cleanup before reasoning');

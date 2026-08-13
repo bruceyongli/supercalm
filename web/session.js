@@ -3467,7 +3467,7 @@ async function sendInput() {
     const { r, json: j } = result;
     if (r.status === 409) {
       cancelEcho();
-      if (j.busy) showComposerNotice(j.error || 'Session is still resuming. Your draft was kept.');
+      if (j.inputBlocked || j.busy) showComposerNotice(j.error || 'The agent did not accept the message. Your draft was kept.');
       else showResumeBar(); // in-theme inline bar — native confirm() is unreadable and off-theme
     } else if (!r.ok) {
       cancelEcho();

@@ -108,6 +108,7 @@ const server = createServer(async (req, res) => {
     if (body.text === 'Send this Story request.' && body.replace_pending !== true) {
       return sendJson(res, {
         error: 'Terminal has a different unfinished draft. Your Story message was kept.',
+        inputBlocked: true,
         busy: true,
         reason: 'pending-draft',
         pendingDraft: 'Preserve this unfinished Terminal draft.',

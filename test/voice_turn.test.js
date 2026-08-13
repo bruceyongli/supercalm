@@ -250,12 +250,13 @@ assert.equal(
     reply: { message: 'feedback' },
     getSession: () => ({ status: 'waiting' }),
     answeredElsewhere: () => false,
-    deliverReply: async () => ({ busy: true, reason: 'resume-choice' }),
+    deliverReply: async () => ({ inputBlocked: true, reason: 'resume-choice' }),
   });
   assert.equal(outcome.sent, false);
   assert.equal(outcome.retry, true);
-  assert.equal(outcome.delivery.status, 'busy');
-  assert.match(outcome.say, /still resuming/i);
+  assert.equal(outcome.delivery.status, 'input-blocked');
+  assert.match(outcome.say, /recovery-choice screen/i);
+  assert.doesNotMatch(outcome.say, /still resuming/i);
 }
 {
   const outcome = await deliverVoiceFeedback({
@@ -263,7 +264,20 @@ assert.equal(
     reply: { message: 'feedback' },
     getSession: () => ({ status: 'waiting' }),
     answeredElsewhere: () => false,
-    deliverReply: async () => ({ busy: true, reason: 'pending-draft' }),
+    deliverReply: async () => ({ inputBlocked: true, reason: 'input-unavailable' }),
+  });
+  assert.equal(outcome.sent, false);
+  assert.match(outcome.say, /couldn't identify a safe agent input box/i);
+  assert.doesNotMatch(outcome.say, /still resuming/i,
+    'unknown input state is reported honestly instead of invented as recovery');
+}
+{
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_target', project: 'AIOS' },
+    reply: { message: 'feedback' },
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
+    deliverReply: async () => ({ inputBlocked: true, reason: 'pending-draft' }),
   });
   assert.equal(outcome.sent, false);
   assert.equal(outcome.retry, true);

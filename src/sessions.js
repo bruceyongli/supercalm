@@ -62,7 +62,7 @@ import {
   sessionStoragePaths,
   sweepSessionStorage,
 } from './session_storage.js';
-import { agentInputReady, askMenuTypeDigit, operatorInputPlan } from './agent_input_ready.js';
+import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -3328,7 +3328,7 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     // the whole prompt is complete so Needs you does not vanish after question one.
     for (const part of sends) {
       const delivered = await sendText(s.tmux, part, { requireOperatorTarget: true, menuAnswer: true, allowActive: s.status === 'working' });
-      if (delivered?.accepted === false) return { busy: true, reason: delivered.reason };
+      if (delivered?.accepted === false) return { inputBlocked: true, reason: delivered.reason };
     }
   } else {
     const delivered = await sendText(s.tmux, text, {
@@ -3337,7 +3337,7 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
       replacePendingDraft,
     });
     if (delivered?.accepted === false) {
-      return { busy: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
+      return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }
   }
   try { store.addMessage(sid, 'in', source, text); } catch {}
@@ -3361,13 +3361,10 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
     replacePendingDraft: b.replace_pending === true,
   });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
-  if (r.busy) return json(res, 409, {
-    error: r.reason === 'resume-choice'
-      ? 'Session is still on its recovery screen. Your draft was kept; choose a resume option or send again when the composer is ready.'
-      : r.reason === 'pending-draft'
-        ? 'Terminal has a different unfinished draft. Your Story message was kept.'
-        : 'Session is still resuming. Your draft was kept; send again when the composer is ready.',
-    busy: true,
+  if (r.inputBlocked) return json(res, 409, {
+    error: operatorInputBlockMessage(r.reason),
+    inputBlocked: true,
+    busy: true, // compatibility for already-open pre-v0.3.306 clients; this is NOT session status
     reason: r.reason,
     pendingDraft: r.reason === 'pending-draft' ? r.pendingDraft : undefined,
   });
@@ -3395,7 +3392,12 @@ route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {
   }).join('\n');
   const r = await deliverReply(sid, text, { source: 'text', segments });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
-  if (r.busy) return json(res, 409, { error: 'Session input is not ready yet. Your selections were not dismissed.', busy: true, reason: r.reason });
+  if (r.inputBlocked) return json(res, 409, {
+    error: 'The agent input did not accept these selections. They were not dismissed.',
+    inputBlocked: true,
+    busy: true, // compatibility for already-open clients
+    reason: r.reason,
+  });
   if (r.missing) return json(res, 404, { error: 'no such session' });
   json(res, 200, { ok: true });
 });
