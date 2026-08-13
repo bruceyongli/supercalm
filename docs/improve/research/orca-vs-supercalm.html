@@ -1,0 +1,303 @@
+<title>Orca vs Supercalm</title>
+<style>
+  :root {
+    --paper: #EEF1F0; --ink: #16211C; --muted: #4C5B54; --faint: #94A29B;
+    --line: #CBD4CF; --card: #F7F9F8;
+    --orca: #2B5A78; --orca-soft: #DDE7ED;
+    --calm: #1F7A4D; --calm-soft: #DCEAE1;
+    --amber: #A8721F; --amber-soft: #F0E4CF;
+    --code-bg: #E3E8E5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0D1411; --ink: #D8E2DC; --muted: #8FA398; --faint: #5C6E65;
+      --line: #24312A; --card: #131C17;
+      --orca: #6FA8C9; --orca-soft: #14232D;
+      --calm: #4EC98B; --calm-soft: #12281C;
+      --amber: #D9A05B; --amber-soft: #2A2113;
+      --code-bg: #1A241E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0D1411; --ink: #D8E2DC; --muted: #8FA398; --faint: #5C6E65;
+    --line: #24312A; --card: #131C17;
+    --orca: #6FA8C9; --orca-soft: #14232D;
+    --calm: #4EC98B; --calm-soft: #12281C;
+    --amber: #D9A05B; --amber-soft: #2A2113;
+    --code-bg: #1A241E;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 17px/1.65 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  }
+  .wrap { max-width: 72ch; margin: 0 auto; padding: 48px 22px 80px; }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+  }
+  header.masthead { border-bottom: 3px solid var(--ink); padding-bottom: 22px; margin-bottom: 10px; }
+  .masthead .eyebrow { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 {
+    font-family: -apple-system, "Helvetica Neue", system-ui, sans-serif;
+    font-size: clamp(34px, 6vw, 52px); line-height: 1.04; letter-spacing: -0.02em;
+    margin: 18px 0 14px; text-wrap: balance; font-weight: 800;
+  }
+  h1 .vs { color: var(--faint); font-weight: 300; font-style: italic; padding: 0 2px; }
+  h1 .orca-w { color: var(--orca); } h1 .calm-w { color: var(--calm); }
+  .dek { font-size: 19px; line-height: 1.55; color: var(--muted); margin: 0; max-width: 62ch; }
+  h2 {
+    font-family: -apple-system, "Helvetica Neue", system-ui, sans-serif;
+    font-size: 24px; letter-spacing: -0.01em; line-height: 1.2; font-weight: 750;
+    margin: 52px 0 14px; padding-top: 26px; border-top: 1px solid var(--line); text-wrap: balance;
+  }
+  h2 .n { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 14px; color: var(--faint); vertical-align: 0.35em; margin-right: 8px; font-weight: 400; }
+  h3 { font-family: -apple-system, "Helvetica Neue", system-ui, sans-serif; font-size: 17px; font-weight: 700; margin: 26px 0 8px; }
+  p { margin: 0 0 14px; }
+  a { color: var(--orca); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  strong { font-weight: 700; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.85em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--faint); }
+
+  .verdict {
+    margin: 26px 0 6px; padding: 18px 20px; background: var(--card);
+    border: 1px solid var(--line); border-left: 4px solid var(--calm); border-radius: 6px;
+  }
+  .verdict .eyebrow { color: var(--calm); margin-bottom: 8px; }
+  .verdict p { font-size: 16px; margin-bottom: 10px; }
+  .verdict p:last-child { margin-bottom: 0; }
+
+  .statrow { display: flex; gap: 10px; flex-wrap: wrap; margin: 22px 0 6px; }
+  .stat {
+    flex: 1 1 150px; background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+    padding: 12px 14px; min-width: 140px;
+  }
+  .stat .k { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 12px; color: var(--muted); line-height: 1.4; margin-top: 3px; }
+  .stat.o .k { color: var(--orca); } .stat.c .k { color: var(--calm); }
+
+  .tablebox { overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; margin: 18px 0 22px; }
+  table { border-collapse: collapse; width: 100%; min-width: 660px; font-size: 14.5px; line-height: 1.45; }
+  th {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; letter-spacing: 0.1em;
+    text-transform: uppercase; text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--line);
+    background: var(--card); position: sticky; top: 0;
+  }
+  th.o { color: var(--orca); } th.c { color: var(--calm); }
+  td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  td.dim { color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
+
+  .duel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0 22px; }
+  @media (max-width: 720px) { .duel { grid-template-columns: 1fr; } }
+  .side { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 16px 18px; }
+  .side.orca-side { border-top: 4px solid var(--orca); }
+  .side.calm-side { border-top: 4px solid var(--calm); }
+  .side .eyebrow { margin-bottom: 10px; }
+  .side.orca-side .eyebrow { color: var(--orca); }
+  .side.calm-side .eyebrow { color: var(--calm); }
+  .side ol { padding-left: 20px; font-size: 15px; }
+  .side li { margin-bottom: 8px; }
+
+  .callout {
+    margin: 20px 0; padding: 14px 18px; border-radius: 6px; font-size: 15.5px;
+    background: var(--amber-soft); border-left: 4px solid var(--amber);
+  }
+  .callout .eyebrow { color: var(--amber); margin-bottom: 6px; }
+  .promise {
+    margin: 22px 0; padding: 20px 24px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 20px; line-height: 1.5; font-style: italic; text-wrap: balance;
+  }
+  .promise .eyebrow { font-style: normal; margin-bottom: 8px; color: var(--calm); }
+
+  .cycle { border: 1px solid var(--line); border-radius: 6px; margin: 14px 0; background: var(--card); }
+  .cycle summary {
+    cursor: pointer; padding: 13px 18px; font-family: -apple-system, "Helvetica Neue", system-ui, sans-serif;
+    font-weight: 700; font-size: 15.5px; display: flex; align-items: baseline; gap: 10px; list-style: none;
+  }
+  .cycle summary::-webkit-details-marker { display: none; }
+  .cycle summary::before { content: "▸"; color: var(--faint); font-size: 12px; }
+  .cycle[open] summary::before { content: "▾"; }
+  .cycle summary .tag { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--calm); letter-spacing: 0.08em; }
+  .cycle summary .dur { margin-left: auto; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px; color: var(--muted); font-weight: 400; white-space: nowrap; }
+  .cycle .body { padding: 2px 20px 14px; font-size: 15.5px; border-top: 1px solid var(--line); }
+  .cycle .body ul { margin-top: 12px; }
+  .gate { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; letter-spacing: 0.06em; color: var(--amber); text-transform: uppercase; }
+
+  .res { font-size: 15px; }
+  .res b.a { color: var(--calm); } .res b.r { color: var(--amber); }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 3px solid var(--ink); font-size: 13.5px; color: var(--muted); }
+  footer ul { padding-left: 18px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+<header class="masthead">
+  <div class="eyebrow"><span>Supercalm · competitive deep-read</span><span>2026-08-13</span></div>
+  <h1><span class="orca-w">Orca</span> <span class="vs">vs</span> <span class="calm-w">Supercalm</span></h1>
+  <p class="dek">A full-clone code teardown of stablyai/orca — 2.74M lines read by four parallel explorations — what it means for Supercalm, and the execution plan that survived adversarial review by two fleet models.</p>
+</header>
+
+<div class="verdict">
+  <div class="eyebrow">The verdict in three sentences</div>
+  <p><strong>Orca is the best cockpit in the category</strong> — YC-backed, ~43k stars in five months, disciplined engineering, native mobile, daily ships. <strong>It contains zero first-party intelligence</strong>: no LLM call anywhere, no supervision, no auto-answer, no verification — and its hero "fan out five agents, merge the winner" marketing has no code behind it.</p>
+  <p>The layer Supercalm already occupies — measured supervision, verified completion, gated autonomous delivery — is exactly the layer their users are left to do by hand. The plan: prove that layer's reliability with named design partners, make it installable in minutes, and make it interoperable with any runner — including, potentially, Orca itself.</p>
+</div>
+
+<div class="statrow">
+  <div class="stat o"><div class="k">2.74M</div><div class="l">Orca lines of TS/TSX (1.34M excl. tests), 123 npm deps</div></div>
+  <div class="stat c"><div class="k">73k</div><div class="l">Supercalm lines (57k excl. tests), 1 runtime dep</div></div>
+  <div class="stat o"><div class="k">~43k</div><div class="l">GitHub stars in ~5 months; daily releases</div></div>
+  <div class="stat c"><div class="k">0</div><div class="l">First-party LLM calls in Orca — all judgment is the user's own agent</div></div>
+</div>
+
+<h2><span class="n">01</span>What Orca actually is</h2>
+<p><a href="https://github.com/stablyai/orca">Orca</a> ("the AI orchestrator for 100x builders") is an MIT Electron app for macOS/Windows/Linux plus a native Expo mobile companion, from <a href="https://www.ycombinator.com/companies/stably-ai-orca">Stably AI (YC W22)</a>; founder Jinjing Liang is ex-Google Chrome. It runs 30+ CLI agents in parallel git worktrees. Verified in code:</p>
+<ul>
+  <li><strong>Terminal engine</strong> — WebGL rendering, infinite splits, a background PTY daemon that survives app restarts and replays scrollback. Genuinely excellent.</li>
+  <li><strong>Agent status</strong> — hooks-first via a loopback HTTP server with <strong>14 bespoke per-CLI adapters</strong>, then OSC escape parsing, then title regex. States are a fixed enum: <code>working | blocked | waiting | done</code>. Notifications are templated title/body strings.</li>
+  <li><strong>Orchestration</strong> — a SQLite bus (decision gates, worker mailboxes, federation between Orca instances) that a <em>user-supplied coordinator agent</em> drives with its own tokens. Orca ships plumbing; the thinking is outsourced to your foreground agent.</li>
+  <li><strong>The hero claim is marketing</strong> — "fan one prompt across five agents, compare, merge the winner" has no fan-out primitive, no scoring, and no merge-of-winner in the code. The real workflow: create N worktrees by hand, eyeball diffs, <code>gh pr merge</code>.</li>
+  <li><strong>Design Mode ("grab")</strong> — click an element in embedded Chromium and its sanitized HTML/CSS, cropped screenshot, and React source-file mapping land in the prompt. Novel and well-hardened.</li>
+  <li><strong>Deep VCS/PM surface</strong> — GitHub (stacked PRs, in-app review) plus GitLab, Bitbucket, Gitea, Azure DevOps, Jira, Linear.</li>
+  <li><strong>Mobile</strong> — full steering (PTY input, permission approvals, PR review) over LAN or an opt-in E2EE cloud relay. Their own findings doc records the relay UX as a bug farm: dead pages, grey-dot stalls, 5–12s pairing blackouts.</li>
+  <li><strong>Voice</strong> — local STT dictation only (sherpa-onnx). No TTS, no assistant.</li>
+  <li><strong>Engineering machine</strong> — 0.74 test-to-source ratio, 28 CI workflows, lint ratchets, perf budget gates. Never bet on them being <em>unable</em> to build something.</li>
+</ul>
+
+<h2><span class="n">02</span>The decisive fact, stated carefully</h2>
+<p><strong>Orca makes zero first-party LLM calls.</strong> No model SDK in 2.7M lines; titles are 160-char truncations; attention is a four-value enum. Every "understand the fleet" capability — summarize, classify, answer, verify, judge, brief — is left to the user's own agent and tokens.</p>
+<p>What this is <em>not</em>: a permanent ceiling. Adding a model call is a product decision away. The honest claim is narrower: <strong>today, nobody owns the supervision loop as a first-party, evaluated product.</strong> Supercalm's head start is real — supervisor brains, per-episode summaries, doctrine, an incident-replay lab, gated deploys — and the durable version of that lead is accumulated per-project policy, measured reliability (precision, abstention, escalation), and deploy-outcome evidence. Those take calendar time and real usage to copy — but only count if we accumulate and measure them.</p>
+<p>They optimized the cockpit. We're building the autopilot — with the burden of proof that absorbed decisions are <em>right</em>.</p>
+
+<h2><span class="n">03</span>Side by side</h2>
+<div class="tablebox"><table>
+  <tr><th></th><th class="o">Orca</th><th class="c">Supercalm</th></tr>
+  <tr><td class="dim">Form factor</td><td>Electron desktop + native mobile (+ headless Electron/Xvfb serve mode)</td><td>Headless daemon + web/PWA over tailnet; phone works while the laptop is closed</td></tr>
+  <tr><td class="dim">Agent state</td><td>Hook enums, 14 per-CLI adapters; templated notifications</td><td>Hooks + stabilized detection + <strong>LLM summary &amp; category per waiting episode</strong></td></tr>
+  <tr><td class="dim">Supervision</td><td><strong>None</strong> — bus + skills for the user's own coordinator</td><td>First-party: auto-answer, dig-for-truth, completion gating, doctrine, incident lab</td></tr>
+  <tr><td class="dim">Verification</td><td>None; the human reviews everything</td><td>Evidence-based (diff, tests, screenshots) + release gates + rollback</td></tr>
+  <tr><td class="dim">Delivery</td><td>Merges a branch (<code>gh pr merge</code>)</td><td>Gated integrate→deploy→health-verify→rollback, self-hosting daily (narrow, reversible class)</td></tr>
+  <tr><td class="dim">Voice</td><td>STT dictation only</td><td>Full concierge: briefings, grounded STT, visual check, confirm-before-send</td></tr>
+  <tr><td class="dim">Knowledge</td><td>Static hand-authored skills</td><td>Self-maintaining wiki over MCP, lessons, Council decision memory</td></tr>
+  <tr><td class="dim">Remote</td><td>SSH relay installs; opt-in cloud relay (beta, buggy UX)</td><td>Tailnet-native, one URL, no relay, no pairing state machine</td></tr>
+  <tr><td class="dim">Editor / browser</td><td>VS Code embed, Chromium, Design Mode</td><td>None by design — the CLI agent is the editor</td></tr>
+  <tr><td class="dim">VCS / PM</td><td>Six providers, in-app review, stacked PRs</td><td>Thin: git evidence + <code>gh</code> via agents (machine integration planned)</td></tr>
+  <tr><td class="dim">Distribution</td><td>Installers, brew/AUR, app stores, 43k stars, WeChat</td><td>Public repo, zero marketing</td></tr>
+</table></div>
+
+<h2><span class="n">04</span>Honest scorecards</h2>
+<div class="duel">
+  <div class="side orca-side">
+    <div class="eyebrow">Where Orca is ahead</div>
+    <ol>
+      <li>Packaging &amp; onboarding — minutes to first value</li>
+      <li>Per-CLI integration depth (14 hook adapters, account hot-swap, 7-provider rate-limit dashboards)</li>
+      <li>Editor / browser / Design Mode — Chrome-team DNA</li>
+      <li>VCS &amp; PM breadth, stacked PRs, in-app review</li>
+      <li>Terminal engineering (WebGL, restart-surviving daemon)</li>
+      <li>Engineering machine — 0.74 test ratio, 28 CI workflows</li>
+      <li>Distribution — stars, cadence, i18n, app stores</li>
+      <li>Cross-instance federation with ACK'd mailboxes</li>
+    </ol>
+  </div>
+  <div class="side calm-side">
+    <div class="eyebrow">Where Supercalm is ahead — hypotheses to prove externally</div>
+    <ol>
+      <li>The supervision loop (their users' unmet layer; our core)</li>
+      <li>Autonomous shipping for a narrow, reversible class — self-hosted daily</li>
+      <li>Attention intelligence — plain-language briefs, not enums</li>
+      <li>Voice as an interface, with auto-prepared visual evidence</li>
+      <li>Always-on by construction — daemon, not a desktop app</li>
+      <li>Project memory that compounds (wiki, lessons, doctrine)</li>
+      <li>Radical lean — the whole codebase turns over in days of agent time</li>
+      <li>Honest autonomy containment (provenance, interlocks, gates)</li>
+    </ol>
+  </div>
+</div>
+<p class="res" style="color: var(--muted)">Every item on the right is real in code and daily operator use; none has external-user evidence yet. Public claims must carry the §6 metrics.</p>
+
+<h2><span class="n">05</span>Strategy after adversarial review</h2>
+<p><strong>Don't chase the cockpit.</strong> Editor, browser, six VCS UIs, WebGL terminals — their home turf, staffed and funded. <strong>Own the layer above, as an interoperable layer:</strong> supervision with measured reliability, riding existing runners instead of demanding replacement. The narrowed promise:</p>
+<div class="promise">
+  <div class="eyebrow">The promise</div>
+  "Wake up to a reviewed queue of small, safely-landed changes — with the evidence, not a dashboard of terminals."
+</div>
+<p><strong>ICP for the next two quarters:</strong> technical solo founders and tiny teams already running Claude Code or Codex on web-app repos with scriptable tests and reversible deploys, on an always-on box. Teams, RBAC, enterprise, Windows: explicitly out of scope.</p>
+<ul>
+  <li><strong>Make supervision provably reliable before making it louder</strong> — precision by prompt class, calibrated abstention, escalation correctness, prompt-injection resistance, and an autonomy ladder (observe → act-in-branch → merge-with-approval → allowlisted autodeploy → never-classes).</li>
+  <li><strong>One golden onboarding path</strong> — macOS + launchd, one agent, localhost-only: a grounded "what needs you and what I'd answer" briefing on the user's own session within 10 minutes. No tailnet, no deploy credentials for first value. Metric: <em>time to first trusted saved action</em>.</li>
+  <li><strong>Distribution = interop + design partners</strong> — a generic runner-hook protocol so Supercalm supervises sessions from any cockpit (an honest Orca-sidecar spike included); five named design partners recruited now; one public build-log artifact weekly. Their installed base is a channel, not only a threat.</li>
+</ul>
+<div class="callout">
+  <div class="eyebrow">Demoted by review</div>
+  <strong>Judged fan-out</strong> — the earlier draft's flagship — was competitor-reactive, cost-multiplying, and its proposed benchmark was circular. It returns only when design partners demonstrably run competing attempts by hand and a blind benchmark beats trivial baselines.
+</div>
+
+<h2><span class="n">06</span>Execution plan — calendar cycles with gates</h2>
+<p style="color: var(--muted); font-size: 15px;">One externally observable outcome per cycle. WIP limit: one product bet + one reliability track + one distribution motion. Everything ships through the existing gated pipeline.</p>
+
+<details class="cycle" open>
+  <summary><span class="tag">C0</span> Validation + threat model <span class="dur">2–3 wks · starts now</span></summary>
+  <div class="body"><ul>
+    <li>Recruit <strong>5 named design partners</strong> from Claude Code/Codex power-user communities; watch them install today's product — their failures scope C1. Falsifiable question: <em>for which recurring tasks will they accept exception-based review only?</em></li>
+    <li>Baseline supervision safety on existing lab + live history: auto-answer precision by class, false-done acceptance, escalation correctness. Encode never-classes (migrations, auth/billing, secrets, infra, destructive ops) as policy.</li>
+    <li>Prompt-injection red team: repo text is adversarial input to a system that <em>acts</em>. Lab scenarios + provenance rules.</li>
+  </ul><p><span class="gate">Gate →</span> baselines exist · ≥3 partners trialing · kill/continue thresholds agreed.</p></div>
+</details>
+<details class="cycle">
+  <summary><span class="tag">C1</span> One golden install + first trusted value <span class="dur">4–6 wks</span></summary>
+  <div class="body"><ul>
+    <li>macOS + launchd, one-line install; connect one existing claude/codex session; localhost-only; first-run ends at a real briefing of the user's own work in &lt;10 min. Clean upgrade + uninstall. Linux only after outsiders finish the macOS path unassisted.</li>
+    <li>Fresh-install E2E extended to the full journey on a cold VM.</li>
+  </ul><p><span class="gate">Metric →</span> time-to-first-trusted-saved-action; install-to-activation conversion.</p></div>
+</details>
+<details class="cycle">
+  <summary><span class="tag">C2</span> The trusted supervisory loop, measured <span class="dur">4–6 wks</span></summary>
+  <div class="body"><ul>
+    <li>The evidence packet: blocker → grounded recommended reply with cited basis → approve-by-default (per-class opt-in to auto) → done-claim verified against acceptance criteria → PR/deploy packet → immutable audit ledger + weekly digest.</li>
+    <li>Reliability gates published per class; partner production deploys stay approval-required until their own data crosses thresholds.</li>
+  </ul><p><span class="gate">Gate →</span> ≥60% recommendations accepted · ≥3 partners weekly ×4 · ≥2 grant branch/PR authority.</p></div>
+</details>
+<details class="cycle">
+  <summary><span class="tag">C3</span> Runner interop = distribution <span class="dur">4–6 wks</span></summary>
+  <div class="body"><ul>
+    <li>Documented <strong>runner-hook protocol</strong> (claude/codex today; shape matches Orca's own adapters) — supervise sessions from any cockpit; honest Orca-sidecar spike.</li>
+    <li>GitHub as machine surface: evidence packets as checks/PR comments — policy-grade integration without building review UIs.</li>
+    <li>One distribution motion weekly: partner recruitment, public postmortem, or migration guide.</li>
+  </ul></div>
+</details>
+<details class="cycle">
+  <summary><span class="tag">C4</span> Earned autonomy + demand-gated extras <span class="dur">after C3 metrics</span></summary>
+  <div class="body"><ul>
+    <li>Widen auto-answer/deploy per class only where partner data crossed thresholds; publish the autonomy contract with at least one abstention and one blocked deploy on record — a system that always approves is not credible.</li>
+    <li><strong>Fan-out returns only here</strong>, blind-benchmarked against test-pass-selection and single-flagship baselines, with a budget controller as precondition.</li>
+    <li>Voice stays a dogfooded output channel; promoted only if partner usage shows it beats push/text on decision latency.</li>
+  </ul></div>
+</details>
+
+<h3>Non-goals (hard fence)</h3>
+<p style="font-size: 15px;">Embedded editor · embedded browser/design-mode · VCS review <em>UIs</em> (machine integration is in-scope) · WebGL terminals · native mobile apps · Windows · enterprise — until C2–C3 gates are met with the narrow ICP.</p>
+
+<h3>Tripwires — business first, competitor second</h3>
+<ul style="font-size: 15px;">
+  <li><strong>Kill/continue:</strong> C1 activation &lt;50% → rework onboarding before anything else. C2 acceptance &lt;60% or any never-class violation live → freeze autonomy, fix the brain. No partner grants branch authority by C2 exit → the wedge is triage, not delivery; re-plan. Inference cost per supervised session above plausible willingness-to-pay → re-architect routing.</li>
+  <li><strong>Competitor watch:</strong> stablyai/orca releases watched for first-party LLM calls, auto-answer/verify, or a real daemon mode → accelerate C2/C3, lean into interop + accumulated policy data. Strongest squeeze: platform vendors absorbing supervision into the agent itself — interop posture is the hedge.</li>
+</ul>
+
+<h2><span class="n">07</span>What the adversarial review changed</h2>
+<p class="res">Two fleet critics (gpt-5.6-sol, code lens; gpt-5.6-terra, market lens) attacked the draft; both raw critiques are committed in the repo. <b class="a">Adopted:</b> moat claim narrowed to "currently-unowned loop + measured head start"; fan-out demoted to demand-gated C4 (its benchmark was circular); sequencing inverted so supervision reliability precedes headline features; one ICP and one golden install path; design partners before packaging; autonomy ladder + injection threat model as C0 work; the interop/complement-Orca distribution posture (proposed independently by both critics); calendar-week estimates with WIP limits; LOC ratios kept as description, dropped as strategy; voice demoted pending usage evidence. <b class="r">Rejected/bounded:</b> "a capable Orca user's coordinator can already do this" (the verified absence of any first-party judge stands — but we'll reproduce their coordinator workflow hands-on before public comparisons); dropping the autopilot frame entirely (it survives as internal shorthand behind the concrete promise); monetization planning now (deliberately deferred to C3 exit, logged as an open operator decision).</p>
+
+<footer>
+  <div class="eyebrow" style="margin-bottom: 8px;">Sources</div>
+  <ul>
+    <li>Full clone + 4 parallel code explorations of <a href="https://github.com/stablyai/orca">github.com/stablyai/orca</a> (2026-08-13; v1.4.178-rc.2)</li>
+    <li><a href="https://www.ycombinator.com/companies/stably-ai-orca">Stably AI (Orca) — Y Combinator</a></li>
+    <li><a href="https://andrew.ooo/posts/orca-stablyai-parallel-coding-agents-ide-review/">Orca review — andrew.ooo</a> · <a href="https://blog.yeyupiaoling.cn/article/1785373066543?lang=en">star-growth report — yeyupiaoling</a></li>
+    <li>Committed annex: <span class="mono">docs/improve/research/2026-08-orca-vs-supercalm.md</span> + raw fleet critiques alongside</li>
+  </ul>
+</footer>
+</div>
