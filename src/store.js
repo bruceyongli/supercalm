@@ -260,10 +260,29 @@ export const otherClaudeTranscripts = (sid) => _otherTranscripts.all(sid || '').
 // ---- events -----------------------------------------------------------------
 const _insEvent = db.prepare('INSERT INTO events (session_id,ts,type,payload) VALUES (?,?,?,?)');
 const _eventsFor = db.prepare('SELECT * FROM events WHERE session_id = ? ORDER BY ts DESC LIMIT ?');
+const _composerDraftHistoryFor = db.prepare(`
+  SELECT id, ts, payload FROM (
+    SELECT id, ts, payload FROM events
+    WHERE session_id = ? AND type = 'composer-draft-archived'
+    ORDER BY id DESC LIMIT ?
+  ) ORDER BY id ASC
+`);
 export function addEvent(session_id, type, payload) {
   _insEvent.run(session_id, now(), type, payload != null ? JSON.stringify(payload) : null);
 }
 export const eventsFor = (id, limit = 100) => _eventsFor.all(id, limit);
+export function composerDraftHistoryFor(id, limit = 50) {
+  const rows = _composerDraftHistoryFor.all(id, limit);
+  const out = [];
+  for (const row of rows) {
+    try {
+      const payload = JSON.parse(row.payload || '{}');
+      const text = String(payload.text || '').trim();
+      if (text) out.push({ id: row.id, ts: row.ts, text });
+    } catch { /* one malformed historical event must not break the session response */ }
+  }
+  return out;
+}
 
 // ---- attention governor helpers ---------------------------------------------
 // Newest OPERATOR act per session (messages from text/voice sources) in ONE grouped query — buildState

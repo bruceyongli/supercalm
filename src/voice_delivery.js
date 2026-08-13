@@ -37,7 +37,14 @@ export async function deliverVoiceFeedback({
   }
   try {
     const message = String(reply?.message || '').trim();
-    const result = await deliverReply(item.sessionId, message);
+    // Reaching this boundary means the operator explicitly confirmed "send". A stale native Terminal
+    // draft is recoverable composer history, not a policy that may overrule that instruction.
+    let result = await deliverReply(item.sessionId, message, { replacePendingDraft: true });
+    // A terminal repaint can race the first capture. Retry the same authoritative operation once;
+    // never fall back to asking the operator to clear a draft they already told us to supersede.
+    if ((result?.inputBlocked || result?.busy) && result?.reason === 'pending-draft') {
+      result = await deliverReply(item.sessionId, message, { replacePendingDraft: true });
+    }
     if (result?.stopped || result?.missing) {
       delivery.status = result.stopped ? 'stopped' : 'missing';
       return { sent: false, say: 'That session has stopped, so I could not send it. You can resume it from the dashboard. Moving on.', delivery };
@@ -46,7 +53,7 @@ export async function deliverVoiceFeedback({
       delivery.status = 'input-blocked';
       delivery.reason = result.reason || 'input-unavailable';
       const say = delivery.reason === 'pending-draft'
-        ? 'That session has an unfinished Terminal draft, so I did not replace it with your feedback. I kept this item here; finish or clear that draft, then try again.'
+        ? "The session input changed twice while I was sending, so I couldn't confirm delivery. Your instruction is still here; say send again."
         : delivery.reason === 'resume-choice'
           ? 'That session is on a recovery-choice screen, so I did not send your feedback. I kept this item here; choose a recovery option, then try again.'
           : delivery.reason === 'agent-starting'
@@ -60,6 +67,7 @@ export async function deliverVoiceFeedback({
     }
     delivery.status = 'sent';
     delivery.length = message.length;
+    if (result?.replacedDraft) delivery.archivedTerminalDraft = true;
     return { sent: true, say: `Sent your feedback to ${delivery.project}. Moving on.`, delivery };
   } catch (error) {
     delivery.status = 'failed';

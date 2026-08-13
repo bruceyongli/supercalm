@@ -1881,7 +1881,15 @@ function fetchSessionInfo(reqId = id) {
   if (sessionInfoRequest?.id === reqId) return sessionInfoRequest.promise;
   const requestToken = requestScope.capture();
   const promise = api(`api/session/${reqId}`, { signal: requestToken.signal })
-    .then((session) => requestScope.guard(requestToken, session))
+    .then((session) => {
+      // Drafts displaced by an explicit send from any device/surface belong to this session's same
+      // ArrowUp/ArrowDown composer history. Merge once; never reopen them as visible attention items.
+      for (const entry of session?.composer_history || []) {
+        const text = String(entry?.text || '').trim();
+        if (text && !cmdHistory.includes(text)) rememberHistory(text);
+      }
+      return requestScope.guard(requestToken, session);
+    })
     .finally(() => {
     if (sessionInfoRequest?.promise === promise) sessionInfoRequest = null;
   });

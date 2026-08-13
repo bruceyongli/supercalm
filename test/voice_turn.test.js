@@ -320,18 +320,28 @@ assert.equal(
     'unknown input state is reported honestly instead of invented as recovery');
 }
 {
+  const deliveryOptions = [];
+  let deliveryAttempts = 0;
   const outcome = await deliverVoiceFeedback({
     item: { sessionId: 's_target', project: 'AIOS' },
     reply: { message: 'feedback' },
     getSession: () => ({ status: 'waiting' }),
     answeredElsewhere: () => false,
-    deliverReply: async () => ({ inputBlocked: true, reason: 'pending-draft' }),
+    deliverReply: async (_sid, _message, options) => {
+      deliveryOptions.push(options);
+      deliveryAttempts++;
+      if (deliveryAttempts === 1) return { inputBlocked: true, reason: 'pending-draft' };
+      return { ok: true, replacedDraft: true };
+    },
   });
-  assert.equal(outcome.sent, false);
-  assert.equal(outcome.retry, true);
-  assert.match(outcome.say, /unfinished Terminal draft/i);
-  assert.doesNotMatch(outcome.say, /still resuming/i,
-    'voice reports the real draft conflict rather than a false recovery state');
+  assert.equal(outcome.sent, true);
+  assert.deepEqual(deliveryOptions, [
+    { replacePendingDraft: true },
+    { replacePendingDraft: true },
+  ], 'a confirmed voice send overrides a stale native Terminal draft, including a repaint race');
+  assert.equal(outcome.delivery.archivedTerminalDraft, true,
+    'the displaced draft is reported as archived instead of blocking the instruction');
+  assert.doesNotMatch(outcome.say, /unfinished Terminal draft|policy|did not replace/i);
 }
 {
   const outcome = await deliverVoiceFeedback({
@@ -358,6 +368,8 @@ assert.match(voiceSource, /voiceTranscriptDisposition\(rawUserText[\s\S]*normali
   'manual and proactive entry points share transcript validation and conversation normalization');
 assert.match(voiceSource, /if \(!disposition\.accepted\)[\s\S]*voice-input-ignored[\s\S]*ignoredReason: disposition\.reason/,
   'the server rejects phone fragments before dialogue or model reasoning, including for stale PWA clients');
+assert.match(voiceSource, /deliverReply: \(sid, message, options = \{\}\)[\s\S]*\{ \.\.\.options, source: 'voice' \}/,
+  'the voice route forwards the explicit draft-replacement option into the shared delivery handler');
 assert.doesNotMatch(voiceSource, /(?:emptyTurns|fragmentTurns)\s*>=\s*3/,
   'silence and unclear speech never terminate the conversation');
 assert.match(voiceSource, /api\/voice\/keepalive/,

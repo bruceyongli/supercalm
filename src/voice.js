@@ -699,7 +699,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
         requestAlive: voiceSessions.has(vs.id),
         getSession: (sid) => store.getSession(sid),
         answeredElsewhere: answeredElsewhereSince,
-        deliverReply: (sid, message) => sessions.deliverReply(sid, message, { source: 'voice' }),
+        deliverReply: (sid, message, options = {}) => sessions.deliverReply(sid, message, { ...options, source: 'voice' }),
       });
       if (outcome.sent) {
         vs.sentCount = (vs.sentCount || 0) + 1;

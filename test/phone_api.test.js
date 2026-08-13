@@ -296,6 +296,8 @@ await featureReady;
     'the standalone phone composer also reconciles an unfinished Terminal draft');
   assert.match(ph, /composerHistoryRemember\(S\.sid, preservedTerminalDraft\)/,
     'phone silently retains the displaced native draft in per-session composer history');
+  assert.match(ph, /d\?\.composer_history[\s\S]*composerHistoryRemember\(sid, entry\?\.text\)/,
+    'phone also merges drafts displaced by voice or another device into composer history');
   assert.doesNotMatch(ph, /Kept the unfinished Terminal draft here/,
     'phone does not turn the saved native draft into a new attention message');
   assert.doesNotMatch(ph, /Session is still resuming/,

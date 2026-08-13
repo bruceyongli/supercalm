@@ -820,7 +820,12 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
     const after = await tmux('capture-pane', '-p', '-t', name).catch(() => '');
     if (askSubmitStepPending(after)) await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
   }
-  return { accepted: true };
+  return {
+    accepted: true,
+    // The caller archives this in the shared per-session composer history. This keeps an explicitly
+    // displaced native draft recoverable without letting it veto the operator's newer instruction.
+    replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '',
+  };
 }
 
 // Send a single named control key. Accepts friendly aliases.
@@ -2903,6 +2908,7 @@ route('GET', '/api/session/:id', async (req, res, { id: sid }) => {
     ...decorate(s),
     messages: store.messagesFor(sid),
     events: store.eventsFor(sid, 60),
+    composer_history: store.composerDraftHistoryFor(sid),
     snapshot: s.status === 'starting' || s.status === 'error' ? '' : await snapshot(sid),
   });
 });
@@ -3322,6 +3328,7 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
   }
   const checkpoint = await projectCheckpoint(s).catch(() => null);
   const sends = Array.isArray(segments) ? segments.map((part) => String(part || '').trim()).filter(Boolean) : [];
+  let replacedDraft = '';
   if (sends.length) {
     // A multi-question AskUserQuestion advances its TUI after each answer and exposes Submit only after
     // the last one. Feed every selected answer in order, but perform bookkeeping/noteReply once after
@@ -3339,14 +3346,21 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     if (delivered?.accepted === false) {
       return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }
+    replacedDraft = String(delivered?.replacedDraft || '').trim();
   }
+  // Story, phone, and confirmed voice sends are all explicit operator instructions. When one replaces
+  // a different native Terminal draft, keep the displaced text in durable composer history instead of
+  // blocking delivery or turning the old line into a new visible warning.
+  try {
+    if (replacedDraft) store.addEvent(sid, 'composer-draft-archived', { text: replacedDraft, displaced_by: source });
+  } catch {}
   try { store.addMessage(sid, 'in', source, text); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
   try { store.answerPendingDecision(sid, { response: text, response_source: source }); } catch {} // link to the open ask, if any
   try { store.addEvent(sid, 'input', { source, len: text.length, attachments }); } catch {}
   try { bus.emit('event', { type: 'input', session: sid, source }); } catch {} // doctrine distiller listens (fire-and-forget)
   try { noteReply(sid); } catch {} // -> working, clear question/summary, reset idle timer, broadcast
-  return { ok: true };
+  return { ok: true, replacedDraft: !!replacedDraft };
 }
 
 route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {

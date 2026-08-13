@@ -178,6 +178,7 @@ async function loadHome() {
 async function loadDetail(sid) {
   try {
     const d = await api('api/session/' + sid);
+    for (const entry of d?.composer_history || []) composerHistoryRemember(sid, entry?.text);
     // identical message set -> keep the existing DOM entirely (no scroll/pulse churn)
     const sig = (x) => (x?.messages || []).map((m) => m.id + ':' + (m.read_at ? 1 : 0)).join(',') + '|' + x?.status + '|' + (x?.question || '').length;
     const changed = sig(d) !== sig(S.detail);

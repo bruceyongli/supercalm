@@ -94,6 +94,7 @@ const server = createServer(async (req, res) => {
       orchestration: 'off',
       messages: [],
       events: [],
+      composer_history: [{ id: 1, ts: now - 10, text: 'Archived by confirmed voice delivery.' }],
     });
   }
   const answers = path.match(/^\/aios\/api\/session\/([^/]+)\/answers$/);
@@ -430,6 +431,14 @@ try {
   await phone.locator('#reply').press('ArrowUp');
   assert.equal(await phone.locator('#reply').inputValue(), 'Preserve this unfinished Terminal draft.',
     'a displaced Terminal draft is silently retained in the same per-session input history');
+  await phone.locator('#reply').press('ArrowUp');
+  assert.equal(await phone.locator('#reply').inputValue(), longPhoneReply.trim(),
+    'earlier sent input remains in chronological composer history');
+  await phone.locator('#reply').press('ArrowUp');
+  assert.equal(await phone.locator('#reply').inputValue(), 'Archived by confirmed voice delivery.',
+    'a native draft displaced by voice or another device joins the same composer history');
+  await phone.locator('#reply').press('ArrowDown');
+  await phone.locator('#reply').press('ArrowDown');
   await phone.locator('#reply').press('ArrowDown');
   await phone.locator('#reply').press('ArrowDown');
   assert.equal(await phone.locator('#reply').inputValue(), '',
