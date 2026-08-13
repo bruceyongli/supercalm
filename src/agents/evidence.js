@@ -292,8 +292,15 @@ export async function citedSources(cwd, text, { timeoutMs = 4000 } = {}) {
 
 async function pruneShots(dir) {
   try {
-    const files = (await readdir(dir)).filter((f) => f.endsWith('.png')).sort();
-    for (const f of files.slice(0, Math.max(0, files.length - MAX_SHOTS_PER_SESSION))) {
+    // Sort by mtime, not name: voice viewport shots carry a "voice-<key>-" prefix, so a lexicographic
+    // sort would no longer be chronological and could prune newer plain-<ts> shots first.
+    const files = (await readdir(dir)).filter((f) => f.endsWith('.png'));
+    const entries = [];
+    for (const f of files) {
+      try { entries.push({ f, t: (await stat(join(dir, f))).mtimeMs }); } catch {}
+    }
+    entries.sort((a, b) => a.t - b.t);
+    for (const { f } of entries.slice(0, Math.max(0, entries.length - MAX_SHOTS_PER_SESSION))) {
       await unlink(join(dir, f)).catch(() => {});
     }
   } catch {}
@@ -734,8 +741,23 @@ async function cdpCapture(port, url, auth = null, opts = {}) {
       }
     }
     const shot = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    // Optional device-viewport passes (voice preview: desktop/tablet/phone in ONE chrome run) —
+    // emulation overrides are independent of the real window size.
+    let viewportShots = null;
+    if (Array.isArray(opts.viewports) && opts.viewports.length) {
+      viewportShots = [];
+      for (const vp of opts.viewports.slice(0, 4)) {
+        try {
+          await call('Emulation.setDeviceMetricsOverride', { width: vp.width, height: vp.height, deviceScaleFactor: vp.scale || 1, mobile: !!vp.mobile });
+          await delay(400);
+          await waitForPreviewSettle(call);
+          const s = await call('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+          viewportShots.push({ key: vp.key, data: s.data });
+        } catch {}
+      }
+    }
     const productAudit = opts.product_audit ? await runProductAudit(call, opts.product_audit).catch((e) => ({ kind: 'product_audit_error', error: String(e.message || e).slice(0, 200) })) : null;
-    return { screenshot: shot.data, productAudit };
+    return { screenshot: shot.data, viewportShots, productAudit };
   } finally {
     try {
       ws.close();
@@ -750,7 +772,7 @@ async function cdpScreenshot(port, url, auth = null) {
 export async function capturePreview(session_id, url, auth = null, opts = {}) {
   const dir = join(SHOT_DIR, session_id);
   await mkdir(dir, { recursive: true });
-  const file = `${Date.now()}.png`;
+  const file = `${opts.filePrefix || ''}${Date.now()}.png`;
   const out = join(dir, file);
   const profileDir = join(dir, 'profile');
   const port = await freePort();
@@ -783,6 +805,7 @@ export async function capturePreview(session_id, url, auth = null, opts = {}) {
   }, SHOT_TIMEOUT_MS + 2000);
   let shotTimer = null;
   let productAudit = null;
+  let viewportShots = null;
   try {
     const timeout = new Promise((_, rej) => {
       shotTimer = setTimeout(() => rej(new Error('screenshot timed out')), SHOT_TIMEOUT_MS);
@@ -792,6 +815,15 @@ export async function capturePreview(session_id, url, auth = null, opts = {}) {
       timeout,
     ]);
     await writeFile(out, Buffer.from(captured.screenshot, 'base64'));
+    if (captured.viewportShots?.length) {
+      viewportShots = [];
+      for (const s of captured.viewportShots) {
+        const vpFile = `${opts.filePrefix || ''}${s.key}-${Date.now()}.png`;
+        const vpOut = join(dir, vpFile);
+        await writeFile(vpOut, Buffer.from(s.data, 'base64'));
+        viewportShots.push({ key: s.key, file: vpFile, rel: join('supervisor', session_id, vpFile), abs: vpOut });
+      }
+    }
     if (captured.productAudit?.screenshots?.length) {
       captured.productAudit.savedScreenshots = [];
       let i = 0;
@@ -814,7 +846,7 @@ export async function capturePreview(session_id, url, auth = null, opts = {}) {
   }
   await stat(out);
   await pruneShots(dir);
-  return { file, rel: join('supervisor', session_id, file), abs: out, productAudit };
+  return { file, rel: join('supervisor', session_id, file), abs: out, productAudit, viewportShots };
 }
 
 function pngDataUrl(buf) {

@@ -120,6 +120,7 @@ const FEATURE_MODULES = [
   './snippets.js',
   './tts.js',
   './voice.js',
+  './voice_preview.js',
   './voice_report_api.js',
   './records.js',
   './story_api.js',

@@ -26,6 +26,7 @@ import {
   voiceDraftGrounding,
 } from './voice_turn.js';
 import { deliverVoiceFeedback } from './voice_delivery.js';
+import { prepareVoicePreview } from './voice_preview.js';
 import { voiceTranscriptDisposition } from '../web/voice-input.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
@@ -471,6 +472,14 @@ async function presentNext(vs, greet) {
     }
     if (vs.pointer >= vs.items.length) return { ended: true, skipped };
     const it = vs.items[vs.pointer];
+    // Automatically prepare the visual check (viewport screenshots) for the item being presented and
+    // the one after it, so the operator's Preview tap shows shots instantly. Fire-and-forget: capture
+    // failures only mean the tap falls back to session-log images.
+    try {
+      prepareVoicePreview(it.sessionId);
+      const next = vs.items[vs.pointer + 1];
+      if (next) prepareVoicePreview(next.sessionId);
+    } catch {}
     const say = await present(vs, greet);
     if (stillNeedsAttention(it.sessionId)) {
       it.presentedAt = now();

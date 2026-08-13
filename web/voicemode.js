@@ -166,6 +166,7 @@ function end(reason = 'complete') {
   requestInterrupt = null;
   try { handle?.stop(); } catch {}
   try { stopAllPlayback(); } catch {} // halt any tts-player playback (belt for the shared element)
+  try { closePreviewPanel(); } catch {} // clears the poll timer; the panel DOM leaves with the root
   if (ui) { ui.root.remove(); ui = null; }
   if (wasActive) window.dispatchEvent(new CustomEvent('aios:voice-mode-end', { detail: { reason } }));
 }
@@ -482,6 +483,106 @@ async function recordUntilSilence({
   return new Blob(chunks, { type: rec?.mimeType || opts.mimeType || chunks[0]?.type || 'audio/webm' });
 }
 
+// ---- visual check (Preview) ----
+// Operator: "in voice mode it's hard to tell whether it actually changed anything — I want a button
+// that shows the raw screenshots, desktop/iPad/phone, prepared automatically". The server pre-captures
+// on item advance; this panel renders the manifest (viewport shots + images already in the session
+// log). The voice loop keeps running while it's open — glance, then just speak the response.
+const PREVIEW_PANEL_HTML =
+  '<div class="vm-preview-panel" hidden>' +
+  '<div class="vm-preview-head"><span class="vm-preview-title">VISUAL CHECK</span><div class="vm-preview-tabs"></div>' +
+  '<button class="vm-preview-x" type="button" aria-label="Close preview">✕</button></div>' +
+  '<div class="vm-preview-body"><div class="vm-preview-empty">Loading…</div></div>' +
+  '<div class="vm-preview-strip" hidden></div></div>';
+const VIEWPORT_LABEL = { desktop: 'Desktop', tablet: 'iPad', phone: 'Phone' };
+let previewTimer = null;
+let previewPollLeft = 0;
+
+function wirePreview(o) {
+  if (!o.preview || !o.previewPanel) return;
+  o.preview.onclick = () => {
+    if (!o.previewPanel.hidden) return closePreviewPanel();
+    o.previewPanel.hidden = false;
+    o.preview.classList.add('on');
+    loadPreviewPanel(true);
+  };
+  o.previewPanel.querySelector('.vm-preview-x').onclick = closePreviewPanel;
+}
+
+function closePreviewPanel() {
+  if (previewTimer) { clearTimeout(previewTimer); previewTimer = null; }
+  if (ui?.previewPanel) { ui.previewPanel.hidden = true; ui.previewPanel.dataset.sid = ''; delete ui.previewPanel.dataset.pick; }
+  ui?.preview?.classList.remove('on');
+}
+
+async function loadPreviewPanel(fresh) {
+  const sid = ui?.sessionId;
+  const panel = ui?.previewPanel;
+  if (!sid || !panel || panel.hidden) return;
+  if (fresh) { previewPollLeft = 10; delete panel.dataset.pick; }
+  panel.dataset.sid = sid;
+  let man = null;
+  try { man = await api(`api/session/${encodeURIComponent(sid)}/voice-preview?prepare=1`); } catch {}
+  if (!ui || panel.hidden || panel.dataset.sid !== ui.sessionId) return; // closed / advanced meanwhile
+  renderPreview(panel, man || {});
+  // Viewport shots may still be capturing (the loop pre-captures, but a fast tap can win) — poll a
+  // few rounds until the set is complete, then stop.
+  const incomplete = man && man.previewUrl && (man.viewports || []).length < 3;
+  if (incomplete && previewPollLeft-- > 0) {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => loadPreviewPanel(false), 2500);
+  }
+}
+
+function renderPreview(panel, man) {
+  const tabs = panel.querySelector('.vm-preview-tabs');
+  const body = panel.querySelector('.vm-preview-body');
+  const strip = panel.querySelector('.vm-preview-strip');
+  const shots = [
+    ...(man.viewports || []).map((v) => ({ id: `vp:${v.key}`, name: VIEWPORT_LABEL[v.key] || v.key, url: `${v.url}?t=${v.ts}`, tab: true })),
+    ...(man.logImages || []).map((s, i) => ({ id: `log:${i}`, name: s.label || 'from the log', url: s.url, tab: false })),
+  ];
+  if (!panel.dataset.pick || !shots.some((s) => s.id === panel.dataset.pick)) panel.dataset.pick = shots[0]?.id || '';
+  const pick = shots.find((s) => s.id === panel.dataset.pick) || null;
+  const choose = (id) => { panel.dataset.pick = id; renderPreview(panel, man); };
+  tabs.replaceChildren(...shots.filter((s) => s.tab).map((s) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = s.name;
+    b.classList.toggle('on', s.id === panel.dataset.pick);
+    b.onclick = () => choose(s.id);
+    return b;
+  }));
+  const logShots = shots.filter((s) => !s.tab);
+  strip.hidden = !logShots.length;
+  strip.replaceChildren(...logShots.map((s) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.title = s.name;
+    b.classList.toggle('on', s.id === panel.dataset.pick);
+    const img = document.createElement('img');
+    img.loading = 'lazy';
+    img.src = s.url;
+    img.alt = s.name;
+    b.appendChild(img);
+    b.onclick = () => choose(s.id);
+    return b;
+  }));
+  if (pick) {
+    const img = document.createElement('img');
+    img.src = pick.url;
+    img.alt = pick.name;
+    body.replaceChildren(img);
+  } else {
+    const empty = document.createElement('div');
+    empty.className = 'vm-preview-empty';
+    empty.textContent = man.previewUrl
+      ? 'Capturing desktop, iPad, and phone screenshots…'
+      : 'No screenshots for this session yet — no preview URL is configured and the agent has not produced any images.';
+    body.replaceChildren(empty);
+  }
+}
+
 // ---- overlay UI ----
 function buildOverlay({ onTheGo = false } = {}) {
   const root = document.createElement('div');
@@ -500,8 +601,10 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="ongo-foot"><details class="ongo-settings"><summary>Voice &amp; speed</summary><div class="vm-controls"><span class="vm-mode"></span>' +
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div></details>' +
-      '<div class="ongo-actions"><button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
-      '<button class="btn danger vm-stop">End assistant</button></div></div></div>'
+      '<div class="ongo-actions"><button class="btn ghost vm-preview" type="button" title="See the screenshots for this session — desktop, iPad, and phone">Preview</button>' +
+      '<button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
+      '<button class="btn danger vm-stop">End assistant</button></div></div>' +
+      PREVIEW_PANEL_HTML + '</div>'
     : '<div class="vm-box">' +
       '<div class="vm-progress"><div class="vm-bar"><i></i></div><div class="vm-prog-label"></div></div>' +
       '<div class="vm-orb"></div>' +
@@ -512,8 +615,10 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
-      '<div class="vm-action-row"><button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
-      '<button class="btn danger vm-stop">Stop</button></div></div>';
+      '<div class="vm-action-row"><button class="btn ghost vm-preview" type="button" title="See the screenshots for this session — desktop, iPad, and phone">Preview</button>' +
+      '<button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
+      '<button class="btn danger vm-stop">Stop</button></div>' +
+      PREVIEW_PANEL_HTML + '</div>';
   document.body.appendChild(root);
   const o = {
     root,
@@ -534,8 +639,11 @@ function buildOverlay({ onTheGo = false } = {}) {
     spokenLabel: root.querySelector('.ongoing-spoken-label'),
     heardLabel: root.querySelector('.ongoing-heard-label'),
     interrupt: root.querySelector('.vm-interrupt'),
+    preview: root.querySelector('.vm-preview'),
+    previewPanel: root.querySelector('.vm-preview-panel'),
     onTheGo,
   };
+  wirePreview(o);
   root.querySelector('.vm-stop').onclick = end;
   o.interrupt.onclick = () => requestInterrupt?.({ tap: true });
   o.deviceVoice.onclick = () => {
@@ -568,6 +676,8 @@ function updateProgress(cur) {
     if (ui.spokenLabel) ui.spokenLabel.textContent = 'BRIEFING';
   }
   ui.sessionId = cur.sessionId || ui.sessionId || '';
+  // An open visual check follows the queue: advancing to the next session reloads its screenshots.
+  if (ui.previewPanel && !ui.previewPanel.hidden && ui.previewPanel.dataset.sid && ui.previewPanel.dataset.sid !== ui.sessionId) loadPreviewPanel(true);
   ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;
   ui.bar.style.width = Math.round((cur.n / cur.total) * 100) + '%';
   if (ui.onTheGo) {
