@@ -107,6 +107,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
         <div class="message-box footer-composer" id="message-box" aria-label="Message composer">
           <div class="attachment-list" id="attachments" hidden></div>
           <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
+          <div class="composer-notice" id="composer-notice" role="status" aria-live="polite" hidden></div>
           <div class="composer-bottom">
             <div class="composer-options">
               <div class="composer-settings-popover" id="composer-settings-popover">
@@ -2847,12 +2848,17 @@ let attachments = [];
 let attachmentSeq = 0;
 
 function showComposerNotice(message) {
-  const el = $('#mic-status');
+  const el = $('#composer-notice');
   if (!el) return;
   const text = String(message || '');
   el.textContent = text;
+  el.hidden = !text;
   clearTimeout(showComposerNotice.timer);
-  showComposerNotice.timer = setTimeout(() => { if (el.textContent === text) el.textContent = ''; }, 7000);
+  showComposerNotice.timer = setTimeout(() => {
+    if (el.textContent !== text) return;
+    el.textContent = '';
+    el.hidden = true;
+  }, 7000);
 }
 
 attachBtns.forEach((btn) => {

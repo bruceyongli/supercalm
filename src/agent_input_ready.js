@@ -20,6 +20,14 @@ export function claudeResumePrompt(screen) {
     && /Enter to confirm/i.test(tail);
 }
 
+// Codex renders rotating grey suggestions in the otherwise-ready composer. tmux's plain capture loses
+// the grey styling, so keep the small canonical set here. Treating one as a composer is safe even when
+// the operator deliberately types the identical phrase: sendText clears and retypes that same text.
+export function codexComposerPlaceholder(text) {
+  return /^(?:Implement \{feature\}|Explain this codebase|Summarize recent commits|Run \/review on my current changes|Write tests for @filename)$/i
+    .test(String(text || '').trim());
+}
+
 function numberedChoicePrompt(screen) {
   const tail = cleanAgentScreen(screen).split('\n').slice(-24).join('\n');
   return /(?:^|\n)\s*[❯›]?\s*1\.\s+\S/m.test(tail)
@@ -45,7 +53,7 @@ export function pendingComposerDraft(screen) {
     const after = tail.slice(i + 1);
     if (after.some((line) => !/(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab)/i.test(line))) continue;
     const text = match[2].trim();
-    if (text === 'Implement {feature}' || /^(?:Ask Claude|Try ["“])/.test(text)) continue;
+    if (codexComposerPlaceholder(text) || /^(?:Ask Claude|Try ["“])/.test(text)) continue;
     return { marker: match[1], text };
   }
   return null;
@@ -61,7 +69,7 @@ export function agentInputReady(screen) {
     // A prompt glyph in transcript text is not sufficient. Require either an empty composer or a
     // known idle placeholder, adjacent to the tool's status/footer region near the pane bottom.
     const placeholder = marker === '›'
-      ? body === 'Implement {feature}'
+      ? codexComposerPlaceholder(body)
       : /^(?:Ask Claude|Try ["“])/.test(body);
     if (body && !placeholder) return false;
     const after = tail.slice(index + 1, index + 7).join('\n');

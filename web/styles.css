@@ -464,8 +464,16 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 
 .composer-bottom { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.composer-notice {
+  min-width: 0; padding: 2px 4px; color: var(--yellow);
+  font-size: 12px; line-height: 1.35; overflow-wrap: anywhere;
+}
+.composer-notice[hidden] { display: none; }
 .composer-options { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.composer-actions .mic-status {
+  min-width: 0; max-width: min(32vw, 320px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .composer-action-spacer { display: none; }
 .composer-settings-popover { min-width: 0; }
 .composer-settings-head { display: none; }

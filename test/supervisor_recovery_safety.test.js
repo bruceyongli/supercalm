@@ -1,11 +1,16 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { agentInputReady, claudeResumePrompt, operatorInputDisposition, pendingComposerDraft } from '../src/agent_input_ready.js';
+import { agentInputReady, claudeResumePrompt, codexComposerPlaceholder, operatorInputDisposition, pendingComposerDraft } from '../src/agent_input_ready.js';
 import { emptyKernelState, evaluateSend, rebaseKernelForNewPane } from '../src/agents/send_kernel.js';
 import { recoveryAttempt } from '../src/agents/exit_recovery.js';
 
 assert.equal(agentInputReady('Starting MCP servers (0/2)…\nloading'), false, 'startup text is not an input target');
 assert.equal(agentInputReady('old transcript\n› Implement {feature}\ngpt-5.5 xhigh · /tmp/lab'), true, 'Codex composer is ready');
+for (const hint of ['Explain this codebase', 'Summarize recent commits', 'Run /review on my current changes', 'Write tests for @filename']) {
+  assert.equal(codexComposerPlaceholder(hint), true, `${hint} is a known Codex composer hint`);
+  assert.equal(agentInputReady(`old transcript\n› ${hint}\ngpt-5.6-sol xhigh · /tmp/lab`), true, `${hint} does not block an idle Codex composer`);
+}
+assert.equal(codexComposerPlaceholder('Run the API check for me'), false, 'real operator prose is not a composer hint');
 assert.equal(agentInputReady('old transcript\n❯ Ask Claude something\nbypass permissions on'), true, 'Claude composer is ready');
 assert.equal(agentInputReady('› old operator request\ngpt-5.5 xhigh · /tmp/lab'), false, 'a recent transcript prompt is not a composer');
 assert.equal(agentInputReady('› Implement {feature}\nStarting MCP servers (0/2)…'), false, 'placeholder without the ready footer is startup, not readiness');
@@ -33,6 +38,8 @@ assert.deepEqual(
 );
 assert.deepEqual(pendingComposerDraft('agent report\n❯ cut over\n'), { marker: '❯', text: 'cut over' });
 assert.equal(pendingComposerDraft('agent report\n❯ Ask Claude something\n'), null, 'idle placeholder is not an operator draft');
+assert.equal(pendingComposerDraft('agent report\n› Run /review on my current changes\ngpt-5.6-sol xhigh · /tmp/lab'), null,
+  'a rotating Codex placeholder is not an unsubmitted operator draft');
 
 const recoveryWindow = 15 * 60_000;
 const episode = { exitRecoveryKey: 'exit-1', exitRecoveryAttempt: 1, exitRecoveryLastAt: 5_000, exitRecoveryResolved: false };

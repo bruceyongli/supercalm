@@ -18,6 +18,7 @@ const fixture = `<!doctype html>
         <section class="story-panel"></section>
         <div class="message-box footer-composer">
           <textarea id="reply" placeholder="Ask anything..."></textarea>
+          <div class="composer-notice" hidden></div>
           <div class="composer-bottom">
             <div class="composer-options"><div class="composer-settings-popover"><div class="settings composer-settings"></div></div></div>
             <div class="composer-actions">
@@ -95,6 +96,27 @@ try {
   assert.equal(closed.controlsInside, true, 'mic and send remain inside the composer');
   assert.equal(closed.oneRow, true, 'attach, run settings, mic, and send stay on one row');
   assert.ok(closed.settingsWidth > 100, 'the run-settings summary gets the flexible middle track');
+
+  const noticeLayout = await page.evaluate(() => {
+    const composer = document.querySelector('.footer-composer');
+    const notice = document.querySelector('.composer-notice');
+    const settings = document.querySelector('.composer-settings-toggle');
+    const send = document.querySelector('#send');
+    notice.hidden = false;
+    notice.textContent = 'Session is still resuming. Your draft was kept; send again when the composer is ready.';
+    const composerRect = composer.getBoundingClientRect();
+    const noticeRect = notice.getBoundingClientRect();
+    const settingsRect = settings.getBoundingClientRect();
+    const sendRect = send.getBoundingClientRect();
+    return {
+      noticeOwnRow: noticeRect.bottom <= settingsRect.top + 1,
+      controlsInside: sendRect.right <= composerRect.right,
+      settingsWidth: settingsRect.width,
+    };
+  });
+  assert.equal(noticeLayout.noticeOwnRow, true, 'a delivery notice gets its own row instead of crushing run settings');
+  assert.equal(noticeLayout.controlsInside, true, 'a delivery notice cannot push Send outside the composer');
+  assert.ok(noticeLayout.settingsWidth > 100, 'run settings stays a compact summary while a notice is visible');
 
   await page.evaluate(() => window.__viewportTest.open());
   await page.waitForTimeout(30);
