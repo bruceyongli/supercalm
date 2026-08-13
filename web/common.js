@@ -206,18 +206,34 @@ function recorderOptions() {
   return {};
 }
 
+// Languages dictation may legitimately be in: an explicit localStorage override (`aios_stt_langs`,
+// CSV like "en,zh") else the browser's configured languages. The server rejects transcripts whose
+// script NONE of these can produce — Whisper's language=auto loved to hallucinate stock Russian
+// ("Продолжение следует…") into English sessions and that text became tasks/titles (2026-08-12).
+export function preferredSttLangs() {
+  try {
+    const saved = String(localStorage.getItem('aios_stt_langs') || '').trim();
+    if (saved) return saved;
+  } catch {}
+  const raw = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
+  const bases = raw.map((l) => String(l || '').split(/[-_]/)[0].toLowerCase()).filter((l) => /^[a-z]{2,3}$/.test(l));
+  return [...new Set(bases)].slice(0, 4).join(',') || 'en';
+}
+
 // agentHint (codex|claude) lets the server MATCH THE SESSION'S AGENT — dictation in a codex session
 // routes to Codex STT, a claude session to Claude, else the default. Unknown/absent → server default.
-async function requestTranscription(blob, agentHint) {
+// extraQuery carries context ids (&session=/&project=) so the server grounds Whisper in the real task.
+async function requestTranscription(blob, agentHint, extraQuery = '') {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 45000);
   try {
-    const q = agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '';
+    const q = (agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '') + `&langs=${encodeURIComponent(preferredSttLangs())}` + (extraQuery || '');
     const r = await fetch('api/transcribe?language=auto&polish=false' + q, { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || r.status);
-    rememberSpeechLanguage(j.language);
-    return (j.text || '').trim();
+    // A rejected take must not poison the on-device recognizer's language preference either.
+    if (!j.rejected) rememberSpeechLanguage(j.language);
+    return { text: (j.text || '').trim(), rejected: j.rejected || '' };
   } finally {
     clearTimeout(timeout);
   }
@@ -305,13 +321,16 @@ function insertAtAnchor(target, anchor, dictated) {
 // Tap-to-toggle dictation via Spark: tap to record, tap to stop -> transcribe.
 // One unified `click` handler avoids the mouse/touch double-firing that produced
 // empty clips. `statusEl` (optional) shows recording / transcribing stages.
-export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {}) {
+export function wireMic(btn, target, statusEl, { hold = false, hint = null, stt = null } = {}) {
   // hold-to-talk (spec) applies on TOUCH only — press-hold-record, release-to-transcribe; desktop keeps
   // tap-to-toggle. Default (no opt) is tap-to-toggle everywhere, so existing callers are unchanged.
   // hint = the agent to match (string or () => string, resolved at transcribe time so it tracks a
   // changing tool selector); passed to the STT route as ?agent=.
+  // stt = () => extra transcribe query ("&session=…" / "&project=…") so the server grounds Whisper
+  // in this surface's real context.
   const holdMode = hold && typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
   const agentHint = () => { try { const h = typeof hint === 'function' ? hint() : hint; return h ? String(h) : ''; } catch { return ''; } };
+  const sttQuery = () => { try { return typeof stt === 'function' ? String(stt() || '') : ''; } catch { return ''; } };
   let rec = null,
     chunks = [],
     stream = null,
@@ -373,14 +392,19 @@ export function wireMic(btn, target, statusEl, { hold = false, hint = null } = {
       try {
         const liveText = live?.getText() || '';
         let text = liveText;
+        let rejected = '';
         try {
-          text = (await requestTranscription(blob, agentHint())) || liveText;
+          const out = await requestTranscription(blob, agentHint(), sttQuery());
+          // Server rejection (stock hallucination / wrong-language) → fall back to the on-device live
+          // recognizer's take, which is pinned to the user's language and doesn't stock-hallucinate.
+          text = out.text || liveText;
+          rejected = out.rejected;
         } catch (e) {
           if (!liveText) throw e;
         }
         if (!text) {
           restoreOriginal();
-          alert('No speech detected — try again.');
+          alert(rejected ? 'Didn’t catch that — the audio transcribed as noise, so nothing was inserted. Try again closer to the mic.' : 'No speech detected — try again.');
           return;
         }
         insertAtAnchor(target, anchor, text); // insert at the caret, preserving newlines + text around it

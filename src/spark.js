@@ -10,6 +10,8 @@ import { getSpeech, getVoiceOverride, getVoiceConfig } from './model_providers.j
 import { transcribeCodex } from './stt_codex.js';
 import { resolveChain, normalizeAgentHint } from './voice_chain.js';
 import { voiceProviders, availabilityMap } from './voice_providers.js';
+import { guardTranscript, sttContextPrompt, normalizeLangs } from './stt_guard.js';
+import { getSession, getProject } from './store.js';
 
 // Effective Spark connection = UI override (data/model_providers.json) merged over env (SPARK_IP/HOST),
 // read at REQUEST time so edits hot-reload without a restart. sparkEnabled() also honors the "use" mute.
@@ -106,10 +108,12 @@ function boolQuery(req, name, fallback) {
   return /^(1|true|yes|on)$/i.test(value);
 }
 
-async function transcribeWithSpark({ audio, contentType, language, polish }) {
+async function transcribeWithSpark({ audio, contentType, language, polish, prompt }) {
   const ext = extFor(contentType);
+  const fields = { language, polish: String(polish), response_format: 'json' };
+  if (prompt) fields.prompt = prompt; // Whisper biasing prompt (context grounding); ignored if Spark predates it
   const { body, contentType: multipartType } = buildMultipart(
-    { language, polish: String(polish), response_format: 'json' },
+    fields,
     'file',
     audio,
     `speech.${ext}`,
@@ -120,10 +124,11 @@ async function transcribeWithSpark({ audio, contentType, language, polish }) {
 
 // OpenAI-compatible speech provider (Settings → Voice): the no-Spark STT path. Same multipart
 // shape as Spark; `language` omitted when 'auto' (OpenAI rejects it), bearer only when a key exists.
-async function transcribeWithProvider(sp, { audio, contentType, language }) {
+async function transcribeWithProvider(sp, { audio, contentType, language, prompt }) {
   const ext = extFor(contentType);
   const fields = { model: sp.stt_model || 'whisper-1', response_format: 'json' };
   if (language && language !== 'auto') fields.language = language;
+  if (prompt) fields.prompt = prompt; // OpenAI-compatible biasing prompt (context grounding)
   const { body, contentType: multipartType } = buildMultipart(
     fields, 'file', audio, `speech.${ext}`, baseContentType(contentType) || 'application/octet-stream'
   );
@@ -142,10 +147,36 @@ async function transcribeWithProvider(sp, { audio, contentType, language }) {
 route('POST', '/api/transcribe', async (req, res) => {
   const ct = req.headers['content-type'] || 'audio/webm';
   const url = new URL(req.url, 'http://aios.local');
-  const language = url.searchParams.get('language') || 'auto';
+  let language = url.searchParams.get('language') || 'auto';
   const polish = boolQuery(req, 'polish', STT_POLISH_DEFAULT);
   const agentHint = normalizeAgentHint(url.searchParams.get('agent'));
   const forceProvider = url.searchParams.get('backend') === 'provider'; // ops/test flag → force cloud
+  // Operator 2026-08-12 ("what the heck kind of language … it's not actually read the context"):
+  // dictation is grounded in the operator's languages + the real session/project context, and every
+  // backend's output goes through guardTranscript before it can become a task/reply/title.
+  // `langs` = the languages dictation may legitimately be in (client sends its navigator languages;
+  // env AIOS_STT_LANGS overrides the default). One single lang → hard-pin Whisper instead of auto.
+  const langs = normalizeLangs(url.searchParams.get('langs') ?? process.env.AIOS_STT_LANGS ?? '');
+  if (language === 'auto' && langs.length === 1) language = langs[0];
+  // `session=`/`project=` → Whisper biasing prompt from the actual rows (fail-open on any miss).
+  let prompt = '';
+  try {
+    const sid = url.searchParams.get('session') || '';
+    const pid = url.searchParams.get('project') || '';
+    const session = sid ? getSession(sid) : null;
+    const project = pid ? getProject(pid) : session?.project_id ? getProject(session.project_id) : null;
+    prompt = sttContextPrompt({ session, project, extra: (url.searchParams.get('context') || '').slice(0, 300) });
+  } catch {}
+  // Reject wrong-language/stock-hallucination output; hand the raw text back for diagnostics. 200 —
+  // "heard nothing usable" is a normal outcome every mic surface already handles as empty input.
+  const finish = (out) => {
+    const verdict = guardTranscript(out.text, { langs });
+    if (!verdict.ok) {
+      console.error('[aios] stt rejected (%s): %s', verdict.rejected, String(verdict.raw).slice(0, 120));
+      return json(res, 200, { ...out, text: '', raw_text: verdict.raw, rejected: verdict.rejected });
+    }
+    return json(res, 200, out);
+  };
   let audio;
   try {
     audio = await readBody(req, 40 * 1024 * 1024);
@@ -153,7 +184,7 @@ route('POST', '/api/transcribe', async (req, res) => {
     return json(res, 413, { error: 'audio too large' });
   }
   if (audio.length < 500) return json(res, 400, { error: 'no audio captured — the recording was empty' });
-  console.error('[aios] transcribe: ct=%s bytes=%d agent=%s', ct, audio.length, agentHint || '-');
+  console.error('[aios] transcribe: ct=%s bytes=%d agent=%s langs=%s ctx=%s', ct, audio.length, agentHint || '-', langs.join('+') || '-', prompt ? 'y' : '-');
 
   const speech = getSpeech({ redact: false });
   const avail = availabilityMap(await voiceProviders());
@@ -183,15 +214,15 @@ route('POST', '/api/transcribe', async (req, res) => {
       }
       if (name === 'codex') {
         const { text } = await transcribeCodex(await getWav(), { signal: ctrl.signal });
-        return json(res, 200, { text, raw_text: text, polished_text: '', language, polish, transcoded: true, backend: 'codex' });
+        return finish({ text, raw_text: text, polished_text: '', language, polish, transcoded: true, backend: 'codex' });
       }
       if (name === 'spark') {
-        const out = await runSpark({ audio, ct, language, polish, getWav });
-        if (out) return json(res, 200, out);
+        const out = await runSpark({ audio, ct, language, polish, prompt, getWav });
+        if (out) return finish(out);
         errors.push('spark: no result');
       } else if (name === 'cloud') {
-        const out = await runProvider({ speech, audio, ct, language, polish, getWav });
-        if (out) return json(res, 200, out);
+        const out = await runProvider({ speech, audio, ct, language, polish, prompt, getWav });
+        if (out) return finish(out);
         errors.push('cloud: no result');
       }
     } catch (e) {
@@ -205,13 +236,13 @@ route('POST', '/api/transcribe', async (req, res) => {
 
 // Spark candidate: direct if it accepts the container, else transcode; returns the normalized response
 // object or null (caller falls through). Throws only on a hard error worth logging.
-async function runSpark({ audio, ct, language, polish, getWav }) {
+async function runSpark({ audio, ct, language, polish, prompt, getWav }) {
   let r = null;
-  if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) r = await transcribeWithSpark({ audio, contentType: ct, language, polish });
+  if (!STT_FORCE_TRANSCODE && sparkAcceptsAudio(ct)) r = await transcribeWithSpark({ audio, contentType: ct, language, polish, prompt });
   let transcoded = false;
   if (!r || r.status >= 400) {
     if (r && r.status >= 400) console.error('[aios] spark direct failed:', r.status, r.body.toString('utf8').slice(0, 180));
-    r = await transcribeWithSpark({ audio: await getWav(), contentType: 'audio/wav', language, polish });
+    r = await transcribeWithSpark({ audio: await getWav(), contentType: 'audio/wav', language, polish, prompt });
     transcoded = true;
   }
   if (r.status >= 400) { console.error('[aios] spark transcode failed:', r.status); return null; }
@@ -220,11 +251,11 @@ async function runSpark({ audio, ct, language, polish, getWav }) {
 
 // Provider candidate: original audio first (as before), then one WAV retry (local servers that only
 // accept wav). Returns the normalized response object or null.
-async function runProvider({ speech, audio, ct, language, polish, getWav }) {
-  let r = await transcribeWithProvider(speech, { audio, contentType: ct, language });
+async function runProvider({ speech, audio, ct, language, polish, prompt, getWav }) {
+  let r = await transcribeWithProvider(speech, { audio, contentType: ct, language, prompt });
   let transcoded = false;
   if (r.status >= 400) {
-    try { r = await transcribeWithProvider(speech, { audio: await getWav(), contentType: 'audio/wav', language }); transcoded = true; } catch {}
+    try { r = await transcribeWithProvider(speech, { audio: await getWav(), contentType: 'audio/wav', language, prompt }); transcoded = true; } catch {}
   }
   if (r.status >= 400) { console.error('[aios] cloud stt failed:', r.status); return null; }
   return normalizeSttPayload(r.body.toString('utf8'), { backend: 'cloud', language, polish, transcoded });

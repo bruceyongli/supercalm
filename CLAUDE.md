@@ -123,8 +123,15 @@ VAD listen → STT → /turn, or /continue after send/skip).
   `canPlayType()` says it can play it, else MP3.
 - **STT** (`spark.js`): Spark `/v1/audio/transcriptions` via `/api/transcribe` (ffmpeg→16k mono wav;
   sends compressed `MediaRecorder` audio through directly when Spark accepts the container, with WAV transcode
-  fallback). It sends `language=auto`+`polish=false` by default. Whisper raw text is preferred for coding-agent
-  replies; opt into grammar cleanup with `/api/transcribe?polish=true` or `AIOS_STT_POLISH=true`.
+  fallback). `polish=false` by default; opt into grammar cleanup with `/api/transcribe?polish=true` or
+  `AIOS_STT_POLISH=true`. **Grounded + guarded (`stt_guard.js`, 2026-08-12)**: clients send
+  `langs=` (browser languages / `aios_stt_langs` localStorage / `AIOS_STT_LANGS` env) — ONE allowed language
+  hard-pins Whisper instead of `auto`, and every backend's output passes `guardTranscript` which rejects
+  stock silence-hallucinations ("Продолжение следует…", "Thanks for watching", bare "you") and transcripts
+  whose script no allowed language can produce (`{text:'', rejected:'hallucination'|'language', raw_text}` —
+  clients treat as no-speech, never insert, never let it become a task/title, and never let it poison the
+  on-device recognizer language). `session=`/`project=` params build a Whisper biasing prompt from the real
+  task/project rows so dictation reads the context. Fail-open: no `langs` → no script rejection.
 - Neither TTS nor STT is on the model proxy fleet (8787–8792) — both go directly to the Spark device
   (`spark.your-tailnet.ts.net`), reached by IP+SNI; TTS additionally has the local 17071 `say` fallback.
 

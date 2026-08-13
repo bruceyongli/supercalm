@@ -3786,7 +3786,10 @@ installSessionViewportSync({
   },
 });
 compactComposerQuery.addEventListener?.('change', syncReplyPlaceholder, { signal: _sig });
-wireMic(micBtn, reply, $('#mic-status'), { hint: () => latestSessionInfo?.tool }); // tap once to record, again to transcribe; ?agent= matches THIS session's agent for STT
+wireMic(micBtn, reply, $('#mic-status'), {
+  hint: () => latestSessionInfo?.tool,
+  stt: () => `&session=${encodeURIComponent(id)}`, // ground STT in THIS session's task/project context
+}); // tap once to record, again to transcribe; ?agent= matches THIS session's agent for STT
 syncReplyPlaceholder();
 
 // Input routing. On desktop the terminal is interactive: clicking it focuses the terminal textarea and

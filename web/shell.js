@@ -475,7 +475,10 @@ export async function openLaunch(opts = {}) {
   if (q('#nl-project').value === '__new' && !q('#nl-path').value) setTimeout(() => q('#nl-path').focus(), 0);
   q('#nl-path')?.addEventListener('input', () => { const seg = q('#nl-path').value.split('/').filter(Boolean).pop() || ''; if (!q('#nl-name').value) q('#nl-name').placeholder = seg || 'auto from path'; });
   q('#nl-example').onclick = () => { q('#nl-task').value = 'Read the failing tests, fix the root cause they expose, run the full suite, and summarize the change for review.'; };
-  const mic = wireMic(q('#nl-mic'), q('#nl-task'), q('#nl-mic-status'), { hint: () => toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool }); // speak the task; STT matches the selected agent
+  const mic = wireMic(q('#nl-mic'), q('#nl-task'), q('#nl-mic-status'), {
+    hint: () => toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool,
+    stt: () => { const p = q('#nl-project')?.value; return p && p !== '__new' ? `&project=${encodeURIComponent(p)}` : ''; }, // ground the dictated task in the chosen project
+  }); // speak the task; STT matches the selected agent
   const closeLaunch = () => { try { mic.abort(); } catch {} m.remove(); }; // never leave the mic live behind a closed modal
   q('#nl-cancel').onclick = closeLaunch;
   m.addEventListener('click', (e) => { if (e.target === m) closeLaunch(); });

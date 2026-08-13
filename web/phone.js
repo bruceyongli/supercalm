@@ -10,7 +10,7 @@
 // POST api/messages/read (read-state syncs server-side so desktop and phone agree),
 // existing input/type/stop/kill/resume + /api/tts + /api/transcribe. Live via /api/events SSE.
 
-import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, registerSW, renderMarkdown } from './common.js';
+import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, preferredSttLangs, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
 import { unlockAudio, newPlayback, splitSentences, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { isVoiceModeActive, startVoiceMode, stopVoiceMode } from './voicemode.js';
@@ -440,9 +440,9 @@ async function voiceLoopListen() {
   V.state = 'thinking'; render();
   let text = '';
   try {
-    const r = await fetch('api/transcribe?polish=true', { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
+    const r = await fetch(`api/transcribe?polish=true&langs=${encodeURIComponent(preferredSttLangs())}${V.current?.sessionId ? `&session=${encodeURIComponent(V.current.sessionId)}` : ''}`, { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
     const j = await r.json();
-    text = (j.text || '').trim();
+    text = (j.text || '').trim(); // server-rejected noise arrives as '' → voiceMissedInput re-asks
   } catch {}
   if (V.stopFlag) return;
   if (!text) {
@@ -597,9 +597,10 @@ async function stopRecAndReview() {
   try {
     const blob = new Blob(chunks, { type: mime });
     if (blob.size < 600) throw new Error('no audio captured');
-    const r = await fetch('api/transcribe?polish=false', { method: 'POST', headers: { 'content-type': mime }, body: blob });
+    const r = await fetch(`api/transcribe?polish=false&langs=${encodeURIComponent(preferredSttLangs())}${S.sid ? `&session=${encodeURIComponent(S.sid)}` : ''}`, { method: 'POST', headers: { 'content-type': mime }, body: blob });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || 'transcribe failed');
+    if (j.rejected) throw new Error('didn’t catch that — transcribed as noise, try again');
     S.draft = j.text || '';
   } catch (e) {
     S.draft = '';

@@ -209,7 +209,7 @@ function composer(sessionId) {
     }
   };
 
-  wireMic(mic, ta, status);
+  wireMic(mic, ta, status, { stt: () => `&session=${encodeURIComponent(sessionId)}` }); // ground STT in this session's task/project
   ta.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') send.click();
   });
@@ -453,7 +453,10 @@ async function loadOpenCards() {
     label.hidden = sel.hidden = false;
   } catch {}
 }
-wireMic($('#ns-mic'), $('#ns-task'), $('#ns-mic-status'), { hint: () => nsTool }); // dictate the initial task; STT matches the selected agent
+wireMic($('#ns-mic'), $('#ns-task'), $('#ns-mic-status'), {
+  hint: () => nsTool,
+  stt: () => { const p = $('#ns-project')?.value; return p && !p.startsWith('__') ? `&project=${encodeURIComponent(p)}` : ''; }, // ground the dictated task in the chosen project
+}); // dictate the initial task; STT matches the selected agent
 $('#ns-go').onclick = async () => {
   const body = {
     project_id: $('#ns-project').value || undefined,

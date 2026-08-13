@@ -1,4 +1,4 @@
-import { api, createLiveSpeechRecognizer, rememberSpeechLanguage } from './common.js';
+import { api, createLiveSpeechRecognizer, rememberSpeechLanguage, preferredSttLangs } from './common.js';
 import { unlockAudio as unlockPlayer, newPlayback, splitSentences, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
@@ -111,7 +111,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
           if (stopFlag) break;
           live.stop();
           setState('thinking');
-          text = (await transcribe(blob, state.current?.tool)) || live.getText();
+          text = (await transcribe(blob, state.current?.tool, state.current?.sessionId)) || live.getText();
         } catch (e) {
           // Mic permission/device failures would otherwise loop forever: capture fails instantly,
           // an empty turn is posted, the server politely re-asks, repeat. Name the cause and stop.
@@ -367,20 +367,25 @@ export function openVoicePicker() {
 // Sentence-ish chunks, merging tiny fragments so each chunk is worth a TTS round-trip.
 
 // ---- STT ----
-// agentHint (the current queue item's agent) matches dictation to that session's STT source server-side.
-async function transcribe(blob, agentHint) {
+// agentHint (the current queue item's agent) matches dictation to that session's STT source server-side;
+// sessionId grounds Whisper in that session's task/project vocabulary. `langs` (browser languages /
+// aios_stt_langs override) lets the server reject wrong-language stock hallucinations — those came
+// back as the operator's "reply" ("Продолжение следует…") and were fed to the intent brain (2026-08-12).
+async function transcribe(blob, agentHint, sessionId) {
   if (!blob || blob.size < 1200) return '';
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 30000); // never let STT wedge the loop
   try {
-    const q = agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '';
+    const q = (agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '')
+      + (sessionId ? `&session=${encodeURIComponent(sessionId)}` : '')
+      + `&langs=${encodeURIComponent(preferredSttLangs())}`;
     // Voice Assistant is conversational speech, not verbatim code dictation. Spark's polish pass fixes
     // Whisper fragments and punctuation before intent reasoning; the raw transcript remains available
     // in the server response for diagnostics.
     const r = await fetch('api/transcribe?language=auto&polish=true' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
-    if (r.ok) rememberSpeechLanguage(j.language);
-    return r.ok ? (j.text || '').trim() : '';
+    if (r.ok && !j.rejected) rememberSpeechLanguage(j.language);
+    return r.ok ? (j.text || '').trim() : ''; // rejected → '' → the loop re-asks instead of acting on noise
   } catch {
     return ''; // timeout/abort/network -> empty -> server re-asks, loop continues
   } finally {
