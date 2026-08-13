@@ -127,6 +127,8 @@ assert.equal(normalizeVoiceAddress('Hey super calm, I prefer option two and larg
 assert.equal(voiceControlReply('stop').action, 'stop');
 assert.equal(voiceControlReply('next').action, 'next');
 assert.equal(voiceControlReply('Okay, moving on.', { hasPending: true }).action, 'next');
+assert.match(voiceControlReply('Okay, moving on.', { hasPending: true }).say, /didn't send the pending feedback/i,
+  'an intentional skip explicitly reports that staged feedback was not sent');
 assert.equal(voiceControlReply("Just leave it. I'll do a review later.", { hasPending: true }).action, 'next');
 assert.equal(voiceControlReply("I'll later do a review myself so nothing need the agent to do right now.").action, 'next',
   'the previously misdelivered live utterance deterministically defers the item');
@@ -185,8 +187,54 @@ assert.deepEqual(voiceDraftGrounding('Use option A', 'Use option A.'), { ok: tru
 assert.equal(
   reconcileVoiceReply({ action: 'await', say: 'Understood. Moving on.', message: 'moving on' }, 'Nothing else here.').action,
   'next',
-  'spoken movement and the internal pointer transition cannot disagree',
+  'the operator’s own defer language—not the assistant wording—moves to the next item',
 );
+assert.equal(
+  reconcileVoiceReply({ action: 'await', say: 'Understood. Moving on.', message: 'moving on' }, 'I prefer option two.').action,
+  'await',
+  'assistant movement wording alone cannot advance the queue',
+);
+
+// Exact live regression: the voice brain mislabeled an explicit approval as navigation. The model
+// cannot own the queue pointer; preserve the instruction and ask for confirmation instead.
+{
+  const instruction = 'approve D-002 and run the decisive split';
+  const recovered = reconcileVoiceReply({
+    action: 'next', say: 'Okay, moving on.', message: '',
+  }, instruction);
+  assert.equal(recovered.action, 'await');
+  assert.equal(recovered.message, instruction);
+  assert.match(recovered.say, /Should I send that\?$/);
+  assert.equal(recovered.rejectedModelControl, 'next');
+  const staged = reduceVoiceDialogue(createVoiceDialogueState(), {
+    sessionId: 's_trading', userText: instruction, reply: recovered,
+  });
+  assert.equal(scopedVoicePending(staged, 's_trading'), instruction);
+  const sent = await resolveVoiceTurn({
+    dialogue: staged,
+    sessionId: 's_trading',
+    userText: 'Yes, send it.',
+    brain: async () => { throw new Error('confirmation must stay deterministic'); },
+  });
+  assert.equal(sent.reply.action, 'send');
+  assert.equal(sent.reply.message, instruction);
+  let delivered = '';
+  const outcome = await deliverVoiceFeedback({
+    item: { sessionId: 's_trading', project: 'trading', presentedAt: 10 },
+    reply: sent.reply,
+    getSession: () => ({ status: 'waiting' }),
+    answeredElsewhere: () => false,
+    deliverReply: async (_sid, message) => { delivered = message; return { ok: true }; },
+  });
+  assert.equal(outcome.sent, true);
+  assert.equal(delivered, instruction, 'the recovered approval reaches the intended coding-agent handler');
+}
+
+{
+  const result = reconcileVoiceReply({ action: 'next', say: 'Moving on.', message: '' }, 'Why did the test fail?');
+  assert.equal(result.action, 'await');
+  assert.equal(result.message, '', 'a model navigation error cannot turn an information question into agent input');
+}
 
 // End-to-end turn selection: navigation short-circuits the model and cannot inherit a stale draft.
 {
@@ -328,6 +376,12 @@ assert.match(voiceTurnSource, /voiceControlReply\(userText, \{ hasPending: !!pen
 assert.doesNotMatch(voiceSource, /ON_THE_GO_SYS/,
   'proactive announcements no longer use a weaker second assistant policy');
 assert.match(voiceSource, /voice-delivery/, 'every attempted handoff leaves a durable delivery audit');
+assert.match(voiceSource, /transcript: userText\.slice\(0, 8000\)/,
+  'accepted voice turns persist the recoverable transcript instead of only its character count');
+assert.match(voiceSource, /rejected_model_control: r\.rejectedModelControl/,
+  'the audit identifies when model output tried to move the operator queue');
+assert.match(voiceSource, /status: 'skipped'[\s\S]*voice-delivery/,
+  'moving past an item creates an explicit non-delivery receipt');
 assert.match(voiceSource, /if \(outcome\.retry\)[\s\S]*phase: 'confirming'[\s\S]*pending: \{ sessionId: it\.sessionId, text: retryMessage \}/,
   'a retryable delivery keeps the confirmed voice draft scoped to the same session');
 assert.match(voiceSource, /r\.message \? \{ draft: String\(r\.message\)/,

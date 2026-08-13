@@ -674,6 +674,12 @@ route('POST', '/api/voice/turn', async (req, res) => {
         mode: vs.onTheGo ? 'on-the-go' : 'manual',
         input_len: userText.length,
         has_message: !!r.message,
+        // An accepted operator turn is recoverable evidence, not disposable request memory. Without
+        // this field the live failure retained only 21/13/15/40 character counts, making the actual
+        // instruction impossible to recover or audit after the model misclassified it.
+        transcript: userText.slice(0, 8000),
+        assistant: String(r.say || '').slice(0, 4000),
+        ...(r.rejectedModelControl ? { rejected_model_control: r.rejectedModelControl } : {}),
         // Keep a private recoverable draft from the confirmation boundary onward. Successful sends
         // are also normal inbound messages; a closed client or state-machine fault must not erase a
         // staged instruction before it reaches delivery.
@@ -733,8 +739,22 @@ route('POST', '/api/voice/turn', async (req, res) => {
     }
     if (r.action === 'next') {
       vs.skipped = (vs.skipped || 0) + 1; // skipped items stay WAITING — they're still in the queue
+      const delivery = {
+        sessionId: currentItem?.sessionId || '',
+        project: currentItem?.project || 'this session',
+        status: 'skipped',
+        reason: r.discardedPending ? 'pending-not-sent' : 'operator-skipped',
+      };
+      try { if (currentItem) store.addEvent(currentItem.sessionId, 'voice-delivery', delivery); } catch {}
       vs.pointer++;
-      return json(res, 200, { say: r.say, done: false, listen: false, current: currentBeforeTurn, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
+      return json(res, 200, {
+        say: r.say,
+        done: false,
+        listen: false,
+        current: currentBeforeTurn,
+        delivery,
+        ...(vs.onTheGo ? { acceptedText: userText } : {}),
+      });
     }
     if (r.action === 'stop') {
       vs.done = true;

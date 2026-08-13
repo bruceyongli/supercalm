@@ -67,13 +67,13 @@ export function asksForConfirmation(text) {
 const DISCOURSE_PREFIX = /^(?:(?:okay|ok|alright|all right|right|well)[\s,.;:!-]+)+/i;
 const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end (?:this|the) (?:assistant|conversation|session))[\s.!]*$/i;
 const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on|moving on|let(?:'s| us) move on|go (?:to )?(?:the )?next(?: one| item)?)[\s.!]*$/i;
-const DEFER = /\b(?:(?:just\s+)?leave (?:it|this|this one)(?: alone)?|i(?:'ll| will) (?:(?:do|handle) (?:the |a )?review|review (?:it|this)|handle (?:it|this)) (?:myself )?later|i(?:'ll| will) (?:do|review|handle) (?:it|this) (?:myself )?later|nothing (?:needs?|need) (?:the )?agent to do (?:right )?now|no(?:thing| action) (?:is )?needed (?:from (?:the )?agent )?(?:right )?now)\b/i;
+const DEFER = /\b(?:(?:just\s+)?leave (?:it|this|this one)(?: alone)?|i(?:'ll| will) (?:(?:do|handle) (?:the |a )?review|review (?:it|this)|handle (?:it|this)) (?:myself )?later|i(?:'ll| will) (?:do|review|handle) (?:it|this) (?:myself )?later|nothing else (?:here|for (?:this|that)(?: item)?)|nothing (?:needs?|need) (?:the )?agent to do (?:right )?now|no(?:thing| action) (?:is )?needed (?:from (?:the )?agent )?(?:right )?now)\b/i;
 const CANCEL_PENDING = /^(?:never mind|nevermind|cancel that|forget that|don'?t send (?:that|it)|do not send (?:that|it)|leave that unsent)[\s.!]*$/i;
 const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happened| should| would| could| can)\b|why\b|how(?:'s| is| are| did| does| do| should| would| could| can)?\b|when\b|where\b|who\b|which\b|more(?: details?)?\b|details?\b|tell me\b|explain\b|give me (?:more|details|the status)\b|read\b|repeat\b|do you think\b|(?:can|could|would) you (?:tell|explain|summarize|repeat|read|give me|check the status)\b|is (?:it|this|that|the|there)\b|are (?:they|these|those|the|there)\b|was (?:it|this|that|the|there)\b|were (?:they|these|those|the|there)\b|did (?:the|it|this|that|they)\b|does (?:the|it|this|that)\b|has (?:the|it|this|that)\b|have (?:the|it|this|that|they)\b)/i;
 const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
 const META_QUESTION = /\b(?:i (?:was|am|'m) (?:asking|wondering)|i asked|my question (?:was|is)|what i (?:asked|wanted to know))\b.{0,80}\b(?:detail|explain|why|what|how|status|happen|mean|think|recommend)/i;
 const WAKE = /\b(?:hey[\s,]+|okay[\s,]+|ok[\s,]+)?super[\s-]*calm\b/i;
-const REFERENTIAL_ACTION = /^(?:(?:yes|okay|ok|alright)[,\s]+)?(?:please\s+)?(?:just\s+)?(?:fix|change|update|improve|redo|remove|use|keep|make|do|handle|solve)\b(?:\s+(?:it|this|that|them|these|those|the issue|the problem|what you (?:said|described)))?/i;
+const REFERENTIAL_ACTION = /^(?:(?:yes|okay|ok|alright)[,\s]+)?(?:please\s+)?(?:just\s+)?(?:fix|change|update|improve|redo|remove|use|keep|make|do|handle|solve|approve|run|start|continue|commit|test|try|apply|choose)\b(?:\s+(?:it|this|that|them|these|those|the issue|the problem|what you (?:said|described)))?/i;
 const UNRESOLVED_REFERENCE = /\b(?:it|this|that|them|these|those|what you (?:said|described))\b/i;
 const DANGLING_DRAFT = /\b(?:to|and|or|because|by|with)\s*[.!?]*$/i;
 const CONFIRMATION_AS_DRAFT = /^(?:yes|yeah|yep|okay|ok|sure|go ahead|send it|do it)\b/i;
@@ -181,8 +181,18 @@ export function voiceControlReply(userText, { hasPending = false } = {}) {
   if (!message) return null;
   const intent = message.replace(DISCOURSE_PREFIX, '');
   if (STOP.test(intent)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
-  if (NEXT.test(intent)) return { say: 'Okay, moving to the next item.', action: 'next', message: '', deterministic: true };
-  if (DEFER.test(intent)) return { say: "Okay. I'll leave this item for your later review and move to the next one.", action: 'next', message: '', deterministic: true };
+  if (NEXT.test(intent)) return {
+    say: hasPending
+      ? "Okay. I didn't send the pending feedback. Moving to the next item."
+      : 'Okay, moving to the next item.',
+    action: 'next', message: '', deterministic: true, discardedPending: hasPending,
+  };
+  if (DEFER.test(intent)) return {
+    say: hasPending
+      ? "Okay. I didn't send the pending feedback. I'll leave this item for your later review and move on."
+      : "Okay. I'll leave this item for your later review and move to the next one.",
+    action: 'next', message: '', deterministic: true, discardedPending: hasPending,
+  };
   if (hasPending && CANCEL_PENDING.test(intent)) return { say: "Okay, I won't send that. We can stay on this item.", action: 'cancel', message: '', deterministic: true };
   return null;
 }
@@ -190,16 +200,57 @@ export function voiceControlReply(userText, { hasPending = false } = {}) {
 const DECLARED_ADVANCE = /\b(?:i(?:'ll| will| am|'m)\s+)?(?:am\s+)?moving (?:on|to the next)|\bi(?:'ll| will) move (?:on|to the next)|\bnext item\b/i;
 const ASKED_ADVANCE = /\b(?:should|shall|may|can|would you like|do you want)\b.{0,35}\b(?:move|moving|go)\b.{0,15}\b(?:on|next)\b/i;
 
-export function reconcileVoiceReply(reply, userText) {
+export function reconcileVoiceReply(reply, userText, { hasPending = false } = {}) {
   const out = { ...(reply || {}) };
-  if (out.action === 'await' && DECLARED_ADVANCE.test(clean(out.say)) && !ASKED_ADVANCE.test(clean(out.say))) {
-    out.action = 'next';
-    out.message = '';
-    out.reconciled = true;
+  const operatorControl = voiceControlReply(userText, { hasPending });
+  if (operatorControl) return operatorControl;
+  // Queue movement is an operator-owned control. The model may explain, summarize, or compose a
+  // draft, but it must never skip an item because it emitted `action:"next"` or happened to say
+  // "moving on". The exact live failure classified "approve D-002 and run the decisive split" as
+  // next, so no delivery handler ever ran. Only voiceControlReply(userText) may authorize movement.
+  const modelTriedControl = !out.deterministic && (
+    ['next', 'stop', 'cancel'].includes(out.action)
+    || (out.action === 'await' && DECLARED_ADVANCE.test(clean(out.say)) && !ASKED_ADVANCE.test(clean(out.say)))
+  );
+  if (modelTriedControl) {
+    if (isVoiceInformationQuestion(userText)) {
+      return {
+        ...out,
+        action: 'await',
+        message: '',
+        say: clean(out.say) || "I'm staying on this item. What detail would you like?",
+        reconciled: true,
+      };
+    }
+    const orphanConfirmation = confirmationFrom(userText);
+    const modelDraft = clean(out.message);
+    const draft = (!isNavigationIntent(modelDraft) && modelDraft)
+      || clean(orphanConfirmation?.additional)
+      || clean(userText);
+    const verdict = voiceDraftGrounding(userText, draft);
+    if (verdict.ok) {
+      return {
+        ...out,
+        action: 'await',
+        message: draft,
+        say: `I understood that as: ${draft.slice(0, 220)}. Should I send that?`,
+        reconciled: true,
+        rejectedModelControl: out.action,
+      };
+    }
+    return {
+      ...out,
+      action: 'await',
+      message: '',
+      say: verdict.reason === 'unresolved-reference'
+        ? "I'm staying on this item. What exactly should the agent approve or change?"
+        : "I'm staying on this item because I don't have a complete instruction to send yet.",
+      reconciled: true,
+      rejectedModelControl: out.action,
+    };
   }
-  if (['next', 'stop', 'cancel', 'ignore'].includes(out.action)) out.message = '';
-  // A deterministic navigation reading always wins over an LLM's contradictory draft.
-  return voiceControlReply(userText) || out;
+  if (out.action === 'ignore') out.message = '';
+  return out;
 }
 
 export function createVoiceDialogueState() {
@@ -239,7 +290,7 @@ export async function resolveVoiceTurn({ dialogue, sessionId, userText, brain })
   const raw = voiceControlReply(userText, { hasPending: !!pending })
     || confirmedPendingReply(pending, userText)
     || await brain();
-  const reply = reconcileVoiceReply(raw, userText);
+  const reply = reconcileVoiceReply(raw, userText, { hasPending: !!pending });
   return {
     reply,
     dialogue: reduceVoiceDialogue(dialogue, { reply, userText, sessionId }),

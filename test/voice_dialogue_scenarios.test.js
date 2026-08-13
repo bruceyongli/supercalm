@@ -110,4 +110,15 @@ for (const utterance of [
 assert.equal(scopedVoicePending(staged('Change session one.', 's_one'), 's_two'), '',
   'a pending instruction is unusable after the conversation advances to another session');
 
+{
+  const instruction = 'approve D-002 and run the decisive split';
+  const result = await resolve(instruction, {
+    brainReply: { action: 'next', say: 'Okay, moving on.', message: '' },
+  });
+  assert.equal(result.reply.action, 'await', 'a model cannot interpret an instruction as queue navigation');
+  assert.equal(result.reply.message, instruction);
+  assert.equal(scopedVoicePending(result.dialogue, 's_current'), instruction,
+    'the misclassified instruction remains available for explicit confirmation');
+}
+
 console.log('voice_dialogue_scenarios.test ok');
