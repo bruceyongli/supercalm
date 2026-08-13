@@ -802,7 +802,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
      (gpt: put the min on the OPEN track, not the child — see the dock-open rule in @media ≥1195).
      Frameless on purpose: the resizer line is its left border and each agent panel's own cards are
      the only frame (a drawer border here double-framed the Graph panel). */
-  grid-column: 3; grid-row: 2; min-width: 0; min-height: 0; height: 100%; overflow: auto;
+  position: relative; grid-column: 3; grid-row: 2; min-width: 0; min-height: 0; height: 100%; overflow: auto;
   border: 0; border-radius: 0; background: var(--panel2); padding: 8px;
 }
 .session-shell.rail-pinned .session-usage-panel { grid-column: 4; }
@@ -834,7 +834,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .side-tab-dot.sup-dot-needs_attention { background: var(--yellow); }
 .side-tab-dot[hidden] { display: none; }
 .side-tab-btn.on { color: var(--ink); border-color: var(--blue); background: #132338; }
-.side-tab-panel { display: grid; gap: 8px; }
+#side-panels { min-width: 0; }
+.side-tab-panel { display: grid; gap: 8px; min-width: 0; }
 .side-tab-panel[hidden] { display: none !important; }
 
 /* ---- Agent tab strip (header) + the right panel ------------------------------------------------- */
@@ -875,10 +876,14 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 /* Explicit ✕ inside the panel — compact widths only (reviewers: the overlay panel had no visible
    dismiss; on desktop the strip tab/esc close it and the ✕ stays hidden). */
 .dock-drawer-x {
-  display: none; position: sticky; top: 0; float: right; z-index: 7;
-  width: 40px; height: 40px; margin: 0 0 4px 8px; place-items: center;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 999px;
-  color: var(--muted); font-size: 14px; cursor: pointer;
+  /* Overlay the panel chrome instead of floating beside #side-panels. The old float made every
+     panel establish a narrower block beneath it, leaving a button-width dead column for the full
+     drawer height (especially obvious in the phone Graph sheet). */
+  display: none; position: absolute; top: 18px; right: 20px; z-index: 7;
+  width: 34px; height: 34px; margin: 0; place-items: center;
+  background: rgba(13, 17, 23, 0.9); border: 1px solid var(--line2); border-radius: 999px;
+  color: var(--muted); font-size: 13px; cursor: pointer;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
 }
 .dock-drawer-x:hover { color: var(--ink); border-color: var(--blue); }
 @media (max-width: 1194px) { .session-shell.dock-open .dock-drawer-x { display: grid; } }
@@ -2479,7 +2484,12 @@ body.map-expanded-open { overflow: hidden; }
 
 /* ---- session-space "Graph" panel: canvas fills the card (sticky to the bottom edge); controls + info
    float over the TOP, overlaying up to the top half of the map and scrolling if they overflow ---- */
-.map-space { position: relative; padding: 0; height: clamp(440px, 70vh, 760px); overflow: hidden; background: var(--panel2); }
+.map-card.map-space {
+  /* The panel/sheet already owns the outside edge. A second full-size card border was the visible
+     "folder inside a folder" frame on Graph; controls and selected-node info remain distinct cards. */
+  position: relative; padding: 0; height: clamp(440px, 70vh, 760px); overflow: hidden;
+  border: 0; border-radius: 0; background: var(--panel2);
+}
 .map-space .map-graph { position: absolute; inset: 0; height: auto; width: auto; border: 0; border-radius: 8px; }
 .map-space .map-top {
   position: absolute; top: 0; left: 0; right: 0; z-index: 3;
@@ -2490,6 +2500,11 @@ body.map-expanded-open { overflow: hidden; }
   pointer-events: auto; flex: 0 0 auto;
   background: rgba(13, 17, 23, 0.82); -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
   border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+}
+@media (max-width: 1194px) {
+  /* The compact close control lives inside the controls' painted surface. Reserve only its content
+     footprint—not a separate column—so the graph still reaches both sides of the sheet. */
+  .session-shell.dock-open .map-panel-host .map-controls { padding-right: 48px; }
 }
 .map-space .map-info {
   pointer-events: auto; flex: 0 1 auto; min-height: 0; overflow-y: auto; position: relative;

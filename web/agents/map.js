@@ -96,7 +96,7 @@ export const panel = {
     // The info area shows the session title/goal/cost when nothing is selected, or the node detail when a
     // node is tapped — it overlays the top half of the map and scrolls if it overflows. No bottom box.
     el.innerHTML = `
-      <section class="su-card map-card map-space">
+      <section class="map-card map-space">
         <div class="map-graph" id="map-graph"></div>
         <div class="map-top">
           <div class="map-controls" id="map-controls"></div>
