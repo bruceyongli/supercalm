@@ -63,12 +63,22 @@ export const MODEL_ALIASES = {
   sonnet: 'claude-sonnet-4-5',
   haiku: 'claude-haiku-4-5',
 };
+const CLAUDE_ALIAS_FAMILIES = { opus: 'opus', sonnet: 'sonnet', haiku: 'haiku' };
 
 const CODEX_FAST_MODELS = new Set(['gpt-5.5', 'gpt-5.4']);
 
 function providerSupportsVision(proxy, id) {
   if (['antigravity', 'gemini', 'codex', 'claude'].includes(proxy)) return true;
   return proxy === 'aliyun' && /max|plus|-vl|vision|glm/i.test(String(id));
+}
+
+// `role` is descriptive fleet metadata for ordinary models (for example "flagship Opus"), not a
+// blanket exclusion flag. Only explicit task aliases such as codex-auto-review are not valid coding
+// session/default models.
+function sessionModelEligible(model) {
+  return (model.kind || 'chat') === 'chat'
+    && !/(?:^|-)auto-review(?:$|-)/i.test(String(model.id || ''))
+    && !/^code review$/i.test(String(model.role || '').trim());
 }
 
 export const PROXY_PROVIDERS = [
@@ -115,7 +125,9 @@ export const PROXY_PROVIDERS = [
     port: 8789,
     nativeFor: ['claude'],
     models: [
-      { id: 'claude-fable-5', label: 'Claude Fable 5', recommended: true, pinned: true }, // operator pick 2026-07-20
+      // Offline seed only. Live discovery uses the proxy's `latest=1` family selection, so future
+      // Fable releases advance without another AIOS edit or a stale operator pin reappearing.
+      { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', recommended: true },
       { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', recommended: true },
       { id: 'claude-opus-4-7', label: 'Claude Opus 4.7' },
       { id: 'claude-opus-4-5', label: 'Claude Opus 4.5' },
@@ -181,6 +193,21 @@ let CATALOG_META = { scannedAt: null, source: 'static' };
 let PROVIDER_BY_PROXY = new Map();
 let ROUTES_BY_ID = new Map();
 
+function refreshClaudeAliases() {
+  const provider = PROVIDERS.find((p) => p.proxy === 'claude');
+  if (!provider) return;
+  const ranked = [
+    ...(provider.recommended || []).map((id) => provider.models.find((model) => model.id === id)).filter(Boolean),
+    ...provider.models,
+  ];
+  for (const [alias, family] of Object.entries(CLAUDE_ALIAS_FAMILIES)) {
+    const model = ranked.find((candidate) =>
+      (candidate.kind || 'chat') === 'chat' && new RegExp(`^claude-${family}(?:-|$)`, 'i').test(candidate.id)
+    );
+    if (model) MODEL_ALIASES[alias] = model.id;
+  }
+}
+
 function rebuildIndex() {
   PROVIDER_BY_PROXY = new Map(PROVIDERS.map((p) => [p.proxy, p]));
   ROUTES_BY_ID = new Map();
@@ -194,6 +221,7 @@ function rebuildIndex() {
     if (route) ROUTES_BY_ID.set(alias, { ...route, id: alias, upstreamModel: concrete, label: route.label });
   }
 }
+refreshClaudeAliases();
 rebuildIndex();
 
 export function currentProviders() {
@@ -213,6 +241,7 @@ export function applyCatalog(providers, meta = {}) {
       port: Number(p.port),
       nativeFor: Array.isArray(p.nativeFor) ? p.nativeFor : [],
       up: p.up !== false,
+      inventoryFilter: p.inventoryFilter === 'latest' ? 'latest' : null,
       deprecated: p.deprecated || null,
       // Ordered provider recommendation ids come from subscription CLI priority first, then the
       // provider/fleet catalog. Consumers such as the Supervisor can follow newly released models
@@ -238,6 +267,10 @@ export function applyCatalog(providers, meta = {}) {
   // OPERATOR PINS: seed entries marked pinned:true persist through rescans even when the provider's
   // /v1/models omits them (verified-passthrough or awaiting-entitlement models, 2026-07-20 picks).
   for (const p of clean) {
+    // A successful filtered inventory is authoritative. Re-adding a missing static pin here would
+    // resurrect the exact old version that `latest=1` intentionally collapsed (for example Fable 5
+    // beside Fable 5.1). Keep pins only for offline or legacy bare-inventory fallback behavior.
+    if (p.up !== false && p.inventoryFilter === 'latest') continue;
     const seed = PROXY_PROVIDERS.find((sp) => sp.proxy === p.proxy);
     if (!seed) continue;
     const pinned = seed.models.filter((m) => m.pinned);
@@ -251,6 +284,7 @@ export function applyCatalog(providers, meta = {}) {
   }
   PROVIDERS = clean;
   CATALOG_META = { scannedAt: meta.scannedAt || new Date().toISOString(), source: meta.source || 'scan' };
+  refreshClaudeAliases();
   rebuildIndex();
   return true;
 }
@@ -323,7 +357,7 @@ export function topProviderModels(proxy, limit = 3, { liveOnly = true } = {}) {
   const provider = PROVIDERS.find((p) => p.proxy === proxy);
   if (!provider || (liveOnly && provider.up === false)) return [];
   const models = listProxyModels({ providers: [proxy], liveOnly })
-    .filter((model) => (model.kind || 'chat') === 'chat');
+    .filter(sessionModelEligible);
   const byId = new Map(models.map((model) => [model.id, model]));
   const orderedIds = [
     ...(provider.recommended || []),
@@ -383,6 +417,7 @@ export function toolModels(tool) {
   const ownProvider = tool === 'codex' ? 'codex' : tool === 'claude' ? 'claude' : null;
   const rest = listProxyModels({ liveOnly: true }).filter((m) => m.provider !== ownProvider);
   return [...native, ...rest].filter((m) => {
+    if (!sessionModelEligible(m)) return false;
     if (seen.has(m.id)) return false;
     seen.add(m.id);
     return true;
@@ -393,14 +428,14 @@ export function toolModels(tool) {
 // Ranking follows the LIVE catalog, so a new model generation becomes the default without a code
 // change (the operator's standing ask — no stale hardcoded defaults): the provider's ordered
 // `recommended` list leads (applyCatalog: subscription-CLI priority first, fleet catalog second),
-// then models flagged recommended, then catalog order. Chat models only — utility/image/role
-// entries (auto-review, whisper, …) can never become a session default. Operator pins are an
+// then models flagged recommended, then catalog order. Session models only — utility/image and
+// task aliases (auto-review, whisper, …) can never become a default. Operator pins are an
 // AVAILABILITY guarantee, deliberately NOT a ranking override: ranking pins first would freeze the
 // default at an old pick, recreating the exact stale-default bug this function exists to fix.
 export function defaultToolModel(tool) {
   const provider = PROVIDERS.find((p) => (p.nativeFor || []).includes(tool));
   if (!provider) return null;
-  const chat = provider.models.filter((m) => (m.kind || 'chat') === 'chat' && !m.role);
+  const chat = provider.models.filter(sessionModelEligible);
   const byId = new Map(chat.map((m) => [m.id, m]));
   const ranked = [
     ...(provider.recommended || []).map((id) => byId.get(id)).filter(Boolean),

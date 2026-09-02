@@ -1,6 +1,6 @@
 // Dynamic model catalog — "scan" instead of hardcode. Authenticated subscription CLIs are the
-// primary source, configured API providers refresh second, and each proxy port's GET /v1/models
-// supplies the fleet fallback. The antigravity /admin/overview endpoint enriches fleet ids with
+// primary source, configured API providers refresh second, and each proxy port's
+// GET /v1/models?latest=1 supplies the fleet fallback. The antigravity /admin/overview endpoint enriches fleet ids with
 // display names / roles / recommended flags / live status. Results merge over the static seed in
 // model_catalog.js, apply in-process, and persist to data/model_catalog.json so a restart boots with
 // the last scan even when every upstream is down.
@@ -59,7 +59,12 @@ async function scanProvider(seed, ov, key) {
   const port = Number(ov?.port || seed.port);
   const ovModels = new Map((ov?.models || []).map((m) => [m.id, m]));
   const seedModels = new Map((seed.models || []).map((m) => [m.id, m]));
-  const live = await fetchJson(`http://127.0.0.1:${port}/v1/models`, key);
+  // The fleet owns version-family semantics. Ask it for one newest model per family instead of
+  // duplicating brittle id parsing in AIOS. Older proxy installs may not know this query parameter,
+  // so fall back to their byte-compatible bare inventory only when the filtered request fails.
+  let live = await fetchJson(`http://127.0.0.1:${port}/v1/models?latest=1`, key);
+  const inventoryFilter = Array.isArray(live?.data) ? 'latest' : null;
+  if (!inventoryFilter) live = await fetchJson(`http://127.0.0.1:${port}/v1/models`, key);
   const ids = Array.isArray(live?.data) ? live.data.filter((d) => d && d.id) : null;
   const models = ids?.length
     ? ids.map((d) => {
@@ -74,18 +79,29 @@ async function scanProvider(seed, ov, key) {
         };
       })
     : [...seedModels.values()]; // port down -> keep what we knew, just mark it down
+  const modelIds = new Set(models.map((model) => model.id));
+  const overviewRecommended = Array.isArray(ov?.recommended)
+    ? ov.recommended.filter((id) => typeof id === 'string' && modelIds.has(id))
+    : [];
+  const overviewRecommendedSet = new Set(overviewRecommended);
   return {
     proxy: seed.proxy,
     label: seed.label || seed.proxy,
     port,
     nativeFor: seed.nativeFor || [],
     up: !!ids?.length,
+    inventoryFilter,
     deprecated: ov?.deprecated || seed.deprecated || null,
     // Preserve the provider's ordered recommendation list instead of reducing it to booleans.
     // This is the automatic "best current models" signal consumed by Supervisor defaults.
-    recommended: Array.isArray(ov?.recommended)
-      ? ov.recommended.filter((id) => typeof id === 'string' && id)
-      : models.filter((model) => model.recommended).map((model) => model.id),
+    // A newly recommended model can reach /v1/models before an older Overview recommendation array
+    // is refreshed. Prepend those flagged live rows (Fable 5.1 was the real incident), then retain
+    // Overview's curated order for every model that survived the latest-family filter.
+    recommended: [...new Set([
+      ...models.filter((model) => model.recommended && !overviewRecommendedSet.has(model.id)).map((model) => model.id),
+      ...overviewRecommended,
+      ...models.filter((model) => model.recommended).map((model) => model.id),
+    ])],
     models,
   };
 }

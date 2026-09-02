@@ -8,8 +8,11 @@ import {
 } from '../src/cli_model_discovery.js';
 import {
   applyCatalog,
+  defaultToolModel,
   listProxyModels,
   modelSupportsFast,
+  routeForModel,
+  topProviderModels,
   toolModels,
 } from '../src/model_catalog.js';
 
@@ -88,5 +91,35 @@ const fleetAt = scanSource.indexOf('await scanCatalog()');
 assert.ok(cliAt > 0 && cliAt < apiAt && apiAt < fleetAt, 'refresh precedence is CLI → API provider → fleet');
 assert.match(scanSource, /rescanInFlight/, 'automated/manual scans are single-flight');
 assert.match(scanSource, /AIOS_MODEL_RESCAN_MS \|\| 3600_000/, 'automatic discovery repeats hourly by default');
+const latestFleetAt = scanSource.indexOf('/v1/models?latest=1');
+const bareFleetAt = scanSource.indexOf('/v1/models`, key', latestFleetAt);
+assert.ok(latestFleetAt > 0 && bareFleetAt > latestFleetAt,
+  'fleet discovery requests the proxy-owned latest-family view first and keeps a legacy bare fallback');
+
+applyCatalog([{
+  proxy: 'claude',
+  label: 'Claude',
+  port: 8789,
+  nativeFor: ['claude'],
+  up: true,
+  inventoryFilter: 'latest',
+  models: [
+    { id: 'claude-fable-5-1', label: 'Claude Fable 5.1', recommended: true },
+    { id: 'claude-opus-5', label: 'Claude Opus 5' },
+  ],
+}], { source: 'test-latest' });
+const latestClaude = toolModels('claude');
+assert.ok(latestClaude.some((model) => model.id === 'claude-fable-5-1'));
+assert.ok(!latestClaude.some((model) => model.id === 'claude-fable-5'),
+  'an authoritative latest inventory cannot resurrect the superseded Fable line from static pins');
+assert.equal(latestClaude.find((model) => model.id === 'opus')?.modelLabel, 'Claude Opus 5',
+  'the friendly Claude family alias follows the newest advertised family member');
+assert.equal(routeForModel('opus').model, 'claude-opus-5',
+  'the launch route behind the friendly alias advances with the catalog, not only its label');
+assert.equal(defaultToolModel('claude'), 'claude-fable-5-1',
+  'descriptive role metadata does not hide the newly recommended flagship from fresh-session defaults');
+assert.deepEqual(topProviderModels('claude').map((model) => model.id),
+  ['claude-fable-5-1', 'claude-opus-5'],
+  'automatic Supervisor recommendations use the same current family-filtered catalog');
 
 console.log('model_discovery.test ok');

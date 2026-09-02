@@ -52,8 +52,8 @@ assert.ok(agyFull.includes('--dangerously-skip-permissions'));
 // --- 2. Default models follow the catalog, newest flagship first ---
 assert.equal(defaultToolModel('codex'), 'gpt-5.6-sol', 'static seed: the newest recommended codex flagship leads');
 assert.equal(TOOLS.codex.model, 'gpt-5.6-sol');
-assert.equal(defaultToolModel('claude'), 'claude-fable-5', 'static seed: claude default follows the seed catalog head');
-assert.equal(TOOLS.claude.model, 'claude-fable-5');
+assert.equal(defaultToolModel('claude'), 'claude-fable-5-1', 'static seed: claude default follows the seed catalog head');
+assert.equal(TOOLS.claude.model, 'claude-fable-5-1');
 assert.equal(defaultToolModel('agy'), 'gemini-pro-agent');
 assert.equal(TOOLS.agy.model, 'gemini-pro-agent');
 
