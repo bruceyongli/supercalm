@@ -36,6 +36,8 @@ import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
+import { findClaudeLog } from './claude_transcripts.js';
+import { originalTaskSeed } from './resume_seed.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { deployContract } from './release_monitor.js';
@@ -1293,7 +1295,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // (status not exited); an exited session must relaunch even though its pane lingers.
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
-  const durableStatus = ['working', 'waiting'].includes(preserveStatus)
+  let durableStatus = ['working', 'waiting'].includes(preserveStatus)
     ? preserveStatus
     : (['working', 'waiting'].includes(s.desired_status) ? s.desired_status : 'working');
   store.updateSession(sid, {
@@ -1350,22 +1352,39 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup (worktree-aware).
   const resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(cwd || project?.path || process.env.HOME).catch(() => null))) : null;
   if (s.tool === 'codex' && resumeId && !s.codex_uuid) store.updateSession(sid, { codex_uuid: resumeId }); // backfill so the story/next resume match by UUID
+  let continueConversation = true;
+  let resumeTask = null;
+  if (s.tool === 'claude') {
+    // A first-launch trust screen appears BEFORE Claude writes a transcript. If that gate exits, a
+    // later `claude --continue` has nothing provider-side to recover even though AIOS durably retained
+    // the entire task. Only reseed when there is exactly one operator input (the launch task) and no
+    // native conversation; any real follow-up or transcript keeps normal --continue semantics.
+    const nativeConversation = await findClaudeLog(cwd || project?.path || process.env.HOME, s, {
+      claimed: store.otherClaudeTranscripts(sid),
+    }).catch(() => null);
+    resumeTask = originalTaskSeed(store.messagesFor(sid, 20), { hasNativeConversation: !!nativeConversation });
+    if (resumeTask) {
+      continueConversation = false;
+      durableStatus = 'working';
+      store.addEvent(sid, 'resume-reseed', { reason: 'native-conversation-missing', task_message: true });
+    }
+  }
   const name = await startPane({
     sid,
     project,
     tool: s.tool,
-    task: null,
+    task: resumeTask,
     effort: s.effort,
     autonomy: s.autonomy,
     model: s.model,
     fastMode: s.tool === 'codex' && modelSupportsFast(s.model || TOOLS[s.tool]?.model) && !!s.fast_mode,
     orchestration: s.orchestration,
     viaProxy: !!s.codex_via_proxy,
-    resume: true,
+    resume: continueConversation,
     resumeId,
     cwd,
   });
-  store.addEvent(sid, 'resume', { tmux: name, resumeId, reason: recoveryReason, restored_status: durableStatus });
+  store.addEvent(sid, 'resume', { tmux: name, resumeId, reason: recoveryReason, restored_status: durableStatus, reseeded: !!resumeTask });
   const updated = store.updateSession(sid, {
     status: durableStatus,
     desired_status: durableStatus,
