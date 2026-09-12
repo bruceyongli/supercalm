@@ -20,6 +20,7 @@ let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — 
 let trimmed = false;
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
+let pendingQuestion = null; // terminal-only prompt projected by the API (not part of transcript/cache)
 let openSteps = new Set(); // indices with the steps expander open
 let learnedEvidence = new Set(); // event timestamps whose exception produced a saved project rule
 let learnedListenerWired = false;
@@ -287,7 +288,11 @@ function askHtml(ev) {
     const w = ev.answeredWith || local || '';
     return `<div class="story-answered">✓ answered${w ? ` "${esc(w)}"` : ''} — session resumed</div>`;
   }
-  if (!opts.length) return '';
+  if (!opts.length) return `<form class="story-ask-reply" data-story-ask-reply data-askkey="${esc(askKey(ev))}">
+    <input type="text" data-story-ask-input autocomplete="off" enterkeyhint="send" aria-label="Reply to this question" placeholder="Type your answer…" />
+    <button type="submit">Reply</button>
+    <span class="story-ask-error" data-story-ask-error></span>
+  </form>`;
   const pi = primaryIndex(opts);
   const ak = esc(askKey(ev));
   return `<div class="story-ask-opts">${opts.map((o, j) => `
@@ -534,7 +539,11 @@ function calmEvents(source) {
 function feedList() {
   const pend = sendEchoes.filter((e) => e.state === 'pending').map((e) => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
   const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index })));
-  return pend.length ? [...base, ...pend].sort((a, b) => (a.ts || 0) - (b.ts || 0)) : base;
+  const liveAsk = pendingQuestion ? [{
+    kind: 'ask', title: 'Needs your answer', ts: pendingQuestion.ts,
+    body: pendingQuestion.body, options: pendingQuestion.options || [], _livePending: true,
+  }] : [];
+  return (pend.length || liveAsk.length) ? [...base, ...pend, ...liveAsk].sort((a, b) => (a.ts || 0) - (b.ts || 0)) : base;
 }
 
 function render() {
@@ -547,7 +556,7 @@ function render() {
   panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
-      <span class="story-rollup" data-story-rollup>${esc(rollup(calmEvents(events)))}</span>
+      <span class="story-rollup" data-story-rollup>${esc(rollup(feedEvents))}</span>
       <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     </div>
     <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedEvents.map((ev, i) => eventHtml(ev, i, evKey(ev) === latestReportKey)).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
@@ -608,8 +617,29 @@ function wire() {
       try {
         await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: key, source: 'text' }) });
         if (b.dataset.askkey) answeredAsks.set(b.dataset.askkey, label); // sticky: survives the next SSE re-render
+        if (pendingQuestion && b.dataset.askkey === askKey({ ts: pendingQuestion.ts, body: pendingQuestion.body })) pendingQuestion = null;
         b.closest('.story-ask-opts')?.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${label}" — session resumed` }));
       } catch (e) { b.textContent = '⚠ ' + (e.message || e); }
+    };
+  }
+  for (const form of panelEl.querySelectorAll('[data-story-ask-reply]')) {
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      const input = form.querySelector('[data-story-ask-input]');
+      const answer = input?.value.trim() || '';
+      if (!answer) return input?.focus();
+      const button = form.querySelector('button');
+      const error = form.querySelector('[data-story-ask-error]');
+      if (button) { button.disabled = true; button.textContent = 'Sending…'; }
+      try {
+        await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: answer, source: 'text' }) });
+        if (form.dataset.askkey) answeredAsks.set(form.dataset.askkey, answer);
+        if (pendingQuestion && form.dataset.askkey === askKey({ ts: pendingQuestion.ts, body: pendingQuestion.body })) pendingQuestion = null;
+        form.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${answer}" — session resumed` }));
+      } catch (e) {
+        if (button) { button.disabled = false; button.textContent = 'Reply'; }
+        if (error) error.textContent = e.message || e;
+      }
     };
   }
   for (const img of panelEl.querySelectorAll('[data-story-shot]')) {
@@ -674,6 +704,7 @@ export async function refreshStory({ quiet = true } = {}) {
     trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
+    pendingQuestion = r.pendingQuestion || null;
     reconcileEchoes(); // pending sends whose transcript event just arrived flip to ✓ read
     // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
     // on the last events (count alone left stale ✓/recovered states), the live status line changing,
@@ -681,7 +712,8 @@ export async function refreshStory({ quiet = true } = {}) {
     const lsSig = working ? (liveStatus ? `${liveStatus.verb}|${liveStatus.detail}|${liveStatus.bg || ''}` : 'w') : '';
     const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
       + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig
-      + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size;
+      + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
+      + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig) { lastSig = sig; render(); }
     if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus, storySource, storyIdentity }); // warm THIS session's cache
   } catch (e) {
@@ -721,7 +753,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

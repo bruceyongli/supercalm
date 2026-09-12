@@ -15,7 +15,7 @@ import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
-import { CLAUDE_SURVEY_RX, askSubmitStepPending } from './detect_classify.js';
+import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt } from './detect_classify.js';
 import { summarize } from './summarize.js';
 import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
@@ -785,6 +785,19 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
     try {
       screen = await tmux('capture-pane', '-p', '-t', name);
     } catch {}
+  }
+  // Story renders native trust choices as buttons. When its exact visible label comes back through
+  // the shared input route, navigate the live menu relative to the option Claude ACTUALLY highlights
+  // instead of trying to paste prose into a raw-mode selector (or blindly pressing its default).
+  const terminalPrompt = terminalQuestionPrompt(screen);
+  const wantedChoice = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const terminalChoice = terminalPrompt?.options?.find((option) => option.label.toLowerCase() === wantedChoice);
+  if (requireOperatorTarget && terminalChoice?.keys?.length) {
+    for (const key of terminalChoice.keys) {
+      await sendKey(name, key);
+      await sleep(280);
+    }
+    return { accepted: true, selectedChoice: terminalChoice.label };
   }
   let inputTarget = null;
   if (requireOperatorTarget) {

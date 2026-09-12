@@ -100,7 +100,139 @@ function meaningfulTail(text, n) {
     .filter((l) => l.length > 1 && !CHROME_RX.test(l) && !PLACEHOLDER_RX.test(l))
     .slice(-n);
 }
+
+const TRUST_PROMPT_RX = /do you trust|trust (?:this folder|the (?:files|contents|folder))|one you trust/i;
+
+// Claude changed its first-run trust screen so the highlighted default is now "No, exit". Blindly
+// pressing Enter (the old behaviour) exits the CLI with code 0, which looks like a clean process exit
+// even though the project task never started. Parse the visible choices and their ACTUAL highlight so
+// autonomous sessions select the affirmative choice, while Story can render the same prompt/options.
+// Fail closed when the menu shape is unknown: the normal prompt detector then asks the operator.
+export function terminalTrustPrompt(text) {
+  const screen = stripAnsi(String(text || '')).replace(/\r/g, '');
+  const raw = screen.split('\n');
+  if (!TRUST_PROMPT_RX.test(screen.replace(/\s+/g, ' '))) return null;
+  let promptAt = -1;
+  for (let i = raw.length - 1; i >= 0; i--) {
+    // Prefer the actual interrogative. Choice labels also contain "trust this folder" and must not
+    // become the block start (doing so loses the highlighted option immediately above them).
+    const possiblePrompt = raw.slice(i, i + 5).join(' ');
+    if (TRUST_PROMPT_RX.test(possiblePrompt) && (/\?/.test(possiblePrompt) || /quick safety check/i.test(raw[i]))) { promptAt = i; break; }
+  }
+  if (promptAt < 0) {
+    for (let i = raw.length - 1; i >= 0; i--) {
+      if (TRUST_PROMPT_RX.test(raw[i]) && !/^\s*(?:[❯›>]\s*)?(?:\d+[.)]\s*)?(?:yes|no)\b/i.test(raw[i])) { promptAt = i; break; }
+    }
+  }
+  if (promptAt < 0) return null;
+
+  const clean = (line) => line.replace(BORDERS, ' ').replace(/\s+$/, '').trim();
+  const end = Math.min(raw.length, promptAt + 24);
+  const options = [];
+  let footerAt = -1;
+  for (let i = promptAt; i < end; i++) {
+    if (/Enter to (?:confirm|select)|press enter to continue/i.test(raw[i])) { footerAt = i; break; }
+    const m = clean(raw[i]).match(/^([❯›>])?\s*(?:\d+[.)]\s*)?((?:Yes\b.*\btrust\b.*)|(?:No\b.*\bexit\b.*))$/i);
+    if (m) options.push({ line: i, label: m[2].replace(/\s+/g, ' ').trim(), selected: !!m[1] });
+  }
+  // The footer must be the final visible UI. A report can quote this entire menu above its live
+  // composer; matching that quote would type navigation keys into an unrelated session (the same
+  // failure class as the historical quoted feedback-survey incident).
+  if (!options.length || footerAt < 0 || raw.slice(footerAt + 1).map(clean).some(Boolean)) return null;
+  const selected = options.findIndex((option) => option.selected);
+  const affirmative = options.findIndex((option) => /^yes\b/i.test(option.label) && /\btrust\b/i.test(option.label));
+
+  const firstOptionLine = Math.min(...options.map((option) => option.line));
+  const question = raw.slice(promptAt, firstOptionLine).map(clean).filter(Boolean).join('\n').trim();
+  return {
+    question: question || 'Do you trust this project folder?',
+    options: options.map((option, index) => {
+      const distance = selected < 0 ? null : index - selected;
+      const keys = distance == null ? null : [
+        ...Array.from({ length: Math.abs(distance) }, () => distance > 0 ? 'down' : 'up'),
+        'enter',
+      ];
+      return { label: option.label, selected: option.selected, keys };
+    }),
+    affirmative,
+    footer: footerAt >= 0 ? clean(raw[footerAt]) : '',
+  };
+}
+
+export function trustConfirmKeys(text) {
+  const prompt = terminalTrustPrompt(text);
+  if (!prompt || prompt.affirmative < 0) return null;
+  return prompt.options[prompt.affirmative]?.keys || null;
+}
+
+// Structured projection for terminal-native questions that never appear as AskUserQuestion calls in
+// the model transcript. Story uses this to mirror the prompt and offer controls that operate the same
+// live selector. The parser stays deliberately narrow: an uncertain screen falls back to a text reply,
+// never speculative keys.
+export function terminalQuestionPrompt(text) {
+  const trust = terminalTrustPrompt(text);
+  if (trust) return trust;
+
+  const raw = stripAnsi(String(text || '')).replace(/\r/g, '').split('\n').slice(-32);
+  const clean = (line) => line.replace(BORDERS, ' ').replace(/\s+$/, '').trim();
+
+  // Conventional shell confirmation.
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (!/(?:\(y\s*\/\s*n\)|\[y\s*\/\s*n\]|\by\s*\/\s*n\b)/i.test(raw[i])) continue;
+    if (raw.slice(i + 1).map(clean).some(Boolean)) continue;
+    return {
+      question: clean(raw[i]),
+      options: [
+        { label: 'Yes', selected: false, keys: ['y', 'enter'] },
+        { label: 'No', selected: false, keys: ['n', 'enter'] },
+      ],
+    };
+  }
+
+  // Arrow-key numbered selector. Require both a footer and at least two numbered choices so prose or
+  // a report quoting "1. ..." cannot become an actionable UI.
+  const footerAt = raw.findLastIndex((line) => /Enter to (?:confirm|select)/i.test(line));
+  if (footerAt >= 0 && !raw.slice(footerAt + 1).map(clean).some(Boolean)) {
+    const candidates = [];
+    for (let i = Math.max(0, footerAt - 16); i < footerAt; i++) {
+      const m = clean(raw[i]).match(/^([❯›>])?\s*(\d+)[.)]\s+(.+)$/);
+      if (m) candidates.push({ line: i, number: m[2], label: m[3].trim(), selected: !!m[1] });
+    }
+    if (candidates.length >= 2 && candidates.some((choice) => choice.selected)) {
+      const selected = candidates.findIndex((choice) => choice.selected);
+      const questionLines = raw.slice(Math.max(0, candidates[0].line - 6), candidates[0].line).map(clean).filter(Boolean);
+      const lastQuestion = questionLines.findLastIndex((line) => /\?|:$/.test(line));
+      const question = questionLines.slice(lastQuestion >= 0 ? lastQuestion : -1).join('\n').trim();
+      return {
+        question: question || 'Choose an option to continue.',
+        options: candidates.map((choice, index) => {
+          const distance = index - selected;
+          return {
+            label: choice.label,
+            key: choice.number,
+            selected: choice.selected,
+            keys: [
+              ...Array.from({ length: Math.abs(distance) }, () => distance > 0 ? 'down' : 'up'),
+              'enter',
+            ],
+          };
+        }),
+      };
+    }
+  }
+
+  // A terminal pause with one unambiguous action.
+  for (let i = raw.length - 1; i >= 0; i--) {
+    if (!/press enter to continue/i.test(raw[i])) continue;
+    if (raw.slice(i + 1).map(clean).some(Boolean)) continue;
+    return { question: clean(raw[i]), options: [{ label: 'Continue', selected: true, keys: ['enter'] }] };
+  }
+  return null;
+}
+
 function questionFrom(text) {
+  const terminal = terminalQuestionPrompt(text);
+  if (terminal) return [terminal.question, ...terminal.options.map((option) => option.label)].join('\n').slice(0, 2000);
   const tail = meaningfulTail(text, 5);
   const q = tail.join('\n').slice(0, 500).trim();
   return q || 'Waiting for your input';
@@ -136,14 +268,13 @@ const CONFIRM_RULES = [
   // highlighted default → Enter) and keep moving — option 2 would stall the agent on every edit.
   { rx: /written up a plan and is ready to execute/i, keys: ['enter'] },
   { rx: /bypass permissions mode/i, keys: ['down', 'enter'] }, // claude: select "2. Yes, I accept"
-  // trust prompts (default option = accept): codex "Do you trust the contents…",
-  // claude "…a project you created or one you trust?" / "Yes, I trust this folder".
-  { rx: /do you trust|trust (this folder|the (files|contents|folder))|one you trust/i, keys: ['enter'] },
   // claude legacy API-key proxy path: "Detected a custom API key … Do you want to use this
   // API key? 1. Yes  ❯2. No". Pick "1. Yes" (Up + Enter).
   { rx: /detected a custom api key|do you want to use this api key/i, keys: ['up', 'enter'] },
 ];
 function autoConfirmKeys(text) {
+  const trust = trustConfirmKeys(text);
+  if (trust) return trust;
   for (const r of CONFIRM_RULES) if (r.rx.test(text)) return r.keys;
   return null;
 }

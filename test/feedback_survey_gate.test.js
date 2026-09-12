@@ -8,7 +8,7 @@
 //    merely display. This test is the red scenario locking that class out.
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { classify, CLAUDE_SURVEY_RX } from '../src/detect_classify.js';
+import { classify, CLAUDE_SURVEY_RX, terminalQuestionPrompt, terminalTrustPrompt, trustConfirmKeys } from '../src/detect_classify.js';
 
 // Verbatim shape from the s_087cf6e228 pane capture.
 const SURVEY_BLOCK = [
@@ -50,12 +50,62 @@ for (const [label, snap] of [['quoted-in-transcript', QUOTED_SURVEY_SCREEN], ['r
 }
 
 // The genuine gates still auto-confirm for autonomous sessions (the removal must not overreach).
+// Claude's current screen highlights "No, exit", so Enter alone destroys the session before the task
+// begins. The selector must move to the visible affirmative option first.
+const CURRENT_CLAUDE_TRUST = [
+  'Quick safety check: Is this a project you created or one you trust?',
+  "If not, take a moment to review what's in this folder first.",
+  "Claude Code'll be able to read, edit, and execute files here.",
+  '❯ No, exit',
+  '  Yes, I trust this folder',
+  'Enter to confirm · Esc to cancel',
+].join('\n');
 const trust = classify({
   session: { id: 's_test_trust', tool: 'claude', autonomy: 'full' },
-  snap: 'Do you trust the files in this folder?\n❯ 1. Yes, I trust this folder',
+  snap: CURRENT_CLAUDE_TRUST,
   idleMs: 1000,
 });
-assert.ok(Array.isArray(trust.confirm) && trust.confirm.length, 'trust gate still auto-confirms');
+assert.deepEqual(trust.confirm, ['down', 'enter'], 'current Claude trust gate moves off default No before confirming');
+assert.deepEqual(trustConfirmKeys('Do you trust the files in this folder?\n❯ 1. Yes, I trust this folder\nEnter to confirm'), ['enter'],
+  'older trust screen already highlighting Yes still confirms in place');
+
+const parsedTrust = terminalTrustPrompt(CURRENT_CLAUDE_TRUST);
+assert.equal(parsedTrust.question.split('\n')[0], 'Quick safety check: Is this a project you created or one you trust?',
+  'the terminal question is preserved verbatim for Story');
+assert.deepEqual(parsedTrust.options.map((option) => option.label), ['No, exit', 'Yes, I trust this folder'],
+  'Story receives the exact visible terminal choices');
+assert.deepEqual(parsedTrust.options[1].keys, ['down', 'enter'], 'the affirmative Story choice has safe menu navigation');
+assert.deepEqual(trustConfirmKeys(CURRENT_CLAUDE_TRUST.replace('created or one you trust?', 'created or one you\ntrust?')), ['down', 'enter'],
+  'a narrow phone-sized pane may wrap the trust question without disabling safe confirmation');
+
+const askTrust = classify({
+  session: { id: 's_test_trust_ask', tool: 'claude', autonomy: 'ask' },
+  snap: CURRENT_CLAUDE_TRUST,
+  idleMs: 1000,
+});
+assert.equal(askTrust.status, 'waiting', 'ask mode surfaces the trust gate instead of answering it');
+assert.match(askTrust.question, /Quick safety check:[\s\S]*No, exit[\s\S]*Yes, I trust this folder/,
+  'the durable question includes the exact prompt and choices used by Story/Needs You');
+
+const ambiguousTrust = classify({
+  session: { id: 's_test_trust_unknown', tool: 'claude', autonomy: 'full' },
+  snap: 'Do you trust this folder?\n  No, exit\n  Yes, I trust this folder\nEnter to confirm',
+  idleMs: 1000,
+});
+assert.equal(ambiguousTrust.status, 'waiting', 'unknown highlight fails closed to an operator question');
+assert.ok(!ambiguousTrust.confirm, 'unknown highlight never receives blind keys');
+assert.equal(terminalTrustPrompt(`${CURRENT_CLAUDE_TRUST}\n❯ This is a report quoting the menu\n⏵⏵ bypass permissions on`), null,
+  'a trust menu quoted above a live composer is inert');
+
+const yesNo = terminalQuestionPrompt('Remove the generated folder? (y/n)');
+assert.equal(yesNo.question, 'Remove the generated folder? (y/n)', 'plain terminal confirmation is copied exactly');
+assert.deepEqual(yesNo.options.map((option) => [option.label, option.keys]), [
+  ['Yes', ['y', 'enter']], ['No', ['n', 'enter']],
+], 'plain terminal confirmation becomes safe explicit Story controls');
+
+const numbered = terminalQuestionPrompt('Choose a recovery path:\n❯ 1. Resume from summary\n  2. Resume full session as-is\nEnter to confirm');
+assert.equal(numbered.question, 'Choose a recovery path:', 'numbered terminal question is copied exactly');
+assert.deepEqual(numbered.options[1].keys, ['down', 'enter'], 'numbered Story choice navigates from the actual highlight');
 
 // ---- source-locks: the wiring that keeps both incidents fixed ----
 const sessionsSrc = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
@@ -64,6 +114,16 @@ assert.ok(/CLAUDE_SURVEY_RX\.test\(.*slice\(-12\)/.test(sessionsSrc), 'sendText 
 const detectSrc = readFileSync(new URL('../src/detect_classify.js', import.meta.url), 'utf8');
 const rulesBlock = detectSrc.slice(detectSrc.indexOf('const CONFIRM_RULES'), detectSrc.indexOf('function autoConfirmKeys'));
 assert.ok(!rulesBlock.includes('CLAUDE_SURVEY_RX'), 'the survey must not be an ambient CONFIRM_RULES gate');
+assert.ok(!rulesBlock.includes('do you trust'), 'trust is selected from the highlighted menu, never a fixed Enter rule');
+
+// Terminal-only questions are projected independently of native transcript parsing and are actionable
+// in Story as either exact choice buttons or a free-text reply.
+const storyApiSrc = readFileSync(new URL('../src/story_api.js', import.meta.url), 'utf8');
+const storyViewSrc = readFileSync(new URL('../web/story-view.js', import.meta.url), 'utf8');
+assert.match(storyApiSrc, /pendingQuestion[\s\S]*terminalQuestionPrompt/, 'Story API projects a live terminal-only question');
+assert.match(storyViewSrc, /pendingQuestion[\s\S]*data-story-ask-reply/, 'Story renders a free-text reply for terminal-only questions');
+assert.ok(storyViewSrc.includes('data-story-ask-opt'), 'Story renders exact native choices as buttons');
+assert.match(sessionsSrc, /terminalQuestionPrompt\(screen\)[\s\S]*terminalChoice[\s\S]*sendKey/, 'Story choice labels navigate the live terminal menu');
 
 // ---- multi-question ask "✔ Submit" parking (operator report 2026-07-17, s_07814eddc4) ----
 // Answers picked through AIOS sat un-delivered on the final Submit step while the UI said "session

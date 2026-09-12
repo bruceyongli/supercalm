@@ -14,6 +14,7 @@ import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
+import { terminalQuestionPrompt } from './detect_classify.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -236,7 +237,22 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     if (s?.status === 'working') {
       try { liveStatus = extractLiveStatus(await snapshot(sid, 16)); } catch {}
     }
-    json(res, 200, { ok: true, ...r, status: s?.status || null, liveStatus });
+    // Native transcript parsers expose structured AskUserQuestion calls, but ordinary terminal gates
+    // (including Claude's initial workspace-trust screen) never enter that transcript. Project the
+    // durable waiting question into Story whenever no unanswered transcript ask already represents it.
+    // This field is deliberately outside the cached story: it vanishes as soon as the reply resumes.
+    let pendingQuestion = null;
+    const hasTranscriptAsk = r.events.some((event) => event.kind === 'ask' && !event.answered);
+    if (s?.status === 'waiting' && s.question && !hasTranscriptAsk) {
+      let terminal = null;
+      try { terminal = terminalQuestionPrompt(await snapshot(sid, 32)); } catch {}
+      pendingQuestion = {
+        ts: s.last_activity || Date.now(),
+        body: terminal?.question || s.question,
+        options: terminal?.options?.map((option) => ({ label: option.label })) || [],
+      };
+    }
+    json(res, 200, { ok: true, ...r, status: s?.status || null, liveStatus, pendingQuestion });
   } catch (e) {
     json(res, 500, { error: String(e.message || e).slice(0, 300) });
   }

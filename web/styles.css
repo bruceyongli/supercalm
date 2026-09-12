@@ -3004,6 +3004,12 @@ body.map-expanded-open { overflow: hidden; }
 .story-ask-opt { height: 38px; border-radius: 10px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12px; font-weight: 700; border: 1px solid #232c38; background: #0d1219; color: #b9c4d4; cursor: pointer; text-align: left; padding: 0 14px; }
 .story-ask-opt.primary { background: #238636; border-color: #2ea043; color: #fff; }
 .story-ask-opt:hover { filter: brightness(1.12); }
+.story-ask-reply { display: flex; align-items: center; gap: 7px; margin-top: 10px; flex-wrap: wrap; }
+.story-ask-reply input { min-width: 0; flex: 1 1 220px; height: 40px; border-radius: 10px; border: 1px solid #303b49; background: #090e14; color: #e6edf3; padding: 0 12px; font: 13px/1.3 'JetBrains Mono', ui-monospace, monospace; }
+.story-ask-reply input:focus { outline: none; border-color: #d0a62f; box-shadow: 0 0 0 2px #d0a62f22; }
+.story-ask-reply button { height: 40px; border: 1px solid #2ea043; border-radius: 10px; background: #238636; color: #fff; padding: 0 16px; font-weight: 750; cursor: pointer; }
+.story-ask-reply button:disabled { opacity: .6; cursor: wait; }
+.story-ask-error { flex-basis: 100%; color: #f2554d; font-size: 12px; }
 .story-answered { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: #4ecb6c; margin-top: 8px; }
 /* Composer send-state chip on the operator's own messages: unread/queued (amber) → ✓ read (green).
    Only messages sent from THIS page view carry it — history stays chip-free. */
