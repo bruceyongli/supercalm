@@ -43,3 +43,10 @@ export function localFilePath(value, currentHostname = globalThis.location?.host
 }
 
 export const FILE_REFERENCE_RX = /(?:https?|file):\/\/[^\s<>()"'`]+|[\w./@~+-]*\w\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?)?/g;
+
+const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf','mp4','m4v','mov','webm','ogv']);
+export function hasKnownFileExtension(raw) {
+  const path = String(raw || '').split(/[?#]/)[0];
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  return FILE_TOKEN_EXTS.has(ext);
+}

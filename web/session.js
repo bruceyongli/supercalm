@@ -5,7 +5,8 @@ import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
-import { FILE_REFERENCE_RX, cleanFileReference, localFilePath } from './file-reference.js';
+import { cleanFileReference, localFilePath, hasKnownFileExtension } from './file-reference.js';
+import { terminalFileReferences } from './terminal-file-links.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 
@@ -3084,12 +3085,6 @@ function openComposerAttachmentDetail(a) {
 // path-like tokens in the terminal clickable -> a viewer modal backed by the session-scoped
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
 // it's rendered as escaped text (never HTML). Also drives the Knowledge "Files" list via the same viewer.
-const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf','mp4','m4v','mov','webm','ogv']);
-function hasKnownFileExtension(raw) {
-  const path = String(raw || '').split(/[?#]/)[0];
-  const ext = (path.split('.').pop() || '').toLowerCase();
-  return FILE_TOKEN_EXTS.has(ext);
-}
 function looksLikeFile(raw) {
   if (!raw || raw.includes('://')) return false;
   return raw.includes('/') || hasKnownFileExtension(raw);
@@ -3229,21 +3224,15 @@ document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
 if (typeof term.registerLinkProvider === 'function') {
   term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
-      let line;
-      try { line = term.buffer.active.getLine(bufferLineNumber - 1); } catch { return callback(undefined); }
-      if (!line) return callback(undefined);
-      const text = line.translateToString(true);
       const links = [];
-      let m;
-      FILE_REFERENCE_RX.lastIndex = 0;
-      while ((m = FILE_REFERENCE_RX.exec(text))) {
-        const raw = m[0];
+      for (const reference of terminalFileReferences(term, bufferLineNumber)) {
+        const raw = reference.text;
         const path = localFilePath(cleanFileReference(raw));
         const fileLink = shouldUseFileViewer(raw, path);
         const webLink = isUrlReference(raw) && !fileLink;
         if (!fileLink && !webLink) continue;
         links.push({
-          range: { start: { x: m.index + 1, y: bufferLineNumber }, end: { x: m.index + raw.length, y: bufferLineNumber } },
+          range: reference.range,
           text: raw,
           activate: (ev) => {
             try { ev.preventDefault(); } catch {}
