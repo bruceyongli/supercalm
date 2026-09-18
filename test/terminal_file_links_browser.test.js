@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 
 const assets = new Map([
   ['/terminal-file-links.js', ['text/javascript', 'web/terminal-file-links.js']],
+  ['/terminal-layout.js', ['text/javascript', 'web/terminal-layout.js']],
   ['/file-reference.js', ['text/javascript', 'web/file-reference.js']],
   ['/xterm.js', ['text/javascript', 'web/vendor/xterm.js']],
   ['/xterm.css', ['text/css', 'web/vendor/xterm.css']],
@@ -15,6 +16,7 @@ const fixture = `<!doctype html><link rel="stylesheet" href="/xterm.css">
 <div id="terminal"></div><div id="preview"></div><script src="/xterm.js"></script>
 <script type="module">
   import { terminalFileReferences } from '/terminal-file-links.js';
+  import { fitTerminalGrid } from '/terminal-layout.js';
   import { localFilePath } from '/file-reference.js';
   const term = new Terminal({cols: 100, rows: 18, fontSize: 16, scrollback: 200});
   term.open(document.querySelector('#terminal'));
@@ -27,6 +29,14 @@ const fixture = `<!doctype html><link rel="stylesheet" href="/xterm.css">
   }});
   window.__links = {
     term,
+    fitSettled() {
+      let addonCalls = 0;
+      const cols = term.cols, rows = term.rows;
+      const metrics = () => ({colsCapacity: cols, rowsCapacity: rows, screenRatio: term.cols / cols, cellWidth: 8, cellHeight: 18});
+      const addon = {fit() { addonCalls++; term.resize(cols - 3, rows); }};
+      fitTerminalGrid(term, addon, metrics);
+      return addonCalls;
+    },
     async load(text, cols) {
       term.reset(); term.resize(cols, 18);
       document.querySelector('#preview').textContent = '';
@@ -77,6 +87,8 @@ try {
     await page.mouse.move(point.x, point.y);
     // xterm resolves hover links on a short timer before accepting a click.
     await page.waitForTimeout(220);
+    assert.equal(await page.evaluate(() => window.__links.fitSettled()), 0,
+      'a settled layout tick must not resize xterm and invalidate its hovered link');
     await page.mouse.click(point.x, point.y);
     await page.waitForFunction(text => document.querySelector('#preview').textContent === `Preview: ${text}`, expected);
     assert.equal(requests.length, before + 1, 'click issues one preview request');
@@ -127,7 +139,10 @@ try {
   links = await load(`\x1b[?1049hReport: ${first.slice(0, -11)}\r\n  ${first.slice(-11)}`, 32);
   assert.ok(links.length >= 3);
   assert.ok(links.every(link => link.text === first));
-  await clickCell(links.at(-1).range.end.x, links.at(-1).row, first);
+  for (const link of links) {
+    const x = link.row === link.range.start.y ? link.range.start.x : link.row === link.range.end.y ? link.range.end.x : 3;
+    await clickCell(x, link.row, first);
+  }
   await page.evaluate(() => new Promise(resolve => window.__links.term.write('\x1b[?1049l', resolve)));
 
   // A literal space at the right edge is still a delimiter, not discarded as terminal padding.

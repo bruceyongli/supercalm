@@ -7,6 +7,7 @@ import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
 import { cleanFileReference, localFilePath, hasKnownFileExtension } from './file-reference.js';
 import { terminalFileReferences } from './terminal-file-links.js';
+import { fitTerminalGrid } from './terminal-layout.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 
@@ -1027,21 +1028,7 @@ function terminalLayoutMetrics() {
 }
 
 function fitTerminal() {
-  const before = `${term.cols}x${term.rows}`;
-  fit.fit();
-  const metrics = terminalLayoutMetrics();
-  const refreshIfChanged = () => {
-    if (`${term.cols}x${term.rows}` !== before) term.refresh?.(0, Math.max(0, term.rows - 1));
-  };
-  if (metrics.screenRatio >= 0.96 && Math.abs(metrics.colsCapacity - term.cols) <= 2) {
-    refreshIfChanged();
-    return;
-  }
-  if (!metrics.cellWidth || !metrics.cellHeight || !Number.isFinite(metrics.cellWidth) || !Number.isFinite(metrics.cellHeight)) return;
-  if (metrics.colsCapacity !== term.cols || metrics.rowsCapacity !== term.rows) {
-    term.resize(metrics.colsCapacity, metrics.rowsCapacity);
-  }
-  refreshIfChanged();
+  fitTerminalGrid(term, fit, terminalLayoutMetrics);
 }
 
 function healTerminalLayout() {
