@@ -6,9 +6,13 @@ import { FILE_REFERENCE_RX, cleanFileReference, localFilePath, hasKnownFileExten
 function pathContinuation(before, after) {
   const tail = before.trimEnd().match(/(?:^|[\s([{<"'`])((?:https?:\/\/|file:\/\/|~?\/|\.{1,2}\/|[\w@+-]+\/)[^\s<>()"'`,;]*)$/)?.[1];
   if (!tail) return false;
+  const local = localFilePath(tail);
+  // External URLs have no reliable hard-line continuation marker (an extensionless URL may already
+  // be complete). Native soft wraps are still joined, but don't absorb following prose into a URL.
+  if (/^https?:\/\//i.test(tail) && !local) return false;
   const head = after.match(/^ {0,8}([\w.@+%:#?=&-][\w./@+%:#?=&-]*)/);
   if (!head) return false;
-  const path = localFilePath(tail) || tail;
+  const path = local || tail;
   // A wrap can even split an extension: .js + on, or .c + ss. Otherwise an already complete
   // filename ends the link; never glue the next line's filename or prose onto it.
   if (hasKnownFileExtension(path)) {

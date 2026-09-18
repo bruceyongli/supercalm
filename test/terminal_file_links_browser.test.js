@@ -136,6 +136,8 @@ try {
   const url = 'https://example.test/very-long-path/documentation.html?section=wrapping';
   links = await load(`Read ${url}`, 32);
   assert.ok(links.every(link => link.text === url), 'wrapped web URLs retain their full address');
+  links = await load('https://example.test/guide\r\nRead this next.');
+  assert.deepEqual(links.map(link => link.text), ['https://example.test/guide'], 'external URL must not absorb the next paragraph');
   console.log(`terminal_file_links_browser: passed; ${requests.length} clicks delivered complete paths`);
 } finally {
   await browser.close();
