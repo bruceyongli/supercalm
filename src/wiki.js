@@ -161,7 +161,7 @@ export async function rebuildWiki(project) {
     const evidence = parts.join('\n\n').slice(0, 16000);
     if (!evidence.trim()) throw new Error('no evidence to synthesize');
     // Per-project model first (Knowledge panel), then the env default chain; dedup.
-    const candidates = [...new Set([helperModelFor(pid, 'wiki'), ...(process.env.AIOS_WIKI_MODELS || 'qwen36-a3b-nvfp4-marlin,gemini-3.1-flash-lite').split(',')].map((s) => String(s || '').trim()).filter(Boolean))];
+    const candidates = [...new Set([helperModelFor(pid, 'wiki'), ...(process.env.AIOS_WIKI_MODELS || 'qwen38-flash-next-nvfp4,gemini-3.1-flash-lite').split(',')].map((s) => String(s || '').trim()).filter(Boolean))];
     const key = await fleetKey();
     const messages = [{ role: 'system', content: SYS }, { role: 'user', content: `Project: ${project.name || project.path}\n\nEVIDENCE:\n${evidence}` }];
     let pages = null, usedModel = '', lastErr = 'no model reachable';

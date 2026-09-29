@@ -136,7 +136,7 @@ export async function generateContext(project) {
     // gemini flash-lite (cloud, reliable) if spark is unreachable or returns empty. Never claude-haiku
     // (shares rate limits with claude coding sessions).
     // Per-project model first (from the Knowledge panel), then the env default, then the reliable fallback.
-    const candidates = [helperModelFor(project.id, 'contextInject'), process.env.AIOS_CONTEXT_MODEL || 'qwen36-a3b-nvfp4-marlin', 'gemini-3.1-flash-lite'].filter(Boolean);
+    const candidates = [helperModelFor(project.id, 'contextInject'), process.env.AIOS_CONTEXT_MODEL || 'qwen38-flash-next-nvfp4', 'gemini-3.1-flash-lite'].filter(Boolean);
     const key = await fleetKey();
     const messages = [{ role: 'system', content: SYS }, { role: 'user', content: `Project: ${project.name || dir}\n\nEVIDENCE:\n${snapshot}` }];
     let doc = '', usedModel = '', lastErr = 'no model reachable';

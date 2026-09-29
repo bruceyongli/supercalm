@@ -10,7 +10,7 @@ import { fleetKey } from './model_catalog.js';
 
 const MAP_VERSION = 3; // v3 = request-spine + per-request cost + blocker/active for semantic-zoom map; v1/v2 still render
 const DEFAULT_GENERATE = process.env.AIOS_MAP_GENERATE_TARGET || 'antigravity:gemini-pro-agent';
-const DEFAULT_UPDATE = process.env.AIOS_MAP_UPDATE_TARGET || 'spark:qwen36-a3b-nvfp4-marlin';
+const DEFAULT_UPDATE = process.env.AIOS_MAP_UPDATE_TARGET || 'spark:qwen38-flash-next-nvfp4';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS session_maps (
@@ -59,7 +59,7 @@ export const MAP_TARGETS = {
     { id: 'aliyun:qwen3.7-max', label: 'Best Chinese: Qwen Max', port: 8790, model: 'qwen3.7-max', proxy: 'aliyun', maxTokens: 7000, context: 32000 },
   ],
   update: [
-    { id: 'spark:qwen36-a3b-nvfp4-marlin', label: 'Cheap/local: Spark Qwen', port: 8792, model: 'qwen36-a3b-nvfp4-marlin', proxy: 'spark', maxTokens: 4500, context: 8192 },
+    { id: 'spark:qwen38-flash-next-nvfp4', label: 'Cheap/local: Spark Flash-Next', port: 8792, model: 'qwen38-flash-next-nvfp4', proxy: 'spark', maxTokens: 4500, context: 32768 },
     { id: 'antigravity:gemini-3.1-flash-lite', label: 'Cheap: Gemini Flash Lite', port: 8791, model: 'gemini-3.1-flash-lite', proxy: 'antigravity', maxTokens: 5000, context: 128000 },
     { id: 'codex:gpt-5.4-mini', label: 'Cheap: GPT-5.4 mini', port: 8788, model: 'gpt-5.4-mini', proxy: 'codex', maxTokens: 5000, context: 128000 },
     { id: 'claude:claude-haiku-4-5', label: 'Cheap: Claude Haiku', port: 8789, model: 'claude-haiku-4-5', proxy: 'claude', maxTokens: 5000, context: 180000 },

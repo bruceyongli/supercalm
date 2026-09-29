@@ -181,7 +181,13 @@ export const PROXY_PROVIDERS = [
     label: 'Spark',
     port: 8792,
     nativeFor: [],
-    models: [{ id: 'qwen36-a3b-nvfp4-marlin', label: 'Qwen3.6-35B-A3B (NVFP4)' }],
+    models: [{ id: 'qwen38-flash-next-nvfp4', label: 'Qwen3.8 Flash-Next (NVFP4)', vision: true, recommended: true }],
+    aliases: {
+      'qwen36-a3b-nvfp4-marlin': 'qwen38-flash-next-nvfp4',
+      'qwen36-a3b': 'qwen38-flash-next-nvfp4',
+      'RedHatAI/Qwen3.6-35B-A3B-NVFP4': 'qwen38-flash-next-nvfp4',
+      'Qwen/Qwen3.6-35B-A3B': 'qwen38-flash-next-nvfp4',
+    },
   },
 ];
 
@@ -216,6 +222,17 @@ function rebuildIndex() {
       if (!ROUTES_BY_ID.has(m.id)) ROUTES_BY_ID.set(m.id, { ...m, proxy: p.proxy, providerLabel: p.label, port: p.port });
     }
   }
+  // Alias metadata is routing-only: saved Spark model selections continue to
+  // use Spark after a rescan removes the retired model from the picker.
+  for (const p of PROVIDERS.filter((provider) => provider.proxy === 'spark')) {
+    for (const [alias, concrete] of Object.entries(p.aliases || {})) {
+      const target = p.models.find((model) => model.id === concrete && (model.kind || 'chat') === 'chat');
+      if (target && !ROUTES_BY_ID.has(alias)) {
+        ROUTES_BY_ID.set(alias, { ...target, id: alias, upstreamModel: concrete,
+          proxy: p.proxy, providerLabel: p.label, port: p.port });
+      }
+    }
+  }
   for (const [alias, concrete] of Object.entries(MODEL_ALIASES)) {
     const route = ROUTES_BY_ID.get(concrete);
     if (route) ROUTES_BY_ID.set(alias, { ...route, id: alias, upstreamModel: concrete, label: route.label });
@@ -242,6 +259,8 @@ export function applyCatalog(providers, meta = {}) {
       nativeFor: Array.isArray(p.nativeFor) ? p.nativeFor : [],
       up: p.up !== false,
       inventoryFilter: p.inventoryFilter === 'latest' ? 'latest' : null,
+      aliases: p.proxy === 'spark' && p.aliases && typeof p.aliases === 'object' && !Array.isArray(p.aliases)
+        ? Object.fromEntries(Object.entries(p.aliases).filter(([alias, concrete]) => alias && typeof concrete === 'string')) : {},
       deprecated: p.deprecated || null,
       // Ordered provider recommendation ids come from subscription CLI priority first, then the
       // provider/fleet catalog. Consumers such as the Supervisor can follow newly released models

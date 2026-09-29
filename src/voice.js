@@ -61,7 +61,7 @@ const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
 const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 18000); // must stay well inside the client's 30s /turn abort
 const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
-  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen36-a3b-nvfp4-marlin')
+  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen38-flash-next-nvfp4')
   .split(',')
   .map((entry) => {
     const [port, ...model] = entry.trim().split(':');

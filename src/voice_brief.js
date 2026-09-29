@@ -6,7 +6,7 @@
 import { chat } from './llm.js';
 
 const BRIEF_CHAIN = String(process.env.AIOS_VOICE_BRIEF_CHAIN
-  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen36-a3b-nvfp4-marlin')
+  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen38-flash-next-nvfp4')
   .split(',')
   .map((entry) => {
     const [port, ...model] = entry.trim().split(':');

@@ -93,7 +93,7 @@ async function chat(port, key, payload) {
 function modelChain(pid) {
   return [...new Set([
     helperModelFor(pid, 'lessons'),
-    ...(process.env.AIOS_LESSONS_MODELS || 'qwen36-a3b-nvfp4-marlin,gemini-3.1-flash-lite').split(','),
+    ...(process.env.AIOS_LESSONS_MODELS || 'qwen38-flash-next-nvfp4,gemini-3.1-flash-lite').split(','),
   ].map((s) => String(s || '').trim()).filter(Boolean))];
 }
 

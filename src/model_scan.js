@@ -74,6 +74,7 @@ async function scanProvider(seed, ov, key) {
           id: d.id,
           label: o?.displayName || s?.label || d.display_name || prettyModelId(d.id),
           recommended: o ? !!o.recommended : !!s?.recommended,
+          vision: d.capabilities?.image_input ?? o?.capabilities?.image_input ?? s?.vision,
           kind: o?.kind || s?.kind || 'chat',
           role: o?.role || s?.role || null,
         };
@@ -91,6 +92,9 @@ async function scanProvider(seed, ov, key) {
     nativeFor: seed.nativeFor || [],
     up: !!ids?.length,
     inventoryFilter,
+    // Spark keeps retired LLM names routable without listing them as separate
+    // models. Preserve this metadata across scans and application restarts.
+    aliases: seed.proxy === 'spark' ? (live?.x_proxy_inventory?.aliases || seed.aliases || {}) : {},
     deprecated: ov?.deprecated || seed.deprecated || null,
     // Preserve the provider's ordered recommendation list instead of reducing it to booleans.
     // This is the automatic "best current models" signal consumed by Supervisor defaults.

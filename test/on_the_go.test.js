@@ -122,7 +122,7 @@ assert.match(voiceServer, /evidence\.requestContext \|\| it\.originalRequest[\s\
 assert.doesNotMatch(voice, /cur\.tool\].*join/, 'the UI no longer repeats the provider beside the human work context');
 assert.match(voiceServer, /voiceTranscriptDisposition\(rawUserText[\s\S]*normalizeVoiceAddress\(disposition\.text\)/,
   'proactive and manual speech enter the same validated conversation path');
-assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*claude-opus-5[\s\S]*gpt-5\.6-luna[\s\S]*qwen36-a3b-nvfp4-marlin/,
+assert.match(voiceServer, /AIOS_VOICE_CONVERSATION_CHAIN[\s\S]*claude-opus-5[\s\S]*gpt-5\.6-luna[\s\S]*qwen38-flash-next-nvfp4/,
   'follow-up reasoning prioritizes Opus 5 and retains GPT-5.6 and the local model as fallbacks');
 assert.doesNotMatch(voiceServer, /ON_THE_GO_SYS/,
   'Voice updates does not maintain a separate lower-quality assistant prompt');
