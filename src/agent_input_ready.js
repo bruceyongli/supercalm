@@ -24,7 +24,7 @@ export function claudeResumePrompt(screen) {
 // the grey styling, so keep the small canonical set here. Treating one as a composer is safe even when
 // the operator deliberately types the identical phrase: sendText clears and retypes that same text.
 export function codexComposerPlaceholder(text) {
-  return /^(?:Implement \{feature\}|Explain this codebase|Summarize recent commits|Run \/review on my current changes|Write tests for @filename)$/i
+  return /^(?:Ask Codex to do anything|Implement \{feature\}|Explain this codebase|Summarize recent commits|Run \/review on my current changes|Write tests for @filename|Improve documentation in @filename)$/i
     .test(String(text || '').trim());
 }
 
@@ -48,14 +48,15 @@ function activeAgentScreen(screen) {
   return /(?:esc|ctrl-c) to interrupt|bypass permissions|accept edits|(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(tail);
 }
 
-export function pendingComposerDraft(screen, { requireFooter = false } = {}) {
-  const tail = cleanAgentScreen(screen).split('\n').map((line) => line.trimEnd()).slice(-24);
+export function pendingComposerDraft(screen, { requireFooter = false, maxLines = 24, includePlaceholders = false, preserveWraps = false, expectedText = '' } = {}) {
+  const tail = cleanAgentScreen(screen).split('\n').map((line) => line.trimEnd()).slice(-maxLines);
   const footerRx = /(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab)/i;
   const ruleRx = /^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/;
+  let nearest = null;
   for (let i = tail.length - 1; i >= 0; i--) {
-    const match = tail[i].match(/^\s*([›❯])\s+(.+?)\s*$/);
+    const match = tail[i].match(/^\s*([›❯])(?:\s+(.*?))?\s*$/);
     if (!match) continue;
-    const after = tail.slice(i + 1, i + 10);
+    const after = tail.slice(i + 1, i + (maxLines > 24 ? maxLines : 10));
     const footerAt = after.findIndex((line) => footerRx.test(line));
     if (footerAt < 0 && requireFooter) continue; // delivery needs proof of the LIVE composer
     // Provenance inspection also consumes saved tails that end exactly on the composer line. It may use
@@ -67,19 +68,36 @@ export function pendingComposerDraft(screen, { requireFooter = false } = {}) {
       .filter((line) => line && !ruleRx.test(line));
     // Only plain wrapped composer text may sit between the prompt and footer. A tool/result marker means
     // this was a transcript prompt near the bottom, not Claude's current input box.
-    if (continuation.some((line) => /^[⏺✻✢⎿●○◉]/.test(line))) continue;
-    const text = [match[2].trim(), ...continuation].join(' ').replace(/\s+/g, ' ').trim();
-    if (codexComposerPlaceholder(text) || /^(?:Ask Claude|Try ["“])/.test(text)) continue;
-    return { marker: match[1], text };
+    const contentMarkers = continuation.some((line) => /^[⏺✻✢⎿●○◉•›❯]/.test(line));
+    const text = [String(match[2] || '').trim(), ...continuation].join(' ').replace(/\s+/g, ' ').trim();
+    // The bottom composer bounds the search. Don't skip an empty/placeholder composer and mistake
+    // an earlier, already-submitted transcript prompt for a new draft (especially just after Enter).
+    if (!text || (!includePlaceholders && (codexComposerPlaceholder(text) || /^(?:Ask Claude|Try ["“])/.test(text)))) return null;
+    const lines = [String(match[2] || '').trim(), ...continuation];
+    const candidate = { marker: match[1], text, ...(preserveWraps ? { lines } : {}) };
+    // During an owned paste, the request itself can contain quoted CLI prompts/bullets. Match the
+    // complete known text before treating those symbols as transcript chrome. Never apply this
+    // relaxation to ordinary readiness/provenance inspection of somebody else's terminal input.
+    if (expectedText && pendingDraftMatches(text, expectedText, lines)) return candidate;
+    if (contentMarkers) continue;
+    if (!expectedText) return candidate;
+    nearest ||= candidate;
   }
-  return null;
+  return nearest;
 }
 
-export function pendingDraftMatches(pending, requested) {
+export function pendingDraftMatches(pending, requested, wrappedLines = []) {
   const visible = String(pending || '').replace(/\s+/g, ' ').trim();
   const wanted = String(requested || '').replace(/\s+/g, ' ').trim();
   if (!visible || !wanted) return false;
   if (visible === wanted) return true;
+  // Terminal wrapping may split a URL or identifier mid-word. Only line boundaries may disappear;
+  // actual spaces within a displayed line must still match the operator's text.
+  if (wrappedLines.length > 1) {
+    const pattern = wrappedLines.filter(Boolean).map(line => String(line).replace(/\s+/g, ' ').trim()
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+    if (pattern && new RegExp(`^${pattern}$`).test(wanted)) return true;
+  }
   // Claude truncates a long composer line with a real ellipsis in capture-pane. The visible prefix is
   // still enough to recognize a retry of that same message, so submit it instead of clearing/retyping.
   return visible.endsWith('…') && wanted.startsWith(visible.slice(0, -1).trimEnd());
@@ -133,7 +151,8 @@ export function operatorInputDisposition(screen, { menuAnswer = false, allowActi
 export function operatorInputPlan(screen, requested, opts = {}) {
   const disposition = operatorInputDisposition(screen, opts);
   if (disposition.ready || disposition.reason !== 'pending-draft') return disposition;
-  if (pendingDraftMatches(disposition.draft, requested)) {
+  const wrapped = pendingComposerDraft(screen, { requireFooter: true, preserveWraps: true });
+  if (pendingDraftMatches(disposition.draft, requested, wrapped?.lines)) {
     return { ready: true, target: 'existing-draft', draft: disposition.draft };
   }
   if (opts.replacePendingDraft) {
@@ -144,6 +163,10 @@ export function operatorInputPlan(screen, requested, opts = {}) {
 
 export function operatorInputBlockMessage(reason) {
   switch (reason) {
+    case 'submit-unconfirmed':
+      return 'The agent has not confirmed submission. Your message is kept here; it was not marked as sent.';
+    case 'input-changed':
+      return 'The terminal input changed while sending. Your message is kept here, and the new terminal draft was left untouched.';
     case 'resume-choice':
       return 'Session is on its recovery screen. Your draft was kept; choose a recovery option or send again when the composer is ready.';
     case 'pending-draft':

@@ -52,6 +52,12 @@ export async function deliverVoiceFeedback({
     if (result?.inputBlocked || result?.busy) {
       delivery.status = 'input-blocked';
       delivery.reason = result.reason || 'input-unavailable';
+      if (delivery.reason === 'submit-unconfirmed' || delivery.reason === 'input-changed') {
+        const say = delivery.reason === 'submit-unconfirmed'
+          ? "The agent hasn't confirmed receiving your feedback. I've kept it here and haven't marked it sent."
+          : "The terminal input changed during sending. Your feedback is still here, and I left the new input untouched.";
+        return { sent: false, retry: true, say, delivery };
+      }
       const say = delivery.reason === 'pending-draft'
         ? "The session input changed twice while I was sending, so I couldn't confirm delivery. Your instruction is still here; say send again."
         : delivery.reason === 'resume-choice'

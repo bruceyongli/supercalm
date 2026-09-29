@@ -65,6 +65,7 @@ import {
   sweepSessionStorage,
 } from './session_storage.js';
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
+import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -768,7 +769,11 @@ function resizeCandidate(sid, t = now()) {
 // askSubmitStepPending (detect_classify.js, pure): the multi-question AskUserQuestion "✔ Submit"
 // parking detector — sendText confirms it after a menu answer so answers actually deliver.
 
-export async function sendText(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false } = {}) {
+export async function sendText(name, text, options = {}) {
+  return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
+}
+
+async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false } = {}) {
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -809,8 +814,12 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
   if (inputTarget?.target === 'existing-draft') {
     // A prior attempt reached Claude's composer but its Enter did not land. Do not erase and retype the
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
-    await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
-    return { accepted: true, submittedExisting: true };
+    const receipt = await submitAgentComposer({
+      text, before: screen, initialDelayMs: 0,
+      readScreen: () => tmux('capture-pane', '-p', '-t', name),
+      pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
+    });
+    return { ...receipt, submittedExisting: receipt.accepted };
   }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
@@ -825,8 +834,18 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
     await sleep(30);
   }
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', text], X);
-  await sleep(SUBMIT_DELAY_MS);
-  await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+  let receipt = { accepted: true };
+  if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
+    receipt = await submitAgentComposer({
+      text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
+      readScreen: () => tmux('capture-pane', '-p', '-t', name),
+      pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
+    });
+    if (!receipt.accepted) return receipt;
+  } else {
+    await sleep(SUBMIT_DELAY_MS);
+    await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
+  }
   // If this answer completed a multi-question ask, the TUI is now parked on its "✔ Submit" step —
   // confirm it so the answers actually reach the agent (see askSubmitStepPending above). One extra
   // Enter, only on the exact all-answered Submit shape; unmatched TUIs are untouched.
@@ -836,7 +855,7 @@ export async function sendText(name, text, { requireOperatorTarget = false, menu
     if (askSubmitStepPending(after)) await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
   }
   return {
-    accepted: true,
+    ...receipt,
     // The caller archives this in the shared per-session composer history. This keeps an explicitly
     // displaced native draft recoverable without letting it veto the operator's newer instruction.
     replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '',
@@ -2674,17 +2693,22 @@ function formatNumstatDeltas(rows) {
   }).join('\n');
 }
 
-async function projectCheckpoint(s) {
+export async function projectCheckpoint(s, { runGit = gitOut, budgetMs = 1000, clock = now } = {}) {
   const project = s.project_id ? store.getProject(s.project_id) : null;
   if (!project?.path) return null;
   const wtRoot = s.worktree_path || project.path; // isolated session → its worktree, not the shared tree
-  const inside = await gitOut(wtRoot, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: 2500 });
-  if (inside.text.trim() !== 'true') return null;
+  // Request diff bookkeeping is optional, not a reason to hold a prompt behind slow disk/git work.
+  // Share ONE budget across all commands; previously sequential defaults could add seven seconds.
+  const deadline = clock() + budgetMs;
+  const remaining = () => Math.max(1, deadline - clock());
+  const inside = await runGit(wtRoot, ['rev-parse', '--is-inside-work-tree'], { maxBuffer: 4096, timeout: remaining() });
+  if (inside.error || inside.text.trim() !== 'true' || clock() >= deadline) return null;
   const [root, status, numstat] = await Promise.all([
-    gitOut(wtRoot, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192 }),
-    gitOut(wtRoot, ['status', '--short'], { maxBuffer: 256 * 1024 }),
-    gitOut(wtRoot, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024 }),
+    runGit(wtRoot, ['rev-parse', '--show-toplevel'], { maxBuffer: 8192, timeout: remaining() }),
+    runGit(wtRoot, ['status', '--short'], { maxBuffer: 256 * 1024, timeout: remaining() }),
+    runGit(wtRoot, ['diff', '--no-ext-diff', '--numstat'], { maxBuffer: 512 * 1024, timeout: remaining() }),
   ]);
+  if ([root, status, numstat].some(result => result.error)) return null;
   return {
     root: root.text || wtRoot,
     status: truncateText(status.text || '', 120000).text,
@@ -3344,6 +3368,7 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
 // fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
 // not re-announce the reply as failed — the caller would re-deliver it.
 export async function deliverReply(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false } = {}) {
+  const deliveryStarted = now();
   const s = store.getSession(sid);
   if (!s) return { missing: true };
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
@@ -3359,6 +3384,15 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     return { stopped: true };
   }
   const checkpoint = await projectCheckpoint(s).catch(() => null);
+  const recordDelivery = (receipt) => {
+    try {
+      store.addEvent(sid, 'input-delivery', {
+        source, accepted: receipt?.accepted === true, verified: receipt?.verified === true,
+        attempts: receipt?.attempts ?? null, reason: receipt?.reason || null,
+        elapsed_ms: now() - deliveryStarted,
+      });
+    } catch {}
+  };
   const sends = Array.isArray(segments) ? segments.map((part) => String(part || '').trim()).filter(Boolean) : [];
   let replacedDraft = '';
   if (sends.length) {
@@ -3367,6 +3401,7 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
     // the whole prompt is complete so Needs you does not vanish after question one.
     for (const part of sends) {
       const delivered = await sendText(s.tmux, part, { requireOperatorTarget: true, menuAnswer: true, allowActive: s.status === 'working' });
+      recordDelivery(delivered);
       if (delivered?.accepted === false) return { inputBlocked: true, reason: delivered.reason };
     }
   } else {
@@ -3375,6 +3410,7 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
       allowActive: s.status === 'working',
       replacePendingDraft,
     });
+    recordDelivery(delivered);
     if (delivered?.accepted === false) {
       return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }
