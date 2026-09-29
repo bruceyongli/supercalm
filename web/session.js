@@ -8,6 +8,7 @@ import { createSessionRequestScope, isSessionAbort } from './session-request-sco
 import { cleanFileReference, localFilePath, hasKnownFileExtension } from './file-reference.js';
 import { terminalFileReferences } from './terminal-file-links.js';
 import { fitTerminalGrid } from './terminal-layout.js';
+import { installTerminalScrolling, terminalScrollMode } from './terminal-scroll.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 
@@ -1106,18 +1107,8 @@ const markUserTermScroll = () => {
   lastUserTermScroll = Date.now();
   setTimeout(pauseTerminalFollow, 0);
 };
-// Full-screen TUIs (Claude Code) run on the alternate screen, which has no xterm scrollback of its own —
-// so the wheel can't scroll it locally. Claude enables SGR mouse tracking precisely so the terminal
-// forwards the wheel to it and IT scrolls its own transcript (exactly how it behaves in iTerm/Terminal).
-// Supercalm forwards keystrokes but not mouse, so those wheels were dropped and the session looked frozen.
-// Forward ONLY the wheel to the pane (as SGR mouse events) when the app has mouse tracking on — clicks and
-// drags stay local so text selection + copy keep working. When mouse tracking is off (Codex on the main
-// buffer, or a Claude modal), fall back to xterm's normal scrollback scroll.
-function appMouseTrackingOn() {
-  const m = term.modes?.mouseTrackingMode;
-  if (m) return m !== 'none';
-  return !!term._core?.coreMouseService?.areMouseEventsActive; // fallback if .modes is unavailable
-}
+// Route both wheel and touch scrolling to the owner of the transcript: local
+// xterm history, native mouse reporting, or Codex's full-screen page navigation.
 function wheelPaneCell(e) {
   const rect = (term.element?.querySelector('.xterm-screen') || termEl).getBoundingClientRect();
   const cell = terminalCellSize();
@@ -1125,21 +1116,10 @@ function wheelPaneCell(e) {
   const row = cell.height > 0 ? Math.min(term.rows, Math.max(1, Math.floor((e.clientY - rect.top) / cell.height) + 1)) : 1;
   return { col, row };
 }
-termEl.addEventListener('wheel', (e) => {
-  if (appMouseTrackingOn()) {
-    e.preventDefault(); // the app owns this scroll; don't also scroll the page/xterm
-    const { col, row } = wheelPaneCell(e);
-    const btn = e.deltaY < 0 ? 64 : 65; // SGR mouse wheel: 64 = up, 65 = down
-    const raw = e.deltaMode === 1 ? Math.abs(e.deltaY) : Math.abs(e.deltaY) / 24; // lines vs pixels
-    const lines = Math.min(8, Math.max(1, Math.round(raw)));
-    let seq = '';
-    for (let i = 0; i < lines; i++) seq += `\x1b[<${btn};${col};${row}M`;
-    sendToPane(seq);
-    return;
-  }
-  markUserTermScroll();
-}, { passive: false });
-termEl.addEventListener('touchstart', markUserTermScroll, { passive: true });
+const terminalScrolling = installTerminalScrolling({
+  element: termEl, term, getTool: () => latestSessionInfo?.tool,
+  send: sendToPane, cellAt: wheelPaneCell, onLocalScroll: markUserTermScroll, signal: _sig,
+});
 termEl.addEventListener('pointerdown', (e) => {
   if (!jumpLatest.contains(e.target)) markUserTermScroll();
 });
@@ -1191,6 +1171,8 @@ window.__aiosTerminalMetrics = () => ({
   baseY: term.buffer?.active?.baseY || 0,
   viewportY: term.buffer?.active?.viewportY || 0,
   bottomDistance: terminalBottomDistance(),
+  bufferType: term.buffer?.active?.type,
+  scrollMode: terminalScrollMode(term, latestSessionInfo?.tool),
   ...terminalLayoutMetrics(),
   followTail,
   userPausedTail,
@@ -3823,6 +3805,7 @@ if (finePointer.matches) {
   // touch: keep the terminal display-only (a read-only textarea won't pop the soft keyboard anyway);
   // send taps to the composer.
   termEl.addEventListener('pointerup', () => {
+    if (terminalScrolling.isTouchScrolling()) return; // a swipe must not open the keyboard
     try { termTextarea?.blur(); } catch {}
     if (document.activeElement !== reply) reply.focus();
   });
