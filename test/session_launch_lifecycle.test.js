@@ -80,7 +80,10 @@ const { BOOT_ID } = await import('../src/config.js');
 const { queueLaunch, killSession, discover, resume } = await import('../src/sessions.js');
 const project = store.createProject({ id: 'p_launch', name: 'Launch lifecycle', path: projectPath });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function waitFor(fn, label, timeout = 2500) {
+// These transitions launch several real Node mock-tmux processes. A busy host
+// running the full release suite can spend more than 2.5s scheduling them; the
+// assertions below test lifecycle ordering, not that incidental wall-clock speed.
+async function waitFor(fn, label, timeout = 10000) {
   const until = Date.now() + timeout;
   while (Date.now() < until) {
     const value = fn();
@@ -176,9 +179,9 @@ await waitFor(() => store.getSession(switching.id)?.status === 'working', 'switc
 rmSync(raceFile, { force: true });
 rmSync(raceDoneFile, { force: true });
 writeFileSync(modeFile, 'relaunch-race');
-await waitFor(() => existsSync(raceFile), 'poll race arm', 3500);
+await waitFor(() => existsSync(raceFile), 'poll race arm');
 await resume(switching.id, { force: true });
-await waitFor(() => existsSync(raceDoneFile), 'stale poll completion', 2500);
+await waitFor(() => existsSync(raceDoneFile), 'stale poll completion');
 await delay(100);
 assert.equal(store.getSession(switching.id).status, 'working', 'stale pre-relaunch poll cannot mark replacement exited');
 assert.ok(names().includes(store.getSession(switching.id).tmux), 'replacement pane remains alive');
