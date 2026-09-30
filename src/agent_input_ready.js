@@ -86,17 +86,20 @@ export function pendingComposerDraft(screen, { requireFooter = false, maxLines =
   return nearest;
 }
 
-export function pendingDraftMatches(pending, requested, wrappedLines = []) {
+export function pendingDraftMatches(pending, requested, wrappedLines = [], { prefix = false } = {}) {
   const visible = String(pending || '').replace(/\s+/g, ' ').trim();
   const wanted = String(requested || '').replace(/\s+/g, ' ').trim();
   if (!visible || !wanted) return false;
   if (visible === wanted) return true;
+  // A raw-mode TUI can render a paste over several frames. This option is only
+  // for waiting on that partial echo, never for authorizing an Enter press.
+  if (prefix && wanted.startsWith(visible)) return true;
   // Terminal wrapping may split a URL or identifier mid-word. Only line boundaries may disappear;
   // actual spaces within a displayed line must still match the operator's text.
   if (wrappedLines.length > 1) {
     const pattern = wrappedLines.filter(Boolean).map(line => String(line).replace(/\s+/g, ' ').trim()
       .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
-    if (pattern && new RegExp(`^${pattern}$`).test(wanted)) return true;
+    if (pattern && new RegExp(`^${pattern}${prefix ? '' : '$'}`).test(wanted)) return true;
   }
   // Claude truncates a long composer line with a real ellipsis in capture-pane. The visible prefix is
   // still enough to recognize a retry of that same message, so submit it instead of clearing/retyping.

@@ -39,6 +39,18 @@ assert.equal(r.enters.length, 2, 'an ignored Enter is retried without repasting'
 assert.ok(r.enters[0] >= 900, 'wait for the actual pasted draft rather than submitting a stale screen');
 assert.ok(r.enters[1] - r.enters[0] >= 800, 'a retained draft must settle before another Enter');
 
+const multiline = 'where is the map html for each codebase, I want to inspect visually,\n\nDo you think better model will result a better reconstruction? Should we try gpt6-sol and deepseek-flash-next in parallel to do a side by side comparison of the 4 models?';
+r = await run({ text: multiline, screen: ({ time, enters }) => enters ? idle : draft(time < 1000 ? multiline.slice(0, time < 600 ? 25 : 166) : multiline) });
+assert.equal(r.result.accepted, true, 'incremental multiline paste echoes are not input-changed');
+assert.equal(r.enters.length, 1);
+assert.ok(r.enters[0] >= 1000, 'do not press Enter until the entire multiline request has arrived');
+r = await run({ text: multiline, screen: () => draft(multiline.slice(0, 90)) });
+assert.equal(r.result.reason, 'submit-unconfirmed', 'an incomplete paste never becomes a false success');
+assert.equal(r.enters.length, 0, 'never submit just a prefix');
+r = await run({ text: 'inspect https://example.test/longpath', screen: ({ time, enters }) => enters ? idle : draft(time < 1000 ? 'inspect https://example.\ntest/long' : 'inspect https://example.test/longpath') });
+assert.equal(r.result.accepted, true, 'partial echoes also tolerate native line wrapping');
+assert.ok(r.enters[0] >= 1000);
+
 r = await run({ screen: () => draft('fix it') });
 assert.equal(r.result.accepted, false);
 assert.equal(r.result.reason, 'submit-unconfirmed');

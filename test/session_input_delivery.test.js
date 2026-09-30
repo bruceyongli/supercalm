@@ -99,6 +99,14 @@ try {
     assert.equal(receipt.attempts, 2);
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
+  const partialId = 's_partial_delivery';
+  const partialTrace = await start(partialId, 'partial-paste', 'codex');
+  const multiline = 'where is the map html for each codebase, I want to inspect visually,\n\nDo you think better model will result a better reconstruction? Should we try gpt6-sol and deepseek-flash-next in parallel to do a side by side comparison of the 4 models?';
+  const partialResponse = await send(partialId, multiline);
+  assert.equal(partialResponse.status, 200, JSON.stringify(partialResponse.body));
+  assert.equal(partialTrace().filter(r => r.event === 'premature').length, 0, 'never submit a partial paste');
+  assert.deepEqual(partialTrace().filter(r => r.event === 'accepted').map(r => r.text), [multiline]);
+  console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'slow multiline paste', http: 200, enters: 1, accepted: 1 }));
   const blocked = 's_blocked_delivery';
   const trace = await start(blocked, 'ignore-all', 'codex');
   const response = await send(blocked, 'This must not be marked as sent.');

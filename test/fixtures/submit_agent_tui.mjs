@@ -10,6 +10,21 @@ const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to
 const render = () => process.stdout.write(`\x1b[2J\x1b[${Math.max(1, (process.stdout.rows || 30) - 8)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${input || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
+let partialTimer;
+if (mode === 'partial-paste') {
+  process.stdin.on('data', data => {
+    if (data === '\x15') { input = ''; render(); return; }
+    if (/^[\r\n]+$/.test(data)) {
+      appendFileSync(trace, JSON.stringify({ event: 'enter', input }) + '\n');
+      if (partialTimer) { appendFileSync(trace, JSON.stringify({ event: 'premature', input }) + '\n'); return; }
+      appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
+      last = input; input = ''; render(); return;
+    }
+    const prefix = data.slice(0, Math.max(1, Math.floor(data.length / 2)));
+    input += prefix; render();
+    partialTimer = setTimeout(() => { input += data.slice(prefix.length); partialTimer = null; render(); }, 1000);
+  });
+} else {
 process.stdin.on('data', data => {
   for (const char of data) {
     if (char === '\x15') { input = ''; attempts = 0; }
@@ -25,4 +40,5 @@ process.stdin.on('data', data => {
   }
   render();
 });
+}
 render();

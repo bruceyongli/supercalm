@@ -53,9 +53,14 @@ export async function submitAgentComposer({
         stableCount = 0;
       }
     } else if (draft) {
+      // Slow/multiline pastes appear a few characters at a time. Their first
+      // frame is not somebody else's edited draft: wait until our complete text
+      // is visible. Never press Enter on the partial prefix itself.
+      const pasteInProgress = !observed && attempts === 0
+        && pendingDraftMatches(draft.text, text, draft.lines, { prefix: true });
       // A redraw can still show the pre-paste draft briefly. Wait for our text instead of pressing
       // Enter on it, but stop immediately if a genuinely different new input appears.
-      if (observed || draft.text !== beforeDraft) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
+      if (!pasteInProgress && (observed || draft.text !== beforeDraft)) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
     } else if (observed && attempts > 0) {
       const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true });
       if (state.ready) return { accepted: true, verified: true, attempts };
