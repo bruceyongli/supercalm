@@ -1,41 +1,37 @@
 // Native full-screen agent transcripts do not have a browser scrollback buffer.
-// Codex accepts PageUp/PageDown even when it has not enabled mouse reporting.
+// Codex accepts SGR wheel reports even when it has not enabled mouse reporting.
 // Never substitute arrows: those edit the composer or change a menu selection.
 export function terminalScrollMode(term, tool) {
   const tracking = term.modes?.mouseTrackingMode;
   if (tracking ? tracking !== 'none' : term._core?.coreMouseService?.areMouseEventsActive) return 'mouse';
-  if (tool === 'codex' && term.buffer?.active?.type === 'alternate') return 'pages';
+  if (tool === 'codex' && term.buffer?.active?.type === 'alternate') return 'native-wheel';
   return 'local';
 }
 
 export function installTerminalScrolling({ element, term, getTool, send, cellAt, onLocalScroll, signal }) {
-  let pageDelta = 0, pageTimer = null, touch = null, touchScrolled = false;
+  let wheelDelta = 0, wheelTimer = null, touch = null, touchScrolled = false;
   const mode = () => terminalScrollMode(term, getTool());
-  const cancelPages = () => { clearTimeout(pageTimer); pageTimer = null; pageDelta = 0; };
-  signal?.addEventListener('abort', cancelPages, { once: true });
+  const cancelWheel = () => { clearTimeout(wheelTimer); wheelTimer = null; wheelDelta = 0; };
+  signal?.addEventListener('abort', cancelWheel, { once: true });
 
   function scroll(delta, point, deltaMode = 0) {
     const kind = mode();
     if (kind === 'local' || !delta) return false;
     const pixels = delta * (deltaMode === 1 ? 20 : deltaMode === 2 ? term.rows * 14 : 1);
-    if (kind === 'mouse') {
-      cancelPages();
-      const { col, row } = cellAt(point);
-      const count = Math.min(8, Math.max(1, Math.round(Math.abs(pixels) / 24)));
-      send(`\x1b[<${delta < 0 ? 64 : 65};${col};${row}M`.repeat(count));
-      return true;
-    }
-    if (Math.sign(pageDelta) !== Math.sign(pixels)) pageDelta = 0;
-    // Coalesce high-resolution trackpad/touch events; bound each batch so inertia
-    // cannot queue hundreds of pages or flood the terminal input endpoint.
-    pageDelta = Math.max(-240, Math.min(240, pageDelta + pixels));
-    if (!pageTimer) pageTimer = setTimeout(() => {
-      pageTimer = null;
-      if (signal?.aborted || mode() !== 'pages') { pageDelta = 0; return; }
-      const count = Math.floor(Math.abs(pageDelta) / 80);
-      const direction = Math.sign(pageDelta);
-      pageDelta %= 80;
-      if (count) send((direction < 0 ? '\x1b[5~' : '\x1b[6~').repeat(count));
+    if (Math.sign(wheelDelta) !== Math.sign(pixels)) wheelDelta = 0;
+    // A native wheel event advances a few rows, never an entire screen. Retain
+    // fractional trackpad deltas rather than rounding every tiny event upward.
+    const lineHeight = (element.querySelector('.xterm-screen')?.getBoundingClientRect().height || term.rows * 14) / term.rows;
+    const step = Math.max(12, lineHeight * 3);
+    wheelDelta = Math.max(-step * 8, Math.min(step * 8, wheelDelta + pixels));
+    const { col, row } = cellAt(point);
+    if (!wheelTimer) wheelTimer = setTimeout(() => {
+      wheelTimer = null;
+      if (signal?.aborted || mode() !== kind) { wheelDelta = 0; return; }
+      const count = Math.floor(Math.abs(wheelDelta) / step);
+      const direction = Math.sign(wheelDelta);
+      wheelDelta %= step;
+      if (count) send(`\x1b[<${direction < 0 ? 64 : 65};${col};${row}M`.repeat(count));
     }, 50);
     return true;
   }
@@ -49,14 +45,14 @@ export function installTerminalScrolling({ element, term, getTool, send, cellAt,
     } else onLocalScroll();
   }, { capture: true, passive: false, signal });
   element.addEventListener('touchstart', (event) => {
-    cancelPages();
+    cancelWheel();
     touchScrolled = false;
     const point = event.touches.length === 1 ? event.touches[0] : null;
     touch = point ? { x: point.clientX, y: point.clientY } : null;
     onLocalScroll();
   }, { capture: true, passive: true, signal });
   element.addEventListener('touchmove', (event) => {
-    if (!touch || event.touches.length !== 1) { touch = null; touchScrolled = true; cancelPages(); return; }
+    if (!touch || event.touches.length !== 1) { touch = null; touchScrolled = true; cancelWheel(); return; }
     const point = event.touches[0];
     const delta = touch.y - point.clientY;
     if (Math.abs(delta) < 8 || Math.abs(point.clientX - touch.x) > Math.abs(delta)) return;
@@ -68,6 +64,6 @@ export function installTerminalScrolling({ element, term, getTool, send, cellAt,
     }
   }, { capture: true, passive: false, signal });
   element.addEventListener('touchend', () => { touch = null; }, { passive: true, signal });
-  element.addEventListener('touchcancel', () => { touch = null; touchScrolled = true; cancelPages(); }, { passive: true, signal });
+  element.addEventListener('touchcancel', () => { touch = null; touchScrolled = true; cancelWheel(); }, { passive: true, signal });
   return { isTouchScrolling: () => touchScrolled };
 }

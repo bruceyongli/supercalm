@@ -16,7 +16,7 @@ const el = document.querySelector('#term'); term.open(el);
 const sent = []; let tool = 'codex', historyPage = 0, localScrolls = 0;
 const abort = new AbortController();
 const scrolling = installTerminalScrolling({element: el, term, getTool: () => tool,
-  send(data) { sent.push(data); for (const key of data.match(/\\x1b\\[[56]~/g) || []) historyPage += key === '\\x1b[5~' ? 1 : -1;
+  send(data) { sent.push(data); for (const key of data.match(/\\x1b\\[<(64|65);2;3M/g) || []) historyPage += key.includes('<64;') ? 1 : -1;
     term.write('\\x1b[HHistory page ' + historyPage); },
   cellAt: () => ({col: 2, row: 3}), onLocalScroll: () => localScrolls++, signal: abort.signal});
 window.testScroll = {term, sent, scrolling, abort,
@@ -54,15 +54,15 @@ try {
   for (const width of [1280, 768, 390]) {
     await page.setViewportSize({width, height: 800});
     await page.evaluate(() => testScroll.load());
-    assert.equal(await page.evaluate(() => testScroll.mode()), 'pages');
+    assert.equal(await page.evaluate(() => testScroll.mode()), 'native-wheel');
     await page.locator('.xterm-screen').hover();
     await page.mouse.wheel(0, -80);
     await page.waitForFunction(() => testScroll.sent.length === 1);
-    assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[5~']);
+    assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M']);
     assert.match(await page.evaluate(() => testScroll.term.buffer.active.getLine(0).translateToString()), /History page 1/);
     await page.mouse.wheel(0, 80);
     await page.waitForFunction(() => testScroll.sent.length === 2);
-    assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[5~', '\x1b[6~']);
+    assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M', '\x1b[<65;2;3M']);
     assert.match(await page.evaluate(() => testScroll.term.buffer.active.getLine(0).translateToString()), /History page 0/);
   }
 
@@ -73,18 +73,18 @@ try {
     testScroll.touch('touchend', 280, 0);
   });
   await page.waitForFunction(() => testScroll.sent.length === 1);
-  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[5~']);
+  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M']);
   assert.equal(await page.evaluate(() => testScroll.scrolling.isTouchScrolling()), true, 'swiping must not focus the composer');
   await page.evaluate(() => {testScroll.touch('touchstart', 280); testScroll.touch('touchmove', 200);});
   await page.waitForFunction(() => testScroll.sent.length === 2);
-  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[5~', '\x1b[6~']);
+  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M', '\x1b[<65;2;3M']);
 
   await page.evaluate(async () => {await testScroll.load(); for (let i = 0; i < 40; i++) testScroll.wheel(-2);});
   await page.waitForFunction(() => testScroll.sent.length === 1);
-  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[5~'], 'trackpad events coalesce into one page');
+  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M'], 'tiny trackpad events coalesce into one native wheel tick, not a page');
   await page.evaluate(() => testScroll.wheel(-100000));
   await page.waitForFunction(() => testScroll.sent.length === 2);
-  assert.equal(await page.evaluate(() => testScroll.sent.at(-1)), '\x1b[5~'.repeat(3), 'large gestures are bounded');
+  assert.equal(await page.evaluate(() => testScroll.sent.at(-1)), '\x1b[<64;2;3M'.repeat(8), 'large gestures are bounded');
 
   await page.evaluate(async () => {
     await testScroll.load(); testScroll.wheel(-80, {ctrlKey: true}); testScroll.wheel(-80, {deltaX: 200});
@@ -101,9 +101,9 @@ try {
   assert.ok(await page.evaluate(() => testScroll.term.buffer.active.viewportY) < before, 'normal buffer still scrolls locally');
   assert.deepEqual(await page.evaluate(() => testScroll.sent), []);
 
-  await page.evaluate(async () => {await testScroll.load({mouse: true, family: 'claude'}); testScroll.wheel(-48);});
+  await page.evaluate(async () => {await testScroll.load({mouse: true, family: 'claude'}); testScroll.wheel(-80);});
   await page.waitForFunction(() => testScroll.sent.length === 1);
-  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M'.repeat(2)], 'native mouse reporting still takes priority');
+  assert.deepEqual(await page.evaluate(() => testScroll.sent), ['\x1b[<64;2;3M'], 'native mouse reporting still takes priority');
   await page.evaluate(async () => {await testScroll.load({family: 'claude'}); testScroll.wheel(-80);});
   await settle();
   assert.deepEqual(await page.evaluate(() => testScroll.sent), [], 'unknown alternate-screen apps never receive guessed keys');
@@ -115,4 +115,4 @@ try {
   await browser.close();
   await new Promise(r => server.close(r));
 }
-console.log('terminal_scroll_browser: wheel/touch, native pages, mouse, local history, and teardown passed');
+console.log('terminal_scroll_browser: incremental wheel/touch, mouse, local history, and teardown passed');
