@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mock } from 'node:test';
 
 const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 
@@ -264,26 +265,35 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 // Await-aware coalescing is single-flight: a slow request cannot overlap another trailing run.
 {
   const { coalesce } = await import('../web/common.js');
-  const gates = [];
-  let calls = 0;
-  const wrapped = coalesce(() => new Promise((resolve) => { calls++; gates.push(resolve); }), 5);
-  wrapped(); wrapped(); wrapped();
-  await new Promise((r) => setTimeout(r, 12));
-  assert.equal(calls, 1, 'events during an in-flight refresh do not overlap it');
-  gates.shift()();
-  await new Promise((r) => setTimeout(r, 12));
-  assert.equal(calls, 2, 'one trailing refresh catches the burst after completion');
-  gates.shift()();
+  // Wall-clock sleeps can overshoot the 50 ms window on a busy release host.
+  // Drive both Date and timers so this checks the actual interval boundary.
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1000 });
+  try {
+    const gates = [];
+    let calls = 0;
+    const wrapped = coalesce(() => new Promise((resolve) => { calls++; gates.push(resolve); }), 5);
+    wrapped(); wrapped(); wrapped();
+    mock.timers.tick(12);
+    assert.equal(calls, 1, 'events during an in-flight refresh do not overlap it');
+    gates.shift()();
+    await Promise.resolve();
+    mock.timers.tick(0);
+    assert.equal(calls, 2, 'one trailing refresh catches the burst after completion');
+    gates.shift()();
+    await Promise.resolve();
 
-  let fastCalls = 0;
-  const fast = coalesce(() => { fastCalls++; }, 50);
-  fast();
-  await new Promise((r) => setTimeout(r, 8));
-  fast();
-  await new Promise((r) => setTimeout(r, 20));
-  assert.equal(fastCalls, 1, 'a completed fast refresh still observes the minimum interval');
-  await new Promise((r) => setTimeout(r, 45));
-  assert.equal(fastCalls, 2, 'the fast trailing refresh runs once after the interval');
+    let fastCalls = 0;
+    const fast = coalesce(() => { fastCalls++; }, 50);
+    fast();
+    await Promise.resolve();
+    mock.timers.tick(8);
+    fast();
+    mock.timers.tick(41);
+    assert.equal(fastCalls, 1, 'a completed fast refresh still observes the minimum interval');
+    mock.timers.tick(1);
+    assert.equal(fastCalls, 2, 'the fast trailing refresh runs once after the interval');
+    await Promise.resolve();
+  } finally { mock.timers.reset(); }
 }
 
 console.log('session_refresh_architecture.test ok');
