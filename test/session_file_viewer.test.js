@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { FILE_REFERENCE_RX, localFilePath } from '../web/file-reference.js';
 import { renderMarkdown } from '../web/common.js';
+import { chromium } from 'playwright';
 
 // Full URLs printed by an agent on this host map back to their local absolute path. Other hosts never
 // do, and the terminal matcher keeps the full URL as one link instead of dropping the "https:" prefix.
@@ -60,6 +61,23 @@ await mkdir(join(externalRoot, 'research'), { recursive: true });
 await mkdir(otherRoot);
 await mkdir(writtenRoot);
 await writeFile(join(projectRoot, 'report.md'), '# Project report\n');
+await mkdir(join(projectRoot, 'dashboard', 'nested'), { recursive: true });
+const dashboard = '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><h1>Rendered dashboard</h1><p id="data"></p><a href="nested/REPORT.md">Read report</a><script src="app.js"></script>';
+await writeFile(join(projectRoot, 'dashboard', 'index.html'), dashboard);
+await writeFile(join(projectRoot, 'dashboard', 'app.js'), `
+fetch('data.json').then(r => r.json()).then(data => document.querySelector('#data').textContent = data.status);
+try { parent.document.title = 'UNSAFE'; window.parentAccessible = true; } catch { window.parentAccessible = false; }
+try { localStorage.setItem('unsafe', 'yes'); window.storageAccessible = true; } catch { window.storageAccessible = false; }
+fetch('/api/state').then(() => window.apiAccessible = true).catch(() => window.apiAccessible = false);
+`);
+await writeFile(join(projectRoot, 'dashboard', 'data.json'), '{"status":"Scripts and relative data loaded"}');
+await writeFile(join(projectRoot, 'dashboard', 'nested', 'REPORT.md'), '# Nested report\n\n**Rendered**, not source.');
+await writeFile(join(projectRoot, 'dashboard', '.private.json'), '{"secret":true}');
+await writeFile(join(projectRoot, 'dashboard', 'private.db'), 'not a web asset');
+await symlink(join(projectRoot, 'report.md'), join(projectRoot, 'dashboard', 'escape.md'));
+const largeHtml = '<!doctype html><h1>Large dashboard</h1><!--' + 'x'.repeat(2 * 1024 * 1024) + '--><p>FULL FILE END</p>';
+await writeFile(join(projectRoot, 'dashboard', 'large.html'), largeHtml);
+await writeFile(join(projectRoot, 'diagram.svg'), '<svg xmlns="http://www.w3.org/2000/svg"><text x="10" y="20">Diagram</text></svg>');
 const projectVideo = join(projectRoot, 'preview.mp4');
 const videoBytes = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
 await writeFile(projectVideo, videoBytes);
@@ -193,6 +211,78 @@ async function waitForRoutes() {
   assert.equal(meta.contentKind, 'text');
 }
 
+// Rendered URLs work directly and under /aios, preserve relative resources, stream
+// full dashboards, and cannot expose other folders or hidden/unsupported files.
+{
+  const meta = await (await fileRequest('dashboard/index.html')).json();
+  assert.equal(meta.renderInline, true);
+  assert.equal((await (await fileRequest('dashboard/index.html')).json()).renderUrl, meta.renderUrl, 'stable rendered URL');
+  const url = `${base}/${meta.renderUrl}`;
+  const rendered = await fetch(url);
+  assert.equal(rendered.status, 200);
+  assert.match(rendered.headers.get('content-security-policy'), /sandbox allow-scripts allow-popups;/);
+  assert.doesNotMatch(rendered.headers.get('content-security-policy'), /allow-same-origin|allow-top-navigation/);
+  assert.equal(await rendered.text(), dashboard);
+  assert.equal(await (await fetch(`${base}/aios/${meta.renderUrl}`)).text(), dashboard);
+  assert.equal((await fetch(new URL('data.json', url))).status, 200);
+  assert.match(await (await fetch(new URL('nested/REPORT.md', url))).text(), /<h1>Nested report<\/h1>/);
+  for (const [name, status] of [['.private.json', 403], ['escape.md', 403], ['private.db', 415], ['%2e%2e%2freport.md', 403], ['%5c..%5creport.md', 403]]) {
+    assert.equal((await fetch(new URL(name, url))).status, status, name);
+  }
+  assert.equal((await fetch(url.replace(/\/render\/[^/]+\//, '/render/unknown/'))).status, 404);
+  assert.equal((await fetch(url.replace('/s_files/', '/s_missing/'))).status, 404);
+  assert.match((await fetch(`${base}/${meta.viewUrl}`)).headers.get('content-type'), /^text\/plain/, 'Source must not execute HTML');
+  const large = await (await fileRequest('dashboard/large.html')).json();
+  assert.equal(large.truncated, true, 'source preview is bounded');
+  assert.equal(await (await fetch(`${base}/${large.renderUrl}`)).text(), largeHtml, 'rendered HTML is never truncated');
+  assert.equal(await (await fetch(`${base}/${large.downloadUrl}`)).text(), largeHtml, 'Download really returns the entire file');
+
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage();
+    page.setDefaultTimeout(15000);
+    const fixture = '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="styles.css"><div class="asset-detail-backdrop"><div class="asset-detail"><div id="preview" class="file-preview-host"></div></div></div><script type="module">import {mountFilePreview} from "./file-preview.js"; window.mountPreview = meta => mountFilePreview(document.querySelector("#preview"), meta);</script>';
+    await page.route('**/__file-preview-test', route => route.fulfill({ contentType: 'text/html', body: fixture }));
+    await page.goto(`${base}/aios/__file-preview-test`);
+    await page.waitForFunction(() => window.mountPreview);
+    for (const width of [1440, 820, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.evaluate(meta => window.mountPreview(meta), meta);
+      const frame = page.frameLocator('.file-render-frame');
+      await frame.locator('#data').filter({ hasText: 'Scripts and relative data loaded' }).waitFor();
+      assert.equal(await frame.locator('h1').textContent(), 'Rendered dashboard');
+      assert.equal(await frame.locator('body').evaluate(() => window.parentAccessible), false, 'sandbox cannot read/write AIOS parent');
+      assert.equal(await frame.locator('body').evaluate(() => window.storageAccessible), false, 'sandbox cannot access AIOS local storage');
+      await frame.locator('body').evaluate(() => new Promise(resolve => {
+        const check = () => typeof window.apiAccessible === 'boolean' ? resolve() : setTimeout(check, 10); check();
+      }));
+      assert.equal(await frame.locator('body').evaluate(() => window.apiAccessible), false, 'preview scripts cannot call AIOS API');
+      const box = await page.locator('.file-render-frame').boundingBox();
+      assert.ok(box.width > 100 && box.x >= 0 && box.x + box.width <= width + 1, 'preview fits viewport');
+      await page.locator('[data-file-mode="source"]').click();
+      await page.locator('pre.asset-detail-text').waitFor();
+      assert.equal(await page.locator('pre.asset-detail-text').textContent(), dashboard);
+      assert.equal(await page.locator('.file-render-frame').count(), 0);
+      await page.locator('[data-file-mode="rendered"]').click();
+      await frame.locator('#data').filter({ hasText: 'Scripts and relative data loaded' }).waitFor();
+    }
+    const tab = await browser.newPage();
+    await tab.goto(`${base}/aios/${meta.renderUrl}`);
+    await tab.waitForFunction(() => document.querySelector('#data').textContent.includes('loaded'));
+    assert.equal(await tab.evaluate(() => window.storageAccessible), false, 'new-tab rendering retains CSP sandbox');
+    const markdown = await (await fileRequest('report.md')).json();
+    await page.evaluate(meta => window.mountPreview(meta), markdown);
+    await page.frameLocator('.file-render-frame').locator('h1').filter({ hasText: 'Project report' }).waitFor();
+    const svg = await (await fileRequest('diagram.svg')).json();
+    await page.evaluate(meta => window.mountPreview(meta), svg);
+    await page.frameLocator('.file-render-frame').locator('svg text').waitFor();
+    assert.equal(await page.locator('[data-file-mode="source"]').count(), 1, 'SVG supports rendered/source switching');
+    await page.evaluate(meta => window.mountPreview({ ...meta, renderInline: false }), markdown);
+    await page.locator('pre.asset-detail-text').waitFor();
+    assert.equal(await page.locator('[data-file-open]').getAttribute('href'), markdown.renderUrl, 'unsupported inline renderer still offers rendered new tab');
+  } finally { await browser.close(); }
+}
+
 // Videos are identified as previewable media and streamed with byte-range support. Range responses
 // are essential for Safari/iOS seeking and avoid buffering a large generated movie in server memory.
 {
@@ -305,11 +395,13 @@ async function waitForRoutes() {
   assert.match(src, /const path = localFilePath\(href\)/);
   assert.match(src, /shouldUseFileViewer\(href, path\)/);
   assert.match(src, /openFileViewer\(path\)/);
-  assert.match(src, /meta\.contentKind === 'video'/);
-  assert.match(src, /<video class="asset-detail-video" controls playsinline preload="metadata"/);
+  const preview = readFileSync(new URL('../web/file-preview.js', import.meta.url), 'utf8');
+  assert.match(src, /mountFilePreview\(/, 'all viewers use the shared rendered/source controls');
+  assert.match(preview, /meta\.contentKind === 'video'/);
+  assert.match(preview, /<video class="asset-detail-video" controls playsinline preload="metadata"/);
   assert.match(src, /data-story-file/);
   assert.match(src, /window\.open\(url, '_blank', 'noopener,noreferrer'\)/, 'terminal web URLs open in a safe new tab');
-  assert.match(src, /target="_blank" rel="noopener">Open tab ↗<\/a>/, 'file viewer offers a new-tab action');
+  assert.match(preview, /target="_blank" rel="noopener noreferrer"/, 'file viewer offers a safe new-tab action');
 }
 
 console.log('session_file_viewer.test ok');

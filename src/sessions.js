@@ -66,6 +66,7 @@ import {
 } from './session_storage.js';
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
+import { renderedFileMeta, serveRenderedFile } from './file_render.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -3293,12 +3294,13 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
       bytes: st.size, mtime: st.mtimeMs, contentKind: kind, binary: kind === 'binary',
       truncated: kind === 'text' && st.size > FILE_VIEW_MAX_BYTES,
       viewUrl: `${viewBase}&raw=1`, downloadUrl: `${viewBase}&raw=1&download=1`,
+      ...renderedFileMeta(sid, target, st.size),
     });
   }
 
   try {
     const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isVideo || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
-    if (isVideo) {
+    if (isVideo || download) {
       streamMediaFile(req, res, target, st, type, { download });
       return;
     }
@@ -3317,6 +3319,13 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   } catch {
     json(res, 404, { error: 'file not found' });
   }
+});
+
+route('GET', '/api/session/:id/render/:token/(.*)', async (req, res, { id: sid, token }, url) => {
+  const session = store.getSession(sid);
+  if (!session) return json(res, 404, { error: 'no such session' });
+  const prefix = `/api/session/${encodeURIComponent(sid)}/render/${token}/`;
+  return serveRenderedFile(req, res, { session, token, asset: url.pathname.slice(prefix.length), resolveFile: resolveSessionFile });
 });
 
 route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {

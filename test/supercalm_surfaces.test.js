@@ -11,9 +11,14 @@ const settings = read('web/views/settings.js');
 assert.match(session, /data-workspace-add="files"/, 'Files is available from the quiet + workspace menu');
 assert.match(session, /data-workspace-add="preview"/, 'Preview is available from the quiet + workspace menu');
 assert.match(session, /api\/session\/\$\{requestToken\.id\}\/files/, 'workspace files use the session-scoped file API');
-assert.match(session, /frame\.setAttribute\('sandbox', ''\)/, 'HTML preview runs in an empty sandbox');
-assert.match(session, /default-src 'none'/, 'HTML preview blocks scripts and network resources');
-assert.match(session, /target="_blank" rel="noopener">Open tab ↗/, 'workspace files can open safely in a new tab');
+const preview = read('web/file-preview.js');
+const renderedFiles = read('src/file_render.js');
+assert.match(session, /mountFilePreview\(/, 'workspace files use the shared rendered/source viewer');
+assert.match(preview, /sandbox="allow-scripts allow-popups"/, 'interactive artifacts run without same-origin or top-navigation privileges');
+assert.match(renderedFiles, /default-src 'none'/, 'rendered artifacts default-deny unapproved resources');
+assert.match(renderedFiles, /connect-src \$\{sources\}/, 'preview networking stays inside its scoped artifact folder');
+assert.match(renderedFiles, /'content-security-policy': csp/, 'the sandbox also protects direct rendered URLs');
+assert.match(preview, /target="_blank" rel="noopener noreferrer"/, 'workspace files can open safely in a new tab');
 
 assert.match(reviewBackend, /capabilities: \['read-context', 'model-calls'\]/, 'Council Review has read/model capabilities only');
 assert.doesNotMatch(reviewBackend, /ctx\.sendToAgent|capabilities:\s*\[[^\]]*'send-input'/, 'Council Review backend cannot steer the coding agent');

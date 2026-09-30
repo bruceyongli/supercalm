@@ -9,6 +9,7 @@ import { cleanFileReference, localFilePath, hasKnownFileExtension } from './file
 import { terminalFileReferences } from './terminal-file-links.js';
 import { fitTerminalGrid } from './terminal-layout.js';
 import { installTerminalScrolling, terminalScrollMode } from './terminal-scroll.js';
+import { mountFilePreview } from './file-preview.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 
@@ -705,65 +706,30 @@ $('#scrollback-latest')?.addEventListener('click', () => {
 });
 
 function workspacePreviewable(path) {
-  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|mp4|m4v|mov|webm|ogv)$/i.test(String(path || ''));
+  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|pdf|mp4|m4v|mov|webm|ogv)$/i.test(String(path || ''));
 }
 
 function workspaceStatusLabel(status) {
   return status === 'new' ? 'new' : status === 'modified' ? 'changed' : 'file';
 }
 
-async function renderWorkspaceDocument(file, target, { preview = false } = {}) {
+async function renderWorkspaceDocument(file, target) {
   if (!file || !target) return;
   const requestToken = requestScope.capture();
   workspaceSelectedPath = file.path;
+  target.dataset.previewPath = file.path;
   target.innerHTML = `<div class="workspace-empty">Loading ${escapeHtml(file.path)}…</div>`;
   try {
     const meta = await api(`api/session/${requestToken.id}/file?path=${encodeURIComponent(file.path)}`, { signal: requestToken.signal });
     requestScope.guard(requestToken);
-    const toolbar = `
-      <div class="workspace-detail-head">
-        <div><b>${escapeHtml(meta.path || file.path)}</b><span>${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</span></div>
-        <span class="workspace-detail-actions">
-          <a class="btn ghost sm" href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open tab ↗</a>
-          <a class="btn ghost sm" href="${escapeHtml(meta.downloadUrl)}" download>Download</a>
-        </span>
-      </div>`;
-    if (meta.contentKind === 'image') {
-      target.innerHTML = `${toolbar}<div class="workspace-document image"><img src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" /></div>`;
-      return;
-    }
-    if (meta.contentKind === 'video') {
-      target.innerHTML = `${toolbar}<div class="workspace-document video"><video controls playsinline preload="metadata" src="${escapeHtml(meta.viewUrl)}" aria-label="Preview ${escapeHtml(meta.path)}"></video></div>`;
-      return;
-    }
-    if (meta.contentKind === 'pdf') {
-      target.innerHTML = `${toolbar}<div class="workspace-empty"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open this PDF in a new tab ↗</a></div>`;
-      return;
-    }
-    if (meta.binary) {
-      target.innerHTML = `${toolbar}<div class="workspace-empty">This binary file can be downloaded but not previewed here.</div>`;
-      return;
-    }
-    const response = await fetch(meta.viewUrl, { signal: requestToken.signal });
-    requestScope.guard(requestToken);
-    const text = response.ok ? await response.text() : '';
-    requestScope.guard(requestToken);
-    const isMarkdown = /\.(?:md|markdown)$/i.test(meta.path || file.path);
-    const isHtml = /\.html?$/i.test(meta.path || file.path);
-    if (preview && isHtml) {
-      target.innerHTML = `${toolbar}<div class="workspace-document html"></div>`;
-      const frame = document.createElement('iframe');
-      frame.title = `Preview of ${meta.path || file.path}`;
-      frame.setAttribute('sandbox', '');
-      frame.srcdoc = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">${text}`;
-      target.querySelector('.workspace-document.html')?.appendChild(frame);
-    } else if (isMarkdown) {
-      target.innerHTML = `${toolbar}<div class="workspace-document markdown md-view">${renderMarkdown(text)}</div>`;
-    } else {
-      target.innerHTML = `${toolbar}<pre class="workspace-document source">${escapeHtml(text)}${meta.truncated ? '\n\n… truncated at 2 MB' : ''}</pre>`;
-    }
+    if (target.dataset.previewPath !== file.path) return;
+    target.innerHTML = `<div class="workspace-detail-head"><div><b>${escapeHtml(meta.path || file.path)}</b><span>${escapeHtml(formatBytes(meta.bytes))}</span></div></div><div class="file-preview-host"></div>`;
+    await mountFilePreview(target.querySelector('.file-preview-host'), meta, {
+      signal: requestToken.signal,
+      isCurrent: () => requestScope.isCurrent(requestToken) && target.dataset.previewPath === file.path,
+    });
   } catch (error) {
-    if (isSessionAbort(error)) return;
+    if (isSessionAbort(error) || target.dataset.previewPath !== file.path) return;
     target.innerHTML = `<div class="workspace-empty error">Could not open ${escapeHtml(file.path)}: ${escapeHtml(error?.message || error)}</div>`;
   }
 }
@@ -3053,7 +3019,8 @@ function openComposerAttachmentDetail(a) {
 // The agent prints paths like "docs/specs/foo.md" but there's no way to read them from here. Make
 // path-like tokens in the terminal clickable -> a viewer modal backed by the session-scoped
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
-// it's rendered as escaped text (never HTML). Also drives the Knowledge "Files" list via the same viewer.
+// HTML/Markdown/SVG use sandboxed rendered previews; Source always stays escaped.
+// Also drives the Knowledge "Files" list via the same viewer.
 function looksLikeFile(raw) {
   if (!raw || raw.includes('://')) return false;
   return raw.includes('/') || hasKnownFileExtension(raw);
@@ -3080,8 +3047,7 @@ async function openFileViewer(rawPath) {
   if (!rel || fileViewerBusy) return;
   const requestToken = requestScope.capture();
   fileViewerBusy = true;
-  let meta = null;
-  let errText = '';
+  let meta = null, errText = '';
   try {
     const r = await fetch(`api/session/${requestToken.id}/file?path=${encodeURIComponent(rel)}`, { signal: requestToken.signal });
     requestScope.guard(requestToken);
@@ -3090,79 +3056,28 @@ async function openFileViewer(rawPath) {
   } catch (error) {
     if (isSessionAbort(error)) return;
     errText = 'Could not reach the server.';
-  }
-  fileViewerBusy = false;
-  // Text files get a toolbar: markdown renders as a PREVIEW by default (raw on toggle), any text can
-  // be copied, everything can go fullscreen or be downloaded. Content stays untrusted: preview goes
-  // through common.js renderMarkdown (escape-first, safe hrefs only), raw stays escaped <pre>.
-  let body;
-  let text = '';
-  const isText = meta && !meta.binary && !['image', 'video', 'pdf'].includes(meta.contentKind);
-  const isMd = isText && /\.(md|markdown)$/i.test(meta.path || rel);
-  const truncNote = meta?.truncated ? '\n\n… (truncated at 2 MB — download for the full file)' : '';
-  if (!meta) body = `<pre class="asset-detail-text">${escapeHtml(errText)}</pre>`;
-  else if (meta.contentKind === 'image') body = `<img class="asset-detail-image" src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}" />`;
-  else if (meta.contentKind === 'video') body = `<div class="asset-detail-media"><video class="asset-detail-video" controls playsinline preload="metadata" src="${escapeHtml(meta.viewUrl)}" aria-label="Preview ${escapeHtml(meta.path)}">Your browser cannot preview this video. Use Open tab or Download.</video></div>`;
-  else if (meta.contentKind === 'pdf') body = `<div class="asset-detail-file"><a href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open PDF</a> · <a href="${escapeHtml(meta.downloadUrl)}" download>Download</a></div>`;
-  else if (meta.binary) body = `<div class="asset-detail-file">Binary file — <a href="${escapeHtml(meta.downloadUrl)}" download>Download ${escapeHtml(meta.name)}</a></div>`;
-  else {
-    try {
-      text = await fetch(meta.viewUrl, { signal: requestToken.signal }).then((x) => (x.ok ? x.text() : ''));
-      requestScope.guard(requestToken);
-    } catch (error) {
-      if (isSessionAbort(error)) return;
-    }
-    body = isMd
-      ? `<div class="md-view">${renderMarkdown(text)}${meta.truncated ? '<p class="count">… (truncated at 2 MB — download for the full file)</p>' : ''}</div>`
-      : `<pre class="asset-detail-text">${escapeHtml(text)}${escapeHtml(truncNote)}</pre>`;
-  }
+  } finally { fileViewerBusy = false; }
+  if (!requestScope.isCurrent(requestToken)) return;
   const title = meta ? meta.path : rel;
-  const toolbar = !meta ? '' : `
-    <div class="file-toolbar">
-      ${isMd ? `<button class="btn ghost sm on" type="button" data-fv="preview">Preview</button><button class="btn ghost sm" type="button" data-fv="raw">Raw</button>` : ''}
-      ${isText ? `<button class="btn ghost sm" type="button" data-fv="copy">Copy</button>` : ''}
-      <button class="btn ghost sm" type="button" data-fv="full" title="Fullscreen reading">⛶ Fullscreen</button>
-      <a class="btn ghost sm" href="${escapeHtml(meta.viewUrl)}" target="_blank" rel="noopener">Open tab ↗</a>
-      <a class="btn ghost sm" href="${escapeHtml(meta.downloadUrl)}" download>Download</a>
-      <span class="count" data-fv="msg"></span>
-    </div>`;
   const overlay = document.createElement('div');
   overlay.className = 'asset-detail-backdrop';
-  overlay.innerHTML = `
-    <div class="asset-detail" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
-      <button class="asset-detail-close" type="button" aria-label="Close">×</button>
-      <h3>${escapeHtml(title)}</h3>
-      ${meta ? `<div class="asset-detail-sub">${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</div>` : ''}
-      ${toolbar}
-      <div class="asset-detail-body">${body}</div>
-      ${meta ? `<div class="asset-detail-meta">${metaRows([['path', meta.path], ['size', formatBytes(meta.bytes)], ['download', `${meta.name}`]])}</div>` : ''}
-    </div>`;
+  overlay.innerHTML = `<div class="asset-detail" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}">
+    <button class="asset-detail-close" type="button" aria-label="Close">×</button>
+    <h3>${escapeHtml(title)}</h3>
+    ${meta ? `<div class="asset-detail-sub">${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</div><div class="file-preview-host"></div>` : `<pre class="asset-detail-text">${escapeHtml(errText)}</pre>`}
+  </div>`;
   const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
-  const onKey = (ev) => { if (ev.key === 'Escape') { ev.stopPropagation(); close(); } };
-  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  const onKey = event => { if (event.key === 'Escape') { event.stopPropagation(); close(); } };
+  overlay.onclick = event => { if (event.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
-  const detail = overlay.querySelector('.asset-detail');
-  const bodyEl = overlay.querySelector('.asset-detail-body');
-  const msgEl = overlay.querySelector('[data-fv="msg"]');
-  const setMode = (mode) => {
-    bodyEl.innerHTML = mode === 'preview'
-      ? `<div class="md-view">${renderMarkdown(text)}</div>`
-      : `<pre class="asset-detail-text">${escapeHtml(text)}${escapeHtml(truncNote)}</pre>`;
-    for (const b of overlay.querySelectorAll('[data-fv="preview"],[data-fv="raw"]')) b.classList.toggle('on', b.dataset.fv === mode);
-  };
-  overlay.addEventListener('click', async (e) => {
-    const act = e.target.closest('[data-fv]')?.dataset.fv;
-    if (!act || act === 'msg') return;
-    if (act === 'preview' || act === 'raw') return setMode(act);
-    if (act === 'copy') {
-      try { await navigator.clipboard.writeText(text); if (msgEl) msgEl.textContent = '✓ copied'; } catch { if (msgEl) msgEl.textContent = 'copy failed — select manually'; }
-      setTimeout(() => { if (msgEl) msgEl.textContent = ''; }, 2000);
-      return;
-    }
-    if (act === 'full') detail.classList.toggle('full');
-  });
   document.addEventListener('keydown', onKey, true);
+  requestToken.signal.addEventListener('abort', close, { once: true });
   document.body.appendChild(overlay);
+  if (meta) await mountFilePreview(overlay.querySelector('.file-preview-host'), meta, {
+    signal: requestToken.signal,
+    isCurrent: () => requestScope.isCurrent(requestToken),
+    fullscreen: () => overlay.querySelector('.asset-detail').classList.toggle('full'),
+  });
 }
 // Let other panels (e.g. Knowledge "Files") open a file in this same viewer.
 window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileViewer(e.detail.path); }, { signal: _sig });

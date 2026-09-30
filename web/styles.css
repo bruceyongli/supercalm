@@ -2789,6 +2789,9 @@ body.map-expanded-open { overflow: hidden; }
 .file-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .file-toolbar .btn.on { border-color: var(--blue); color: var(--blue); }
 .file-toolbar a.btn { text-decoration: none; }
+.file-preview-host { display: grid; gap: 10px; min-width: 0; min-height: 0; }
+.file-render-frame { display: block; width: 100%; height: min(68dvh, 820px); min-height: 260px; border: 0; background: white; }
+.asset-detail.full .file-render-frame { height: calc(100dvh - 210px); }
 .asset-detail.full { width: calc(100vw - 16px); height: calc(100dvh - 16px); max-height: calc(100dvh - 16px); }
 /* Rendered-markdown reading surface — GitHub .markdown-body conventions on our dark palette:
    ~70ch measure centered (66cpl readability sweet spot), reading sans (NOT the app mono — this is
