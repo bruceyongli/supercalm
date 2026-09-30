@@ -112,10 +112,14 @@ try {
   const response = await send(blocked, 'This must not be marked as sent.');
   assert.equal(response.status, 409);
   assert.equal(response.body.reason, 'submit-unconfirmed');
-  assert.equal(trace().filter(r => r.event === 'enter').length, 3);
+  const blockedEnters = trace().filter(r => r.event === 'enter').length;
+  // Real tmux captures take wall time. A loaded release host may reach the five-
+  // second deadline before attempt three; the contract is bounded retries with
+  // no false acceptance, not an exact retry count (covered by the fake-clock unit test).
+  assert.ok(blockedEnters >= 1 && blockedEnters <= 3, `bounded retries: ${blockedEnters}`);
   assert.equal(trace().filter(r => r.event === 'accepted').length, 0);
   assert.equal(store.db.prepare("SELECT count(*) AS n FROM messages WHERE session_id=? AND direction='in'").get(blocked).n, 0);
-  console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', http: 409, reason: response.body.reason, enters: 3, accepted: 0, persisted: 0 }));
+  console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', http: 409, reason: response.body.reason, enters: blockedEnters, accepted: 0, persisted: 0 }));
   console.log('session_input_delivery: passed (private tmux, no live sessions or projects modified)');
 } finally {
   cleanup();
