@@ -1,3 +1,6 @@
+import { renderInline, markdownTableCells, markdownDestination } from './markdown-inline.js';
+export { renderLinkedText, renderInline } from './markdown-inline.js';
+
 export const $ = (s, r = document) => r.querySelector(s);
 export const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
@@ -541,52 +544,16 @@ export async function pushStatus() {
 // code, markdown links + bare http(s) URLs (javascript: etc. render as plain text). Images render as
 // links on purpose: an <img> to an attacker URL would leak the viewer's address.
 const MD_ESC = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-function mdSafeHref(h) {
-  const t = String(h || '').trim();
-  if (/^(https?:|mailto:|#)/i.test(t)) return t;
-  if (/^file:\/\/(?:localhost)?\//i.test(t)) return t;
-  const path = t.replace(/#L\d+(?:C\d+)?$/i, '').replace(/:\d+(?::\d+)?$/, '');
-  if (/^[~\w./@+-][~\w./@+?#=&%-]*$/.test(path) && !path.includes(':')) return t;
-  return null;
-}
-function mdAutolink(x) {
-  // Markdown links and inline code are already generated HTML at this point. Keep those chunks intact
-  // so a URL in an href or code span is never linked a second time.
-  return x.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<code>[\s\S]*?<\/code>)/gi).map((part) => {
-    if (/^<(?:a\b|code>)/i.test(part)) return part;
-    return part.replace(/(^|[\s(>])((?:https?:\/\/)(?:(?!&quot;|&#39;)[^\s<])+)/gi, (match, lead, raw) => {
-      let url = raw;
-      let trailing = '';
-      while (/[.,;:!?]$/.test(url)) { trailing = url.slice(-1) + trailing; url = url.slice(0, -1); }
-      while (url.endsWith(')')) {
-        const closes = (url.match(/\)/g) || []).length;
-        const opens = (url.match(/\(/g) || []).length;
-        if (closes <= opens) break;
-        trailing = ')' + trailing;
-        url = url.slice(0, -1);
-      }
-      const safe = mdSafeHref(url.replace(/&amp;/g, '&'));
-      if (!safe) return match;
-      return `${lead}<a href="${MD_ESC(safe)}" target="_blank" rel="noopener noreferrer">${url}</a>${trailing}`;
-    });
-  }).join('');
-}
-function mdInline(s) {
-  let x = MD_ESC(s);
-  x = x.replace(/`([^`]+)`/g, (_, c) => `<code>${c}</code>`);
-  // links + images (image -> link). Href was escaped by MD_ESC; sanitize scheme on the raw-ish value.
-  x = x.replace(/!?\[([^\]]*)\]\(([^()\s]+)(?:\s+&quot;[^&]*&quot;)?\)/g, (m, label, href) => {
-    const safe = mdSafeHref(href.replace(/&amp;/g, '&'));
-    if (!safe) return m;
-    return `<a href="${MD_ESC(safe)}" target="_blank" rel="noopener noreferrer">${label || MD_ESC(safe)}</a>`;
-  });
-  x = x.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  x = x.replace(/(^|[\s(])\*([^*\s][^*]*)\*(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
-  x = x.replace(/(^|[\s(])_([^_\s][^_]*)_(?=[\s).,;:!?]|$)/g, '$1<em>$2</em>');
-  return mdAutolink(x);
-}
-export function renderMarkdown(md) {
+export function renderMarkdown(md, options = {}) {
   const lines = String(md || '').replace(/\r/g, '').split('\n');
+  const references = new Map(options.references || []);
+  let inFence = false;
+  for (let n = 0; n < lines.length; n++) {
+    if (/^```/.test(lines[n])) inFence = !inFence;
+    const ref = !inFence && lines[n].match(/^ {0,3}\[([^\]]+)\]:\s*(.+)$/);
+    if (ref) { references.set(ref[1].trim().replace(/\s+/g, ' ').toLowerCase(), markdownDestination(ref[2])); lines[n] = ''; }
+  }
+  const mdInline = text => renderInline(text, { ...options, references });
   const out = [];
   let i = 0;
   let list = null; // {tag, items} open list tag
@@ -607,7 +574,7 @@ export function renderMarkdown(md) {
     // GFM table: header row + separator row
     if (line.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:-]+\|[|\s:-]*$/.test(lines[i + 1]) && lines[i + 1].includes('-')) {
       closeList();
-      const rowCells = (l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
+      const rowCells = markdownTableCells;
       const head = rowCells(line);
       i += 2;
       const rows = [];
@@ -628,7 +595,7 @@ export function renderMarkdown(md) {
       const buf = [q[1]];
       i++;
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ''));
-      out.push(`<blockquote>${renderMarkdown(buf.join('\n'))}</blockquote>`);
+      out.push(`<blockquote>${renderMarkdown(buf.join('\n'), { ...options, references })}</blockquote>`);
       continue;
     }
     const ol = line.match(/^\s*\d+[.)]\s+(.+)$/);

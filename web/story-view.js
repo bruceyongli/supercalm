@@ -1,7 +1,7 @@
 // Story view (design handoff phase 1) — plain-language rendering of the session log, toggled
 // against the raw terminal. DOM contract + exact tokens from the handoff's spec.tokens.json;
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
-import { api, renderMarkdown } from './common.js';
+import { api, renderMarkdown, renderLinkedText } from './common.js';
 import { localFilePath } from './file-reference.js';
 import { unlockAudio, newPlayback, speakSmart, cycleRate, currentRate } from './tts-player.js';
 
@@ -452,7 +452,7 @@ function eventHtml(ev, i, previewVideo = false) {
     : '';
   const body = (bodyText || imgsHtml) ? (rich
     ? `<div class="story-body md">${renderMarkdown(bodyText)}${imgsHtml}${videosHtml}</div>`
-    : `<div class="story-body">${esc(bodyText)}${imgsHtml}</div>`) : '';
+    : `<div class="story-body">${renderLinkedText(bodyText)}${imgsHtml}</div>`) : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
   const head = untitled

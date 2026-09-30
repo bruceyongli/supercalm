@@ -7,6 +7,8 @@ const root = new URL('../', import.meta.url);
 const assets = new Map([
   ['/views/records.js', readFileSync(new URL('web/views/records.js', root))],
   ['/common.js', readFileSync(new URL('web/common.js', root))],
+  ['/markdown-inline.js', readFileSync(new URL('web/markdown-inline.js', root))],
+  ['/file-reference.js', readFileSync(new URL('web/file-reference.js', root))],
 ]);
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fixture = `<!doctype html><meta charset="utf-8"><body><main id="view"></main>

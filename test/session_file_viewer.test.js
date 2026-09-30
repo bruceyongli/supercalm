@@ -214,6 +214,8 @@ async function waitForRoutes() {
 // Rendered URLs work directly and under /aios, preserve relative resources, stream
 // full dashboards, and cannot expose other folders or hidden/unsupported files.
 {
+  await writeFile(join(projectRoot, 'dashboard', 'My report (最终).md'), '# Space and Unicode report\n');
+  await writeFile(join(projectRoot, 'dashboard', 'nested', 'LINKS.md'), `# Links\n\n| Kind | Open |\n|---|---|\n| HTML | [Dashboard](<${join(projectRoot, 'dashboard', 'index.html')}>) |\n| Markdown | [Spaced](../My%20report%20(%E6%9C%80%E7%BB%88).md) |\n| Private | [Denied](<${privateArtifact}>) |`);
   const meta = await (await fileRequest('dashboard/index.html')).json();
   assert.equal(meta.renderInline, true);
   assert.equal((await (await fileRequest('dashboard/index.html')).json()).renderUrl, meta.renderUrl, 'stable rendered URL');
@@ -273,6 +275,22 @@ async function waitForRoutes() {
     const markdown = await (await fileRequest('report.md')).json();
     await page.evaluate(meta => window.mountPreview(meta), markdown);
     await page.frameLocator('.file-render-frame').locator('h1').filter({ hasText: 'Project report' }).waitFor();
+    const linked = await (await fileRequest('dashboard/nested/LINKS.md')).json();
+    await page.evaluate(meta => window.mountPreview(meta), linked);
+    const documentFrame = page.frameLocator('.file-render-frame');
+    await documentFrame.getByRole('link', { name: 'Dashboard', exact: true }).waitFor();
+    for (const [name, expectedHeading] of [['Dashboard', 'Rendered dashboard'], ['Spaced', 'Space and Unicode report']]) {
+      const popupPromise = page.waitForEvent('popup');
+      await documentFrame.getByRole('link', { name, exact: true }).click();
+      const popup = await popupPromise;
+      await popup.locator('h1').filter({ hasText: expectedHeading }).waitFor();
+      await popup.close();
+    }
+    const deniedHref = await documentFrame.getByRole('link', { name: 'Denied', exact: true }).getAttribute('href');
+    assert.equal((await fetch(new URL(deniedHref, base))).status, 403, 'document links never bypass session file scope');
+    const openResponse = await fileRequest('dashboard/index.html', '&open=1');
+    assert.equal(openResponse.status, 200);
+    assert.equal(await openResponse.text(), dashboard, 'direct open redirects through authorized rendered hosting');
     const svg = await (await fileRequest('diagram.svg')).json();
     await page.evaluate(meta => window.mountPreview(meta), svg);
     await page.frameLocator('.file-render-frame').locator('svg text').waitFor();
@@ -390,7 +408,7 @@ async function waitForRoutes() {
 // Story markdown links are delegated into the same viewer instead of opening the host root in a tab.
 {
   const src = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
-  assert.match(src, /story-body\.md a\[href\]/);
+  assert.match(src, /story-body a\[href\]/);
   assert.match(src, /const href = link\.getAttribute\('href'\)/);
   assert.match(src, /const path = localFilePath\(href\)/);
   assert.match(src, /shouldUseFileViewer\(href, path\)/);

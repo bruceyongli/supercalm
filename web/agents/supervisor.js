@@ -1,4 +1,4 @@
-import { fmtAgo } from '../common.js';
+import { fmtAgo, renderInline } from '../common.js';
 import { groupedModelOptions } from '../model-select.js';
 
 // Supervisor panel module — { mount, update } over the agent SDK. Config/verdict/history/models all
@@ -1253,7 +1253,7 @@ function wireResult() {
 
 // ---- minimal markdown (headings, bullets, checkboxes, code) ------------------
 function inlineMd(s) {
-  return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  return renderInline(s);
 }
 function renderMarkdown(md) {
   const lines = String(md || '').replace(/\r/g, '').split('\n');

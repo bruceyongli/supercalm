@@ -6,6 +6,7 @@ import { realpath, stat, readFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, isAbsolute } from 'node:path';
 import { db } from './store.js';
 import { renderMarkdown, escapeHtml } from '../web/common.js';
+import { isFileReference, localFilePath } from '../web/file-reference.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS file_render_grants (
   token TEXT PRIMARY KEY, session_id TEXT NOT NULL, entry_path TEXT NOT NULL,
@@ -72,7 +73,20 @@ export async function serveRenderedFile(req, res, { session, token, asset, resol
     if (info.size > 8 * 1024 * 1024) return fail(413, 'Markdown too large to render; use Source or Download');
     const text = await readFile(target, 'utf8');
     res.writeHead(200, headers);
-    res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(basename(target))}</title><style>body{font:16px/1.6 system-ui;max-width:960px;margin:24px auto;padding:0 20px;color:#20252b;background:#fff;overflow-wrap:anywhere}pre{overflow:auto;padding:16px;background:#f3f4f6}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;display:block;overflow:auto}th,td{padding:8px;border:1px solid #ccc}img{max-width:100%}a{color:#0969da}</style>${renderMarkdown(text)}`);
+    const hostname = new URL(`http://${host}`).hostname;
+    const html = renderMarkdown(text, { linkHref(href) {
+      if (!isFileReference(href, hostname)) return href;
+      const local = localFilePath(href, hostname);
+      const absolute = isAbsolute(local) || local.startsWith('~/') ? local : join(dirname(target), local);
+      const rel = relative(root, absolute);
+      // Relative resources keep the document's grant; absolute/home links beyond
+      // this folder go through the normal session authorization before opening.
+      if (!local.startsWith('~/') && !rel.startsWith('..') && !isAbsolute(rel) && types[extname(absolute).toLowerCase()]) {
+        return prefix + rel.split('/').map(encodeURIComponent).join('/') + (href.match(/#[^#]*$/)?.[0] || '');
+      }
+      return `/aios/api/session/${encodeURIComponent(session.id)}/file?path=${encodeURIComponent(absolute)}&open=1`;
+    } });
+    res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(basename(target))}</title><style>body{font:16px/1.6 system-ui;max-width:960px;margin:24px auto;padding:0 20px;color:#20252b;background:#fff;overflow-wrap:anywhere}pre{overflow:auto;padding:16px;background:#f3f4f6}code{font-family:ui-monospace,monospace}table{border-collapse:collapse;display:block;overflow:auto}th,td{padding:8px;border:1px solid #ccc}img{max-width:100%}a{color:#0969da}</style>${html}`);
     return;
   }
   // Stream full HTML (large dashboards commonly exceed the source viewer's 2 MB

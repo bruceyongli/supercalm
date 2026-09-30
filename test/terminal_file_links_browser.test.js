@@ -15,7 +15,7 @@ const fixture = `<!doctype html><link rel="stylesheet" href="/xterm.css">
 <style>body {margin: 0} #terminal {width: max-content} #preview {white-space:pre-wrap}</style>
 <div id="terminal"></div><div id="preview"></div><script src="/xterm.js"></script>
 <script type="module">
-  import { terminalFileReferences } from '/terminal-file-links.js';
+  import { terminalFileReferences, installTerminalLinkTaps } from '/terminal-file-links.js';
   import { fitTerminalGrid } from '/terminal-layout.js';
   import { localFilePath } from '/file-reference.js';
   const term = new Terminal({cols: 100, rows: 18, fontSize: 16, scrollback: 200});
@@ -26,6 +26,9 @@ const fixture = `<!doctype html><link rel="stylesheet" href="/xterm.css">
       const path = localFilePath(reference.text);
       document.querySelector('#preview').textContent = await fetch('/api/session/s_wrap/file?path=' + encodeURIComponent(path)).then(r => r.text());
     }})));
+  }});
+  installTerminalLinkTaps({ element: document.querySelector('#terminal'), term, activate: async reference => {
+    document.querySelector('#preview').textContent = await fetch('/api/session/s_wrap/file?path=' + encodeURIComponent(localFilePath(reference.text))).then(r => r.text());
   }});
   window.__links = {
     term,
@@ -153,6 +156,45 @@ try {
   assert.ok(links.every(link => link.text === url), 'wrapped web URLs retain their full address');
   links = await load('https://example.test/guide\r\nRead this next.');
   assert.deepEqual(links.map(link => link.text), ['https://example.test/guide'], 'external URL must not absorb the next paragraph');
+  for (const reference of ['/tmp/报告.md', '/tmp/report(final).html', 'docs/code.js:12:3', 'file:///tmp/My%20report.md', '//example.test/a.html']) {
+    links = await load(`Result: (${reference}).`);
+    assert.deepEqual([...new Set(links.map(l => l.text))], [reference]);
+  }
+  links = await load('Result: "/tmp/My report (最终).md"', 32);
+  assert.ok(links.every(l => l.text === '/tmp/My report (最终).md'));
+  await clickCell(links.at(-1).range.start.x, links.at(-1).row, '/tmp/My report (最终).md');
+
+  // The operator screenshot: independently wrapped paths in adjacent table cells.
+  for (const border of ['plain', 'box']) {
+    const widths = [19, 58, 58];
+    const tableRow = cells => (border === 'box' ? '│' : '') + cells.map((s, i) => s.padEnd(widths[i])).join(border === 'box' ? '│' : '  ') + (border === 'box' ? '│' : '');
+    const rule = tableRow(widths.map(n => '─'.repeat(n)));
+    const left = '/Users/bb1/aios/data/session-artifacts/s_table/deepseek-harness-luna-v5.html';
+    const right = '/Users/bb1/aios/data/session-artifacts/s_table/deepseek-harness-claude-supplied.html';
+    const text = [tableRow(['Codebase', 'GPT-6 Luna', 'Supplied Claude']), rule,
+      tableRow(['Deepseek Harness', 'Open Luna map (' + left.slice(0, 43), 'Open Claude (' + right.slice(0, 45)]),
+      tableRow(['', left.slice(43) + ')', right.slice(45) + ')']), rule].join('\r\n');
+    // Wide desktop and physical soft wraps of the same table after a narrow reconnect.
+    for (const cols of [150, 80, 40]) {
+      links = await load(text, cols);
+      const paths = [...new Set(links.map(link => link.text))];
+      assert.deepEqual(paths.sort(), [left, right].sort(), `${border} table at ${cols} cols`);
+      for (const link of links) await clickCell(link.range.start.x, link.row, link.text);
+      assert.ok(links.every(link => link.range.start.y === link.range.end.y), 'column links never create screen-wide hitboxes');
+    }
+  }
+  const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await phone.goto(`http://127.0.0.1:${server.address().port}/`);
+  await phone.waitForFunction(() => window.__links);
+  await phone.evaluate(path => window.__links.load(path, 32), first);
+  const fragment = await phone.evaluate(() => window.__links.all().at(-1));
+  const point = await phone.evaluate(range => window.__links.point(range.start.x, range.start.y), fragment.range);
+  const beforeTap = requests.length;
+  await phone.touchscreen.tap(point.x, point.y);
+  await phone.waitForFunction(path => document.querySelector('#preview').textContent === 'Preview: ' + path, first);
+  await phone.waitForTimeout(300);
+  assert.equal(requests.length, beforeTap + 1, 'one mobile tap opens a wrapped file exactly once, without mouse hover');
+  await phone.close();
   console.log(`terminal_file_links_browser: passed; ${requests.length} clicks delivered complete paths`);
 } finally {
   await browser.close();

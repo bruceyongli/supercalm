@@ -3280,6 +3280,13 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   const isPdf = ext === '.pdf';
   const viewBase = `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(rel)}`;
 
+  if (u.searchParams.get('open') === '1' && !raw) {
+    const rendered = renderedFileMeta(sid, target, st.size);
+    const destination = rendered.renderInline !== false && rendered.renderUrl || `${viewBase}&raw=1`;
+    res.writeHead(303, { location: `/aios/${destination}`, 'cache-control': 'no-store' });
+    return res.end();
+  }
+
   if (!raw) {
     let kind = 'binary';
     if (isImg) kind = 'image';

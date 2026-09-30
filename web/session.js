@@ -5,8 +5,8 @@ import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
-import { cleanFileReference, localFilePath, hasKnownFileExtension } from './file-reference.js';
-import { terminalFileReferences } from './terminal-file-links.js';
+import { cleanFileReference, localFilePath, isFileReference } from './file-reference.js';
+import { terminalFileReferences, installTerminalLinkTaps } from './terminal-file-links.js';
 import { fitTerminalGrid } from './terminal-layout.js';
 import { installTerminalScrolling, terminalScrollMode } from './terminal-scroll.js';
 import { mountFilePreview } from './file-preview.js';
@@ -3021,22 +3021,15 @@ function openComposerAttachmentDetail(a) {
 // GET /api/session/:id/file. Reuses the same asset-detail modal as attachments; content is untrusted so
 // HTML/Markdown/SVG use sandboxed rendered previews; Source always stays escaped.
 // Also drives the Knowledge "Files" list via the same viewer.
-function looksLikeFile(raw) {
-  if (!raw || raw.includes('://')) return false;
-  return raw.includes('/') || hasKnownFileExtension(raw);
-}
 function isUrlReference(raw) {
   return /^(?:https?:)?\/\//i.test(cleanFileReference(raw));
 }
 function shouldUseFileViewer(reference, path) {
-  if (!path) return false;
-  if (!isUrlReference(reference)) return looksLikeFile(path);
-  // A same-host URL with a file extension (or an explicit host temp path) is an artifact link.
-  // Same-host application/web routes remain ordinary URLs and open in a new tab.
-  return hasKnownFileExtension(path) || /^\/(?:private\/)?tmp\//.test(path);
+  return Boolean(path) && isFileReference(reference);
 }
 function openUrlInNewTab(raw) {
-  const url = cleanFileReference(raw);
+  const ref = cleanFileReference(raw);
+  const url = ref.startsWith('//') ? `${location.protocol}${ref}` : ref;
   if (!/^https?:\/\//i.test(url)) return;
   const tab = window.open(url, '_blank', 'noopener,noreferrer');
   if (tab) tab.opener = null;
@@ -3084,7 +3077,7 @@ window.addEventListener('aios:open-file', (e) => { if (e.detail?.path) openFileV
 
 // Story markdown normally opens links in a new browser tab. A file path — including a full URL to
 // this same host such as https://bb1…/tmp/report.png — belongs in the session viewer instead.
-document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
+shell.addEventListener('click', (e) => {
   const fileButton = e.target.closest?.('[data-story-file]');
   if (fileButton) {
     const path = fileButton.dataset.storyFile;
@@ -3094,7 +3087,7 @@ document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
     openFileViewer(path);
     return;
   }
-  const link = e.target.closest?.('.story-body.md a[href]');
+  const link = e.target.closest?.('.story-body a[href], .review-rendered a[href], .sup-md a[href], .md-view a[href]');
   if (!link) return;
   const href = link.getAttribute('href');
   const path = localFilePath(href);
@@ -3105,6 +3098,15 @@ document.querySelector('[data-story-panel]')?.addEventListener('click', (e) => {
 }, { signal: _sig });
 
 // Underline path-like tokens in the terminal and open the viewer on click. Works on the alt screen too.
+function activateTerminalReference(raw, event) {
+  const path = localFilePath(raw);
+  if (shouldUseFileViewer(raw, path)) { event.preventDefault(); openFileViewer(raw); }
+  else if (isUrlReference(raw)) { event.preventDefault(); openUrlInNewTab(raw); }
+}
+installTerminalLinkTaps({ element: termEl, term, signal: _sig,
+  isScrolling: () => terminalScrolling.isTouchScrolling(),
+  activate: (reference, event) => activateTerminalReference(reference.text, event),
+});
 if (typeof term.registerLinkProvider === 'function') {
   term.registerLinkProvider({
     provideLinks(bufferLineNumber, callback) {
@@ -3118,11 +3120,7 @@ if (typeof term.registerLinkProvider === 'function') {
         links.push({
           range: reference.range,
           text: raw,
-          activate: (ev) => {
-            try { ev.preventDefault(); } catch {}
-            if (fileLink) openFileViewer(raw);
-            else openUrlInNewTab(raw);
-          },
+          activate: (ev) => activateTerminalReference(raw, ev),
         });
       }
       callback(links.length ? links : undefined);
