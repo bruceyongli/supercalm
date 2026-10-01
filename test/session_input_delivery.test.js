@@ -10,9 +10,12 @@ import { createServer } from 'node:net';
 const exec = promisify(execFile);
 const scratch = mkdtempSync(join(tmpdir(), 'aios-input-delivery-'));
 const socket = `aios-input-${process.pid}`;
-const wrapper = join(scratch, 'tmux.mjs');
+const wrapper = join(scratch, 'tmux.sh');
 const realTmux = (await exec('which', ['tmux'])).stdout.trim();
-writeFileSync(wrapper, `#!${process.execPath}\nimport {spawnSync} from 'node:child_process';\nconst r=spawnSync(${JSON.stringify(realTmux)}, ['-L',${JSON.stringify(socket)},...process.argv.slice(2)], {stdio:'inherit',env:{...process.env,TMUX:''}});process.exit(r.status ?? 1);\n`, { mode: 0o755 });
+const shellQuote = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+// Exec the real binary directly. A Node + spawnSync wrapper on every capture
+// adds scheduling overhead to the production five-second confirmation window.
+writeFileSync(wrapper, `#!/bin/sh\nTMUX='' exec ${shellQuote(realTmux)} -L ${shellQuote(socket)} "$@"\n`, { mode: 0o755 });
 const probe = createServer();
 await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
 const port = probe.address().port;
