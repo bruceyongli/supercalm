@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { codexProviderArgs, defaultToolModel, isNativeModel, modelDisplayLabel, modelReasoningEfforts, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
+import { codexProviderArgs, defaultToolModel, isNativeModel, modelDisplayLabel, modelSupportsFast, toolEnv, toolModels } from './model_catalog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..');
@@ -143,7 +143,7 @@ const ORCH_PROMPT = {
 
 // Tools Supercalm can launch. `argv(task, {effort, autonomy, model, resume})` returns the raw argv
 // (no shell quoting); sessions.js shell-quotes + prefixes env when sending into tmux.
-// Tool effort vocabularies include Max; model metadata narrows them to supported values.
+// Effort levels + default are per-tool (claude tops out at "max", codex at "xhigh").
 // resume=true continues the tool's most recent conversation in the project dir.
 // claude SESSION auth is resolved per-launch in authmode.js (auto-detect): external proxy
 // fleet if reachable, else Supercalm's own dashboard login via the local shim, else the CLI's own
@@ -194,7 +194,7 @@ export const TOOLS = {
     get model() { return codexDefaultModel(); },
     get modelLabel() { return toolModelLabel('codex', this.model); },
     get models() { return toolModels('codex'); },
-    efforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    efforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     defaultEffort: 'xhigh',
     orchestrations: [], // ultracode/workflow are claude-only -> no-op for codex
     defaultOrchestration: null,
@@ -259,15 +259,3 @@ export const TOOLS = {
 };
 
 export const TOOL_IDS = Object.keys(TOOLS);
-
-export function effortsForModel(tool, model) {
-  const allowed = TOOLS[tool]?.efforts || [];
-  if (!allowed.length) return [];
-  return (modelReasoningEfforts(model) ?? allowed).filter(value => allowed.includes(value));
-}
-
-export function defaultEffortForModel(tool, model) {
-  const efforts = effortsForModel(tool, model);
-  const preferred = TOOLS[tool]?.defaultEffort;
-  return efforts.includes(preferred) ? preferred : efforts.includes('high') ? 'high' : efforts[0] || null;
-}
