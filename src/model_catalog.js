@@ -66,6 +66,40 @@ export const MODEL_ALIASES = {
 const CLAUDE_ALIAS_FAMILIES = { opus: 'opus', sonnet: 'sonnet', haiku: 'haiku' };
 
 const CODEX_FAST_MODELS = new Set(['gpt-5.5', 'gpt-5.4']);
+const REASONING_EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
+export function normalizeReasoningEfforts(values) {
+  if (!Array.isArray(values)) return null;
+  return [...new Set(values.map(value => typeof value === 'string' ? value : value?.reasoningEffort || value?.reasoning_effort || value?.effort)
+    .filter(value => REASONING_EFFORTS.has(value)))];
+}
+
+// Subscription model/list metadata takes precedence. The documented family
+// defaults also cover offline catalogs and providers that advertise only IDs.
+// https://developers.openai.com/api/docs/guides/reasoning
+// https://platform.claude.com/docs/en/build-with-claude/effort
+export function modelReasoningEfforts(model) {
+  const route = routeForModel(model);
+  const advertised = normalizeReasoningEfforts(route.efforts);
+  if (advertised) return advertised;
+  const id = String(route.model || model || '').replace(/^openai\//, '');
+  const gpt = id.match(/^gpt-(\d+)(?:\.(\d+))?(?:-|$)/i);
+  if (gpt) {
+    const major = Number(gpt[1]), minor = Number(gpt[2] || 0);
+    if (major >= 6) return /astra|^gpt-6\.1-sol(?:-|$)/i.test(id)
+      ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (major === 5 && minor >= 6) return ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (major === 5 && minor >= 4) return ['none', 'low', 'medium', 'high', 'xhigh'];
+    if (major === 5 && minor >= 2) return ['low', 'medium', 'high', 'xhigh'];
+  }
+  if (/^claude-(?:fable|mythos)-(?:5(?:-|$)|preview)/i.test(id)
+    || /^claude-(?:opus|sonnet)-5(?:-|$)/i.test(id)
+    || /^claude-opus-4-[78](?:-|$)/i.test(id)) return ['low', 'medium', 'high', 'xhigh', 'max'];
+  if (/^claude-(?:opus|sonnet)-4-6(?:-|$)/i.test(id)) return ['low', 'medium', 'high', 'max'];
+  if (/^claude-opus-4-5(?:-|$)/i.test(id)) return ['low', 'medium', 'high'];
+  if (/^claude-(?:haiku|sonnet-4-5)/i.test(id)) return [];
+  return null;
+}
 
 function providerSupportsVision(proxy, id) {
   if (['antigravity', 'gemini', 'codex', 'claude'].includes(proxy)) return true;
@@ -274,6 +308,7 @@ export function applyCatalog(providers, meta = {}) {
           recommended: !!m.recommended,
           pinned: !!m.pinned,
           supportsFast: !!m.supportsFast,
+          efforts: normalizeReasoningEfforts(m.efforts ?? m.reasoning_efforts),
           vision: m.vision === true ? true : m.vision === false ? false : null,
           source: m.source || null,
           // Utility models (STT/TTS on the spark box) arrive untyped from /v1/models and were leaking
@@ -348,6 +383,8 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
             vision: m.vision ?? providerSupportsVision(p.proxy, m.id),
             source: m.source || null,
             supportsFast: !!m.supportsFast || (p.proxy === 'codex' && CODEX_FAST_MODELS.has(m.id)),
+            efforts: modelReasoningEfforts(m.id),
+            reasoning_efforts: modelReasoningEfforts(m.id),
           };
         });
     })
@@ -362,6 +399,8 @@ export function listProxyModels({ providers = null, includeImages = false, liveO
       recommended: false,
       kind: 'chat',
       supportsFast: false,
+      efforts: modelReasoningEfforts(r.id),
+      reasoning_efforts: modelReasoningEfforts(r.id),
     })) : []);
 }
 
@@ -418,6 +457,7 @@ export function toolModels(tool) {
             kind: 'chat',
             vision: m?.vision ?? providerSupportsVision('claude', concrete),
             supportsFast: false,
+            efforts: modelReasoningEfforts(concrete),
           };
         })
       : [];

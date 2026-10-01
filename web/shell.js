@@ -438,6 +438,7 @@ export async function openLaunch(opts = {}) {
         <label class="dk-field">Model<select id="nl-model"></select></label>
         <label class="dk-field">Autonomy<select id="nl-auto"><option value="full">full — hands-off</option><option value="auto">auto</option><option value="ask">ask</option></select></label>
       </div>
+      <label class="dk-field" id="nl-effort-field">Effort<select id="nl-effort"></select></label>
       <div class="dk-field">Task
         <span class="dk-task-wrap">
           <textarea id="nl-task" rows="4" placeholder="What should the agent do? Be concrete — repo, goal, done-when."></textarea>
@@ -454,13 +455,24 @@ export async function openLaunch(opts = {}) {
     </div>`;
   const q = (sel) => m.querySelector(sel);
   const toolBtns = [...m.querySelectorAll('#nl-tool [data-tool]')];
+  const fillEfforts = () => {
+    const t = tools.find(x => x.id === toolBtns.find(b => b.classList.contains('on'))?.dataset.tool);
+    const model = (t?.models || []).find(x => x.id === q('#nl-model').value);
+    const efforts = model?.efforts ?? t?.efforts ?? [];
+    const previous = q('#nl-effort').value;
+    const selected = efforts.includes(previous) ? previous : model?.defaultEffort || t?.defaultEffort;
+    q('#nl-effort-field').hidden = !efforts.length;
+    q('#nl-effort').innerHTML = efforts.map(value => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(value)}</option>`).join('');
+  };
   const fillModels = () => {
     const t = tools.find((x) => x.id === (toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool));
     q('#nl-model').innerHTML = groupedModelOptions(t?.models || [], {
       selected: t?.model || '',
       leading: (t?.models || []).length ? [] : [{ value: '', label: 'default' }],
     });
+    fillEfforts();
   };
+  q('#nl-model').onchange = fillEfforts;
   fillModels();
   for (const b of toolBtns) b.onclick = () => { toolBtns.forEach((x) => x.classList.toggle('on', x === b)); fillModels(); };
   // Visibility must be SYNCED, not only reacted to: on a fresh install with zero projects,
@@ -489,7 +501,7 @@ export async function openLaunch(opts = {}) {
     if (!task || !path) { q('#nl-gate').textContent = !task ? 'a task is required' : 'a path is required for a new project'; return; }
     q('#nl-go').textContent = 'Launching…';
     try {
-      const body = { path, tool: toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool || 'claude', task, autonomy: q('#nl-auto').value, model: q('#nl-model').value || undefined };
+      const body = { path, tool: toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool || 'claude', task, autonomy: q('#nl-auto').value, model: q('#nl-model').value || undefined, effort: q('#nl-effort').value || undefined };
       if (isNew && q('#nl-name').value.trim()) body.name = q('#nl-name').value.trim();
       if (isNew && q('#nl-kb').checked) body.kb = true;
       const r = await api('api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });

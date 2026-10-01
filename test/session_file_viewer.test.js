@@ -81,6 +81,15 @@ await writeFile(join(projectRoot, 'diagram.svg'), '<svg xmlns="http://www.w3.org
 const projectVideo = join(projectRoot, 'preview.mp4');
 const videoBytes = Buffer.from([0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x70, 0x34, 0x32]);
 await writeFile(projectVideo, videoBytes);
+// Valid PCM WAV beyond the text viewer limit: audio must stream every sample.
+const audioBytes = Buffer.alloc(44 + 2 * 1024 * 1024 + 128);
+audioBytes.write('RIFF'); audioBytes.writeUInt32LE(audioBytes.length - 8, 4);
+audioBytes.write('WAVEfmt ', 8); audioBytes.writeUInt32LE(16, 16);
+audioBytes.writeUInt16LE(1, 20); audioBytes.writeUInt16LE(1, 22);
+audioBytes.writeUInt32LE(48000, 24); audioBytes.writeUInt32LE(96000, 28);
+audioBytes.writeUInt16LE(2, 32); audioBytes.writeUInt16LE(16, 34);
+audioBytes.write('data', 36); audioBytes.writeUInt32LE(audioBytes.length - 44, 40);
+await writeFile(join(projectRoot, 'preview.wav'), audioBytes);
 const artifact = join(artifactRoot, 'result.png');
 const privateArtifact = join(artifactRoot, 'private.txt');
 await writeFile(artifact, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
@@ -267,6 +276,30 @@ async function waitForRoutes() {
       assert.equal(await page.locator('.file-render-frame').count(), 0);
       await page.locator('[data-file-mode="rendered"]').click();
       await frame.locator('#data').filter({ hasText: 'Scripts and relative data loaded' }).waitFor();
+    }
+    const audioMeta = await (await fileRequest('preview.wav')).json();
+    assert.equal(audioMeta.contentKind, 'audio');
+    assert.equal(audioMeta.truncated, false);
+    const fullAudio = await fetch(`${base}/${audioMeta.viewUrl}`);
+    assert.equal(fullAudio.headers.get('content-type'), 'audio/wav');
+    assert.equal(fullAudio.headers.get('x-aios-truncated'), null);
+    assert.deepEqual(Buffer.from(await fullAudio.arrayBuffer()), audioBytes);
+    const audioRange = await fetch(`${base}/${audioMeta.viewUrl}`, { headers: { range: 'bytes=0-43' } });
+    assert.equal(audioRange.status, 206);
+    assert.equal(audioRange.headers.get('content-range'), `bytes 0-43/${audioBytes.length}`);
+    assert.deepEqual(Buffer.from(await audioRange.arrayBuffer()), audioBytes.subarray(0, 44));
+    for (const width of [1440, 820, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.evaluate(meta => window.mountPreview(meta), audioMeta);
+      await page.waitForFunction(() => document.querySelector('audio')?.readyState >= 1);
+      const player = page.locator('audio.asset-detail-audio');
+      assert.equal(await player.getAttribute('controls'), '');
+      assert.equal(await page.locator('[data-file-copy], [data-file-mode]').count(), 0, 'audio never exposes binary source as text');
+      await player.evaluate(async audio => { await audio.play(); audio.currentTime = 2; });
+      await page.waitForFunction(() => { const audio = document.querySelector('audio'); return !audio.paused && !audio.seeking && audio.currentTime >= 2; });
+      const box = await player.boundingBox();
+      assert.ok(box.width > 100 && box.x >= 0 && box.x + box.width <= width + 1, 'audio controls fit desktop, tablet, and phone');
+      await player.evaluate(audio => audio.pause());
     }
     const tab = await browser.newPage();
     await tab.goto(`${base}/aios/${meta.renderUrl}`);

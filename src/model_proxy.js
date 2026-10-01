@@ -1022,6 +1022,10 @@ route('GET', '/api/cli-proxy/v1/models', (req, res) => {
       created: 0,
       owned_by: m.provider,
       display_name: m.label,
+      ...(m.efforts ? {
+        reasoning_efforts: m.efforts,
+        supported_reasoning_levels: m.efforts.map(effort => ({ effort })),
+      } : {}),
     })),
   });
 });

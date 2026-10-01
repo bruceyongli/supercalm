@@ -50,7 +50,7 @@ export function localFilePath(value, currentHostname = globalThis.location?.host
 
 export const FILE_REFERENCE_RX = /(?:https?|file):\/\/[^\s<>()"'`]+|[\w./@~+-]*\w\.[A-Za-z0-9]{1,10}(?::\d+(?::\d+)?)?/g;
 
-const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf','mp4','m4v','mov','webm','ogv']);
+const FILE_TOKEN_EXTS = new Set(['md','markdown','txt','text','json','jsonc','yml','yaml','toml','ini','env','js','mjs','cjs','ts','tsx','jsx','py','go','rs','rb','java','kt','c','h','cc','cpp','hpp','cs','php','swift','css','scss','less','html','htm','xml','vue','svelte','sh','bash','zsh','sql','csv','tsv','log','svg','lock','png','jpg','jpeg','gif','webp','pdf','mp4','m4v','mov','webm','ogv','wav','wave','mp3','m4a','aac','ogg','oga','opus','flac','aif','aiff']);
 export function hasKnownFileExtension(raw) {
   const path = withoutSourceLocation(raw).split(/[?#]/)[0];
   if (!(path.split('/').pop() || '').includes('.')) return false;
@@ -75,17 +75,25 @@ export function isFileReference(value, currentHostname = globalThis.location?.ho
 // the terminal provider can map Unicode text back to real screen cells.
 export function fileReferences(value) {
   const text = String(value || ''), found = [];
-  const add = (raw, index) => {
+  const add = (raw, index, target = null) => {
     const clean = cleanFileReference(raw);
-    if (!clean || (!/^(?:https?:|file:)?\/\//i.test(clean) && !isFileReference(clean))) return;
-    if (!/^(?:https?:|file:)?\/\//i.test(clean) && !hasKnownFileExtension(clean)
-      && !/^(?:README|LICENSE|Dockerfile|Makefile|\.env|\.gitignore)$/i.test(clean.split('/').pop())) return;
+    const destination = target || clean;
+    if (!clean || (!/^(?:https?:|file:)?\/\//i.test(destination) && !isFileReference(destination))) return;
+    if (!/^(?:https?:|file:)?\/\//i.test(destination) && !hasKnownFileExtension(destination)
+      && !/^(?:README|LICENSE|Dockerfile|Makefile|\.env|\.gitignore)$/i.test(destination.split('/').pop())) return;
     if (found.some(ref => index < ref.index + ref.text.length && index + clean.length > ref.index)) return;
-    found.push({ text: clean, index: index + raw.indexOf(clean) });
+    found.push({ text: clean, index: index + raw.indexOf(clean), ...(target ? { target } : {}) });
   };
   for (const m of text.matchAll(/(["'`])([^\n"'`]+)\1|<([^<>\n]+)>/g)) {
     const raw = m[2] || m[3];
     if (/^(?:https?:\/\/|file:\/\/|~?\/|\.{1,2}\/|[^\s/]+\/)/i.test(raw) || (!raw.includes('/') && hasKnownFileExtension(raw))) add(raw, m.index + 1);
+  }
+  // Agent prose sometimes wraps a directory slash separately from its filename.
+  // Preserve the printed span, but navigate to the joined path. Quoted paths
+  // were reserved above, so intentional filename spaces remain literal.
+  for (const m of text.matchAll(/(?:~?\/|\.{1,2}\/|[\p{L}\p{N}_@+-]+\/)[\p{L}\p{N}_./@%+()-]*\/[ \t\r\n]+[\p{L}\p{N}_./@%+()-]+/gu)) {
+    const target = cleanFileReference(m[0]).replace(/\/\s+/g, '/');
+    add(m[0], m.index, target);
   }
   const rx = /(?:https?:\/\/|file:\/\/|\/\/)[^\s\x00<>"'`|]+|[~\p{L}\p{N}_./@%+-][~\p{L}\p{N}_./@%+()-]*(?::\d+(?::\d+)?)?(?:#L\d+(?:C\d+)?)?/gu;
   for (const m of text.matchAll(rx)) {

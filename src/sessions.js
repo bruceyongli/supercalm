@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
 import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
-import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT, BOOT_ID } from './config.js';
+import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT, BOOT_ID, effortsForModel, defaultEffortForModel } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
@@ -165,6 +165,17 @@ const ATTACHMENT_CONTENT_TYPES = {
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
   '.ogv': 'video/ogg',
+  '.wav': 'audio/wav',
+  '.wave': 'audio/wav',
+  '.mp3': 'audio/mpeg',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.flac': 'audio/flac',
+  '.aif': 'audio/aiff',
+  '.aiff': 'audio/aiff',
 };
 
 // Content types for the project-file viewer (GET /api/session/:id/file). Code/config files map to
@@ -182,6 +193,7 @@ const FILE_TEXT_EXTS = new Set([
 ]);
 const FILE_IMAGE_RX = /^\.(png|jpe?g|gif|webp|avif|bmp|ico)$/;
 const FILE_VIDEO_RX = /^\.(mp4|m4v|mov|webm|ogv)$/;
+const FILE_AUDIO_RX = /^\.(wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/;
 const FILE_VIEW_MAX_BYTES = 2 * 1024 * 1024;
 const FILE_LIST_MAX = 200;
 const FILE_SKIP_DIRS = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.cache', 'vendor', '.aios', 'coverage', '.venv', '__pycache__']);
@@ -2382,6 +2394,8 @@ function attachmentRefText(a, s) {
 function assetContentKind(type = '', name = '') {
   const mime = String(type || '').split(';')[0].toLowerCase();
   if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(name)) return 'image';
+  if (mime.startsWith('audio/') || FILE_AUDIO_RX.test(extname(name).toLowerCase())) return 'audio';
+  if (mime.startsWith('video/') || FILE_VIDEO_RX.test(extname(name).toLowerCase())) return 'video';
   if (mime.startsWith('text/') || /(\.txt|\.md|\.markdown|\.json|\.csv|\.log|\.yaml|\.yml)$/i.test(name)) return 'text';
   if (mime === 'application/json') return 'text';
   if (mime === 'application/pdf' || /\.pdf$/i.test(name)) return 'pdf';
@@ -2830,8 +2844,9 @@ async function buildTimeline(s) {
 function launchSettings(body, tool, fallback = null) {
   const T = TOOLS[tool];
   const autonomy = AUTONOMY_LEVELS.includes(body.autonomy) ? body.autonomy : (fallback?.autonomy || DEFAULT_AUTONOMY);
-  const effort = T.efforts.length ? (T.efforts.includes(body.effort) ? body.effort : (T.efforts.includes(fallback?.effort) ? fallback.effort : T.defaultEffort)) : null;
   const model = cleanModelId(body.model) || fallback?.model || T.model || null;
+  const efforts = effortsForModel(tool, model);
+  const effort = efforts.length ? (efforts.includes(body.effort) ? body.effort : efforts.includes(fallback?.effort) ? fallback.effort : defaultEffortForModel(tool, model)) : null;
   const fastMode = tool === 'codex' && modelSupportsFast(model) && boolParam(body.fastMode ?? body.fast_mode ?? fallback?.fast_mode);
   const orchestration = T.orchestrations?.length
     ? (T.orchestrations.includes(body.orchestration) ? body.orchestration : (T.orchestrations.includes(fallback?.orchestration) ? fallback.orchestration : T.defaultOrchestration))
@@ -3108,9 +3123,13 @@ route('GET', '/api/session/:id/attachment/:file', async (req, res, { id: sid, fi
   const target = normalize(join(dir, name));
   if (!target.startsWith(dir + '/') && target !== dir) return json(res, 403, { error: 'forbidden' });
   try {
-    const data = await readFile(target);
     const ext = extname(target).toLowerCase();
     const type = ATTACHMENT_CONTENT_TYPES[ext] || 'application/octet-stream';
+    if (FILE_AUDIO_RX.test(ext) || FILE_VIDEO_RX.test(ext)) {
+      streamMediaFile(req, res, target, await stat(target), type, { download });
+      return;
+    }
+    const data = await readFile(target);
     const inline = !download && (/^image\//.test(type) || /^text\//.test(type) || /^application\/(json|pdf)\b/.test(type));
     res.writeHead(200, {
       'content-type': type,
@@ -3277,6 +3296,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   const ext = extname(target).toLowerCase();
   const isImg = FILE_IMAGE_RX.test(ext);
   const isVideo = FILE_VIDEO_RX.test(ext);
+  const isAudio = FILE_AUDIO_RX.test(ext);
   const isPdf = ext === '.pdf';
   const viewBase = `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(rel)}`;
 
@@ -3291,6 +3311,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     let kind = 'binary';
     if (isImg) kind = 'image';
     else if (isVideo) kind = 'video';
+    else if (isAudio) kind = 'audio';
     else if (isPdf) kind = 'pdf';
     else {
       const head = await readHead(target, Math.min(8192, st.size || 1)).catch(() => '');
@@ -3306,8 +3327,8 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   }
 
   try {
-    const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isVideo || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
-    if (isVideo || download) {
+    const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isVideo || isAudio || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
+    if (isVideo || isAudio || download) {
       streamMediaFile(req, res, target, st, type, { download });
       return;
     }
@@ -3827,9 +3848,15 @@ route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
   const patch = {};
   const changed = [];
   if (b.autonomy && AUTONOMY_LEVELS.includes(b.autonomy) && b.autonomy !== s.autonomy) { patch.autonomy = b.autonomy; changed.push('autonomy'); }
-  if (b.effort && T.efforts.includes(b.effort) && b.effort !== s.effort) { patch.effort = b.effort; changed.push('effort'); }
   const nextModel = cleanModelId(b.model);
+  const efforts = effortsForModel(s.tool, nextModel || s.model || T.model);
+  if (b.effort && !efforts.includes(b.effort)) return json(res, 400, { error: 'effort is not supported by the selected model', efforts });
+  if (b.effort && b.effort !== s.effort) { patch.effort = b.effort; changed.push('effort'); }
   if (nextModel && nextModel !== s.model) { patch.model = nextModel; changed.push('model'); }
+  if (patch.model && !efforts.includes(patch.effort ?? s.effort)) {
+    patch.effort = defaultEffortForModel(s.tool, nextModel);
+    if (patch.effort !== s.effort && !changed.includes('effort')) changed.push('effort');
+  }
   const hasFastMode = Object.hasOwn(b, 'fastMode') || Object.hasOwn(b, 'fast_mode');
   if (hasFastMode) {
     if (s.tool !== 'codex') return json(res, 400, { error: 'fast mode is codex-only' });

@@ -45,6 +45,14 @@ assert.match(table, /<td><code>a\|b<\/code> and c\|d<\/td>/, 'literal pipes do n
 assert.equal((table.match(/<td>/g) || []).length, 2);
 assert.match(renderMarkdown('- [Open](/tmp/report.md)\n\n> [Open](/tmp/report.md)'), /<blockquote>.*href=/s);
 assert.match(renderLinkedText('Here: /tmp/report.md'), /href="\/tmp\/report.md"/);
+for (const separator of [' ', '\n']) {
+  const sample = `data/speech-eval-2026-10-01/samples/${separator}mandarin-voxcpm2.wav`;
+  assert.match(renderLinkedText(sample), /href="data\/speech-eval-2026-10-01\/samples\/mandarin-voxcpm2\.wav"/);
+}
+assert.match(renderLinkedText('"/tmp/ leading-space.wav"'), /href="\/tmp\/ leading-space\.wav"/);
+for (const extension of ['wav', 'mp3', 'm4a', 'aac', 'ogg', 'opus', 'flac', 'aiff']) {
+  assert.equal(fileReferences(`Listen: data/samples/mandarin.${extension}`)[0]?.text, `data/samples/mandarin.${extension}`);
+}
 assert.match(renderMarkdown('```html\n<a href="javascript:alert(1)">example</a>\n```'), /&lt;a href=/);
 for (const href of ['javascript:alert(1)', 'javascript:/tmp/evil.md:12', 'data:text/html,x', 'vbscript:msgbox(1)', 'java\nscript:alert(1)', 'file://elsewhere/tmp/a.md']) {
   assert.equal(safeLinkHref(href), null, href);

@@ -22,7 +22,7 @@ export function renderLinkedText(value, options = {}) {
   let out = '', end = 0;
   for (const ref of fileReferences(text)) {
     if (options.urls === false && /^(?:https?:)?\/\//i.test(ref.text)) continue;
-    const html = anchor(ref.text, esc(ref.text), options);
+    const html = anchor(ref.target || ref.text, esc(ref.text), options);
     if (!html) continue;
     out += esc(text.slice(end, ref.index)) + html;
     end = ref.index + ref.text.length;
@@ -97,7 +97,7 @@ export function renderInline(value, options = {}) {
   // rewrite href attributes or create nested anchors inside existing links.
   const linked = fileReferences(plain);
   for (const ref of linked.reverse()) {
-    const link = anchor(ref.text, esc(ref.text), options);
+    const link = anchor(ref.target || ref.text, esc(ref.text), options);
     if (link) plain = plain.slice(0, ref.index) + token(link) + plain.slice(ref.index + ref.text.length);
   }
   return esc(plain).replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')

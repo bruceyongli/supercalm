@@ -12,6 +12,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { loggedIn } from './auth/store.js';
 import { listAgyModels } from './auth/agy_cli.js';
+import { normalizeReasoningEfforts } from './model_catalog.js';
 
 const TIMEOUT_MS = Number(process.env.AIOS_CLI_MODEL_TIMEOUT_MS || 15_000);
 
@@ -59,6 +60,7 @@ export function parseCodexModels(rows) {
         recommended: !!m.isDefault || !!m.is_default || Number(m.priority) <= 3 || index < 3,
         kind: 'chat',
         supportsFast: speedTiers.some((tier) => /^(?:fast|priority)$/i.test(String(tier?.id || tier?.name || tier))),
+        efforts: normalizeReasoningEfforts(m.supportedReasoningEfforts || m.supported_reasoning_efforts || m.supported_reasoning_levels || m.reasoning_efforts),
         vision: modalities.includes('image'),
         source: 'cli',
       };
@@ -82,6 +84,7 @@ export function parseClaudeModelsCache(payload) {
         recommended: !!m.recommended || index < 3,
         kind: 'chat',
         vision: m.vision !== false,
+        efforts: normalizeReasoningEfforts(m.efforts || m.supportedReasoningEfforts || m.supported_reasoning_efforts),
         source: 'cli',
       };
     });

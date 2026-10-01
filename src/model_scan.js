@@ -20,6 +20,7 @@ import {
   currentProviders,
   fleetKey,
   listProxyModels,
+  normalizeReasoningEfforts,
 } from './model_catalog.js';
 import { discoverCliModels } from './cli_model_discovery.js';
 import { refreshProviderModels } from './model_providers.js';
@@ -75,6 +76,7 @@ async function scanProvider(seed, ov, key) {
           label: o?.displayName || s?.label || d.display_name || prettyModelId(d.id),
           recommended: o ? !!o.recommended : !!s?.recommended,
           vision: d.capabilities?.image_input ?? o?.capabilities?.image_input ?? s?.vision,
+          efforts: normalizeReasoningEfforts(d.supported_reasoning_efforts || d.supportedReasoningEfforts || d.reasoning_efforts || d.supported_reasoning_levels || d.efforts || o?.efforts || o?.reasoning_efforts || s?.efforts),
           kind: o?.kind || s?.kind || 'chat',
           role: o?.role || s?.role || null,
         };

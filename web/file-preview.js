@@ -2,7 +2,10 @@ import { escapeHtml, renderMarkdown } from './common.js';
 
 // Shared by clicked report/terminal links and the Files/Preview workspaces.
 export function mountFilePreview(host, meta, { signal, isCurrent = () => true, fullscreen } = {}) {
-  const textFile = !meta.binary && (Boolean(meta.renderUrl) || !['image', 'video', 'pdf'].includes(meta.contentKind));
+  const stopMedia = () => host.querySelectorAll('audio, video').forEach(media => media.pause());
+  stopMedia();
+  signal?.addEventListener('abort', stopMedia, { once: true });
+  const textFile = !meta.binary && (Boolean(meta.renderUrl) || !['image', 'video', 'audio', 'pdf'].includes(meta.contentKind));
   const markdown = textFile && /\.(md|markdown)$/i.test(meta.path);
   const rendered = textFile && (meta.renderUrl ? meta.renderInline !== false : markdown);
   let mode = rendered ? 'rendered' : 'source', revision = 0, textPromise;
@@ -35,6 +38,7 @@ export function mountFilePreview(host, meta, { signal, isCurrent = () => true, f
     }
     if (meta.contentKind === 'image') { body.innerHTML = `<img class="asset-detail-image" src="${escapeHtml(meta.viewUrl)}" alt="${escapeHtml(meta.path)}">`; return; }
     if (meta.contentKind === 'video') { body.innerHTML = `<video class="asset-detail-video" controls playsinline preload="metadata" src="${escapeHtml(meta.viewUrl)}"></video>`; return; }
+    if (meta.contentKind === 'audio') { body.innerHTML = `<audio class="asset-detail-audio" controls preload="metadata" aria-label="${escapeHtml(meta.name || meta.path)}" src="${escapeHtml(meta.viewUrl)}"></audio>`; return; }
     if (!textFile) { body.innerHTML = `<div class="asset-detail-file"><a href="${escapeHtml(openUrl)}" target="_blank" rel="noopener noreferrer">${meta.contentKind === 'pdf' ? 'Open PDF ↗' : 'Download file'}</a></div>`; return; }
     body.innerHTML = '<div class="workspace-empty">Loading source…</div>';
     try {

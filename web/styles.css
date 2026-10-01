@@ -434,6 +434,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .asset-detail-video {
   display: block; width: 100%; height: auto; max-height: min(72dvh, 780px); object-fit: contain; background: #000;
 }
+.asset-detail-audio {
+  display: block; width: calc(100% - 24px); max-width: 640px; min-width: 0; margin: 18px auto;
+}
 .asset-detail-text {
   margin: 0; max-height: min(62dvh, 720px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   padding: 12px; color: var(--ink); background: #010409; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

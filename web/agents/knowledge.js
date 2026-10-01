@@ -253,6 +253,10 @@ async function openAssetDetail(a) {
   let body = '';
   if (a.contentKind === 'image' && a.viewUrl) {
     body = `<img class="asset-detail-image" src="${esc(a.viewUrl)}" alt="${esc(a.title || a.name || a.id)}" />`;
+  } else if (a.contentKind === 'audio' && a.viewUrl) {
+    body = `<audio class="asset-detail-audio" controls preload="metadata" src="${esc(a.viewUrl)}" aria-label="${esc(a.title || a.name || 'Audio attachment')}"></audio>`;
+  } else if (a.contentKind === 'video' && a.viewUrl) {
+    body = `<video class="asset-detail-video" controls playsinline preload="metadata" src="${esc(a.viewUrl)}"></video>`;
   } else if ((a.contentKind === 'text' || a.kind === 'wiki') && a.viewUrl) {
     const text = await fetch(a.viewUrl).then((r) => (r.ok ? r.text() : '')).catch(() => '');
     body = `<pre class="asset-detail-text">${esc(text || a.preview || '')}</pre>`;
@@ -281,7 +285,7 @@ async function openAssetDetail(a) {
         ['reference', a.refText || a.composerText],
       ])}</div>
     </div>`;
-  const close = () => overlay.remove();
+  const close = () => { overlay.querySelectorAll('audio, video').forEach(media => media.pause()); overlay.remove(); };
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
   document.body.appendChild(overlay);

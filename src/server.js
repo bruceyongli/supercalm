@@ -3,7 +3,7 @@ import { gzip as gzipCb } from 'node:zlib';
 import { promisify } from 'node:util';
 import { readFile, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, releaseChannel, COMMIT_SHA, BOOT_ID, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
+import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, releaseChannel, COMMIT_SHA, BOOT_ID, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, effortsForModel, defaultEffortForModel } from './config.js';
 import { bus } from './bus.js';
 import * as store from './store.js';
 import { now, id } from './util.js';
@@ -214,7 +214,7 @@ function launchTools() {
     color: TOOLS[id].color,
     model: TOOLS[id].model,
     modelLabel: TOOLS[id].modelLabel,
-    models: TOOLS[id].models || [],
+    models: (TOOLS[id].models || []).map(model => ({ ...model, efforts: effortsForModel(id, model.id), defaultEffort: defaultEffortForModel(id, model.id) })),
     efforts: TOOLS[id].efforts,
     defaultEffort: TOOLS[id].defaultEffort,
     fastMode: !!TOOLS[id].fastMode,

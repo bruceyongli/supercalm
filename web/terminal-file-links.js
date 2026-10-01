@@ -125,7 +125,7 @@ export function terminalFileReferences(term, bufferLineNumber) {
       const start = cells[0], end = cells.at(-1);
       if (!start || !end) continue;
       links.push({
-        text: raw,
+        text: match.target || raw,
         range: { start: { x: start.x, y: start.y }, end: { x: end.endX, y: end.y } },
       });
     }

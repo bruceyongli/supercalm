@@ -706,7 +706,7 @@ $('#scrollback-latest')?.addEventListener('click', () => {
 });
 
 function workspacePreviewable(path) {
-  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|pdf|mp4|m4v|mov|webm|ogv)$/i.test(String(path || ''));
+  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|pdf|mp4|m4v|mov|webm|ogv|wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(String(path || ''));
 }
 
 function workspaceStatusLabel(status) {
@@ -2657,9 +2657,10 @@ function renderSettings(s, tmeta) {
     { v: 'auto', l: 'Auto' },
     { v: 'full', l: 'Full' },
   ], s.autonomy);
-  if ((tmeta.efforts || []).length) html += sel('Effort', 'effort', tmeta.efforts.map((v) => ({ v, l: v })), s.effort);
   const activeModel = s.model || tmeta.model;
   const activeModelMeta = (tmeta.models || []).find((m) => m.id === activeModel);
+  const efforts = activeModelMeta?.efforts ?? tmeta.efforts ?? [];
+  if (efforts.length) html += sel('Effort', 'effort', efforts.map((v) => ({ v, l: v })), s.effort);
   if ((tmeta.models || []).length > 1) {
     html += `<label class="setting setting-select setting-model"><select name="session-model" data-set="model" aria-label="Model">` +
       groupedModelOptions(tmeta.models, { selected: activeModel }) +
@@ -2987,6 +2988,8 @@ function openComposerAttachmentDetail(a) {
   if (!a) return;
   const body = a.isImage && a.previewUrl
     ? `<img class="asset-detail-image" src="${escapeHtml(a.previewUrl)}" alt="${escapeHtml(a.name || 'attachment')}" />`
+    : (String(a.type || '').startsWith('audio/') || /\.(?:wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(a.name || '')) && a.previewUrl
+      ? `<audio class="asset-detail-audio" controls preload="metadata" src="${escapeHtml(a.previewUrl)}" aria-label="${escapeHtml(a.name || 'Audio attachment')}"></audio>`
     : `<pre class="asset-detail-text">${escapeHtml(a.detailText || a.previewText || '')}</pre>`;
   const overlay = document.createElement('div');
   overlay.className = 'asset-detail-backdrop';
@@ -3009,7 +3012,8 @@ function openComposerAttachmentDetail(a) {
         ['error', a.error],
       ])}</div>
     </div>`;
-  const close = () => overlay.remove();
+  const close = () => { overlay.querySelectorAll('audio, video').forEach(media => media.pause()); overlay.remove(); };
+  _sig.addEventListener('abort', close, { once: true });
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
   document.body.appendChild(overlay);
@@ -3059,7 +3063,7 @@ async function openFileViewer(rawPath) {
     <h3>${escapeHtml(title)}</h3>
     ${meta ? `<div class="asset-detail-sub">${escapeHtml([formatBytes(meta.bytes), meta.contentKind].filter(Boolean).join(' · '))}</div><div class="file-preview-host"></div>` : `<pre class="asset-detail-text">${escapeHtml(errText)}</pre>`}
   </div>`;
-  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey, true); };
+  const close = () => { overlay.querySelectorAll('audio, video').forEach(media => media.pause()); overlay.remove(); document.removeEventListener('keydown', onKey, true); };
   const onKey = event => { if (event.key === 'Escape') { event.stopPropagation(); close(); } };
   overlay.onclick = event => { if (event.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
@@ -3196,7 +3200,7 @@ function addFiles(fileList, opts = {}) {
       size: file.size || 0,
       format: fileFormat(file.name, file.type),
       isImage: isImageFile(file),
-      previewUrl: isImageFile(file) ? URL.createObjectURL(file) : '',
+      previewUrl: isImageFile(file) || String(file.type || '').startsWith('audio/') || /\.(?:wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(file.name || '') ? URL.createObjectURL(file) : '',
       previewText: '',
       detailText: '',
       lineCount: 0,

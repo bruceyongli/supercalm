@@ -365,11 +365,11 @@ function updateToolDeps() {
       fastToggle.classList.toggle('on', nsFast);
     };
   }
-  const efforts = (t && t.efforts) || [];
+  const efforts = selectedModel?.efforts ?? t?.efforts ?? [];
   const note = $('#ns-effort-note');
   if (efforts.length) {
     $('#ns-effort').style.display = '';
-    if (!efforts.includes(nsEffort)) nsEffort = t.defaultEffort;
+    if (!efforts.includes(nsEffort)) nsEffort = selectedModel?.defaultEffort || (efforts.includes(t.defaultEffort) ? t.defaultEffort : efforts[0]);
     renderSeg('#ns-effort', efforts.map((e) => ({ value: e, label: e })), nsEffort, (v) => (nsEffort = v));
     note.textContent = selectedModel ? `· model ${selectedModel.label || selectedModel.id}` : t.modelLabel ? `· model ${t.modelLabel}` : '';
   } else {
