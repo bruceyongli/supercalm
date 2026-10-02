@@ -129,6 +129,11 @@ try {
   assert.equal(header.tool, 'codex');
   assert.ok(Array.isArray(header.composer_history));
   for (const heavy of ['messages', 'events', 'snapshot']) assert.equal(heavy in header, false, `lean header omits ${heavy}`);
+  for (let n = 0; n < 65; n++) store.addMessage('s_native_question', 'out', 'fixture', `Recent report ${n}`);
+  const phone = await (await fetch(`http://127.0.0.1:${port}/api/session/s_native_question?surface=phone`)).json();
+  assert.equal(phone.messages.length, 60);
+  assert.equal(phone.messages.at(-1).text, 'Recent report 64', 'phone gets the newest reports, not the earliest 200 records');
+  for (const heavy of ['events', 'snapshot']) assert.equal(heavy in phone, false, `phone omits ${heavy}`);
   const questionStory = await (await fetch(`http://127.0.0.1:${port}/api/session/s_native_question/story`)).json();
   assert.equal(questionStory.pendingQuestion?.body, 'Choose a recovery path:', 'a real terminal-only question still appears verbatim');
   assert.deepEqual(questionStory.pendingQuestion.options.map(o => o.label), ['Resume from summary', 'Resume full session as-is']);

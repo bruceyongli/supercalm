@@ -6,7 +6,7 @@
 // focuses only on an explicit tap. Nothing ever focuses on scroll, open, or nav.
 //
 // Data: GET api/phone/home (one lean fetch: sessions + unread counts + last key message),
-// GET api/session/:id (turns from the messages table: in = user, out = agent key messages),
+// GET api/session/:id?surface=phone (recent turns only, no terminal capture),
 // POST api/messages/read (read-state syncs server-side so desktop and phone agree),
 // existing input/type/stop/kill/resume + /api/tts + /api/transcribe. Live via /api/events SSE.
 
@@ -175,16 +175,21 @@ async function loadHome() {
   if (S.screen === 'home') renderSoft();
   return ok;
 }
-async function loadDetail(sid) {
-  try {
-    const d = await api('api/session/' + sid);
+const detailRequests = new Map();
+function loadDetail(sid) {
+  if (detailRequests.has(sid)) return detailRequests.get(sid);
+  const flight = (async () => { try {
+    const d = await api('api/session/' + sid + '?surface=phone');
     for (const entry of d?.composer_history || []) composerHistoryRemember(sid, entry?.text);
+    if (S.screen !== 'session' || S.sid !== sid) return; // late responses cannot replace the next session
     // identical message set -> keep the existing DOM entirely (no scroll/pulse churn)
     const sig = (x) => (x?.messages || []).map((m) => m.id + ':' + (m.read_at ? 1 : 0)).join(',') + '|' + x?.status + '|' + (x?.question || '').length;
     const changed = sig(d) !== sig(S.detail);
     S.detail = d;
     if (S.screen === 'session' && S.sid === sid && changed) renderSoft();
-  } catch { /* keep stale */ }
+  } catch { /* keep stale */ } })().finally(() => detailRequests.delete(sid));
+  detailRequests.set(sid, flight);
+  return flight;
 }
 const refresh = coalesce(async () => { await loadHome(); if (S.screen === 'session' && S.sid) await loadDetail(S.sid); }, 3000);
 function patchSession(payload) {

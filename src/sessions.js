@@ -2968,6 +2968,10 @@ route('GET', '/api/session/:id', async (req, res, { id: sid }, url) => {
   if (url?.searchParams?.get('surface') === 'header') return json(res, 200, {
     ...decorate(s), composer_history: store.composerDraftHistoryFor(sid),
   }); // title/settings need no message history, lifecycle payloads or capture-pane subprocess
+  if (url?.searchParams?.get('surface') === 'phone') return json(res, 200, {
+    ...decorate(s), messages: store.recentMessagesFor(sid, 60),
+    composer_history: store.composerDraftHistoryFor(sid),
+  }); // the companion renders at most 60 recent messages, never events or a terminal snapshot
   json(res, 200, {
     ...decorate(s),
     messages: store.messagesFor(sid),

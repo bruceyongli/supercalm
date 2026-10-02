@@ -21,5 +21,8 @@ try {
   assert.deepEqual({ ...db.prepare(touch).get() }, { session_id: 's_hot', 'MAX(ts)': 9 });
   const session = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
   assert.ok(session.includes('api/session/${reqId}?surface=header'), 'header/settings never fetch raw history or a terminal snapshot');
+  const phone = readFileSync(new URL('../web/phone.js', import.meta.url), 'utf8');
+  assert.ok(phone.includes("'?surface=phone'"), 'phone only requests the messages it renders');
+  assert.ok(phone.includes('detailRequests.has(sid)'), 'phone live updates coalesce overlapping detail requests');
 } finally { db.close(); }
 console.log('ui_hot_queries: covering recency index, bounded composer archive and lean header passed');

@@ -306,7 +306,7 @@ export function expireStaleAsks(ttlMs) {
 // ---- messages ---------------------------------------------------------------
 const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text) VALUES (?,?,?,?,?)');
 const _messagesFor = db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC LIMIT ?');
-const _recentMessagesFor = db.prepare('SELECT * FROM (SELECT * FROM messages WHERE session_id = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC');
+const _recentMessagesFor = db.prepare('SELECT * FROM (SELECT * FROM messages WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT ?) ORDER BY ts ASC, id ASC');
 export function addMessage(session_id, direction, source, text) {
   const ts = now();
   const result = _insMessage.run(session_id, ts, direction, source ?? null, text);
