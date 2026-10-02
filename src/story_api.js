@@ -2,14 +2,12 @@
 // re-parsed as plain-language story events (src/story.js — the handoff's verified drop-in parser).
 // Locates the session's NATIVE transcript (not the tmux pipe log): codex rollout JSONL by cwd match,
 // claude project JSONL by cwd-slug + session time window. Cached by file mtime — a 200MB rollout is
-// only re-parsed when it actually grew.
-import { readFile, readdir, stat, open } from 'node:fs/promises';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
+// only re-parsed when it actually grew. Parsing/large-file reads run in a bounded worker pool.
+import { stat, open } from 'node:fs/promises';
 import { route, json } from './server.js';
 import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
 import { findClaudeLog } from './claude_transcripts.js';
-import { parseSessionLog, completedRoundStarts, trimToRecentRounds } from './story.js';
+import { readStoryPage } from './story_reader.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { spineFromMessages } from './story_spine.js';
@@ -69,6 +67,18 @@ function fallbackStory(sid) {
 }
 
 const cache = new Map(); // key -> { file, mtimeMs, events, meta }
+const inFlight = new Map();
+const rolloutPaths = new Map();
+let rolloutInventory = null;
+let inventoryAt = 0;
+let inventoryFlight = null;
+async function rolloutFiles(force = false) {
+  if (!force && rolloutInventory && Date.now() - inventoryAt < 30_000) return rolloutInventory;
+  if (!inventoryFlight) inventoryFlight = codexRolloutFiles().then(files => {
+    rolloutInventory = files.sort().reverse(); inventoryAt = Date.now(); return rolloutInventory;
+  }).finally(() => { inventoryFlight = null; });
+  return inventoryFlight;
+}
 
 // Instant load: transcripts run to 80–200 MB, and reading+parsing the whole thing on every open is
 // the slowness. Most users only need the recent conversation, so by default we read just the TAIL
@@ -76,27 +86,10 @@ const cache = new Map(); // key -> { file, mtimeMs, events, meta }
 // supervisor '[Supervisor] …' messages are shown but do NOT count as round boundaries). ?full=1
 // reads the whole file; ?rounds=N tunes the window.
 const DEFAULT_ROUNDS = 1; // instant first paint: one COMPLETED round (request → report; ?rounds=N for more)
-const FULL_PARSE_UNDER = 1_200_000; // small transcripts: parse whole (already instant)
-const TAIL_START_BYTES = 3_000_000;
-const TAIL_CAP_BYTES = 32_000_000; // never scan more than this for the recent view
 // Round semantics + trimming live in story.js (pure, testable): a round = an operator request whose
 // turn reached a completed report; in-flight requests ride along without counting.
-// Read the last `bytes` of a file, dropping the partial first line so parseSessionLog sees whole lines.
-async function readTailBytes(file, bytes, size) {
-  const fh = await open(file, 'r');
-  try {
-    const start = Math.max(0, size - bytes);
-    const len = size - start;
-    const buf = Buffer.alloc(len);
-    await fh.read(buf, 0, len, start);
-    let s = buf.toString('utf8');
-    if (start > 0) { const nl = s.indexOf('\n'); if (nl >= 0) s = s.slice(nl + 1); }
-    return s;
-  } finally { await fh.close(); }
-}
-
 async function readHead(file, bytes = 4096) {
-  const fh = await (await import('node:fs/promises')).open(file, 'r');
+  const fh = await open(file, 'r');
   try {
     const buf = Buffer.alloc(bytes);
     const { bytesRead } = await fh.read(buf, 0, bytes, 0);
@@ -111,11 +104,16 @@ async function readHead(file, bytes = 4096) {
 // project dir and whose lifetime overlaps the session (started_at .. ended_at|now); then the clean
 // fallback story upstream. Same walk as sessions.js findCodexSession.
 async function findCodexLog(cwd, s) {
-  const files = (await codexRolloutFiles()).sort().reverse();
+  const bound = s?.codex_uuid && rolloutPaths.get(s.codex_uuid);
+  if (bound) {
+    try { await stat(bound); return bound; } catch { rolloutPaths.delete(s.codex_uuid); }
+  }
+  let files = await rolloutFiles();
   // 1) captured UUID — authoritative, cwd-independent. The UUID is the full trailing filename component.
   if (s?.codex_uuid) {
-    const hit = pickRolloutByUuid(files, s.codex_uuid);
-    if (hit) return hit;
+    let hit = pickRolloutByUuid(files, s.codex_uuid);
+    if (!hit) { files = await rolloutFiles(true); hit = pickRolloutByUuid(files, s.codex_uuid); }
+    if (hit) { rolloutPaths.set(s.codex_uuid, hit); return hit; }
   }
   // A fresh queued launch has no safe cwd fallback: another Codex session in the same project can be
   // newer and would disclose/merge that conversation before this launch captures its UUID. Show the
@@ -138,39 +136,7 @@ async function findCodexLog(cwd, s) {
 // claude transcript location lives in claude_transcripts.js (hook-bound path first, heuristic after —
 // see that module for the multi-session-per-cwd story-bleed this replaced).
 
-// Screenshot thumbnails: claude transcripts embed image tool-results as base64. Attach the LAST
-// few as data-URLs to the nearest following check/edit/work event (payload-bounded: 4 shots max).
-function attachShots(text, events) {
-  try {
-    const shots = [];
-    for (const line of text.split('\n')) {
-      if (!line.includes('"type":"image"')) continue;
-      try {
-        const j = JSON.parse(line);
-        const ts = Date.parse(j.timestamp || 0) || 0;
-        // Images live in several shapes: toolUseResult.content[], message.content[], and — for tool
-        // results — DOUBLY nested at message.content[i].content[j] (a tool_result block's content).
-        // Walk shallowly through content arrays and collect any base64 image node.
-        const roots = [j?.toolUseResult?.content, j?.message?.content].filter(Array.isArray);
-        const collect = (arr, depth) => {
-          for (const it of arr) {
-            if (it?.type === 'image' && it.source?.type === 'base64' && it.source.data && it.source.data.length < 900_000) {
-              shots.push({ ts, url: `data:${it.source.media_type || 'image/png'};base64,${it.source.data}` });
-            } else if (depth < 2 && Array.isArray(it?.content)) collect(it.content, depth + 1);
-          }
-        };
-        for (const r of roots) collect(r, 0);
-      } catch {}
-    }
-    for (const sh of shots.slice(-4)) {
-      const ev = events.find((e) => !e.shot && ['check', 'edit', 'work'].includes(e.kind) && Math.abs((e.ts || 0) - sh.ts) < 180e3)
-        || events.find((e) => !e.shot && e.kind === 'check');
-      if (ev) ev.shot = sh.url;
-    }
-  } catch {}
-}
-
-export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = {}) {
+export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null } = {}) {
   const s = getSession(sid);
   if (!s) return { error: 'no such session' };
   const project = s.project_id ? getProject(s.project_id) : null;
@@ -183,50 +149,28 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false } = 
     return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
   }
   const st = await stat(file);
-  const key = `${sid}|${full ? 'full' : 'r' + rounds}`;
+  const key = `${sid}|${full ? 'full' : 'r' + rounds}|${cursor || ''}`;
   const hit = cache.get(key);
   if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs) return { events: hit.events, meta: hit.meta };
-
-  let events, trimmed = false, scannedWhole = true;
-  if (full || st.size <= FULL_PARSE_UNDER) {
-    const text = await readFile(file, 'utf8');
-    events = parseSessionLog(text);
-    attachShots(text, events);
-    if (!full) ({ events, trimmed } = trimToRecentRounds(events, rounds));
-  } else {
-    // read a growing tail until it holds `rounds` operator messages (or we hit the cap / file start)
-    let bytes = TAIL_START_BYTES;
-    for (;;) {
-      const readWhole = bytes >= st.size;
-      const text = readWhole ? await readFile(file, 'utf8') : await readTailBytes(file, bytes, st.size);
-      const parsed = parseSessionLog(text);
-      attachShots(text, parsed);
-      // grow the tail until it holds `rounds` COMPLETED rounds — an in-flight request at the end
-      // must not satisfy the window (it would hide the previous request → report exchange).
-      const opCount = completedRoundStarts(parsed).length;
-      if (opCount >= rounds || readWhole || bytes >= TAIL_CAP_BYTES) {
-        ({ events, trimmed } = trimToRecentRounds(parsed, rounds));
-        scannedWhole = readWhole;
-        if (!readWhole) trimmed = true; // there is definitely older history we didn't read
-        break;
-      }
-      bytes *= 2;
-    }
-  }
-  // source is part of the client contract: the story view must NOT merge fallback-spine events with
-  // transcript events (same task, different ts → duplicate operator cards; E2E finding #3) — on a
-  // source switch it replaces the feed instead.
-  const meta = { file, mtimeMs: st.mtimeMs, count: events.length, trimmed, full: full || scannedWhole, rounds, source: 'transcript' };
-  cache.set(key, { file, mtimeMs: st.mtimeMs, events, meta });
-  if (cache.size > 60) cache.delete(cache.keys().next().value);
-  return { events, meta };
+  const flightKey = `${key}|${file}|${st.mtimeMs}`;
+  if (inFlight.has(flightKey)) return inFlight.get(flightKey);
+  const flight = readStoryPage({ file, rounds, full, cursor }).then(result => {
+    const { events } = result;
+    const meta = { ...result.meta, file, mtimeMs: st.mtimeMs, source: 'transcript' };
+    cache.set(key, { file, mtimeMs: st.mtimeMs, events, meta });
+    if (cache.size > 120) cache.delete(cache.keys().next().value);
+    return { events, meta };
+  }).finally(() => { inFlight.delete(flightKey); });
+  inFlight.set(flightKey, flight);
+  return flight;
 }
 
 route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
   try {
     const full = url?.searchParams?.get('full') === '1';
     const rounds = Math.max(1, Math.min(20, Number(url?.searchParams?.get('rounds')) || DEFAULT_ROUNDS));
-    const r = await storyFor(sid, { rounds, full });
+    const cursor = url?.searchParams?.get('cursor') || null;
+    const r = await storyFor(sid, { rounds, full, cursor });
     if (r.error) return json(res, 404, { error: r.error });
     // Live session status (NOT baked into storyFor's cached meta — status changes far more often than
     // the transcript) so the story view can show a calming "working" animation while the agent runs.
@@ -257,6 +201,6 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     }
     json(res, 200, { ok: true, ...r, status: s?.status || null, liveStatus, pendingQuestion });
   } catch (e) {
-    json(res, 500, { error: String(e.message || e).slice(0, 300) });
+    json(res, e.code === 'STORY_CURSOR_INVALID' ? 409 : 500, { error: String(e.message || e).slice(0, 300), code: e.code });
   }
 });

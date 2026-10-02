@@ -18,6 +18,10 @@ let storySource = null; // 'fallback' | 'transcript' — a switch REPLACES the f
 let storyIdentity = null; // source + transcript file — a different same-source rollout also REPLACES
 let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — keeps the viewport stable while content prepends
 let trimmed = false;
+let historyCursor = null;
+let historyLoading = false;
+let refreshFlight = null;
+let historyError = '';
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
 let pendingQuestion = null; // terminal-only prompt projected by the API (not part of transcript/cache)
@@ -550,34 +554,104 @@ function feedList() {
 function render() {
   if (!panelEl) return;
   captureStoryVideoState();
-  const workingHtml = renderWorking();
   const feedEvents = feedList();
   const latestReport = feedEvents.findLast((ev) => ev.kind === 'report');
   const latestReportKey = latestReport ? evKey(latestReport) : '';
-  panelEl.innerHTML = `
+  let feed = panelEl.querySelector('.story-feed');
+  if (!feed) {
+    panelEl.innerHTML = `
     <div class="story-head">
       <span class="story-head-title">What happened, in plain language</span>
-      <span class="story-rollup" data-story-rollup>${esc(rollup(feedEvents))}</span>
+      <span class="story-rollup" data-story-rollup></span>
       <button class="story-latest-btn" data-story-latest hidden>↓ Latest</button>
     </div>
-    <div class="story-feed">${trimmed && !showFull ? '<div class="story-loadbar"><button class="story-earlier" data-story-prev title="Load one more round of conversation">Earlier activity</button><button class="story-earlier quiet" data-story-earlier>Full history</button></div>' : ''}${feedEvents.map((ev, i) => eventHtml(ev, i, evKey(ev) === latestReportKey)).join('') || '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>'}</div>
-    ${workingHtml}`;
-  wire();
-  restoreStoryVideoState();
-  const feed = panelEl.querySelector('.story-feed');
-  if (feed) {
-    // PRESERVE the user's position across this wholesale re-render (the .story-feed node is recreated by the
-    // innerHTML wipe above, so its scrollTop reset to 0 — restore it). Never jump to the bottom automatically.
-    // A load-earlier render PREPENDS content: shift the restore by the height delta so the reading
-    // position stays put instead of jumping to (now much earlier) absolute offset.
-    if (pendingAnchor != null) { feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor)); pendingAnchor = null; persistScroll(); }
-    feed.scrollTop = feedTop;
+    <div class="story-feed"><div class="story-loadbar" hidden><button class="story-earlier" data-story-prev>Earlier conversation</button></div></div>
+    <div data-story-status-slot></div>`;
+    feed = panelEl.querySelector('.story-feed');
     feed.addEventListener('scroll', () => {
+      const previous = feedTop;
       feedTop = feed.scrollTop;
       clearTimeout(feedPersistT); feedPersistT = setTimeout(persistScroll, 300);
       updateLatestBtn(feed);
+      // Only an intentional upward scroll fetches history. Initial paint, a short feed or a timer
+      // must not recursively pull the entire transcript. One gesture/request loads one exchange.
+      if (feedTop < previous && feedTop < 100) void loadEarlierStory();
     }, { passive: true });
+  }
+  panelEl.querySelector('[data-story-rollup]').textContent = rollup(feedEvents);
+  const bar = feed.querySelector('.story-loadbar');
+  bar.hidden = !trimmed;
+  const historyButton = bar.querySelector('button');
+  historyButton.disabled = historyLoading;
+  historyButton.textContent = historyLoading ? 'Loading earlier conversation…' : historyError || 'Earlier conversation';
+  // Reconcile keyed rows, not the entire feed. Unchanged reports, selections, video playback and
+  // accessibility focus survive live refreshes; markdown is rendered only for changed/new rows.
+  const old = new Map([...feed.querySelectorAll(':scope > [data-story-key]')].map(row => [row.dataset.storyKey, row]));
+  let previous = bar;
+  feedEvents.forEach((ev, i) => {
+    const key = evKey(ev);
+    const sourceIndex = Number.isInteger(ev._sourceIndex) ? ev._sourceIndex : i;
+    const signature = JSON.stringify({ ...ev, _sourceIndex: undefined }) + `|${key === latestReportKey}|${openSteps.has(sourceIndex)}|${answeredAsks.get(askKey(ev))}|${readMarks.has(key)}|${learnedEvidence.has(ev.ts)}|${ev._echo ? working : ''}`;
+    let row = old.get(key);
+    old.delete(key);
+    if (!row || row._storySignature !== signature) {
+      const template = document.createElement('template');
+      template.innerHTML = eventHtml(ev, i, evKey(ev) === latestReportKey).trim();
+      const next = template.content.firstElementChild;
+      next.dataset.storyKey = key;
+      next._storySignature = signature;
+      if (row) row.replaceWith(next);
+      row = next;
+    }
+    const steps = row.querySelector('[data-story-steps-toggle]');
+    if (steps) steps.dataset.i = sourceIndex;
+    if (previous.nextElementSibling !== row) previous.after(row);
+    previous = row;
+  });
+  for (const row of old.values()) row.remove();
+  feed.querySelector('.story-empty')?.remove();
+  if (!feedEvents.length) feed.insertAdjacentHTML('beforeend', '<div class="story-empty">Nothing to tell yet — the story appears as the agent works.</div>');
+  updateWorkingStatus();
+  wire();
+  restoreStoryVideoState();
+  if (feed) {
+    // Disable native scroll anchoring in CSS: this explicit height delta anchors a prepended page once.
+    if (pendingAnchor != null) { feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor)); pendingAnchor = null; persistScroll(); }
+    feed.scrollTop = feedTop;
+    feedTop = feed.scrollTop;
     updateLatestBtn(feed);
+  }
+}
+
+function updateWorkingStatus() {
+  const slot = panelEl?.querySelector('[data-story-status-slot]');
+  if (!slot) return;
+  const html = renderWorking();
+  if (slot._statusHtml !== html) { slot._statusHtml = html; slot.innerHTML = html; }
+}
+
+export async function loadEarlierStory() {
+  if (!trimmed || !historyCursor || historyLoading || !panelEl) return;
+  const mySid = sid, cursor = historyCursor, identity = storyIdentity;
+  historyLoading = true; historyError = '';
+  render();
+  try {
+    const r = await api(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`);
+    if (sid !== mySid || identity !== storyIdentity) return;
+    const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
+    if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
+    const feed = panelEl.querySelector('.story-feed');
+    pendingAnchor = feed?.scrollHeight ?? null;
+    const byKey = new Map((r.events || []).map(e => [evKey(e), e]));
+    for (const ev of events) byKey.set(evKey(ev), ev); // newest/live versions win over historical copies
+    events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    historyCursor = r.meta?.cursor || null;
+    trimmed = !!historyCursor;
+    rounds++;
+  } catch (error) {
+    if (sid === mySid) historyError = 'Retry earlier conversation';
+  } finally {
+    if (sid === mySid) { historyLoading = false; render(); }
   }
 }
 
@@ -586,11 +660,8 @@ function wire() {
   if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
   // Both load-earlier paths anchor the viewport: content PREPENDS, so the scroll position is adjusted
   // by the height delta after the re-render (otherwise what you were reading jumps off-screen).
-  const anchor = () => { const f = panelEl.querySelector('.story-feed'); pendingAnchor = f ? f.scrollHeight : null; };
-  const earlier = panelEl.querySelector('[data-story-earlier]');
-  if (earlier) earlier.onclick = () => { showFull = true; lastSig = ''; anchor(); refreshStory({ quiet: false }); };
   const prev = panelEl.querySelector('[data-story-prev]');
-  if (prev) prev.onclick = () => { rounds = Math.min(20, rounds + 1); lastSig = ''; anchor(); refreshStory({ quiet: false }); };
+  if (prev) prev.onclick = loadEarlierStory;
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
     t.onclick = () => {
       // toggle IN PLACE — a full re-render would detach the element mid-interaction (verifier
@@ -664,20 +735,32 @@ function wire() {
     }));
   };
   for (const card of panelEl.querySelectorAll('[data-story-result]')) {
-    card.querySelector('[data-story-evidence]')?.addEventListener('click', () => openEvidence(card));
-    card.addEventListener('keydown', (event) => {
+    const evidence = card.querySelector('[data-story-evidence]');
+    if (evidence) evidence.onclick = () => openEvidence(card);
+    card.onkeydown = (event) => {
       if (event.key.toLowerCase() === 'e' || event.key === 'Enter') {
         event.preventDefault();
         openEvidence(card);
       }
-    });
+    };
   }
 }
 
 export async function refreshStory({ quiet = true } = {}) {
+  if (refreshFlight?.sid === sid) return refreshFlight.promise;
+  const mySid = sid;
+  const promise = refreshStoryNow({ quiet }).finally(() => {
+    if (refreshFlight?.promise === promise) refreshFlight = null;
+  });
+  refreshFlight = { sid: mySid, promise };
+  return promise;
+}
+
+async function refreshStoryNow({ quiet }) {
   const mySid = sid; // capture: a session switch DURING this await must not apply session A's story to B
   try {
-    const r = await api(`api/session/${mySid}/story${showFull ? '?full=1' : rounds > 1 ? `?rounds=${rounds}` : ''}`);
+    // Live refresh always fetches ONLY the recent window, even after the operator loaded old pages.
+    const r = await api(`api/session/${mySid}/story`);
     // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
     // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
     // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
@@ -689,7 +772,7 @@ export async function refreshStory({ quiet = true } = {}) {
     // (E2E finding #3: the launch task showed twice). Replace wholesale instead.
     const src = r.meta?.source || 'transcript';
     const identity = `${src}|${r.meta?.file || ''}`;
-    if (storyIdentity && identity !== storyIdentity) { events = []; lastSig = ''; }
+    if (storyIdentity && identity !== storyIdentity) { events = []; lastSig = ''; rounds = 1; historyCursor = null; }
     storySource = src;
     storyIdentity = identity;
     if (!events.length) {
@@ -702,7 +785,7 @@ export async function refreshStory({ quiet = true } = {}) {
       for (const e of incoming) byKey.set(evKey(e), e);
       events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
     }
-    trimmed = !!(r.meta && r.meta.trimmed) && !showFull;
+    if (rounds === 1) { historyCursor = r.meta?.cursor || null; trimmed = !!r.meta?.trimmed; }
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
     pendingQuestion = r.pendingQuestion || null;
@@ -710,12 +793,13 @@ export async function refreshStory({ quiet = true } = {}) {
     // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
     // on the last events (count alone left stale ✓/recovered states), the live status line changing,
     // or a composer echo's unread→read state moving.
-    const lsSig = working ? (liveStatus ? `${liveStatus.verb}|${liveStatus.detail}|${liveStatus.bg || ''}` : 'w') : '';
-    const sig = JSON.stringify(events) + ':' + lsSig
+    const sig = JSON.stringify(events) + ':' + working
       + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig) { lastSig = sig; render(); }
-    if (!showFull) writeStoryCache(mySid, { events, trimmed, working, liveStatus, storySource, storyIdentity }); // warm THIS session's cache
+    else updateWorkingStatus(); // elapsed timers must not repaint even a single history row
+    // Cache only the recent response, never all of the history the user chose to load.
+    if (!showFull) writeStoryCache(mySid, { events: incoming, trimmed: !!r.meta?.trimmed, cursor: r.meta?.cursor || null, working, liveStatus, storySource, storyIdentity });
   } catch (e) {
     if (sid === mySid && !quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
   }
@@ -753,7 +837,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; }
+  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; panelEl.innerHTML = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
@@ -762,6 +846,7 @@ export function initStoryView({ sessionId, panel }) {
     const cached = readStoryCache(sid);
     if (cached && Array.isArray(cached.events) && cached.events.length) {
       events = cached.events; trimmed = !!cached.trimmed; working = !!cached.working; liveStatus = cached.liveStatus || null;
+      historyCursor = cached.cursor || null;
       storySource = cached.storySource || null; storyIdentity = cached.storyIdentity || null;
       lastSig = ''; render();
     }

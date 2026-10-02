@@ -31,6 +31,36 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Supercalm</title>
+  <!-- Discover critical modules together, not one network RTT per nested import on cellular/DERP. -->
+  <link rel="modulepreload" href="router.js" />
+  <link rel="modulepreload" href="shell.js" />
+  <link rel="modulepreload" href="common.js" />
+  <link rel="modulepreload" href="navigation.js" />
+  <link rel="modulepreload" href="session-state.js" />
+  <link rel="modulepreload" href="model-select.js" />
+  <link rel="modulepreload" href="attention-preview.js" />
+  <link rel="modulepreload" href="markdown-inline.js" />
+  <link rel="modulepreload" href="file-reference.js" />
+  <link rel="modulepreload" href="on-the-go.js" />
+  <link rel="modulepreload" href="on-the-go-state.js" />
+  <link rel="modulepreload" href="voicemode.js" />
+  <link rel="modulepreload" href="tts-player.js" />
+  <link rel="modulepreload" href="voice-input.js" />
+  <link rel="modulepreload" href="voice-interruption.js" />
+  <script>
+    if (/\/session(?:\.html)?$/.test(location.pathname)) {
+      for (const href of ['views/session-view.js', 'session.js', 'story-view.js', 'agents/host.js',
+        'session-request-scope.js', 'terminal-layout.js', 'terminal-scroll.js', 'terminal-file-links.js',
+        'file-preview.js', 'session-viewport.js']) {
+        const link = document.createElement('link'); link.rel = 'modulepreload'; link.href = href;
+        document.head.append(link);
+      }
+      for (const href of ['vendor/xterm.js', 'vendor/xterm-fit.js']) {
+        const link = document.createElement('link'); link.rel = 'preload'; link.as = 'script'; link.href = href;
+        document.head.append(link);
+      }
+    }
+  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />

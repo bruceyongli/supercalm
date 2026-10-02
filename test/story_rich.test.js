@@ -356,9 +356,10 @@ const shKey = read('web/shell.js').match(/aios_story(\d+)_/)?.[1];
 assert.ok(svKey && svKey === shKey, `story cache-key version agrees between story-view.js (v${svKey}) and shell.js prefetch (v${shKey})`);
 assert.ok(Number(svKey) >= 4, 'cache key bumped past v3 — cached notification bubbles must not merge back in');
 
-// Round pagination: ‹ previous round (left) + ↑ show the full story (right); rounds ride the fetch.
-assert.ok(storyView.includes('data-story-prev') && storyView.includes('data-story-earlier'), 'both load-earlier controls exist');
-assert.ok(/rounds > 1 \? `\?rounds=\$\{rounds\}` : ''/.test(storyView), 'refreshStory passes the incremental rounds window');
+// History is cursor-paged: one upward gesture loads one exchange, not an ever-growing/full response.
+assert.ok(storyView.includes('data-story-prev') && !storyView.includes('data-story-earlier'), 'one accessible fallback control, no full-history download');
+assert.ok(storyView.includes('story?cursor=${encodeURIComponent(cursor)}'), 'earlier history uses a stable byte cursor');
+assert.ok(storyView.includes('feedTop < previous && feedTop < 100'), 'upward scrolling automatically loads one earlier conversation');
 assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewport anchored (content prepends)');
 assert.ok(/story-head[\s\S]{0,300}data-story-latest/.test(storyView)
     && /\.story-latest-btn\s*\{[^}]*position:\s*static/.test(css),
