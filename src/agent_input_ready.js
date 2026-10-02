@@ -58,7 +58,7 @@ export function pendingComposerDraft(screen, { requireFooter = false, maxLines =
     if (!match) continue;
     const after = tail.slice(i + 1, i + (maxLines > 24 ? maxLines : 10));
     // The request can itself mention a model or quote its permissions. The bottommost status
-    // line is the actual composer footer; an earlier mention must not truncate an owned paste.
+    // line is the actual composer footer; an earlier mention must not clip the complete request.
     const footerAt = after.findLastIndex((line) => footerRx.test(line));
     if (footerAt < 0 && requireFooter) continue; // delivery needs proof of the LIVE composer
     // Provenance inspection also consumes saved tails that end exactly on the composer line. It may use
