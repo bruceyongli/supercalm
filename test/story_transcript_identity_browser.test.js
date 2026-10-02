@@ -22,10 +22,14 @@ const fixture = `<!doctype html><meta charset="utf-8"><body><div id="story"></di
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   if (assets.has(path)) { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(assets.get(path)); return; }
-  if (path === '/advance') { version = 1; res.writeHead(204); res.end(); return; }
+  if (path === '/advance') { version++; res.writeHead(204); res.end(); return; }
   if (path === '/api/session/s_concurrent/story') {
     const body = version
-      ? { ok: true, status: 'working', events: [{ kind: 'you', ts: 2, body: 'FRESH SESSION TASK' }], meta: { source: 'transcript', file: '/rollouts/fresh.jsonl' } }
+      ? { ok: true, status: version >= 3 ? 'waiting' : 'working', events: [
+        { kind: 'you', ts: 2, body: 'FRESH SESSION TASK' },
+        ...(version >= 2 ? [{ kind: version === 2 ? 'note' : 'report', ts: 3,
+          body: 'A recovered assistant response with the same stable opening text. ' + (version >= 4 ? 'Updated complete report.' : 'Initial response.') }] : []),
+      ], meta: { source: 'transcript', file: '/rollouts/fresh.jsonl' } }
       : { ok: true, status: 'working', events: [
         { kind: 'you', ts: 1, body: 'OLDER SIBLING SECRET' },
         { kind: 'report', ts: 1.5, body: 'Episode finished — `out/ep01/final.mp4`.' },
@@ -54,6 +58,15 @@ try {
   const text = await page.locator('#story').innerText();
   assert.match(text, /FRESH SESSION TASK/);
   assert.doesNotMatch(text, /OLDER SIBLING SECRET/, 'a different transcript file replaces rather than merges the sibling conversation');
+  const advance = () => page.evaluate(async () => { await fetch('/advance'); await window.__story.refreshStory({ quiet: false }); });
+  await advance();
+  assert.equal(await page.locator('[data-kind="note"]').count(), 1, 'an intermediate update appears');
+  await advance();
+  assert.equal(await page.locator('[data-kind="report"]').count(), 1, 'a completed report replaces its note rather than duplicating it');
+  assert.equal(await page.locator('[data-kind="note"]').count(), 0);
+  await advance();
+  assert.match(await page.locator('[data-kind="report"]').innerText(), /Updated complete report/, 'body changes render even when count, timestamp and prefix stay the same');
+  assert.equal(await page.locator('[data-kind="report"]').count(), 1);
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

@@ -11,6 +11,45 @@ import { spineFromMessages } from '../src/story_spine.js';
 
 const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 
+// Native Codex formats: legacy agent_message twins, newer response-only messages and
+// item_completed/AgentMessage mirrors. Reports and commentary must survive exactly once.
+{
+  const row = (seconds, type, payload) => JSON.stringify({ timestamp: `2026-10-01T10:00:${String(seconds).padStart(2, '0')}Z`, type, payload });
+  const message = (text, phase, id) => ({ type: 'message', role: 'assistant', id, phase, content: [{ type: 'output_text', text }] });
+  const user = text => ({ type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+  const modern = [
+    row(0, 'session_meta', { originator: 'codex' }),
+    row(1, 'event_msg', { type: 'task_started', turn_id: 'turn1' }),
+    row(2, 'response_item', user('Review the changes.')),
+    row(3, 'event_msg', { type: 'item_completed', turn_id: 'turn1', item: { type: 'AgentMessage', id: 'note1', content: [{ type: 'Text', text: 'Checking the implementation.' }] } }),
+    row(3, 'response_item', message('Checking the implementation.', 'commentary', 'note1')),
+    row(5, 'response_item', message('## Result\n\n| Change | Status |\n|---|---|\n| UI | Fixed |', 'final_answer', 'report1')),
+    row(5, 'event_msg', { type: 'task_complete', turn_id: 'turn1', last_agent_message: '## Result\n\n| Change | Status |\n|---|---|\n| UI | Fixed |' }),
+    row(6, 'response_item', user('Now check sending.')),
+    row(7, 'response_item', message('Tracing the send handler.', 'commentary', 'note2')),
+  ];
+  const events = parseSessionLog(modern.join('\n'));
+  assert.deepEqual(events.filter(e => ['note', 'report'].includes(e.kind)).map(e => [e.kind, e.body]), [
+    ['note', 'Checking the implementation.'],
+    ['report', '## Result\n\n| Change | Status |\n|---|---|\n| UI | Fixed |'],
+    ['note', 'Tracing the send handler.'],
+  ], 'new native reports and intermediate updates are present, rich and not duplicated');
+  assert.equal(parseSessionLog(modern.slice(0, 5).join('\n')).at(-1).kind, 'note', 'a live commentary tail is not promoted to a report');
+  const legacy = parseSessionLog([
+    row(0, 'session_meta', {}), row(1, 'response_item', user('Check it.')),
+    row(2, 'event_msg', { type: 'agent_message', phase: 'commentary', message: 'Checking.' }),
+    row(2, 'response_item', message('Checking.', 'commentary', 'legacy-note')),
+    row(3, 'event_msg', { type: 'agent_message', phase: 'final', message: 'Fixed.' }),
+    row(3, 'response_item', message('Fixed.', 'final', 'legacy-report')),
+    row(3, 'event_msg', { type: 'task_complete', last_agent_message: 'Fixed.' }),
+  ].join('\n'));
+  assert.deepEqual(legacy.filter(e => ['note', 'report'].includes(e.kind)).map(e => [e.kind, e.body]), [['note', 'Checking.'], ['report', 'Fixed.']], 'legacy mirrors still produce one update and one report');
+  const completion = parseSessionLog([row(0, 'session_meta', {}), row(1, 'event_msg', { type: 'task_complete', last_agent_message: 'Recovered final report.' })].join('\n'));
+  assert.equal(completion.at(-1).kind, 'report', 'tail reads can recover a final report from task_complete');
+  const repeated = parseSessionLog([row(0, 'session_meta', {}), row(1, 'response_item', message('Same update.', 'commentary', 'a')), row(2, 'response_item', message('Same update.', 'commentary', 'b'))].join('\n'));
+  assert.equal(repeated.filter(e => e.kind === 'note').length, 2, 'different real messages are not collapsed because their wording matches');
+}
+
 // ---- plan tools keep their step order + status for the Story view's real checklist ----
 {
   const codex = parseSessionLog([

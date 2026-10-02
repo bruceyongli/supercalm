@@ -71,7 +71,7 @@ try {
     });
     for (let i = 0; i < 40; i++) {
       const screen = (await exec(wrapper, ['capture-pane', '-p', '-t', name])).stdout;
-      if (/GPT-6-Astra|bypass permissions/.test(screen)) break;
+      if (/GPT-6-Astra|bypass permissions|Enter to confirm/.test(screen)) break;
       await new Promise(resolve => setTimeout(resolve, 50));
       if (i === 39) throw new Error('fixture never became ready');
     }
@@ -100,6 +100,9 @@ try {
     const receipt = JSON.parse(store.db.prepare("SELECT payload FROM events WHERE session_id=? AND type='input-delivery' ORDER BY id DESC LIMIT 1").get(sid).payload);
     assert.equal(receipt.verified, true);
     assert.equal(receipt.attempts, 2);
+    store.updateSession(sid, { status: 'waiting', question: 'Conversation interrupted — tell the model what to do differently.' });
+    const idleStory = await (await fetch(`http://127.0.0.1:${port}/api/session/${sid}/story`)).json();
+    assert.equal(idleStory.pendingQuestion, null, 'an idle/interrupted composer is not a Story question despite a stored waiting summary');
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
   const partialId = 's_partial_delivery';
@@ -110,6 +113,20 @@ try {
   assert.equal(partialTrace().filter(r => r.event === 'premature').length, 0, 'never submit a partial paste');
   assert.deepEqual(partialTrace().filter(r => r.event === 'accepted').map(r => r.text), [multiline]);
   console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'slow multiline paste', http: 200, enters: 1, accepted: 1 }));
+  const redrawId = 's_redraw_delivery';
+  const redrawTrace = await start(redrawId, 'redraw-paste', 'codex');
+  const manifest = 'Check both screenshots.\n\nAttached files available locally to this coding CLI:\n1. screenshot.png (PNG, image/png): /project/attachments/screenshot.png\n2. other.png (PNG, image/png): /project/attachments/other.png\n\nOpen these paths directly when you need the uploaded content.';
+  const redrawResponse = await send(redrawId, manifest);
+  assert.equal(redrawResponse.status, 200, JSON.stringify(redrawResponse.body));
+  assert.equal(redrawTrace().filter(r => r.event === 'premature').length, 0, 'no Enter on a half-painted manifest');
+  assert.deepEqual(redrawTrace().filter(r => r.event === 'accepted').map(r => r.text), [manifest], 'the complete attachment request is accepted exactly once');
+  assert.equal(redrawTrace().filter(r => r.event === 'enter').length, 2, 'a settled draft gets an Enter-only retry');
+  console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'half-painted attachment paste and ignored first Enter', http: 200, enters: 2, accepted: 1 }));
+  await start('s_native_question', 'question', 'codex');
+  store.updateSession('s_native_question', { question: 'outdated heuristic summary' });
+  const questionStory = await (await fetch(`http://127.0.0.1:${port}/api/session/s_native_question/story`)).json();
+  assert.equal(questionStory.pendingQuestion?.body, 'Choose a recovery path:', 'a real terminal-only question still appears verbatim');
+  assert.deepEqual(questionStory.pendingQuestion.options.map(o => o.label), ['Resume from summary', 'Resume full session as-is']);
   const blocked = 's_blocked_delivery';
   const trace = await start(blocked, 'ignore-all', 'codex');
   const response = await send(blocked, 'This must not be marked as sent.');

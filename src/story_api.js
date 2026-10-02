@@ -243,12 +243,15 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     // This field is deliberately outside the cached story: it vanishes as soon as the reply resumes.
     let pendingQuestion = null;
     const hasTranscriptAsk = r.events.some((event) => event.kind === 'ask' && !event.answered);
-    if (s?.status === 'waiting' && s.question && !hasTranscriptAsk) {
+    if (s?.status === 'waiting' && !hasTranscriptAsk) {
       let terminal = null;
       try { terminal = terminalQuestionPrompt(await snapshot(sid, 32)); } catch {}
-      pendingQuestion = {
+      // Waiting also means a completed report, an interruption or an idle composer. s.question
+      // is a heuristic terminal summary, NOT evidence of an actionable question. Only a live
+      // prompt (or the structured transcript asks above) may get answer controls in Story.
+      if (terminal?.question) pendingQuestion = {
         ts: s.last_activity || Date.now(),
-        body: terminal?.question || s.question,
+        body: terminal.question,
         options: terminal?.options?.map((option) => ({ label: option.label })) || [],
       };
     }

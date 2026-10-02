@@ -186,6 +186,36 @@ function attachImagesToYou(atoms, ts, images, indent) {
 function atomsFromCodex(lines) {
   const atoms = [];
   const callCmd = new Map(); // call_id -> cmd (F4)
+  const assistantIds = new Map();
+  let recentAssistant = [], turnId = null;
+  // CLI versions mirror the same text in agent_message, item_completed/AgentMessage and
+  // response_item/message. Newer versions emit ONLY the latter two, with final_answer rather
+  // than final. Keep one atom across mirrors, preserving the authoritative message phase.
+  const pushAssistant = (ts, text, phase, source, messageId, messageTurn = turnId) => {
+    if (!text || typeof text !== 'string') return;
+    text = text.trim();
+    if (!text) return;
+    let record = messageId && assistantIds.get(messageId);
+    record ||= recentAssistant.findLast((entry) => entry.atom.text === text
+      && (!messageTurn || !entry.turnId || messageTurn === entry.turnId)
+      && (source === 'completion' || Math.abs(entry.atom.ts - ts) < 5000)
+      && !entry.sources.has(source));
+    if (!record) {
+      record = { atom: { ts, kind: 'note', text }, sources: new Set(), turnId: messageTurn };
+      atoms.push(record.atom);
+      recentAssistant.push(record);
+      if (recentAssistant.length > 12) recentAssistant.shift();
+    }
+    record.atom.text = text;
+    record.sources.add(source);
+    if (phase === 'final' || phase === 'final_answer') record.atom.kind = 'report';
+    // Explicit commentary is not a completed report just because a growing log ends on it.
+    if (phase) record.atom.reportCandidate = false;
+    if (messageId) {
+      assistantIds.set(messageId, record);
+      if (assistantIds.size > 4096) assistantIds.delete(assistantIds.keys().next().value);
+    }
+  };
   let sawTurnCtx = false;
   const pushYou = (ts, raw) => {
     const images = extractAttachmentImages(raw);
@@ -193,7 +223,10 @@ function atomsFromCodex(lines) {
     if (!text) return attachImagesToYou(atoms, ts, images);
     // F9: dedupe against an event_msg/user_message twin
     const dup = atoms.slice(-4).some((a) => a.kind === 'you' && Math.abs(a.ts - ts) < 5000 && a.text.slice(0, 120) === text.slice(0, 120));
-    if (!dup) atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
+    if (!dup) {
+      atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
+      recentAssistant = [];
+    }
     else if (images.length) attachImagesToYou(atoms, ts, images);
   };
   for (const l of lines) {
@@ -210,7 +243,13 @@ function atomsFromCodex(lines) {
     } else if (j.type === 'event_msg') {
       const t = p.type;
       if (t === 'user_message') pushYou(ts, p.message);
-      else if (t === 'agent_message') atoms.push({ ts, kind: p.phase === 'final' ? 'report' : 'note', text: p.message });
+      else if (t === 'task_started') { turnId = p.turn_id || null; recentAssistant = []; }
+      else if (t === 'agent_message') pushAssistant(ts, p.message, p.phase, 'event', p.id, p.turn_id || turnId);
+      else if (t === 'item_completed' && p.item?.type === 'AgentMessage') {
+        pushAssistant(ts, textOf(p.item.content), p.item.phase, 'item', p.item.id, p.turn_id || turnId);
+      } else if (t === 'task_complete') {
+        pushAssistant(ts, p.last_agent_message, 'final', 'completion', null, p.turn_id || turnId);
+      }
       else if (t === 'turn_aborted' || t === 'interrupted') atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
     } else if (j.type === 'response_item') {
       const t = p.type;
@@ -218,6 +257,9 @@ function atomsFromCodex(lines) {
         // F1: real rollouts log user turns here (content: [{type:"input_text",text}])
         const raw = (p.content || []).filter((c) => c.type === 'input_text' || c.type === 'text').map((c) => c.text || '').join('\n');
         pushYou(ts, raw);
+      } else if (t === 'message' && p.role === 'assistant') {
+        const text = (p.content || []).filter((c) => ['output_text', 'text', 'Text'].includes(c.type)).map((c) => c.text || '').join('\n');
+        pushAssistant(ts, text, p.phase, 'response', p.id, p.internal_chat_message_metadata_passthrough?.turn_id || turnId);
       } else if (t === 'function_call') {
         let args = {}; try { args = JSON.parse(p.arguments || '{}'); } catch {}
         // F3: cmd string (exec_command) OR command array (shell variants)
@@ -393,7 +435,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, reportCandidate: a.reportCandidate });
   }
   flush();
 
@@ -418,14 +460,15 @@ function buildStory(atoms) {
   // control, not just the newest (operator: "voice report should appear in all history reports").
   // Claude emits ALL assistant text as notes (interleaved with tool calls); a note is that turn's
   // report when the next non-gap event hands back to the operator ('you') or ends the story. Codex
-  // already tags phase:final as report. Short mid-turn narration that slips through is filtered by
-  // the story view's >200-char listen guard, so this only ever adds buttons to real reports.
+  // tags final/final_answer explicitly; its commentary must remain a note even at a live tail.
+  // Legacy unphased text keeps this compatibility inference.
   for (let i = 0; i < out.length; i++) {
-    if (out[i].kind !== 'note') continue;
+    if (out[i].kind !== 'note' || out[i].reportCandidate === false) continue;
     let j = i + 1;
     while (j < out.length && out[j].kind === 'gap') j++;
     if (j >= out.length || out[j].kind === 'you') out[i].kind = 'report';
   }
+  for (const event of out) delete event.reportCandidate;
   return out;
 }
 

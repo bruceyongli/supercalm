@@ -88,7 +88,7 @@ export function cancelComposerSend(echo) {
 // out?" — a new send must APPEND, never re-window the story down to the newest message. ts is near-unique
 // per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
 // keys (so answered/meta updates land) and add new ones; already-loaded atoms with no incoming match are KEPT.
-function evKey(e) { return `${e.ts || 0}|${e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
+function evKey(e) { return `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
 
 // The scroll position belongs to the USER, not to us. It is preserved across every re-render / refresh /
 // story-update / session-switch, and restored (persisted per session) on reopen. We NEVER auto-scroll to
@@ -121,7 +121,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // v4: task-notification turns no longer parse as operator bubbles — cached stories still hold them.
 // v5: flush caches that may contain a same-project sibling rollout from the pre-identity picker.
 // v6: plan events now carry status-aware list items instead of the old pill-only shape.
-export const STORY_CACHE_KEY = (id) => `aios_story6_${id}`;
+// v7: flush missing native assistant messages and commentary falsely promoted to reports.
+export const STORY_CACHE_KEY = (id) => `aios_story7_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -710,8 +711,7 @@ export async function refreshStory({ quiet = true } = {}) {
     // on the last events (count alone left stale ✓/recovered states), the live status line changing,
     // or a composer echo's unread→read state moving.
     const lsSig = working ? (liveStatus ? `${liveStatus.verb}|${liveStatus.detail}|${liveStatus.bg || ''}` : 'w') : '';
-    const sig = events.length + ':' + events.reduce((a, e) => a + (e.answered ? 1 : 0), 0)
-      + ':' + events.slice(-3).map((e) => e.meta || '').join('|') + ':' + lsSig
+    const sig = JSON.stringify(events) + ':' + lsSig
       + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig) { lastSig = sig; render(); }

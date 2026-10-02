@@ -29,11 +29,13 @@ export async function submitAgentComposer({
   let lastEnter = -Infinity;
   let stableDraft = '';
   let stableCount = 0;
+  let changedDraft = '', changedAt = 0, changedCount = 0;
   let pending = '';
   await pause(Math.max(0, initialDelayMs));
   do {
     const screen = await readScreen();
     const draft = pendingComposerDraft(screen, draftOptions);
+    if (!draft) { changedDraft = ''; changedCount = 0; }
     // Explicitly sending a phrase which is also a CLI hint is still valid operator input.
     const withHint = draft || pendingComposerDraft(screen, { ...draftOptions, includePlaceholders: true });
     pending = draft?.text || '';
@@ -42,6 +44,7 @@ export async function submitAgentComposer({
     // counts; an old folded draft cannot authorize submitting somebody else's text.
     const newPaste = draft && /^\[Pasted (?:text|content)[^\]]*\]$/i.test(draft.text) && draft.text !== beforeDraft;
     if (ownText || newPaste) {
+      changedDraft = ''; changedCount = 0;
       observed = true;
       const current = withHint.text;
       stableCount = stableDraft === current ? stableCount + 1 : 1;
@@ -59,8 +62,16 @@ export async function submitAgentComposer({
       const pasteInProgress = !observed && attempts === 0
         && pendingDraftMatches(draft.text, text, draft.lines, { prefix: true });
       // A redraw can still show the pre-paste draft briefly. Wait for our text instead of pressing
-      // Enter on it, but stop immediately if a genuinely different new input appears.
-      if (!pasteInProgress && (observed || draft.text !== beforeDraft)) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
+      // Enter on it, but stop if a genuinely different new input settles.
+      if (!pasteInProgress && (observed || draft.text !== beforeDraft)) {
+        // capture-pane can catch a TUI midway through repainting a multiline composer: old rows
+        // temporarily duplicate attachment lines or leave a stale suffix. An unmatched FRAME
+        // isn't an edited draft. Require it to settle before aborting; never press Enter on it.
+        if (changedDraft !== draft.text) { changedDraft = draft.text; changedAt = clock(); changedCount = 1; }
+        else changedCount++;
+        stableCount = 0;
+        if (changedCount >= 2 && clock() - changedAt >= 480) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
+      } else { changedDraft = ''; changedCount = 0; }
     } else if (observed && attempts > 0) {
       const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true });
       if (state.ready) return { accepted: true, verified: true, attempts };

@@ -7,22 +7,31 @@ let last = '';
 const marker = family === 'claude' ? '❯' : '›';
 const hint = family === 'claude' ? '' : 'Ask Codex to do anything';
 const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to cycle)' : 'GPT-6-Astra xhigh · /tmp/delivery-test';
-const render = () => process.stdout.write(`\x1b[2J\x1b[${Math.max(1, (process.stdout.rows || 30) - 8)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${input || hint}\r\n\r\n${footer}\r\n`);
+const render = (display = input) => process.stdout.write(mode === 'question'
+  ? '\x1b[2J\x1b[1;1HChoose a recovery path:\r\n❯ 1. Resume from summary\r\n  2. Resume full session as-is\r\nEnter to confirm\r\n'
+  : `\x1b[2J\x1b[${Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
 let partialTimer;
-if (mode === 'partial-paste') {
+if (mode === 'partial-paste' || mode === 'redraw-paste') {
   process.stdin.on('data', data => {
     if (data === '\x15') { input = ''; render(); return; }
     if (/^[\r\n]+$/.test(data)) {
       appendFileSync(trace, JSON.stringify({ event: 'enter', input }) + '\n');
       if (partialTimer) { appendFileSync(trace, JSON.stringify({ event: 'premature', input }) + '\n'); return; }
+      if (mode === 'redraw-paste' && ++attempts === 1) return;
       appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
       last = input; input = ''; render(); return;
     }
-    const prefix = data.slice(0, Math.max(1, Math.floor(data.length / 2)));
-    input += prefix; render();
-    partialTimer = setTimeout(() => { input += data.slice(prefix.length); partialTimer = null; render(); }, 1000);
+    if (mode === 'redraw-paste') {
+      input += data;
+      render(input.replace(/2\. other\.png[^\n]*/, '1. screenshot.png duplicated stale row'));
+      partialTimer = setTimeout(() => { partialTimer = null; render(); }, 240);
+    } else {
+      const prefix = data.slice(0, Math.max(1, Math.floor(data.length / 2)));
+      input += prefix; render();
+      partialTimer = setTimeout(() => { input += data.slice(prefix.length); partialTimer = null; render(); }, 1000);
+    }
   });
 } else {
 process.stdin.on('data', data => {

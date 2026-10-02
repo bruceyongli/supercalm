@@ -44,6 +44,17 @@ r = await run({ text: multiline, screen: ({ time, enters }) => enters ? idle : d
 assert.equal(r.result.accepted, true, 'incremental multiline paste echoes are not input-changed');
 assert.equal(r.enters.length, 1);
 assert.ok(r.enters[0] >= 1000, 'do not press Enter until the entire multiline request has arrived');
+const attachments = 'Check both screenshots.\n\nAttached files available locally to this coding CLI:\n1. screenshot.png (PNG, image/png): /project/attachments/screenshot.png\n2. other.png (PNG, image/png): /project/attachments/other.png\n\nOpen these paths directly when you need the uploaded content.';
+const halfPainted = attachments.replace('2. other.png (PNG, image/png): /project/attachments/other.png', '1. screenshot.png (PNG, image/png): /project/attachments/screenshot.png');
+r = await run({ text: attachments, screen: ({ time, enters }) => enters ? idle : draft(time < 640 ? halfPainted : attachments) });
+assert.equal(r.result.accepted, true, 'duplicated rows in a transient repaint are not a different human draft');
+assert.equal(r.enters.length, 1);
+assert.ok(r.enters[0] >= 640, 'never submit the half-painted attachment manifest');
+r = await run({ screen: ({ time, enters }) => enters ? (time < 700 ? draft('fix it stale repaint') : accepted('fix it')) : draft('fix it') });
+assert.equal(r.result.accepted, true, 'an in-flight post-Enter redraw also settles before input-changed');
+assert.equal(r.enters.length, 1, 'do not submit a temporarily mismatching redraw');
+r = await run({ text: 'Please compare these models:\ngpt-6-astra and gpt-6-sol\nThen explain the result.', screen: ({ enters }) => enters ? idle : draft('Please compare these models:\ngpt-6-astra and gpt-6-sol\nThen explain the result.') });
+assert.equal(r.result.accepted, true, 'model mentions in a multiline request are not the live footer');
 r = await run({ text: multiline, screen: () => draft(multiline.slice(0, 90)) });
 assert.equal(r.result.reason, 'submit-unconfirmed', 'an incomplete paste never becomes a false success');
 assert.equal(r.enters.length, 0, 'never submit just a prefix');
