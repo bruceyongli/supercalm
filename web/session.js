@@ -999,7 +999,7 @@ function fitTerminal() {
 }
 
 function healTerminalLayout() {
-  if (!termEl.isConnected || document.hidden) return;
+  if (!termEl.isConnected || document.hidden || activeMainView !== 'terminal') return;
   const metrics = terminalLayoutMetrics();
   if (metrics.screenRatio < 0.96 || Math.abs(metrics.colsCapacity - term.cols) > 2 || Math.abs(metrics.rowsCapacity - term.rows) > 1) scheduleSyncSize(0);
 }
@@ -1816,7 +1816,7 @@ let titleBusy = false;
 function fetchSessionInfo(reqId = id) {
   if (sessionInfoRequest?.id === reqId) return sessionInfoRequest.promise;
   const requestToken = requestScope.capture();
-  const promise = api(`api/session/${reqId}`, { signal: requestToken.signal })
+  const promise = api(`api/session/${reqId}?surface=header`, { signal: requestToken.signal })
     .then((session) => {
       // Drafts displaced by an explicit send from any device/surface belong to this session's same
       // ArrowUp/ArrowDown composer history. Merge once; never reopen them as visible attention items.

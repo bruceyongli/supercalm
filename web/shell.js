@@ -400,11 +400,13 @@ function closePalette() { if ($('#dk-palette')) $('#dk-palette').hidden = true; 
 // or "+ new project…" on a fresh install with none.
 let stateCache = null;
 let launchOptionsAt = 0;
-let launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; }).catch(() => { launchOptionsPromise = null; return null; });
+let launchOptionsPromise = null;
+getLaunchOptions(); // prewarm without competing with another modal/settings caller
 export function getLaunchOptions() {
   if (stateCache && Date.now() - launchOptionsAt < 30000) return Promise.resolve(stateCache);
-  if (!stateCache && launchOptionsPromise) return launchOptionsPromise;
-  launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; }).catch(() => { launchOptionsPromise = null; return null; });
+  if (launchOptionsPromise) return launchOptionsPromise;
+  launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; })
+    .catch(() => stateCache).finally(() => { launchOptionsPromise = null; });
   return launchOptionsPromise;
 }
 export async function openLaunch(opts = {}) {

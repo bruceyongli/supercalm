@@ -68,6 +68,13 @@ export function terminalFileReferences(term, bufferLineNumber) {
   // Bound hover work even for a pathological terminal line; ordinary long paths fit in this window.
   const first = Math.max(0, row - 16);
   const last = Math.min(buffer.length - 1, row + 16);
+  // Most hovered/scrolling rows are ordinary prose/status. Avoid allocating thousands of cell maps
+  // just to discover there are no URLs, paths or filenames anywhere in the bounded wrap window.
+  let candidate = false;
+  for (let y = first; y <= last; y++) {
+    if (/[\/\\]|\.[A-Za-z]{1,12}\b/.test(buffer.getLine(y)?.translateToString(true) || '')) { candidate = true; break; }
+  }
+  if (!candidate) return [];
   const rows = [];
   for (let y = first; y <= last; y++) {
     const next = readRow(buffer, y, cols);

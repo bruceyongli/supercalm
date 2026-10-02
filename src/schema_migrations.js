@@ -180,4 +180,16 @@ export const CORE_MIGRATIONS = [
       `);
     },
   },
+  {
+    id: '0006_hot_ui_query_indexes',
+    description: 'Keep operator recency and composer recovery queries off large historical payload pages',
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_messages_operator_touch
+          ON messages(session_id, ts, source) WHERE direction = 'in';
+        CREATE INDEX IF NOT EXISTS idx_events_composer_history
+          ON events(session_id, id) WHERE type = 'composer-draft-archived';
+      `);
+    },
+  },
 ];

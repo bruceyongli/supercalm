@@ -97,6 +97,7 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
     let bytes = full ? end : Math.min(START_BYTES, end);
     for (;;) {
       let start = Math.max(0, end - bytes);
+      const rangeStart = start;
       const buffer = Buffer.alloc(end - start);
       const { bytesRead } = await fh.read(buffer, 0, buffer.length, start);
       let text = buffer.subarray(0, bytesRead).toString('utf8');
@@ -112,6 +113,9 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
         continue;
       }
       let offset = start;
+      // A single tool-result line can exceed the scan budget. If skipping its partial prefix reaches
+      // the page end, still advance the cursor backward rather than offering the same empty page forever.
+      if (offset >= end && rangeStart < end) offset = rangeStart;
       if (!full && completed.length >= rounds) {
         const first = completed[completed.length - rounds];
         offset += roundOffset(text, events[first].ts || 0);
@@ -131,6 +135,7 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
 function attachShots(text, events) {
   const shots = [];
   const collect = (arr, ts, depth = 0) => {
+    if (!Array.isArray(arr)) return;
     for (const item of arr || []) {
       if (item?.type === 'image' && item.source?.type === 'base64' && item.source.data?.length < 900_000) {
         shots.push({ ts, url: `data:${item.source.media_type || 'image/png'};base64,${item.source.data}` });

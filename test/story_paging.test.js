@@ -49,6 +49,16 @@ try {
   assert.ok(ticks > 1, 'large tool-result parsing runs off the event loop');
   assert.equal(bigPage.events.find(e => e.kind === 'you')?.body, 'Request 0', 'a giant partial JSONL line does not hide the request');
   assert.equal(bigPage.events.find(e => e.kind === 'report')?.body, 'Report 0');
+  const oversized = join(root, 'oversized.jsonl');
+  await writeFile(oversized, request(0) + record(1, 'response_item', { type: 'function_call_output', output: 'z'.repeat(34 * 1024 * 1024) }) + report(0));
+  let large = await readStoryPage({ file: oversized }), prior = Infinity;
+  while (large.meta.cursor) {
+    const offset = JSON.parse(Buffer.from(large.meta.cursor, 'base64url')).offset;
+    assert.ok(offset < prior, 'even an oversized tool-result line cannot trap the cursor on an empty page');
+    prior = offset;
+    large = await readStoryPage({ file: oversized, cursor: large.meta.cursor });
+  }
+  assert.equal(large.events.find(e => e.kind === 'you')?.body, 'Request 0');
 
   const claude = join(root, 'claude.jsonl');
   await writeFile(claude, Array.from({ length: 3 }, (_, n) =>

@@ -68,6 +68,7 @@ import {
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { renderedFileMeta, serveRenderedFile } from './file_render.js';
+import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -1436,9 +1437,11 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // retire the new pane when its stale `has-session = false` result arrives. Keep terminal subscribers
   // attached across the relaunch; only the lifecycle generation changes.
   const previousEntry = reg.get(sid);
+  if (previousEntry) { previousEntry.tailRetired = true; stopTerminalTail(previousEntry); }
   reg.delete(sid);
   const resumedEntry = register(updated);
   if (previousEntry) resumedEntry.subscribers = previousEntry.subscribers;
+  watchTerminalTail(resumedEntry);
   // A resumed waiting session briefly renders its startup/loading screen before the old prompt. Keep
   // the durable Needs You state through that grace instead of letting one transitional poll erase it.
   if (durableStatus === 'waiting') resumedEntry.preserveWaitingUntil = now() + LAUNCH_GRACE_MS;
@@ -1497,7 +1500,9 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
       res.write('event: ended\ndata: {}\n\n');
     } catch {}
   }
+  entry.tailRetired = true;
   reg.delete(entry.id);
+  stopTerminalTail(entry);
   return true;
 }
 
@@ -1806,6 +1811,8 @@ async function pollOnce() {
   for (const entry of [...reg.values()]) {
     const s = store.getSession(entry.id);
     if (!s || s.status === 'exited') {
+      entry.tailRetired = true;
+      stopTerminalTail(entry);
       reg.delete(entry.id);
       continue;
     }
@@ -2234,29 +2241,10 @@ async function terminalLogTail(sid, maxBytes = TERMINAL_LOG_MAX_BYTES) {
   return { text: cleanTerminalLog(buf.toString('utf8')), bytes: st.size - start, totalBytes: st.size, truncated: start > 0 };
 }
 async function tailOnce() {
-  for (const entry of reg.values()) {
-    let st;
-    try {
-      st = await stat(entry.logFile);
-    } catch {
-      continue;
-    }
-    if (st.size < entry.offset) entry.offset = 0; // truncated/rotated
-    if (!entry.subscribers.size) {
-      entry.offset = st.size; // keep cursor current cheaply
-      continue;
-    }
-    if (st.size > entry.offset) {
-      const buf = await readRange(entry.logFile, entry.offset, st.size);
-      entry.offset = st.size;
-      const payload = `event: data\ndata: ${buf.toString('base64')}\n\n`;
-      for (const res of entry.subscribers) {
-        try {
-          res.write(payload);
-        } catch {}
-      }
-    }
-  }
+  // Only viewed panes need filesystem work. Each pane owns one reader, so overlapping polling/watch
+  // notifications never duplicate bytes; different panes progress independently.
+  await Promise.all([...reg.values()].filter(entry => entry.subscribers.size)
+    .map(entry => flushTerminalTail(entry).catch(() => {})));
 }
 
 // ---------------------------------------------------------------------------
@@ -2974,9 +2962,12 @@ route('POST', '/api/reauth', async (req, res) => {
   json(res, 200, { ok: true, relaunched });
 });
 
-route('GET', '/api/session/:id', async (req, res, { id: sid }) => {
+route('GET', '/api/session/:id', async (req, res, { id: sid }, url) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
+  if (url?.searchParams?.get('surface') === 'header') return json(res, 200, {
+    ...decorate(s), composer_history: store.composerDraftHistoryFor(sid),
+  }); // title/settings need no message history, lifecycle payloads or capture-pane subprocess
   json(res, 200, {
     ...decorate(s),
     messages: store.messagesFor(sid),
@@ -3917,6 +3908,11 @@ route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' });
   res.write('retry: 2000\n\n');
   const entry = register(s);
+  if (entry && !entry.subscribers.size) {
+    // Unviewed logs are no longer polled. Start at now; the snapshot below supplies history/screen.
+    await entry.tailFlight?.catch(() => {});
+    try { entry.offset = (await stat(entry.logFile)).size; } catch { entry.offset = 0; }
+  }
   try {
     // Re-baseline the browser xterm to tmux's ACTUAL screen on every (re)connect. If the pane is on the
     // alternate screen (a full-screen TUI like Claude Code), switch xterm to its alt buffer and paint the
@@ -3940,11 +3936,15 @@ route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
   const done = () => {
     clearInterval(ping);
     if (entry) entry.subscribers.delete(res);
+    if (entry && !entry.subscribers.size) stopTerminalTail(entry);
+    const activeEntry = reg.get(sid);
+    if (activeEntry && !activeEntry.subscribers.size) stopTerminalTail(activeEntry);
   };
   req.on('close', done);
   res.on('error', done); // abrupt disconnect -> async socket error; swallow it
   if (entry) {
     entry.subscribers.add(res);
+    watchTerminalTail(entry);
   } else {
     res.write('event: ended\ndata: {}\n\n');
   }

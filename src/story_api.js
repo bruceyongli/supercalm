@@ -178,7 +178,7 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     // Live CLI status line (only while working; one cheap capture-pane, off the cache since it changes
     // every second). Fail-open — a missing status just falls back to the generic working animation.
     let liveStatus = null;
-    if (s?.status === 'working') {
+    if (!cursor && s?.status === 'working') {
       try { liveStatus = extractLiveStatus(await snapshot(sid, 16)); } catch {}
     }
     // Native transcript parsers expose structured AskUserQuestion calls, but ordinary terminal gates
@@ -187,7 +187,7 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     // This field is deliberately outside the cached story: it vanishes as soon as the reply resumes.
     let pendingQuestion = null;
     const hasTranscriptAsk = r.events.some((event) => event.kind === 'ask' && !event.answered);
-    if (s?.status === 'waiting' && !hasTranscriptAsk) {
+    if (!cursor && s?.status === 'waiting' && !hasTranscriptAsk) {
       let terminal = null;
       try { terminal = terminalQuestionPrompt(await snapshot(sid, 32)); } catch {}
       // Waiting also means a completed report, an interruption or an idle composer. s.question

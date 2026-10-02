@@ -41,7 +41,7 @@ db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) 
 db.prepare("INSERT INTO events (session_id,ts,type,payload) VALUES ('s_rebooted',4,'exit','{\"code\":null,\"reason\":\"tmux gone on restart\"}')").run();
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes']);
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
 assert.equal(db.prepare("SELECT applied_at FROM schema_migrations WHERE id='0001_sessions_complete_shape'").get().applied_at, 1234);
 const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((row) => row.name));
