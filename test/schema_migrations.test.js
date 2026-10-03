@@ -41,7 +41,7 @@ db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) 
 db.prepare("INSERT INTO events (session_id,ts,type,payload) VALUES ('s_rebooted',4,'exit','{\"code\":null,\"reason\":\"tmux gone on restart\"}')").run();
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes', '0007_operator_input_receipts']);
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
 assert.equal(db.prepare("SELECT applied_at FROM schema_migrations WHERE id='0001_sessions_complete_shape'").get().applied_at, 1234);
 const sessionColumns = new Set(db.prepare('PRAGMA table_info(sessions)').all().map((row) => row.name));
@@ -74,6 +74,15 @@ assert(projectColumns.has('lifecycle'));
 assert(projectColumns.has('auto_delete_folder'));
 const messageColumns = new Set(db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name));
 assert(messageColumns.has('read_at'));
+assert(messageColumns.has('client_message_id'));
+const receiptMessage = db.prepare("INSERT INTO messages (session_id,ts,direction,source,text,client_message_id) VALUES (?,1,'in','text','same words',?)");
+receiptMessage.run('s_live', 'send-first');
+assert.throws(() => receiptMessage.run('s_live', 'send-first'), /UNIQUE constraint/, 'one receipt per session and send identity');
+receiptMessage.run('s_live', 'send-second');
+receiptMessage.run('s_stopped', 'send-first');
+receiptMessage.run('s_live', null);
+receiptMessage.run('s_live', null);
+assert.equal(db.prepare('SELECT count(*) n FROM messages').get().n, 5, 'new sends, different sessions, and legacy unkeyed messages remain independent');
 assert.equal(db.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='attention_dismissals'").get().n, 1);
 assert.deepEqual(applyMigrations(db, CORE_MIGRATIONS), [], 'recorded migrations are not re-run');
 

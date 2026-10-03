@@ -192,4 +192,13 @@ export const CORE_MIGRATIONS = [
       `);
     },
   },
+  {
+    id: '0007_operator_input_receipts',
+    description: 'Remember accepted composer send identities so request retries cannot deliver twice',
+    up(db) {
+      ensureColumn(db, 'messages', 'client_message_id', 'TEXT');
+      db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_receipt
+        ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL`);
+    },
+  },
 ];

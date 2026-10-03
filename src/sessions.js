@@ -3400,7 +3400,28 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
 // Returns { ok:true } | { stopped:true } | { missing:true }; throws only when tmux delivery itself
 // fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
 // not re-announce the reply as failed — the caller would re-deliver it.
-export async function deliverReply(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false } = {}) {
+const pendingOperatorInputs = new Map();
+export async function deliverReply(sid, text, options = {}) {
+  const clientMessageId = options.clientMessageId || null;
+  if (!clientMessageId) return deliverReplyNow(sid, text, options); // existing voice/agent callers
+  const source = options.source || 'text';
+  const key = `${sid}|${clientMessageId}`;
+  const accepted = store.inputReceipt(sid, clientMessageId);
+  if (accepted) {
+    if (accepted.text !== text || accepted.source !== source) return { idempotencyConflict: true };
+    return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
+  }
+  const fingerprint = JSON.stringify([text, source, options.segments || null]);
+  const pending = pendingOperatorInputs.get(key);
+  if (pending) return pending.fingerprint === fingerprint ? pending.promise : { idempotencyConflict: true };
+  // Publish before the first asynchronous pane check. Concurrent retries share both native delivery
+  // and bookkeeping; completed retries consult the durable message receipt even after a reboot.
+  const promise = deliverReplyNow(sid, text, options).finally(() => pendingOperatorInputs.delete(key));
+  pendingOperatorInputs.set(key, { fingerprint, promise });
+  return promise;
+}
+
+async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false, clientMessageId = null } = {}) {
   const deliveryStarted = now();
   const s = store.getSession(sid);
   if (!s) return { missing: true };
@@ -3455,18 +3476,22 @@ export async function deliverReply(sid, text, { source = 'text', attachments = 0
   try {
     if (replacedDraft) store.addEvent(sid, 'composer-draft-archived', { text: replacedDraft, displaced_by: source });
   } catch {}
-  try { store.addMessage(sid, 'in', source, text); } catch {}
+  let message = null;
+  try { message = store.addMessage(sid, 'in', source, text, { clientMessageId }); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
   try { store.answerPendingDecision(sid, { response: text, response_source: source }); } catch {} // link to the open ask, if any
   try { store.addEvent(sid, 'input', { source, len: text.length, attachments }); } catch {}
   try { bus.emit('event', { type: 'input', session: sid, source }); } catch {} // doctrine distiller listens (fire-and-forget)
   try { noteReply(sid); } catch {} // -> working, clear question/summary, reset idle timer, broadcast
-  return { ok: true, replacedDraft: !!replacedDraft };
+  return { ok: true, replacedDraft: !!replacedDraft, message };
 }
 
 route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });
   const b = await readJson(req);
+  if (b.client_message_id != null && (typeof b.client_message_id !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(b.client_message_id))) {
+    return json(res, 400, { error: 'invalid client message identity' });
+  }
   const attachments = normalizeAttachmentMeta(b.attachments);
   const text = textWithAttachmentBlock(b.text, attachments);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
@@ -3474,7 +3499,9 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
     source: b.source || 'text',
     attachments: attachments.length,
     replacePendingDraft: b.replace_pending === true,
+    clientMessageId: b.client_message_id || null,
   });
+  if (r.idempotencyConflict) return json(res, 409, { error: 'This send identity already belongs to a different message.', reason: 'idempotency-conflict', inputBlocked: true });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
   if (r.inputBlocked) return json(res, 409, {
     error: operatorInputBlockMessage(r.reason),
@@ -3484,7 +3511,7 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
     pendingDraft: r.reason === 'pending-draft' ? r.pendingDraft : undefined,
   });
   if (r.missing) return json(res, 404, { error: 'no such session' });
-  json(res, 200, { ok: true });
+  json(res, 200, { ok: true, message: r.message, duplicate: !!r.duplicate });
 });
 
 route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {

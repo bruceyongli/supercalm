@@ -2817,6 +2817,23 @@ const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 let attachments = [];
 let attachmentSeq = 0;
+let sendInFlight = false;
+const SEND_ID_KEY = `aios_pending_send_${id}`;
+let pendingSendIdentity = null;
+try { pendingSendIdentity = JSON.parse(sessionStorage.getItem(SEND_ID_KEY) || 'null'); } catch {}
+function composerSendIdentity(text, assets) {
+  const fingerprint = JSON.stringify([text, assets.map(asset => [asset.path, asset.name, asset.type, asset.size])]);
+  if (pendingSendIdentity?.fingerprint !== fingerprint || !/^[A-Za-z0-9_-]{8,128}$/.test(pendingSendIdentity?.id || '')) {
+    pendingSendIdentity = { id: randomClientId(), fingerprint };
+    try { sessionStorage.setItem(SEND_ID_KEY, JSON.stringify(pendingSendIdentity)); } catch {}
+  }
+  return pendingSendIdentity.id;
+}
+function acknowledgeComposerSend(clientMessageId) {
+  if (pendingSendIdentity?.id !== clientMessageId) return;
+  pendingSendIdentity = null;
+  try { sessionStorage.removeItem(SEND_ID_KEY); } catch {}
+}
 
 function showComposerNotice(message) {
   const el = $('#composer-notice');
@@ -2899,7 +2916,7 @@ function uploadsPending() {
 }
 
 function updateSendState() {
-  sendBtn.disabled = uploadsPending() || (!reply.value.trim() && !readyAttachments().length);
+  sendBtn.disabled = sendInFlight || uploadsPending() || (!reply.value.trim() && !readyAttachments().length);
 }
 
 function replyHeightCap() {
@@ -3301,12 +3318,20 @@ function installFileTarget(target) {
 window.addEventListener('aios:insert-reference', (e) => insertComposerReference(e.detail?.text || ''), { signal: _sig });
 
 async function sendInput() {
+  // Button disabled alone is not a lock: keyboard sends bypass it, and input/viewport/upload
+  // updates used to re-enable it during delivery. Claim synchronously, before even the Story import.
+  if (sendInFlight) return;
   const text = reply.value.trim();
+  const draftAtSend = reply.value;
   const uploaded = readyAttachments();
   if (!text && !uploaded.length) return;
   if (uploadsPending()) return alert('Wait for attachments to finish uploading first.');
   const requestToken = requestScope.capture();
-  sendBtn.disabled = true;
+  // An accepted message can outlive a lost HTTP response. Retain its identity until acknowledged,
+  // including through refresh, so retrying the kept draft queries the receipt instead of sending twice.
+  const clientMessageId = composerSendIdentity(text, uploaded);
+  sendInFlight = true;
+  updateSendState();
   // Instant story echo AT the click (not after the POST round-trip): the message appears in the
   // story NOW with an unread chip, flips to ✓ read when the agent's transcript contains it
   // (story-view.js reconciles), and is cancelled if the send actually fails.
@@ -3331,6 +3356,7 @@ async function sendInput() {
         text,
         attachments: uploaded,
         source: uploaded.length ? 'text+attachments' : 'text',
+        client_message_id: clientMessageId,
         replace_pending: replacePending,
       }),
       signal: requestToken.signal,
@@ -3356,10 +3382,17 @@ async function sendInput() {
       cancelEcho();
       alert('Send failed: ' + (j.error || r.status));
     } else {
+      acknowledgeComposerSend(clientMessageId);
       if (preservedTerminalDraft) rememberHistory(preservedTerminalDraft);
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
-      reply.value = '';
-      clearAttachments();
+      // The operator can prepare the next message while this one is delivering. Only consume the
+      // submitted draft/assets; a late response must not erase newly typed text or new attachments.
+      if (reply.value === draftAtSend) reply.value = '';
+      const sentIds = new Set(uploaded.map((asset) => asset.localId));
+      attachments.filter((asset) => sentIds.has(asset.localId)).forEach(cleanupAttachment);
+      attachments = attachments.filter((asset) => !sentIds.has(asset.localId));
+      renderAttachments();
+      persistDraft();
       // A displaced native draft is recoverable through the same per-session ↑/↓ history as sent
       // composer text. Do not turn that safety copy into a new visible draft or attention message.
       showComposerNotice('');
@@ -3369,6 +3402,7 @@ async function sendInput() {
     cancelEcho();
     alert('Send failed: ' + e.message);
   } finally {
+    sendInFlight = false;
     if (requestScope.isCurrent(requestToken)) {
       updateSendState();
       autoExpandReply();

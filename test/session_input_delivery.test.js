@@ -79,12 +79,32 @@ try {
     store.updateSession(name, { status: 'waiting' });
     return () => readFileSync(trace, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   }
-  async function send(id, text) {
+  async function send(id, text, options = {}) {
     const response = await fetch(`http://127.0.0.1:${port}/api/session/${id}/input`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }),
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, ...options }),
     });
     return { status: response.status, body: await response.json() };
   }
+  const onceId = 's_once_delivery';
+  const onceTrace = await start(onceId, 'ignore-first', 'codex');
+  const onceText = 'One operator send must reach the coding agent only once.';
+  const onceKey = { client_message_id: 'send-once-fixture' };
+  const concurrent = await Promise.all(Array.from({ length: 5 }, () => send(onceId, onceText, onceKey)));
+  assert.equal(concurrent.every(r => r.status === 200), true, JSON.stringify(concurrent));
+  assert.equal(new Set(concurrent.map(r => r.body.message.id)).size, 1, 'concurrent HTTP retries share one stored receipt');
+  const repeated = await send(onceId, onceText, onceKey);
+  assert.equal(repeated.body.duplicate, true, 'a completed retry uses the durable receipt rather than sending again');
+  assert.equal(repeated.body.message.id, concurrent[0].body.message.id);
+  assert.deepEqual(onceTrace().filter(r => r.event === 'accepted').map(r => r.text), [onceText]);
+  assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(onceId).n, 1);
+  assert.equal(store.db.prepare("SELECT count(*) n FROM events WHERE session_id=? AND type='input'").get(onceId).n, 1);
+  const conflict = await send(onceId, 'Changed content may not reuse an accepted identity.', onceKey);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.reason, 'idempotency-conflict');
+  assert.equal((await send(onceId, onceText, { client_message_id: 'send-new-fixture' })).status, 200);
+  assert.equal(onceTrace().filter(r => r.event === 'accepted').length, 2, 'an intentional new send of identical words is not suppressed');
+  assert.equal((await send(onceId, onceText, { client_message_id: '../bad' })).status, 400);
+  console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'five concurrent retries plus completed retry', requests: 6, accepted: 1, persisted: 1 }));
   for (const family of ['codex', 'claude']) {
     const sid = `s_${family}_delivery`;
     const trace = await start(sid, 'ignore-first', family);
@@ -139,7 +159,7 @@ try {
   assert.deepEqual(questionStory.pendingQuestion.options.map(o => o.label), ['Resume from summary', 'Resume full session as-is']);
   const blocked = 's_blocked_delivery';
   const trace = await start(blocked, 'ignore-all', 'codex');
-  const response = await send(blocked, 'This must not be marked as sent.');
+  const response = await send(blocked, 'This must not be marked as sent.', { client_message_id: 'send-failed-fixture' });
   assert.equal(response.status, 409);
   assert.equal(response.body.reason, 'submit-unconfirmed');
   const blockedEnters = trace().filter(r => r.event === 'enter').length;
@@ -149,6 +169,7 @@ try {
   assert.ok(blockedEnters >= 1 && blockedEnters <= 3, `bounded retries: ${blockedEnters}`);
   assert.equal(trace().filter(r => r.event === 'accepted').length, 0);
   assert.equal(store.db.prepare("SELECT count(*) AS n FROM messages WHERE session_id=? AND direction='in'").get(blocked).n, 0);
+  assert.equal(store.inputReceipt(blocked, 'send-failed-fixture'), undefined, 'failed delivery never poisons a later retry identity');
   console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', http: 409, reason: response.body.reason, enters: blockedEnters, accepted: 0, persisted: 0 }));
   console.log('session_input_delivery: passed (private tmux, no live sessions or projects modified)');
 } finally {

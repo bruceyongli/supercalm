@@ -304,14 +304,16 @@ export function expireStaleAsks(ttlMs) {
 }
 
 // ---- messages ---------------------------------------------------------------
-const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text) VALUES (?,?,?,?,?)');
+const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text,client_message_id) VALUES (?,?,?,?,?,?)');
+const _inputReceipt = db.prepare("SELECT id, ts, source, text FROM messages WHERE session_id = ? AND client_message_id = ? AND direction = 'in'");
 const _messagesFor = db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC LIMIT ?');
 const _recentMessagesFor = db.prepare('SELECT * FROM (SELECT * FROM messages WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT ?) ORDER BY ts ASC, id ASC');
-export function addMessage(session_id, direction, source, text) {
+export function addMessage(session_id, direction, source, text, { clientMessageId = null } = {}) {
   const ts = now();
-  const result = _insMessage.run(session_id, ts, direction, source ?? null, text);
+  const result = _insMessage.run(session_id, ts, direction, source ?? null, text, clientMessageId);
   return { id: Number(result.lastInsertRowid), ts };
 }
+export const inputReceipt = (sid, clientMessageId) => _inputReceipt.get(sid, clientMessageId);
 export const messagesFor = (id, limit = 200) => _messagesFor.all(id, limit);
 export const recentMessagesFor = (id, limit = 40) => _recentMessagesFor.all(id, limit);
 
