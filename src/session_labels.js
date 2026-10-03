@@ -3,16 +3,15 @@
 //   - per request: {label, result, status, relation} — what it was about, how it ended, and how it relates
 //     to the previous request (new / follow-up / rework after a problem / scope-change / aside)
 //   - session: {headline, goal} — what the session ACTUALLY became, not the opening line
-// It runs "on settle" (a request is labeled once it's complete — the next request arrived, or the session is
-// idle/waiting), capped per pass, cached by request-text hash + a work signature so settled requests are
-// never re-labeled. Falls back to the deterministic labels when absent. Reuses the summarizer's cheap model.
+// Default: label settled requests only when their graph is viewed, with a global cadence and failure
+// backoff. Cached by request-text hash + work signature; deterministic labels remain available without AI.
 import http from 'node:http';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { db } from './store.js';
 import { applyMigrations, ensureColumn } from './migrations.js';
 import { now } from './util.js';
 import { fleetKey, routeForModel } from './model_catalog.js';
 import { priceUsage } from './usage_pricing.js';
+import { createLabelBudget, LabelDeferred } from './label_budget.js';
 
 // Default labeling model: a CHEAP, non-Claude model so labeling never competes with the user's Claude
 // coding sessions for rate limits. The actual model is usually set per-instance in the config (label_meta),
@@ -47,7 +46,7 @@ applyMigrations(db, [{
   },
 }]);
 // global on/off + running usage meter (labeling spans ALL sessions, so the switch + cost are global).
-// Default ON — it's cheap (haiku, cached, ~0 steady-state) — but the user can turn it off to stop spend.
+// Enabled by default, but on demand — never scan every live session for model work unless opted in.
 db.exec(`
   CREATE TABLE IF NOT EXISTS label_meta (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -69,6 +68,13 @@ applyMigrations(db, [{
     ensureColumn(conn, 'label_meta', 'prompt_extra', 'TEXT');
     ensureColumn(conn, 'label_meta', 'default_view', 'TEXT');
   },
+}, {
+  id: '0103_on_demand_labeling_budget',
+  description: 'Keep graph labeling on demand with a shared model-call interval',
+  up(conn) {
+    ensureColumn(conn, 'label_meta', 'mode', "TEXT NOT NULL DEFAULT 'on_demand'");
+    ensureColumn(conn, 'label_meta', 'min_interval_ms', 'INTEGER NOT NULL DEFAULT 30000');
+  },
 }]);
 db.prepare('INSERT OR IGNORE INTO label_meta (id, enabled) VALUES (1, 1)').run();
 const _meta = db.prepare('SELECT * FROM label_meta WHERE id = 1');
@@ -76,6 +82,8 @@ const _setEnabled = db.prepare('UPDATE label_meta SET enabled = ?, updated_at = 
 const _setModel = db.prepare('UPDATE label_meta SET model = ?, updated_at = ? WHERE id = 1');
 const _setPrompt = db.prepare('UPDATE label_meta SET prompt_extra = ?, updated_at = ? WHERE id = 1');
 const _setView = db.prepare('UPDATE label_meta SET default_view = ?, updated_at = ? WHERE id = 1');
+const _setMode = db.prepare('UPDATE label_meta SET mode = ?, updated_at = ? WHERE id = 1');
+const _setInterval = db.prepare('UPDATE label_meta SET min_interval_ms = ?, updated_at = ? WHERE id = 1');
 const _addUsage = db.prepare('UPDATE label_meta SET calls = calls + 1, input_tokens = input_tokens + ?, output_tokens = output_tokens + ?, usd = usd + ?, updated_at = ? WHERE id = 1');
 
 const cfg = () => _meta.get() || {};
@@ -83,11 +91,14 @@ function currentModel() { const m = cfg().model; return (m && m.trim()) || MODEL
 function promptExtra() { return (cfg().prompt_extra || '').trim(); }
 
 export function labelingEnabled() { return !!cfg().enabled; }
+export function backgroundLabelingEnabled() { return labelingEnabled() && cfg().mode === 'background'; }
 // full graph-agent config: the on/off + usage meter PLUS the configurable model / extra prompt / default view
 export function labelConfig() {
   const m = cfg();
   return {
     enabled: !!m.enabled,
+    mode: m.mode || 'on_demand', min_interval_ms: Math.max(30000, Number(m.min_interval_ms) || 30000),
+    ...budget.state(),
     model: m.model || '', model_default: MODEL_DEFAULT, model_active: currentModel(),
     prompt_extra: m.prompt_extra || '', default_view: m.default_view || '',
     calls: m.calls || 0, input_tokens: m.input_tokens || 0, output_tokens: m.output_tokens || 0,
@@ -95,12 +106,18 @@ export function labelConfig() {
   };
 }
 export const labelStats = labelConfig; // back-compat alias (the /space payload + toggle route)
-export function setLabeling(on) { _setEnabled.run(on ? 1 : 0, now()); return labelConfig(); }
+export function setLabeling(on) {
+  _setEnabled.run(on ? 1 : 0, now());
+  if (!on) activeRequest?.destroy(new LabelDeferred());
+  return labelConfig();
+}
 export function setLabelConfig(p = {}) {
-  if (typeof p.enabled === 'boolean') _setEnabled.run(p.enabled ? 1 : 0, now());
+  if (typeof p.enabled === 'boolean') setLabeling(p.enabled);
   if (typeof p.model === 'string') _setModel.run(p.model.trim().slice(0, 80) || null, now());
   if (typeof p.prompt_extra === 'string') _setPrompt.run(p.prompt_extra.slice(0, 1400) || null, now());
   if (typeof p.default_view === 'string' && ['3d', '2d', 'tree'].includes(p.default_view)) _setView.run(p.default_view, now());
+  if (['on_demand', 'background'].includes(p.mode)) _setMode.run(p.mode, now());
+  if (Number.isFinite(p.min_interval_ms)) _setInterval.run(Math.max(30000, Math.min(3600000, Math.round(p.min_interval_ms))), now());
   return labelConfig();
 }
 function recordUsage(env) {
@@ -142,38 +159,31 @@ function workSummary(sys) {
   return `${parts.join(', ') || 'no tools'}${files ? `; files changed: ${files}` : ''}${sys.problems ? `; ${sys.problems} errors hit` : ''}`;
 }
 
-// Be a polite background citizen so labeling can NEVER pile load onto a busy/overloaded API:
-//  - serialize ALL label model calls to concurrency 1 (many sessions fire labelSettled concurrently);
-//  - on an overload / rate-limit signal, TRIP A BREAKER — stand the whole labeler down for a cooldown and
-//    do NOT retry. Hammering 3× during a 429/529 is exactly the wrong move (it amplifies the overload).
-//    Only a transient network blip gets one retry. labeling is non-urgent, so trickle + yield is correct.
-const OVERLOAD_RX = /overloaded|rate.?limit|too many requests|quota|\b(429|529|503)\b/i;
-const NETBLIP_RX = /fetch failed|timeout|timed out|ECONNREFUSED|ECONNRESET|socket hang up|EAI_AGAIN|\b(500|502|504)\b/i;
-const BADMODEL_RX = /not[_ ]?found|unknown model|no such model|invalid model|\b404\b/i; // misconfigured model -> stand down, don't spam
-// access revoked (fleet de-escalated the model / upstream 403, e.g. "Antigravity loadCodeAssist failed
-// (403)") — same stand-down as a bad model: retrying every sweep produced thousands of log lines
-const DENIED_RX = /\b403\b|forbidden|permission[_ ]denied|access denied/i;
-const PAUSE_MS = Number(process.env.AIOS_LABEL_PAUSE_MS || 240000); // stand down 4 min after an overload
-let pausedUntil = 0;
-function tripBreaker(msg) {
-  pausedUntil = now() + PAUSE_MS;
-  console.error(`[aios] labeler paused ${Math.round(PAUSE_MS / 1000)}s — API overloaded: ${String(msg).slice(0, 120)}`);
-}
-// gate the whole labeler: enabled by the user AND not currently standing down after an overload
-export function labelReady() { return labelingEnabled() && now() >= pausedUntil; }
-
-let _gate = Promise.resolve(); // global mutex: at most ONE label model call in flight across all sessions
-function serialize(fn) {
-  const run = _gate.then(fn, fn);
-  _gate = run.then(() => {}, () => {}); // swallow so the chain keeps going regardless of outcome
-  return run;
-}
+const budget = createLabelBudget({ enabled: labelingEnabled,
+  interval: () => Math.max(30000, Number(cfg().min_interval_ms) || 30000),
+  overloadMs: Math.max(30000, Number(process.env.AIOS_LABEL_PAUSE_MS) || 240000) });
+export function labelReady() { return budget.ready(); }
+let activeRequest = null;
 function httpChat(body, key, port) {
   return new Promise((resolve, reject) => {
     const req = http.request(
       { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': body.length, authorization: `Bearer ${key}` }, timeout: 30000 },
-      (res) => { const ch = []; res.on('data', (c) => ch.push(c)); res.on('end', () => resolve(Buffer.concat(ch).toString('utf8'))); }
+      (res) => {
+        const ch = []; res.on('data', c => ch.push(c));
+        res.on('error', reject);
+        res.on('end', () => {
+          const raw = Buffer.concat(ch).toString('utf8');
+          if (res.statusCode >= 400) {
+            let detail = raw.slice(0, 300);
+            try { detail = JSON.parse(raw).error?.message || detail; } catch {}
+            return reject(new Error(`HTTP ${res.statusCode}: ${detail}`));
+          }
+          resolve(raw);
+        });
+      }
     );
+    activeRequest = req;
+    req.on('close', () => { if (activeRequest === req) activeRequest = null; });
     req.on('error', reject);
     req.on('timeout', () => req.destroy(new Error('label timeout')));
     req.write(body);
@@ -181,28 +191,27 @@ function httpChat(body, key, port) {
   });
 }
 async function chatJson(messages, maxTokens = 320) {
-  const key = await fleetKey();
-  const route = routeForModel(currentModel()); // resolve the chosen model -> its own proxy port + upstream id
-  const port = PORT_OVERRIDE || route.port || 8789;
-  const body = Buffer.from(JSON.stringify({ model: route.model || currentModel(), temperature: 0, max_tokens: maxTokens, messages }));
-  for (let i = 0; ; i++) {
-    try {
-      const raw = await serialize(() => httpChat(body, key, port)); // concurrency 1 process-wide
-      const env = JSON.parse(raw);
-      recordUsage(env); // meter tokens/$ spent on labeling (shown to the user; the switch can turn it off)
-      if (env.error) throw new Error(env.error.message || JSON.stringify(env.error));
-      let txt = (env.choices?.[0]?.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
-      const m = txt.match(/\{[\s\S]*\}/);
-      return JSON.parse(m ? m[0] : txt);
-    } catch (e) {
-      const msg = String(e?.message || e);
-      if (BADMODEL_RX.test(msg)) { tripBreaker(`model "${currentModel()}" not available: ${msg.slice(0, 80)}`); throw e; } // misconfig -> stand down
-      if (DENIED_RX.test(msg)) { tripBreaker(`model "${currentModel()}" access denied (403) — pick another AIOS_LABEL_MODEL or restore fleet access`); throw e; } // access change -> stand down
-      if (OVERLOAD_RX.test(msg)) { tripBreaker(msg); throw e; } // overloaded -> stand down, do NOT add load
-      if (i < 1 && NETBLIP_RX.test(msg)) { await sleep(600); continue; } // one retry for a transient blip
-      throw e;
-    }
-  }
+  return budget.run(async () => {
+    const key = await fleetKey();
+    if (!labelingEnabled()) throw new LabelDeferred(); // user switched off while credentials resolved
+    const route = routeForModel(currentModel());
+    const port = PORT_OVERRIDE || route.port || 8789;
+    const upstream = route.model || currentModel();
+    // Spark already offers a background lane which yields to interactive requests. A labels-model
+    // selection must not accidentally promote this optional work to the foreground lane.
+    const model = route.proxy === 'spark' && !upstream.startsWith('background/') ? `background/${upstream}` : upstream;
+    const body = Buffer.from(JSON.stringify({ model, temperature: 0, max_tokens: maxTokens, messages }));
+    const raw = await httpChat(body, key, port);
+    const env = JSON.parse(raw);
+    recordUsage(env); // meter tokens/$ spent on labeling (shown to the user; the switch can turn it off)
+    if (env.error) throw new Error(env.error.message || JSON.stringify(env.error));
+    const txt = (env.choices?.[0]?.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '');
+    const m = txt.match(/\{[\s\S]*\}/);
+    const result = JSON.parse(m ? m[0] : txt);
+    if (!result || typeof result !== 'object' || Array.isArray(result)
+        || (!String(result.label || '').trim() && !String(result.headline || '').trim())) throw new Error('Label model returned no usable label');
+    return result;
+  });
 }
 
 const REQ_SYS = `You categorize ONE request inside a coding-agent session for a feature-grouped review tree. Return STRICT JSON: {"feature","task","label","result","status","relation"}.
@@ -301,7 +310,8 @@ export async function labelSettled(session, space) {
     const taxStr = () => [...tax.entries()].map(([f, ts]) => `- ${f}: ${[...ts].join(' · ') || '(none yet)'}`).join('\n') || null;
     let calls = 0;
     let changed = false;
-    for (let i = 0; i < settledMax && calls < MAX_PER_PASS; i++) {
+    // The visible recent work matters first; historical backfill can wait for later refreshes.
+    for (let i = settledMax - 1; i >= 0 && calls < MAX_PER_PASS; i--) {
       const sys = systems[i];
       const ref = reqKey(sys);
       const sig = workSig(sys);
@@ -319,7 +329,7 @@ export async function labelSettled(session, space) {
           changed = true;
         }
       } catch (e) {
-        console.error('[aios] label request failed:', e.message);
+        if (e.code !== 'LABEL_DEFERRED') console.error('[aios] label request deferred after failure:', e.message);
         return false; // model trouble -> not done; try next sweep
       }
     }
@@ -337,7 +347,7 @@ export async function labelSettled(session, space) {
             byRef.set('session', { ref: 'session', sig, label: s.headline, result: s.goal });
           } else summaryCurrent = false;
         } catch (e) {
-          console.error('[aios] label session failed:', e.message);
+          if (e.code !== 'LABEL_DEFERRED') console.error('[aios] label session deferred after failure:', e.message);
           summaryCurrent = false;
         }
       }

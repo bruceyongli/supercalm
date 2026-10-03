@@ -144,7 +144,8 @@ function buildIndex(sp) {
 async function load({ quiet = false } = {}) {
   let payload;
   try {
-    payload = await api(`api/session/${P.sessionId}/space`);
+    const visibleGraph = !document.hidden && host?.getClientRects().length > 0 && view !== 'code';
+    payload = await api(`api/session/${P.sessionId}/space${visibleGraph ? '?label=1' : ''}`);
   } catch (e) {
     if (!quiet) host.querySelector('#map-info').innerHTML = `<span class="muted">Graph unavailable: ${esc(e.message || String(e))}</span>`;
     return;
@@ -296,10 +297,13 @@ async function openConfig(row) {
     <label class="map-config-row"><span>AI labels</span>
       <input type="checkbox" id="cfg-enabled" ${c.enabled ? 'checked' : ''}>
     </label>
+    <label class="map-config-row"><span>Run labels</span>
+      <select id="cfg-mode"><option value="on_demand" ${c.mode !== 'background' ? 'selected' : ''}>When graph is open</option><option value="background" ${c.mode === 'background' ? 'selected' : ''}>In background</option></select>
+    </label>
     <label class="map-config-row"><span>Labeling model</span>
       ${modelSelectHtml(models, c.model || '', c.model_default)}
     </label>
-    <div class="map-config-note muted">Switch any time — pick a NON-Claude model to keep labeling off your Claude rate limits; local spark models (qwen…) are free &amp; fastest.</div>
+    <div class="map-config-note muted">Global limit: one model call every ${Math.round((c.min_interval_ms || 30000) / 1000)} seconds. Labels are cached; failures wait before trying again.</div>
     <label class="map-config-col"><span>Extra labeling instructions <em class="muted">(optional)</em></span>
       <textarea id="cfg-prompt" rows="3" placeholder="e.g. prefer terse labels; keep status strict; note perf wins">${esc(c.prompt_extra || '')}</textarea>
     </label>
@@ -313,6 +317,7 @@ async function openConfig(row) {
     const body = {
       default_view: pop.querySelector('#cfg-view').value,
       enabled: pop.querySelector('#cfg-enabled').checked,
+      mode: pop.querySelector('#cfg-mode').value,
       model: pop.querySelector('#cfg-model').value.trim(),
       prompt_extra: pop.querySelector('#cfg-prompt').value,
     };

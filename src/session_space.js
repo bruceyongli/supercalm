@@ -13,7 +13,7 @@ import { SPACE_VERSION, tsMs, contentText, hasToolResult } from './session_space
 import { readSpace, readTranscriptRange } from './session_space_reader.js';
 import { codexRolloutFiles, pickRolloutByUuid } from './codex_rollouts.js';
 import { bus } from './bus.js';
-import { applyLabels, labelSettled, labelReady } from './session_labels.js';
+import { applyLabels, labelSettled, labelReady, backgroundLabelingEnabled } from './session_labels.js';
 
 const CLAUDE_DIR = process.env.AIOS_USAGE_CLAUDE_DIR || join(homedir(), '.claude', 'projects');
 const CODEX_DIR = process.env.AIOS_USAGE_CODEX_DIR || join(homedir(), '.codex', 'sessions');
@@ -210,10 +210,10 @@ export async function buildSessionSpace(session, located = null) {
     return getSessionSpace(session.id);
   }
   const stored = storeSpace(session.id, { tool: session.tool, file: loc.file, mtime: mt, space });
-  // the structure (re)built -> there may be new/changed requests to label; let the labeler re-evaluate,
-  // and kick an immediate pass so labels start appearing the moment a session is opened or grows.
-  if (space && labelReady()) {
-    labelDone.delete(session.id);
+  // A structure change invalidates the completion cache even while labeling is disabled. Only an
+  // explicitly enabled background mode starts model work here; on-demand work waits for the viewer.
+  if (space) labelDone.delete(session.id);
+  if (space && backgroundLabelingEnabled() && labelReady()) {
     labelSettled(session, space).then((done) => { if (done) labelDone.add(session.id); }).catch((e) => console.error('[aios] labelSettled:', e?.message || e));
   }
   return stored;
@@ -280,11 +280,12 @@ async function sweepOnce() {
       if (s.tool !== 'claude' && s.tool !== 'codex') continue;
       const built = _getMeta.get(s.id);
       if (!(s.status === 'exited' && built)) await maybeRebuild(s).catch(() => {}); // exited+built is structurally stable
-      // Proactively label only LIVE sessions (the ones the user is likely watching): keep labeling their
+      // Only the optional background mode proactively labels live sessions. Default on-demand mode
+      // never starts inference in this sweep. In background mode, keep labeling their
       // settled requests across sweeps until done (one pass labels only MAX_PER_PASS). Exited/old sessions
       // are labeled lazily, on open (kickLabels from the /space route) — no point spending tokens naming
       // dozens of finished sessions nobody may reopen. labelDone gates fully-labeled sessions to ~a Map hit.
-      if (labelReady() && s.status !== 'exited' && !labelDone.has(s.id)) {
+      if (backgroundLabelingEnabled() && labelReady() && s.status !== 'exited' && !labelDone.has(s.id)) {
         const cur = getSessionSpace(s.id);
         if (cur?.space) {
           const done = await labelSettled(s, cur.space).catch(() => false);
@@ -317,8 +318,7 @@ export async function ensureSessionSpace(session) {
   return getSessionSpace(session.id);
 }
 
-// On-demand labeling for the session being VIEWED (any status, incl. exited/old). The sweep only labels
-// live sessions, so this is how an opened finished session gets named — fire-and-forget, cheap when cached
+// On-demand labeling for the session being VIEWED (any status, incl. exited/old) — fire-and-forget, cached.
 // (labelSettled self-skips already-labeled requests). The panel re-fetches /space as labels land.
 export function kickLabels(session) {
   if (!session || !labelReady() || labelDone.has(session.id)) return;

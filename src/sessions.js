@@ -3065,12 +3065,14 @@ route('POST', '/api/session/:id/map', async (req, res, { id: sid }) => {
 });
 
 // Deterministic "session space map" (solar-system + flow): built from the transcript, zero LLM, auto-updated.
-route('GET', '/api/session/:id/space', async (req, res, { id: sid }) => {
+route('GET', '/api/session/:id/space', async (req, res, { id: sid }, url) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   let space = getSessionSpace(sid);
   if (!space || !space.space) space = await ensureSessionSpace(s); // build on first view
-  kickLabels(s); // label THIS session on demand (the sweep only labels live sessions); cheap when cached
+  // Data consumers and hidden panels must not start inference. The visible graph explicitly asks
+  // for optional labels; all other reads retain cached labels and deterministic graph structure.
+  if (url?.searchParams?.get('label') === '1') kickLabels(s);
   json(res, 200, { ok: true, space, labeling: labelStats() });
 });
 
