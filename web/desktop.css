@@ -95,6 +95,19 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-badge.warn { background: rgba(226,178,62,.12); color: #e2b23e; border: 1px solid rgba(226,178,62,.4); }
 .dk-sec { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 1.5px; color: #5c6675; text-transform: uppercase; padding: 8px 6px 2px; }
 .dk-sessions { display: flex; flex-direction: column; gap: 3px; }
+.dk-older[hidden] { display: none; }
+.dk-older > summary {
+  min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 8px 2px;
+  color: #8793a3; font-size: 12px; font-weight: 650; cursor: pointer; list-style: none;
+}
+.dk-older > summary::-webkit-details-marker { display: none; }
+.dk-older > summary::before { content: '▸'; color: #687585; }
+.dk-older[open] > summary::before { content: '▾'; }
+.dk-older > summary > span { color: #687585; font-size: 11px; margin-left: auto; }
+.dk-older > summary:hover { color: #c3ccd7; }
+.dk-older > summary:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; border-radius: 6px; }
+.dk-older-rail > summary { padding: 8px 9px; font-size: 11px; }
+#dk-older-cards { display: grid; gap: 10px; }
 .dk-sess { display: flex; flex-direction: column; gap: 2px; padding: 7px 9px; border-radius: 9px; text-decoration: none; }
 .dk-sess:hover { background: #10151d; }
 /* the session currently open highlights like an active nav item (bg + inset accent) */

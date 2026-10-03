@@ -19,6 +19,7 @@ import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
+import { splitSessionRecency } from './session-recency.js';
 
 registerSW();
 
@@ -41,6 +42,7 @@ const S = {
   killArmed: false, killTimer: null,
   toast: '', toastTimer: null,
   dismissedOpen: false,
+  olderNeedsOpen: false, olderSessionsOpen: false,
   appVersion: null,
 };
 addEventListener('aios:version', (event) => {
@@ -821,7 +823,8 @@ function renderHome() {
       ${hasMulti ? `<button class="need-send" data-need-send="${esc(s.id)}" ${phoneChoicesComplete(questions, selections) && !submittingChoices.has(s.id) ? '' : 'disabled'}>${submittingChoices.has(s.id) ? 'Sending choices…' : 'Send selected options'}</button>` : `<span class="needq-hint">${questions.length > 1 ? 'Choose one for each — sends after the last choice' : 'Choose an option to answer'}</span>`}
     </div>`;
   };
-  const needCards = needs.map((s) => {
+  const { recent: recentNeeds, older: olderNeeds } = splitSessionRecency(needs);
+  const needCard = (s) => {
     const [bLabel, bColor] = badgeFor(s) || ['REVIEW', '#3fbf5f'];
     const isPlaying = S.playScope === 'home' && S.speakingId === s.last_key?.id;
     const questions = phoneOptionQuestions(s);
@@ -851,7 +854,9 @@ function renderHome() {
         <button class="act dismiss" data-dismiss-need="${esc(s.id)}">Dismiss</button>
       </div>
     </div>`;
-  }).join('');
+  };
+  const needCards = recentNeeds.map(needCard).join('');
+  const olderNeedCards = S.olderNeedsOpen ? olderNeeds.map(needCard).join('') : '';
   const dismissedRows = dismissed.map((s) => `
     <div class="ph-dismissed-row" data-open="${esc(s.id)}">
       <div class="ph-dismissed-copy">
@@ -870,7 +875,8 @@ function renderHome() {
       <span class="sessstatus" style="color:${statusColor(s.status)}">${statusWord(s.status)}</span>
       <span class="sesstime">${ago(s.last_activity)}</span>
     </button>`;
-  const rows = live.filter((s) => !needs.includes(s) && !s.dismissed).map(sessRow).join('');
+  const { recent: recentLive, older: olderLive } = splitSessionRecency(live.filter((s) => !needs.includes(s) && !s.dismissed));
+  const rows = recentLive.map(sessRow).join('');
   // Every session, not just the live ones (operator: the mobile view must reach ALL sessions).
   const others = sessions.filter((s) => !['working', 'waiting'].includes(s.status));
   const otherRows = others.map(sessRow).join('');
@@ -902,6 +908,12 @@ function renderHome() {
       <div class="sec-label">NEEDS YOU <span class="cnt">${needs.length}</span><button class="ph-needs-refresh" id="refresh-needs" aria-label="Refresh Needs you from the server">↻ Refresh</button></div>
       ${needs.length ? needCards : `
         <div class="allclear"><span class="check">✓</span><span class="t">All clear — nothing needs you.</span></div>`}
+      ${olderNeeds.length ? `<section class="ph-older">
+        <button class="ph-older-toggle" id="toggle-older-needs" aria-expanded="${S.olderNeedsOpen}" aria-controls="ph-older-needs">
+          <span aria-hidden="true">${S.olderNeedsOpen ? '▾' : '▸'}</span> Older sessions <span class="cnt">${olderNeeds.length}</span>
+        </button>
+        <div class="ph-older-rows" id="ph-older-needs" ${S.olderNeedsOpen ? '' : 'hidden'}>${olderNeedCards}</div>
+      </section>` : ''}
       ${stale.length ? `<div class="stale-strip">▸ ${stale.length} stale session${stale.length === 1 ? '' : 's'} waiting — no touch from you in days (replying re-heats)</div>` : ''}
       ${dismissed.length ? `<section class="ph-dismissed">
         <button class="ph-dismissed-toggle" id="toggle-dismissed" aria-expanded="${S.dismissedOpen ? 'true' : 'false'}">
@@ -910,7 +922,13 @@ function renderHome() {
         ${S.dismissedOpen ? `<div class="ph-dismissed-rows">${dismissedRows}</div>` : ''}
       </section>` : ''}
       <div class="sec-label" style="padding-top:10px">SESSIONS</div>
-      ${rows || '<div class="stale-strip">no other live sessions</div>'}
+      ${rows || (!olderLive.length ? '<div class="stale-strip">no other live sessions</div>' : '')}
+      ${olderLive.length ? `<section class="ph-older">
+        <button class="ph-older-toggle" id="toggle-older-sessions" aria-expanded="${S.olderSessionsOpen}" aria-controls="ph-older-sessions">
+          <span aria-hidden="true">${S.olderSessionsOpen ? '▾' : '▸'}</span> Older sessions <span class="cnt">${olderLive.length}</span>
+        </button>
+        <div class="ph-older-rows" id="ph-older-sessions" ${S.olderSessionsOpen ? '' : 'hidden'}>${S.olderSessionsOpen ? olderLive.map(sessRow).join('') : ''}</div>
+      </section>` : ''}
       <div class="sec-label" style="padding-top:12px">SYSTEM</div>
       <nav class="ph-sysnav">
         <a href="decisions">Decisions</a>
@@ -1158,6 +1176,8 @@ function mountPanels() {
 
 // ---- wiring (event delegation after each render) ---------------------------------------------------
 function wire() {
+  $('#toggle-older-needs')?.addEventListener('click', () => { S.olderNeedsOpen = !S.olderNeedsOpen; render(); });
+  $('#toggle-older-sessions')?.addEventListener('click', () => { S.olderSessionsOpen = !S.olderSessionsOpen; render(); });
   // home
   $('#toggle-dismissed')?.addEventListener('click', () => {
     S.dismissedOpen = !S.dismissedOpen;

@@ -8,6 +8,7 @@ import { api, escapeHtml as esc, fmtAgo, setupVerdict, isInteracting, setDashboa
 import { startVoiceMode } from '../voicemode.js';
 import { setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
+import { splitSessionRecency } from '../session-recency.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
 // (a CLI installed + a credential) actually pass; otherwise it points at the wizard. Checked once
@@ -37,6 +38,7 @@ const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e']
 const STOPPED_SHOWN = 10;
 let stoppedExpanded = false;
 let dismissedExpanded = false;
+let olderNeedsExpanded = false;
 let unsub = null;
 let unsubOnTheGo = null;
 let host = null;
@@ -119,10 +121,11 @@ function renderInbox(home) {
   if (!host) return;
   setDashboardBrowserIdentity(home);
   const cards = needsYou();
+  const { recent: recentCards, older: olderCards } = splitSessionRecency(cards);
   const nc = $('#dk-needs-count');
   if (nc) { nc.hidden = !cards.length; nc.textContent = cards.length; }
   const cardsEl = $('#dk-cards');
-  const cardSpecs = cards.map((s) => {
+  const cardSpec = (s) => {
     const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
     const preview = sessionAttentionPreview(s, { optionCount: questions.length });
@@ -145,11 +148,32 @@ function renderInbox(home) {
         : `<button class="dk-reply-btn" data-dk-reply>Reply</button><a class="dk-inspect-btn" href="session?id=${esc(s.id)}">Open session</a>`}<button class="dk-dismiss-btn" data-dk-dismiss title="Remove this report from Needs you">Dismiss</button></div>
       <div class="dk-reply" hidden><textarea rows="2" placeholder="Reply to the agent…"></textarea><button class="dk-send" data-dk-send>➤</button></div>
     </div>` };
-  });
-  if (!cardSpecs.length) cardSpecs.push((home.sessions || []).length === 0
+  };
+  const cardSpecs = recentCards.map(cardSpec);
+  if (!cards.length) cardSpecs.push((home.sessions || []).length === 0
     ? { key: 'empty:first', html: `<div class="dk-hero" data-dk-allclear><span data-dk-setupline><span class="ok">✓ this box is yours</span></span><p>Start your first session: pick a repo — or type a new path and the project is created on the spot — give the agent a task, and walk away.</p><button class="dk-new" id="dk-hero-start">▶ Start first session</button></div>` }
     : { key: 'empty:clear', html: '<div class="dk-allclear" data-dk-allclear>All clear — nothing needs you.</div>' });
+  const olderCardsEl = $('#dk-older-cards');
+  // Move connected cards between groups before reconciliation: a fresh report must not discard a reply draft.
+  const placements = new Map([
+    ...recentCards.map(s => [`card:${s.id}`, cardsEl]),
+    ...olderCards.map(s => [`card:${s.id}`, olderCardsEl]),
+  ]);
+  for (const container of [cardsEl, olderCardsEl]) {
+    for (const card of [...(container?.children || [])]) {
+      const target = placements.get(card.dataset.key);
+      if (target && target !== container) target.appendChild(card);
+    }
+  }
   if (cardsEl) reconcile(cardsEl, cardSpecs);
+  const olderNeeds = $('#dk-older-needs');
+  if (olderNeeds) {
+    olderNeeds.hidden = !olderCards.length;
+    olderNeedsExpanded = olderNeeds.open; // the native disclosure is authoritative, even before its toggle event
+    $('#dk-older-needs-count').textContent = olderCards.length;
+    // Lazy on first expansion; once mounted retain cards on collapse so unsent drafts survive.
+    reconcile(olderCardsEl, olderNeedsExpanded || olderCardsEl.children.length ? olderCards.map(cardSpec) : []);
+  }
   const dismissed = dismissedAttention();
   const dismissedSection = $('#dk-dismissed-section');
   const dismissedCount = $('#dk-dismissed-count');
@@ -188,17 +212,26 @@ function renderInbox(home) {
   const stoppedToggle = stopped.length > STOPPED_SHOWN
     ? `<button class="dk-show-more" data-dk-stopped-toggle>${stoppedExpanded ? 'show fewer' : `show all ${stopped.length} stopped`}</button>` : '';
   const rowsEl = $('#dk-rows');
-  const rowSpecs = live.map((s) => ({ key: `row:${s.id}`, html: row(s) }));
+  const { recent: recentLive, older: olderLive } = splitSessionRecency(live);
+  const rowSpecs = recentLive.map((s) => ({ key: `row:${s.id}`, html: row(s) }));
+  if (olderLive.length) rowSpecs.push({ key: 'older:live', html: `<details class="dk-older" id="dk-older-live">
+    <summary>Older sessions <span data-older-count></span></summary><div data-older-rows></div>
+  </details>` });
   if (stopped.length) {
     rowSpecs.push({ key: 'stopped:header', html: `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>` });
     rowSpecs.push(...shownStopped.map((s) => ({ key: `row:${s.id}`, html: row(s) })));
     if (stoppedToggle) rowSpecs.push({ key: 'stopped:toggle', html: stoppedToggle });
   }
   if (rowsEl) reconcile(rowsEl, rowSpecs);
+  const olderLiveGroup = $('#dk-older-live');
+  if (olderLiveGroup) {
+    olderLiveGroup.querySelector('[data-older-count]').textContent = olderLive.length;
+    reconcile(olderLiveGroup.querySelector('[data-older-rows]'), olderLive.map(s => ({ key: `row:${s.id}`, html: row(s) })));
+  }
   const tog = $('[data-dk-stopped-toggle]');
   if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
   wireCards();
-  for (const session of cards) ensureOptionQuestions(session, () => renderInbox(getHome()));
+  for (const session of [...recentCards, ...(olderNeedsExpanded ? olderCards : [])]) ensureOptionQuestions(session, () => renderInbox(getHome()));
 }
 
 async function answer(card, text) {
@@ -365,6 +398,10 @@ export function init(el) {
           </div>
         </div>
         <div id="dk-cards" data-dk-cards></div>
+        <details class="dk-older" id="dk-older-needs" hidden>
+          <summary>Older sessions <span id="dk-older-needs-count">0</span></summary>
+          <div id="dk-older-cards"></div>
+        </details>
         <section class="dk-dismissed" id="dk-dismissed-section" hidden>
           <button class="dk-dismissed-toggle" id="dk-dismissed-toggle" aria-expanded="false">
             <span data-dk-dismissed-chevron>▸</span> Dismissed <span id="dk-dismissed-count">0</span>
@@ -376,6 +413,13 @@ export function init(el) {
       </section>
     </div>`;
   const voice = $('#dk-voice');
+  const olderNeeds = $('#dk-older-needs');
+  if (olderNeeds) olderNeeds.open = olderNeedsExpanded;
+  if (olderNeeds) olderNeeds.ontoggle = () => {
+    if (olderNeedsExpanded === olderNeeds.open) return;
+    olderNeedsExpanded = olderNeeds.open;
+    renderInbox(getHome());
+  };
   if (voice) voice.onclick = () => startVoiceMode();
   const onTheGo = $('#dk-on-the-go');
   if (onTheGo) onTheGo.onclick = async () => {

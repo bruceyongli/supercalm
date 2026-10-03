@@ -166,7 +166,7 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 // (version) + auth mode, not hostname/clock.
 {
   const shell = read('shell.js');
-  const rs = shell.slice(shell.indexOf('function renderSide()'), shell.indexOf('function renderSide()') + 2600);
+  const rs = shell.slice(shell.indexOf('function renderSide()'), shell.indexOf('// Auth-mode footer chip'));
   assert.ok(!/dk-status/.test(rs), 'rail rows carry no dk-status word — the dot is the status');
   assert.ok(/dk-sess-age/.test(rs) && /fmtAgo\(s\.last_activity\)/.test(rs), 'rail rows show the last-activity age instead');
   assert.ok(/appVersion/.test(rs), 'the footer leads with the running version');
