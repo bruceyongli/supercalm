@@ -13,6 +13,7 @@ import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
 import { terminalQuestionPrompt } from './detect_classify.js';
+import { refreshCodexQuestions, overlayCodexQuestions } from './codex_questions.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -175,6 +176,10 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     // Live session status (NOT baked into storyFor's cached meta — status changes far more often than
     // the transcript) so the story view can show a calming "working" animation while the agent runs.
     const s = getSession(sid);
+    if (!cursor && s?.tool === 'codex') {
+      await refreshCodexQuestions(s, { file: r.meta?.source === 'transcript' ? r.meta.file : null });
+      r.events = overlayCodexQuestions(getSession(sid), r.events);
+    }
     // Live CLI status line (only while working; one cheap capture-pane, off the cache since it changes
     // every second). Fail-open — a missing status just falls back to the generic working animation.
     let liveStatus = null;

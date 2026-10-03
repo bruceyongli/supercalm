@@ -218,7 +218,7 @@ export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
 export const listExpectedLiveSessions = () => _expectedLiveSessions.all();
 
-const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'desired_status', 'runtime_status', 'runtime_boot_id', 'runtime_heartbeat_at', 'status_reason', 'recovery_attempts', 'question', 'summary', 'category', 'stage', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'desired_status', 'runtime_status', 'runtime_boot_id', 'runtime_heartbeat_at', 'status_reason', 'recovery_attempts', 'question', 'summary', 'category', 'stage', 'structured_question', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
   const next = { ...patch };
   // One durable write path owns lifecycle semantics. UI actions, agent hooks, polling, and resumes all

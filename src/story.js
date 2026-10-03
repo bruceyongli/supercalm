@@ -34,6 +34,8 @@
 //     shot, indent, durationMs, exitCode, answered, answeredWith }
 // kinds: you | sys | work | plan | note | sub | edit | fail | check | ship | web | report | ask | stop | gap
 
+import { codexQuestionCall, questionMirror } from './codex_question.js';
+
 const CLUSTER_WINDOW_MS = 90_000;   // same-class calls within 90s merge into one work block
 const GAP_MIN_MS = 10 * 60_000;     // idle > 10 min renders a gap divider
 
@@ -187,6 +189,7 @@ function atomsFromCodex(lines) {
   const atoms = [];
   const callCmd = new Map(); // call_id -> cmd (F4)
   const assistantIds = new Map();
+  let asyncMirrors = [];
   let recentAssistant = [], turnId = null;
   // CLI versions mirror the same text in agent_message, item_completed/AgentMessage and
   // response_item/message. Newer versions emit ONLY the latter two, with final_answer rather
@@ -195,6 +198,9 @@ function atomsFromCodex(lines) {
     if (!text || typeof text !== 'string') return;
     text = text.trim();
     if (!text) return;
+    // The async tool emits a plain-text final_answer mirror immediately after its call. It is
+    // the same question, not a second report. Match the trusted payload exactly, never prose heuristics.
+    if (asyncMirrors.some(m => m.text === text && Math.abs(m.ts - ts) < 5000)) return;
     let record = messageId && assistantIds.get(messageId);
     record ||= recentAssistant.findLast((entry) => entry.atom.text === text
       && (!messageTurn || !entry.turnId || messageTurn === entry.turnId)
@@ -226,6 +232,7 @@ function atomsFromCodex(lines) {
     if (!dup) {
       atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
       recentAssistant = [];
+      asyncMirrors = [];
     }
     else if (images.length) attachImagesToYou(atoms, ts, images);
   };
@@ -267,18 +274,23 @@ function atomsFromCodex(lines) {
         if (p.name === 'update_plan') {
           const planItems = normalizePlanItems(args.plan || args.steps);
           atoms.push({ ts, kind: 'plan', title: 'Made a plan', planItems });
-        } else if (p.name === 'request_user_input') {
-          // F6: codex asks arrive as a tool call; their function_call_output IS the durable answer
-          const questions = args.questions?.length ? args.questions : [{
-            question: args.question || args.prompt || 'Needs your decision',
-            options: args.options || [],
-            multiSelect: !!args.multiSelect,
-          }];
-          for (const q of questions) {
-            const options = (q.options || []).map((o) => (typeof o === 'string' ? { label: o } : o));
+        } else if (codexQuestionCall(p)) {
+          const prompt = codexQuestionCall(p);
+          if (prompt.mode === 'async') {
+            const mirror = questionMirror(prompt.questions);
+            asyncMirrors.push({ ts, text: mirror });
+            asyncMirrors = asyncMirrors.slice(-8);
+            // Some CLI builds write the mirror before the tool call rather than after it.
+            for (let i = atoms.length - 1; i >= 0; i--) {
+              if (atoms[i].kind === 'you') break;
+              if (['note', 'report'].includes(atoms[i].kind) && atoms[i].text === mirror && Math.abs(atoms[i].ts - ts) < 5000) atoms.splice(i, 1);
+            }
+          }
+          for (const [index, q] of prompt.questions.entries()) {
             atoms.push({
               ts, kind: 'ask', title: q.header ? `Needs your decision — ${q.header}` : 'Needs your decision',
-              text: q.question || 'Needs your decision', options, askId: p.call_id, multiSelect: !!q.multiSelect,
+              text: q.question, options: q.options, askId: p.call_id, askMode: prompt.mode,
+              questionId: q.id, questionIndex: index, multiSelect: q.multiSelect,
             });
           }
         } else {
@@ -290,6 +302,8 @@ function atomsFromCodex(lines) {
         // (menu selections leave no user text turn, so the you-after rule alone never fires)
         const askAtoms = p.call_id ? atoms.filter((a) => a.kind === 'ask' && a.askId === p.call_id) : [];
         if (askAtoms.length) {
+          // request_user_input_async returns {accepted:true} immediately. It contains no reply.
+          if (askAtoms[0].askMode === 'async') continue;
           const rawAns = typeof p.output === 'string' ? p.output : JSON.stringify(p.output || '');
           for (const askAtom of askAtoms) {
             askAtom.answered = true;
@@ -435,7 +449,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, reportCandidate: a.reportCandidate });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, reportCandidate: a.reportCandidate });
   }
   flush();
 

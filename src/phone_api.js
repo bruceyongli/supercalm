@@ -6,6 +6,7 @@
 import { route, json } from './server.js';
 import { db } from './store.js';
 import { bus } from './bus.js';
+import { questionProjection } from './codex_question.js';
 import {
   attentionUnreadCount,
   dismissAttention,
@@ -142,7 +143,7 @@ route('GET', '/api/phone/home', async (req, res) => {
     WITH recent AS (
       SELECT id FROM sessions ORDER BY last_activity DESC LIMIT 120
     )
-    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.last_activity, s.started_at, s.revision, p.name AS project
+    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.structured_question, s.last_activity, s.started_at, s.revision, p.name AS project
     FROM sessions s
     LEFT JOIN projects p ON p.id = s.project_id
     WHERE s.id IN (SELECT id FROM recent)
@@ -158,6 +159,7 @@ route('GET', '/api/phone/home', async (req, res) => {
     return {
       ...s,
       question,
+      ...questionProjection(s),
       unread: u?.n || 0,
       last_key: lastKey ? { id: lastKey.id, text: String(lastKey.text || '').slice(0, 500), ts: lastKey.ts } : null,
       dismissed: !!dismissal,

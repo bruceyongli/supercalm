@@ -1,5 +1,6 @@
 import { TOOLS } from './config.js';
 import { modelDisplayLabel, modelSupportsFast } from './model_catalog.js';
+import { questionProjection } from './codex_question.js';
 
 // Canonical public session shape. API detail responses, state snapshots, and lifecycle events all derive
 // labels/capabilities here so a field cannot silently drift between three independent decorators.
@@ -10,6 +11,7 @@ export function projectSession(session, { project = null } = {}) {
   const fastCapable = session.tool === 'codex' && modelSupportsFast(model);
   return {
     ...session,
+    ...questionProjection(session),
     revision: Math.max(1, Number(session.revision) || 1),
     fastMode: fastCapable && !!session.fast_mode,
     fastCapable,
@@ -42,6 +44,8 @@ export function sessionStatusPayload(session, {
     question: row.question || null,
     summary: row.summary || null,
     category: row.category || null,
+    pending_input: row.pending_input,
+    option_events: row.option_events,
     stage: row.stage || null,
     title: row.title || null,
     tool: row.tool,

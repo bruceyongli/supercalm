@@ -201,4 +201,9 @@ export const CORE_MIGRATIONS = [
         ON messages(session_id, client_message_id) WHERE client_message_id IS NOT NULL`);
     },
   },
+  {
+    id: '0008_structured_async_questions',
+    description: 'Persist native asynchronous questions separately from process working state',
+    up(db) { ensureColumn(db, 'sessions', 'structured_question', 'TEXT'); },
+  },
 ];

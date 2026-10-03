@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { parseSessionLog } from '../src/story.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const webRoot = join(root, 'web');
@@ -456,6 +457,30 @@ try {
     'the phone footer version opens the PWA refresh bottom sheet');
   await phone.screenshot({ path: join(outDir, 'phone-pwa-update.png'), fullPage: true });
   await phone.close();
+  // New Codex async prompts may arrive while working. Persisted native choices render directly
+  // from the lean home payload, with no per-card history download or fake paused session state.
+  for (const mobile of [false, true]) {
+    const asyncId = `s_async_${mobile ? 'phone' : 'desktop'}`;
+    const nativeCall = { type: 'function_call', name: 'request_user_input_async', call_id: `call_${asyncId}`,
+      arguments: JSON.stringify({ questions: [{ title: 'Approve this change?', options: ['Approve', 'Leave unchanged'] }] }) };
+    const optionEvents = parseSessionLog(JSON.stringify({ timestamp: new Date().toISOString(), type: 'response_item', payload: nativeCall }));
+    sessions.push({ id: asyncId, title: 'Review new async approval', project: 'aios', tool: 'codex', status: 'working',
+      pending_input: true, option_events: optionEvents, category: 'decision', unread: 1, question: 'Approve this change?',
+      last_activity: Date.now(), last_key: { id: mobile ? 51 : 50, ts: Date.now(), text: 'Approve this change?' } });
+    const asyncPage = await browser.newPage({ viewport: { width: mobile ? 390 : 1440, height: 844 } });
+    await asyncPage.goto(base + (mobile ? 'phone' : ''));
+    const asyncCard = asyncPage.locator(mobile ? `.needcard[data-open="${asyncId}"]` : `[data-dk-card][data-sid="${asyncId}"]`);
+    const choices = asyncCard.locator(mobile ? '[data-need-choice]' : '[data-dk-choice]');
+    await choices.first().waitFor();
+    assert.deepEqual(await choices.allTextContents().then(items => items.map(s => s.trim())), ['Approve', 'Leave unchanged']);
+    const previousAnswers = answerBodies.length;
+    await choices.filter({ hasText: 'Leave unchanged' }).click();
+    await asyncCard.waitFor({ state: 'detached' });
+    assert.equal(answerBodies.length, previousAnswers + 1);
+    assert.equal(answerBodies.at(-1).answers[0].ask_id, nativeCall.call_id);
+    assert.equal(answerBodies.at(-1).answers[0].values[0].label, 'Leave unchanged');
+    await asyncPage.close();
+  }
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

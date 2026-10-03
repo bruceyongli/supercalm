@@ -104,7 +104,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.match(css, /\.dk-dot\.pulse\s*\{[^}]*2\.8s/, 'working status uses a slow blink instead of rapid flashing');
   assert.match(dash, /data-dk-dismiss/, 'Needs-you cards have a visible dismiss action');
   assert.match(dash, /id="dk-dismissed-section"/, 'desktop keeps a quiet recoverable Dismissed section');
-  assert.match(shell, /!s\.dismissed && s\.status === 'waiting'/, 'persistently dismissed reports cannot enter Needs you');
+  assert.match(shell, /!s\.dismissed && \(s\.status === 'waiting' \|\| \(s\.status === 'working' && s\.pending_input\)\)/, 'persistently dismissed reports cannot enter Needs you, including async questions from working agents');
   assert.match(shell, /export function dismissedAttention/, 'all views derive dismissed history from the shared normalized store');
   assert.match(dash, /id="dk-needs-refresh"/, 'desktop Needs you has a visible manual refresh control');
   assert.match(dash, /upsertSession\(\{ id: sid, status: 'working', question: null, summary: null, category: null, unread: 0 \}\)/,

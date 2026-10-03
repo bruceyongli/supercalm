@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +25,8 @@ process.env.AIOS_TMUX = wrapper;
 process.env.AIOS_HOST = '127.0.0.1';
 process.env.AIOS_PORT = String(port);
 process.env.AIOS_SUBMIT_DELAY = '30';
+process.env.AIOS_CODEX_SESSIONS_DIR = join(scratch, 'codex');
+mkdirSync(process.env.AIOS_CODEX_SESSIONS_DIR);
 delete process.env.AIOS_NO_LISTEN;
 
 let store;
@@ -105,6 +107,59 @@ try {
   assert.equal(onceTrace().filter(r => r.event === 'accepted').length, 2, 'an intentional new send of identical words is not suppressed');
   assert.equal((await send(onceId, onceText, { client_message_id: '../bad' })).status, 400);
   console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'five concurrent retries plus completed retry', requests: 6, accepted: 1, persisted: 1 }));
+  const asyncId = 's_async_delivery';
+  const asyncTrace = await start(asyncId, 'partial-paste', 'codex');
+  const uuid = '12345678-1234-1234-1234-123456789abc';
+  store.updateSession(asyncId, { status: 'working', codex_uuid: uuid });
+  const nativeFile = join(process.env.AIOS_CODEX_SESSIONS_DIR, `rollout-test-${uuid}.jsonl`);
+  const ask = { type: 'function_call', name: 'request_user_input_async', call_id: 'call_async_delivery',
+    arguments: JSON.stringify({ questions: [{ title: 'Which runtime?', options: ['Node', 'Bun'] }, { title: 'Which checks?', options: ['Focused', 'Full'] }] }) };
+  const nativeRow = payload => JSON.stringify({ type: 'response_item', timestamp: new Date().toISOString(), payload }) + '\n';
+  writeFileSync(nativeFile, nativeRow(ask) + nativeRow({ type: 'function_call_output', call_id: ask.call_id, output: '{"accepted":true}' }));
+  const { refreshCodexQuestions } = await import('../src/codex_questions.js');
+  await refreshCodexQuestions(store.getSession(asyncId));
+  let home = await (await fetch(`http://127.0.0.1:${port}/api/phone/home`)).json();
+  const attention = home.sessions.find(s => s.id === asyncId);
+  assert.equal(attention.status, 'working', 'async attention does not invent a paused agent state');
+  assert.equal(attention.pending_input, true);
+  assert.equal(attention.category, 'decision');
+  assert.equal(attention.unread, 1);
+  assert.equal(attention.option_events.length, 2, 'home gets persisted choices without a transcript parse');
+  let story = await (await fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/story`)).json();
+  assert.equal(story.events.filter(e => e.kind === 'ask' && !e.answered).length, 2);
+  const answers = [{ ask_id: ask.call_id, question: 'Which runtime?', values: [{ label: 'Node' }] },
+    { ask_id: ask.call_id, question: 'Which checks?', values: [{ label: 'Full' }] }];
+  const sendAnswers = body => fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/answers`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers: body }),
+  });
+  assert.equal((await sendAnswers([{ ...answers[0], values: [{ label: 'Invented choice' }] }, answers[1]])).status, 409,
+    'unrecognized/stale choices cannot be delivered');
+  const asyncResponse = await sendAnswers(answers);
+  assert.equal(asyncResponse.status, 200, await asyncResponse.text());
+  const acceptedAsync = asyncTrace().filter(r => r.event === 'accepted');
+  assert.deepEqual(acceptedAsync.map(r => r.text), ['Which runtime?: Node\nWhich checks?: Full'],
+    'two async choices reach the native composer as one complete operator turn');
+  assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(asyncId).n, 1);
+  assert.equal((await sendAnswers(answers)).status, 200, 'a lost acknowledgement replays the same receipt');
+  assert.equal(asyncTrace().filter(r => r.event === 'accepted').length, 1, 'answer retry does not submit again');
+  home = await (await fetch(`http://127.0.0.1:${port}/api/phone/home`)).json();
+  assert.equal(home.sessions.find(s => s.id === asyncId).pending_input, false);
+  assert.equal(home.sessions.find(s => s.id === asyncId).unread, 0);
+  story = await (await fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/story`)).json();
+  assert.equal(story.events.filter(e => e.kind === 'ask' && !e.answered).length, 0,
+    'another browser sees the accepted reply before Codex consumes its queued native turn');
+  const newAsk = { ...ask, call_id: 'call_async_next', arguments: JSON.stringify({ questions: [{ title: 'New question?', options: ['Proceed', 'Wait'] }] }) };
+  const partial = nativeRow(newAsk);
+  appendFileSync(nativeFile, partial.slice(0, -8));
+  await refreshCodexQuestions(store.getSession(asyncId));
+  assert.equal(JSON.parse(store.getSession(asyncId).structured_question).id, ask.call_id, 'partial native writes do not invent a question');
+  appendFileSync(nativeFile, partial.slice(-8));
+  await refreshCodexQuestions(store.getSession(asyncId));
+  assert.equal(JSON.parse(store.getSession(asyncId).structured_question).id, newAsk.call_id, 'the next complete native question reopens attention');
+  assert.equal((await sendAnswers(answers)).status, 409, 'the old question cannot answer the new one');
+  console.log(JSON.stringify({ handler: 'POST /api/session/:id/answers', nativeTool: ask.name,
+    questions: 2, acknowledgementIsAnswer: false, acceptedNativeTurns: 1, persistedReplies: 1,
+    delivered: acceptedAsync[0].text, crossDevicePendingAfterDelivery: false, staleReply: 409 }));
   for (const family of ['codex', 'claude']) {
     const sid = `s_${family}_delivery`;
     const trace = await start(sid, 'ignore-first', family);

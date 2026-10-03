@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db, addMessage } from './store.js';
+import { questionProjection } from './codex_question.js';
 
 const _get = db.prepare('SELECT * FROM attention_dismissals WHERE session_id = ?');
 const _list = db.prepare(`
@@ -38,7 +39,7 @@ const _markReadThrough = db.prepare(`
   WHERE session_id = ? AND direction = 'out' AND id <= ? AND read_at IS NULL`);
 const _markReadOne = db.prepare('UPDATE messages SET read_at = ? WHERE id = ? AND read_at IS NULL');
 const _restoreOne = db.prepare('UPDATE messages SET read_at = NULL WHERE id = ?');
-const _session = db.prepare('SELECT status, category FROM sessions WHERE id = ?');
+const _session = db.prepare('SELECT status, category, structured_question FROM sessions WHERE id = ?');
 const _unread = db.prepare(`
   WITH last_in AS (
     SELECT COALESCE(MAX(id), 0) AS last_id
@@ -141,8 +142,9 @@ export function restoreAttention(sessionId) {
   const session = _session.get(sessionId);
   const lastInId = Number(_lastInId.get(sessionId)?.id) || 0;
   _delete.run(sessionId);
-  const canReopen = session?.status === 'waiting'
-    && session?.category !== 'working'
+  const projection = questionProjection(session || {});
+  const canReopen = (session?.status === 'waiting' || (session?.status === 'working' && projection.pending_input))
+    && (projection.category || session?.category) !== 'working'
     && lastInId <= dismissal.report_id;
   if (canReopen) _restoreOne.run(dismissal.report_id);
   return {

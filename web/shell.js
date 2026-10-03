@@ -168,7 +168,7 @@ export function shortTitle(s) {
 }
 
 export function needsYou() {
-  return (home.sessions || []).filter((s) => !s.dismissed && s.status === 'waiting' && s.unread && s.category && s.category !== 'working');
+  return (home.sessions || []).filter((s) => !s.dismissed && (s.status === 'waiting' || (s.status === 'working' && s.pending_input)) && s.unread && s.category && s.category !== 'working');
 }
 
 export function dismissedAttention() {
@@ -182,13 +182,14 @@ export function dismissedAttention() {
 // when those fields do not contain one.
 export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
   const status = String(s?.status || 'stopped');
-  const state = status === 'working' ? 'Working'
+  const awaiting = status === 'waiting' || (status === 'working' && s?.pending_input);
+  const state = status === 'working' && s?.pending_input ? 'Needs you · working' : status === 'working' ? 'Working'
     : status === 'waiting' ? 'Needs you'
       : status === 'starting' ? 'Starting'
         : status === 'error' ? 'Failed'
           : s?.dismissed ? 'Dismissed' : 'Stopped';
   const doing = cleanAttentionText(s?.title || s?.project || s?.id, 180);
-  const copy = status === 'waiting'
+  const copy = awaiting
     ? attentionCopy({
       request: s?.title,
       question: s?.question,
@@ -201,7 +202,7 @@ export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
   const request = copy.request || doing;
   const need = copy.action;
   const outcome = copy.happened || copy.latest;
-  const next = status === 'waiting'
+  const next = awaiting
     ? 'Reply continues the session; Dismiss only clears this report.'
     : status === 'working' || status === 'starting'
       ? 'No attention needed; the session keeps working.'
@@ -349,7 +350,7 @@ export function prefetchStory(id) {
     const storySource = r.meta?.source || 'transcript';
     const payload = JSON.stringify({ events: r.events, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
       storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story7_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v7)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story8_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v8)
   }).catch(() => _prefetched.delete(id));
 }
 

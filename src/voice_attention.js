@@ -1,9 +1,11 @@
 // Pure voice-attention rules. The spoken concierge must use the same product definition as the
 // Needs You UI; "status = waiting" alone is broader and includes read or explicitly dismissed work.
+import { questionProjection } from './codex_question.js';
 export function isNeedsYouSession(session, { unread = 0, dismissed = false } = {}) {
+  if (session?.structured_question) session = { ...session, ...questionProjection(session) };
   return !!session
     && !dismissed
-    && session.status === 'waiting'
+    && (session.status === 'waiting' || (session.status === 'working' && session.pending_input))
     && Number(unread) > 0
     && !!session.category
     && session.category !== 'working';

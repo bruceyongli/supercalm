@@ -94,7 +94,7 @@ function phoneNeeds() {
   return (S.home?.sessions || []).filter((session) =>
     !session.dismissed
     && session.unread > 0
-    && session.status === 'waiting'
+    && (session.status === 'waiting' || (session.status === 'working' && session.pending_input))
     && session.category
     && session.category !== 'working');
 }

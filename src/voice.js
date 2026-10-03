@@ -2,6 +2,7 @@ import { route, json, readJson } from './server.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import * as store from './store.js';
+import { questionProjection } from './codex_question.js';
 import * as sessions from './sessions.js';
 import { chat } from './llm.js';
 import { id, now, stripAnsi } from './util.js';
@@ -142,6 +143,7 @@ export function projectIdentityFor(project) {
 export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
   const live = store
     .listLiveSessions()
+    .map(s => ({ ...s, ...questionProjection(s) }))
     .filter((s) => isNeedsYouSession(s, attentionState(s)))
     .sort((a, b) => {
       // An on-the-go notification names the report that just arrived. Present that project first

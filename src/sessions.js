@@ -69,6 +69,8 @@ import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorI
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
+import { refreshCodexQuestions, resolveCodexQuestion } from './codex_questions.js';
+import { storedQuestion } from './codex_question.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -1817,6 +1819,9 @@ async function pollOnce() {
       continue;
     }
     if (entry.relaunching) continue;
+    // Native async questions can arrive while the CLI continues working. Observe a bounded delta
+    // independently of terminal status; never make the operator inbox parse complete histories.
+    void refreshCodexQuestions(s);
     if (!(await tmuxOk('has-session', '-t', entry.tmux))) {
       markExited(entry, null);
       continue;
@@ -2070,6 +2075,7 @@ export function paneSig(sid) {
 // streak so the poll loop doesn't instantly re-flag it as waiting. Shared by the
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
+  resolveCodexQuestion(sid);
   const before = store.getSession(sid);
   const updated = store.updateSession(sid, { status: 'working', status_reason: 'reply', question: null, summary: null, category: null, stage: null, parked: 0, degraded: 0, last_activity: now() });
   const entry = reg.get(sid);
@@ -2095,6 +2101,8 @@ async function runSummary(sid, report = null) {
   }
   const cur = store.getSession(sid);
   if (!cur || cur.status !== 'waiting') return; // moved on while summarizing
+  const structured = storedQuestion(cur);
+  if (structured?.mode === 'async' && !structured.answered) return; // authoritative question beats screen summaries
   const summary = (result?.summary || cur.question || cur.title || 'Waiting for your input').replace(/\s+/g, ' ').slice(0, 220);
   const category = result?.category || 'review';
   const stage = result?.stage || null; // semantic lifecycle stage for the Supervisor's stand-down gate
@@ -3532,7 +3540,24 @@ route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {
     const labels = answer.values.map((value) => value.label || value.key).join(', ');
     return answer.question ? `${answer.question}: ${labels}` : `Choice ${index + 1}: ${labels}`;
   }).join('\n');
-  const r = await deliverReply(sid, text, { source: 'text', segments });
+  const prompt = storedQuestion(store.getSession(sid));
+  const requestedId = rawAnswers.find(answer => answer?.ask_id)?.ask_id;
+  if (requestedId && prompt?.id === requestedId && prompt.answered) {
+    const receipt = store.inputReceipt(sid, `question-${prompt.id}`.slice(0, 128));
+    if (receipt?.text === text) return json(res, 200, { ok: true, duplicate: true, message: { id: receipt.id, ts: receipt.ts } });
+  }
+  if (requestedId && (prompt?.id !== requestedId || prompt.answered)) return json(res, 409, { error: 'This question has already been answered or replaced. Refresh to see the current question.' });
+  const asyncPrompt = prompt?.mode === 'async' && !prompt.answered;
+  if (asyncPrompt && (answers.length !== prompt.questions.length || answers.some((answer, index) =>
+    answer.question !== prompt.questions[index].question.replace(/\s+/g, ' ').trim().slice(0, 500)
+    || (!prompt.questions[index].multiSelect && answer.values.length !== 1)
+    || answer.values.some(value => !prompt.questions[index].options.some(option => option.label === value.label))))) {
+    return json(res, 409, { error: 'These choices do not match the current question. Nothing was sent.' });
+  }
+  // Async prompts are not blocking terminal menus. Deliver one complete answer in the composer,
+  // not one Enter per question (which would submit multiple separate operator turns).
+  const r = await deliverReply(sid, text, { source: 'text', ...(asyncPrompt ? {} : { segments }),
+    ...(asyncPrompt ? { clientMessageId: `question-${prompt.id}`.slice(0, 128) } : {}) });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
   if (r.inputBlocked) return json(res, 409, {
     error: 'The agent input did not accept these selections. They were not dismissed.',

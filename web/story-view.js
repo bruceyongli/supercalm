@@ -34,7 +34,10 @@ const storyVideoState = new Map(); // path -> playback state preserved across li
 // selection UI on the next refresh because the server story still reports it pending until the transcript
 // catches up (operator report: "I chose the option card and it bounced back"). askKey survives re-renders.
 const answeredAsks = new Map(); // askKey -> chosen label
-function askKey(ev) { return `${ev.ts || 0}|${String(ev.body || ev.title || '').slice(0, 48)}`; }
+const asyncChoices = new Map(); // native call id -> per-question selections
+const asyncSending = new Set();
+const asyncErrors = new Map();
+function askKey(ev) { return ev.askId && ev.questionId != null ? `${ev.askId}|${ev.questionId}` : `${ev.ts || 0}|${String(ev.body || ev.title || '').slice(0, 48)}`; }
 
 // "Listen to this report" — playback state lives in MODULE vars (the openSteps/answeredAsks rule:
 // render() wipes the DOM wholesale every SSE tick, so buttons re-derive their label from this map;
@@ -92,7 +95,7 @@ export function cancelComposerSend(echo) {
 // out?" — a new send must APPEND, never re-window the story down to the newest message. ts is near-unique
 // per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
 // keys (so answered/meta updates land) and add new ones; already-loaded atoms with no incoming match are KEPT.
-function evKey(e) { return `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
+function evKey(e) { return e.kind === 'ask' && e.askId && e.questionId != null ? `ask|${e.askId}|${e.questionId}` : `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
 
 // The scroll position belongs to the USER, not to us. It is preserved across every re-render / refresh /
 // story-update / session-switch, and restored (persisted per session) on reopen. We NEVER auto-scroll to
@@ -126,7 +129,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // v5: flush caches that may contain a same-project sibling rollout from the pre-identity picker.
 // v6: plan events now carry status-aware list items instead of the old pill-only shape.
 // v7: flush missing native assistant messages and commentary falsely promoted to reports.
-export const STORY_CACHE_KEY = (id) => `aios_story7_${id}`;
+// v8: native async questions replace the CLI's plain-text question/report mirror.
+export const STORY_CACHE_KEY = (id) => `aios_story8_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -300,6 +304,16 @@ function askHtml(ev) {
   </form>`;
   const pi = primaryIndex(opts);
   const ak = esc(askKey(ev));
+  if (ev.askMode === 'async') {
+    const group = events.filter(e => e.kind === 'ask' && e.askId === ev.askId);
+    const selected = asyncChoices.get(ev.askId)?.get(ev.questionIndex) || new Set();
+    const complete = group.every(q => asyncChoices.get(ev.askId)?.get(q.questionIndex)?.size);
+    const busy = asyncSending.has(ev.askId);
+    return `<div class="story-ask-opts">${opts.map((o, j) => `
+      <button class="story-ask-opt${selected.has(j) ? ' primary' : ''}" data-story-async-opt data-call="${esc(ev.askId)}" data-question="${ev.questionIndex}" data-option="${j}" aria-pressed="${selected.has(j)}" ${busy ? 'disabled' : ''}>${esc(o.label)}</button>`).join('')}
+      ${group.at(-1)?.questionIndex === ev.questionIndex && group.some(q => q.multiSelect) ? `<button data-story-async-send data-call="${esc(ev.askId)}" ${!complete || busy ? 'disabled' : ''}>${busy ? 'Sending…' : 'Send selected options'}</button>` : ''}
+      ${asyncErrors.has(ev.askId) ? `<span role="alert">${esc(asyncErrors.get(ev.askId))}</span>` : ''}</div>`;
+  }
   return `<div class="story-ask-opts">${opts.map((o, j) => `
     <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-askkey="${ak}" data-label="${esc(o.label || o.spoken || o.key || '')}" data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
 }
@@ -591,7 +605,7 @@ function render() {
   feedEvents.forEach((ev, i) => {
     const key = evKey(ev);
     const sourceIndex = Number.isInteger(ev._sourceIndex) ? ev._sourceIndex : i;
-    const signature = JSON.stringify({ ...ev, _sourceIndex: undefined }) + `|${key === latestReportKey}|${openSteps.has(sourceIndex)}|${answeredAsks.get(askKey(ev))}|${readMarks.has(key)}|${learnedEvidence.has(ev.ts)}|${ev._echo ? working : ''}`;
+    const signature = JSON.stringify({ ...ev, _sourceIndex: undefined }) + `|${key === latestReportKey}|${openSteps.has(sourceIndex)}|${answeredAsks.get(askKey(ev))}|${readMarks.has(key)}|${learnedEvidence.has(ev.ts)}|${ev._echo ? working : ''}|${JSON.stringify([...(asyncChoices.get(ev.askId)?.get(ev.questionIndex) || [])])}|${asyncSending.has(ev.askId)}|${asyncErrors.get(ev.askId) || ''}`;
     let row = old.get(key);
     old.delete(key);
     if (!row || row._storySignature !== signature) {
@@ -656,6 +670,25 @@ export async function loadEarlierStory() {
 }
 
 function wire() {
+  for (const button of panelEl.querySelectorAll('[data-story-async-opt]')) {
+    button.onclick = () => {
+      const call = button.dataset.call;
+      if (asyncSending.has(call)) return;
+      const group = events.filter(e => e.kind === 'ask' && e.askId === call);
+      const index = Number(button.dataset.question), option = Number(button.dataset.option);
+      const question = group.find(q => q.questionIndex === index);
+      let choices = asyncChoices.get(call);
+      if (!choices) asyncChoices.set(call, choices = new Map());
+      let selected = choices.get(index) || new Set();
+      if (question.multiSelect) selected.has(option) ? selected.delete(option) : selected.add(option);
+      else selected = new Set([option]);
+      choices.set(index, selected);
+      asyncErrors.delete(call);
+      render();
+      if (!group.some(q => q.multiSelect) && group.every(q => choices.get(q.questionIndex)?.size)) void sendAsyncChoices(call);
+    };
+  }
+  for (const button of panelEl.querySelectorAll('[data-story-async-send]')) button.onclick = () => void sendAsyncChoices(button.dataset.call);
   const latest = panelEl.querySelector('[data-story-latest]');
   if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
   // Both load-earlier paths anchor the viewport: content PREPENDS, so the scroll position is adjusted
@@ -684,6 +717,8 @@ function wire() {
   }
   for (const b of panelEl.querySelectorAll('[data-story-ask-opt]')) {
     b.onclick = async () => {
+      if (b.disabled) return;
+      b.disabled = true;
       const key = b.dataset.key || b.textContent.trim();
       const label = b.dataset.label || key;
       try {
@@ -691,7 +726,7 @@ function wire() {
         if (b.dataset.askkey) answeredAsks.set(b.dataset.askkey, label); // sticky: survives the next SSE re-render
         if (pendingQuestion && b.dataset.askkey === askKey({ ts: pendingQuestion.ts, body: pendingQuestion.body })) pendingQuestion = null;
         b.closest('.story-ask-opts')?.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${label}" — session resumed` }));
-      } catch (e) { b.textContent = '⚠ ' + (e.message || e); }
+      } catch (e) { b.disabled = false; b.textContent = '⚠ ' + (e.message || e); }
     };
   }
   for (const form of panelEl.querySelectorAll('[data-story-ask-reply]')) {
@@ -744,6 +779,24 @@ function wire() {
       }
     };
   }
+}
+
+async function sendAsyncChoices(call) {
+  if (asyncSending.has(call)) return;
+  const group = events.filter(e => e.kind === 'ask' && e.askId === call && !e.answered);
+  const choices = asyncChoices.get(call);
+  if (!group.length || !group.every(q => choices?.get(q.questionIndex)?.size)) return;
+  const mySid = sid;
+  asyncSending.add(call); render();
+  const answers = group.map(q => ({ ask_id: call, question_id: q.questionId, question: q.body,
+    values: [...choices.get(q.questionIndex)].map(index => ({ key: q.options[index].key || '', label: q.options[index].label })) }));
+  try {
+    await api(`api/session/${mySid}/answers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers }) });
+    if (sid !== mySid) return;
+    for (const [index, q] of group.entries()) answeredAsks.set(askKey(q), answers[index].values.map(v => v.label).join(', '));
+  } catch (e) {
+    if (sid === mySid) asyncErrors.set(call, e.message || String(e));
+  } finally { asyncSending.delete(call); if (sid === mySid) render(); }
 }
 
 export async function refreshStory({ quiet = true } = {}) {
@@ -807,6 +860,7 @@ async function refreshStoryNow({ quiet }) {
 
 export function initStoryView({ sessionId, panel }) {
   const switching = sid !== sessionId;
+  if (switching) { asyncChoices.clear(); asyncSending.clear(); asyncErrors.clear(); }
   sid = sessionId;
   panelEl = panel;
   // Listen controls use ONE delegated handler on the persistent panel (attached once per panel

@@ -30,6 +30,7 @@ export function extractPendingOptionQuestions(events) {
     : pending.filter((event) => Number(event.ts || 0) === Number(latest.ts || 0));
   return samePrompt.map((event, index) => ({
     id: String(event.askId || `${event.ts || 0}:${index}`),
+    ...(event.askMode === 'async' ? { askMode: 'async', questionId: event.questionId } : {}),
     header: String(event.title || '').replace(/^Needs your decision\s*[—-]?\s*/i, ''),
     question: String(event.body || event.title || `Question ${index + 1}`),
     multiSelect: !!event.multiSelect,
@@ -38,12 +39,14 @@ export function extractPendingOptionQuestions(events) {
 }
 
 export function getOptionQuestions(session) {
+  if (session?.pending_input && session.option_events?.length) return extractPendingOptionQuestions(session.option_events);
   const hit = promptCache.get(session?.id);
   return hit?.reportKey === attentionReportKey(session) ? hit.questions || [] : [];
 }
 
 export function ensureOptionQuestions(session, onChange) {
-  if (!session?.id || session.status !== 'waiting' || !session.unread) return Promise.resolve([]);
+  if (!session?.id || (session.status !== 'waiting' && !session.pending_input) || !session.unread) return Promise.resolve([]);
+  if (session.pending_input && session.option_events?.length) return Promise.resolve(getOptionQuestions(session));
   const reportKey = attentionReportKey(session);
   const hit = promptCache.get(session.id);
   if (hit?.reportKey === reportKey) return hit.promise || Promise.resolve(hit.questions || []);
@@ -71,6 +74,7 @@ export function answersPayload(questions, selections) {
     const selected = selections.get(questionIndex) || new Set();
     return {
       question: question.question,
+      ...(question.askMode === 'async' ? { ask_id: question.id, question_id: question.questionId } : {}),
       values: [...selected].map((optionIndex) => {
         const option = question.options[optionIndex] || {};
         return { key: option.key || '', label: option.label || '' };
