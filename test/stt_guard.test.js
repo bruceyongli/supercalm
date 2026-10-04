@@ -45,6 +45,10 @@ assert.equal(guardTranscript('Привет, как дела с деплоем с
 const prompt = sttContextPrompt({ project: { name: 'supercalm' }, session: { tool: 'codex', title: 'fix the voice STT nonsense' }, extra: 'queue reply' });
 assert.ok(prompt.includes('supercalm') && prompt.includes('codex') && prompt.includes('fix the voice STT nonsense'), 'prompt carries project/tool/task');
 assert.ok(sttContextPrompt({ session: { title: 'x'.repeat(2000) } }).length <= 600, 'prompt is hard-capped');
+const bilingual = sttContextPrompt({ langs: 'en,zh', project: { name: 'AIOS' }, session: { title: '修复手机语音输入' } });
+assert.match(bilingual, /中文和 English/);
+assert.match(bilingual, /修复手机语音输入/);
+assert.equal(guardTranscript('请把手机的语音输入修复一下，English 也需要保留。', { langs: ['en', 'zh'] }).ok, true);
 
 // ---- route + client pins: every transcribe surface goes through the guard/grounding ----
 const spark = read('src/spark.js');

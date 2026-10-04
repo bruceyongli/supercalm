@@ -177,8 +177,16 @@ export function normalizeSpeechLanguage(lang) {
   return value;
 }
 
-export function rememberSpeechLanguage(lang) {
-  const normalized = normalizeSpeechLanguage(lang);
+export function rememberSpeechLanguage(lang, text = '') {
+  let normalized = normalizeSpeechLanguage(lang);
+  // Spark's Whisper adapter can return "auto" rather than its detected language. Recognized Han
+  // text still tells the single-language browser recognizer to listen in Chinese on the next turn.
+  // Infer Latin-only English only in a bilingual en/zh configuration; Latin script alone cannot
+  // distinguish French, Spanish, etc. in a broader language configuration.
+  if (!normalized) {
+    if (/\p{Script=Han}/u.test(text) && !/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(text)) normalized = 'zh-CN';
+    else if (/[a-z]/i.test(text) && preferredSttLangs().split(',').every(value => /^(?:en|zh)(?:[-_]|$)/i.test(value))) normalized = 'en-US';
+  }
   if (!normalized) return;
   try { localStorage.setItem(STT_LAST_LANG_KEY, normalized); } catch {}
 }
@@ -188,7 +196,7 @@ function preferredSpeechRecognitionLanguage() {
     const last = normalizeSpeechLanguage(localStorage.getItem(STT_LAST_LANG_KEY));
     if (last) return last;
   } catch {}
-  return 'en-US';
+  return normalizeSpeechLanguage(navigator.languages?.[0] || navigator.language) || 'en-US';
 }
 
 function microphoneConstraints() {
@@ -210,7 +218,8 @@ function recorderOptions() {
 }
 
 // Languages dictation may legitimately be in: an explicit localStorage override (`aios_stt_langs`,
-// CSV like "en,zh") else the browser's configured languages. The server rejects transcripts whose
+// CSV like "en,zh") else English + Chinese plus the browser's configured languages. UI/browser locale
+// is not a declaration of the languages an operator can speak. The server rejects transcripts whose
 // script NONE of these can produce — Whisper's language=auto loved to hallucinate stock Russian
 // ("Продолжение следует…") into English sessions and that text became tasks/titles (2026-08-12).
 export function preferredSttLangs() {
@@ -218,9 +227,12 @@ export function preferredSttLangs() {
     const saved = String(localStorage.getItem('aios_stt_langs') || '').trim();
     if (saved) return saved;
   } catch {}
-  const raw = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
-  const bases = raw.map((l) => String(l || '').split(/[-_]/)[0].toLowerCase()).filter((l) => /^[a-z]{2,3}$/.test(l));
-  return [...new Set(bases)].slice(0, 4).join(',') || 'en';
+  let last = '';
+  try { last = localStorage.getItem(STT_LAST_LANG_KEY) || ''; } catch {}
+  const browser = navigator.languages?.length ? navigator.languages : [navigator.language || 'en'];
+  const bases = ['en', 'zh', last, ...browser].map(l => normalizeSpeechLanguage(l).split('-')[0].toLowerCase())
+    .filter(l => /^[a-z]{2,3}$/.test(l));
+  return [...new Set(bases)].slice(0, 6).join(',');
 }
 
 // agentHint (codex|claude) lets the server MATCH THE SESSION'S AGENT — dictation in a codex session
@@ -235,7 +247,7 @@ async function requestTranscription(blob, agentHint, extraQuery = '') {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || r.status);
     // A rejected take must not poison the on-device recognizer's language preference either.
-    if (!j.rejected) rememberSpeechLanguage(j.language);
+    if (!j.rejected) rememberSpeechLanguage(j.language, j.text);
     return { text: (j.text || '').trim(), rejected: j.rejected || '' };
   } finally {
     clearTimeout(timeout);

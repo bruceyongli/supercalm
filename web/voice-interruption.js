@@ -6,7 +6,7 @@ function normalize(value) {
   return String(value || '')
     .toLowerCase()
     .replace(/[’']/g, '')
-    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -20,12 +20,17 @@ const QUESTION = /^(?:hey\s+(?:assistant|supercalm)\s+)?(?:what|why|how|when|whe
 const CORRECTION = /^(?:hey\s+(?:assistant|supercalm)\s+)?(?:no\b|actually\b|thats not\b|that is not\b|i asked\b|i meant\b|i mean\b|i want\b|i need\b|dont\b|do not\b|please\b|make\b|use\b|send\b|show me\b|let me\b)/;
 const CUE_ANYWHERE = /\b(?:stop|pause|wait|hold on|hang on|actually|thats not|that is not|i asked|i meant|i mean|tell me|explain|what|why|how|when|where|who|which|can|could|would)\b/g;
 const RAW_CUE_ANYWHERE = /\b(?:stop|pause|wait|hold on|hang on|actually|that's not|that is not|i asked|i meant|i mean|tell me|explain|what|why|how|when|where|who|which|can|could|would)\b/gi;
+const ZH_CUE = /^(?:(?:助手|supercalm)[，,\s]*)?(?:停(?:止|一下)?|暂停|等等|等一下|先别说|别读了|下一个|跳过|重说|再说|为什么|怎么|如何|什么|哪(?:个|些|里)|告诉我|解释|不是|不对|我(?:问|想|要|需要|刚才问)|请|麻烦)/iu;
+const RAW_ZH_CUE = /先别说|别读了|等一下|等等|暂停|停一下|停止|下一个|跳过|再说|重说|为什么|怎么|如何|告诉我|解释|不对|不是|我刚才问|我问|我想|我需要/g;
 
 export function isPlaybackEcho(heard, spoken) {
   const h = normalize(heard);
   const s = normalize(spoken);
   if (!h || !s) return false;
   if (s.includes(h) || h === s) return true;
+  // Chinese has no word boundaries. Ignore punctuation/spacing differences for verbatim echo,
+  // but do not count shared individual characters as words: that would reject new questions.
+  if (/\p{Script=Han}/u.test(h)) return s.replace(/\s/g, '').includes(h.replace(/\s/g, ''));
   const heardWords = words(h);
   if (heardWords.length < 2) return false;
   const spokenWords = new Set(words(s));
@@ -40,7 +45,11 @@ export function isClearVoiceInterruption(heard, spoken) {
   // A verbatim/substantial fragment of the report is speaker echo, even when it starts with a word
   // such as "what". This check prevents the assistant from interrupting itself.
   if (isPlaybackEcho(h, s)) return false;
-  if (CONTROL.test(h) || QUESTION.test(h) || CORRECTION.test(h)) return true;
+  if (CONTROL.test(h) || QUESTION.test(h) || CORRECTION.test(h) || ZH_CUE.test(h)) return true;
+  for (const match of h.matchAll(RAW_ZH_CUE)) {
+    const suffix = h.slice(match.index).trim();
+    if (!s.includes(suffix)) return true;
+  }
 
   // Some engines retain the assistant's words before appending the operator's interruption. Accept
   // only a direct cue whose remaining phrase is genuinely new to the report.
@@ -57,11 +66,15 @@ export function extractVoiceInterruption(heard, spoken) {
   const raw = String(heard || '').trim();
   if (!isClearVoiceInterruption(raw, spoken)) return '';
   const h = normalize(raw);
-  if (CONTROL.test(h) || QUESTION.test(h) || CORRECTION.test(h)) return raw;
+  if (CONTROL.test(h) || QUESTION.test(h) || CORRECTION.test(h) || ZH_CUE.test(h)) return raw;
   const s = normalize(spoken);
   for (const match of raw.matchAll(RAW_CUE_ANYWHERE)) {
     const suffix = raw.slice(match.index).trim();
     if (suffix.split(/\s+/).length >= 2 && !s.includes(normalize(suffix))) return suffix;
+  }
+  for (const match of raw.matchAll(RAW_ZH_CUE)) {
+    const suffix = raw.slice(match.index).trim();
+    if (!s.includes(normalize(suffix))) return suffix;
   }
   return raw;
 }

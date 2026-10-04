@@ -9,6 +9,13 @@ for (const fragment of ['I', 'a', 'is', '.', '  ']) {
 for (const intent of ['yes', 'No', 'okay', 'stop', 'next', 'why', '继续']) {
   assert.equal(voiceTranscriptDisposition(intent).accepted, true, `${intent} remains a valid short reply`);
 }
+for (const text of ['为什么', '好的', '可以', '发送', '暂停', '下一个', '好', '对', '是', '為什麼', '可以解释一下吗', '请修复 iPhone 的输入框']) {
+  assert.equal(voiceTranscriptDisposition(text).accepted, true, `${text} is meaningful Chinese, not a one-word fragment`);
+}
+for (const text of ['嗯', '啊', '的']) {
+  assert.equal(voiceTranscriptDisposition(text).accepted, false, `${text} alone remains noise, not a command`);
+}
+assert.equal(voiceTranscriptDisposition('更新已经完成', { spoken: 'AIOS 的更新已经完成，请你检查新的界面。' }).reason, 'playback-echo');
 assert.equal(voiceTranscriptDisposition('the flashing issue').accepted, true);
 assert.deepEqual(
   voiceTranscriptDisposition('the current report', { spoken: 'Here is the current report for AIOS.' }),

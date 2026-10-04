@@ -2,6 +2,11 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { wavFromPcm } from '../src/tts_native.js';
+
+const reportFor = sid => sid === 's_zh'
+  ? 'AIOS 的语音输入已经更新，现在支持中文和 English。请检查手机上的录音功能。'
+  : 'AIOS Supercalm. Voice Assistant. Report quality. The update now leads with the issue and explains the actual repair in plain language.';
 
 const root = new URL('../', import.meta.url);
 const assets = new Map(['voicemode.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js', 'voice-interruption.js', 'voice-input.js']
@@ -20,15 +25,26 @@ const server = createServer(async (req, res) => {
     res.end(assets.get(path));
     return;
   }
+  if (path === '/api/voice/prepare') {
+    const body = await readBody(req);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ preparationId: 'fixture', say: reportFor(body.focusSessionId), audioUrl: '/api/voice/prepared/fixture/audio' }));
+    return;
+  }
+  if (path === '/api/voice/prepared/fixture/audio') {
+    res.writeHead(200, { 'content-type': 'audio/wav' });
+    res.end(wavFromPcm(Buffer.alloc(24000 * 2)));
+    return;
+  }
   if (path === '/api/voice/start') {
-    await readBody(req);
+    const body = await readBody(req);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
       voiceId: 'v_interrupt',
-      say: 'AIOS Supercalm. Voice Assistant. Report quality. The update now leads with the issue and explains the actual repair in plain language.',
+      say: reportFor(body.focusSessionId),
       done: false,
       listen: true,
-      current: { sessionId: 's_one', projectIdentity: 'AIOS Supercalm', module: 'Voice Assistant', workstream: 'Report quality', tool: 'codex', n: 1, total: 1 },
+      current: { sessionId: body.focusSessionId, projectIdentity: 'AIOS Supercalm', module: 'Voice Assistant', workstream: 'Report quality', tool: 'codex', n: 1, total: 1 },
     }));
     return;
   }
@@ -49,15 +65,20 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify(turns));
     return;
   }
+  if (path !== '/') { res.writeHead(404); res.end('not found'); return; }
+  const sid = new URL(req.url, 'http://fixture').searchParams.get('lang') === 'zh' ? 's_zh' : 's_one';
   res.writeHead(200, { 'content-type': 'text/html' });
-  res.end('<!doctype html><meta charset="utf-8"><body><script type="module">localStorage.setItem("aios_tts","browser"); window.__voice = await import("/voicemode.js"); window.__run = window.__voice.startVoiceMode({focusSessionId:"s_one",source:"on-the-go-update"});</script>');
+  res.end(`<!doctype html><meta charset="utf-8"><body><script type="module">localStorage.setItem("aios_tts","browser"); window.__voice = await import("/voicemode.js"); window.__run = window.__voice.startVoiceMode({focusSessionId:"${sid}",source:"on-the-go-update"});</script>`);
 });
 
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const browser = await chromium.launch({ headless: true });
 try {
-  const page = await browser.newPage();
-  await page.addInitScript(() => {
+  for (const language of ['en', 'zh']) {
+  const before = turns.length;
+  const page = await browser.newPage({ locale: 'en-US' });
+  await page.addInitScript(({ language }) => {
+    if (language === 'zh') localStorage.setItem('aios_stt_last_lang', 'zh-CN');
     let utterance = 0;
     class FakeUtterance {
       constructor(text) { this.text = text; }
@@ -79,14 +100,15 @@ try {
     };
     class FakeRecognition {
       start() {
+        window.__recognitionLanguage = this.lang;
         this.onstart?.();
         setTimeout(() => {
-          const result = [{ transcript: 'Wait' }];
+          const result = [{ transcript: language === 'zh' ? '等一下' : 'Wait' }];
           result.isFinal = false;
           this.onresult?.({ results: [result] });
         }, 250);
         setTimeout(() => {
-          const result = [{ transcript: 'Voice Assistant report quality. Wait, what actually caused the problem?' }];
+          const result = [{ transcript: language === 'zh' ? 'AIOS 的语音输入已经更新，等一下，为什么以前不支持中文？' : 'Voice Assistant report quality. Wait, what actually caused the problem?' }];
           result.isFinal = true;
           this.onresult?.({ results: [result] });
         }, 400);
@@ -100,16 +122,19 @@ try {
     Object.defineProperty(window, 'Audio', { configurable: true, value: class { play() { return Promise.resolve(); } pause() {} } });
     Object.defineProperty(window, 'AudioContext', { configurable: true, value: undefined });
     Object.defineProperty(window, 'webkitAudioContext', { configurable: true, value: undefined });
-  });
+  }, { language });
   const base = `http://127.0.0.1:${server.address().port}`;
-  await page.goto(base + '/');
+  await page.goto(base + '/?lang=' + language);
   await page.locator('.vm-interrupt:not([hidden])').waitFor();
   assert.equal(await page.locator('.vm-interrupt').textContent(), 'Speak now', 'touch has an explicit interruption fallback while speech is playing');
   const deadline = Date.now() + 5000;
-  while (!turns.length && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(turns[0]?.userText, 'Wait, what actually caused the problem?',
+  while (turns.length === before && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(turns[before]?.userText, language === 'zh' ? '等一下，为什么以前不支持中文？' : 'Wait, what actually caused the problem?',
     'a clear spoken question stops playback and enters the normal contextual turn route');
   await page.evaluate(() => window.__run);
+  assert.equal(await page.evaluate(() => window.__recognitionLanguage), language === 'zh' ? 'zh-CN' : 'en-US');
+  await page.close();
+  }
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

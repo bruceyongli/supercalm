@@ -7,6 +7,12 @@ const CONFIRM_PREFIX = /^(?:yes|yeah|yep|correct|that(?:'s| is) right|right|conf
 const SOFT_CONFIRM_PREFIX = /^(?:okay|ok|sure)\b/i;
 const CONFIRM_ONLY = /^(?:(?:and\s+)?(?:also\s+)?(?:go ahead|send (?:it|that)|do it|please|now|thanks?|thank you)[\s,.;!]*)+$/i;
 const CONFIRM_QUESTION = /\b(?:confirm|send (?:it|that)|shall I|should I|want me to|is that right|did I get that right|sound right|correct)\b/i;
+const ZH_CONFIRM = /^(?:确认发送|确认|发送吧|发送|发吧|就这么办|执行吧|是的|没错|对的|对|可以(?:发送|执行)(?:吧)?|好的?|可以|行)(?=$|[\s，。！？,.;!?]|另外|还有|并且|也|但是|不过)/u;
+const ZH_CONFIRM_QUESTION = /(?:要不要|要|是否|可以|能否|需要).{0,16}(?:发送|发给|交给)|(?:确认发送|确认一下|我理解得对吗|这样对吗|这样可以吗|对吗|可以吗)/u;
+const ZH_INFO = /^(?:(?:请|麻烦)(?:你)?|(?:能否|可否|可以|能不能|可不可以)(?:给我|帮我|你)?|你(?:可以|能)?(?:给我|帮我)?)?(?:解释|说明|讲(?:讲|一下)|说(?:说|一下)|告诉我|介绍|分析|读(?:一下)?|再说|重复|详细(?:说|讲)|展开)|^(?:为什么|为何|怎么|如何|什么|哪(?:个|些|里)|谁|什么时候|到底|这是(?:什么|怎么|哪|啥)|是不是|是否|有没有)|(?:我(?:是|刚才是)?(?:在)?问|我问的是)/u;
+const ZH_ACTION = /^(?:(?:你)?(?:能不能|可不可以|可以|能否)|请|麻烦)?(?:你)?(?:帮我|替我)?(?:先)?(?:修复|修一下|修改|更新|增加|添加|移除|删除|实现|调整|改成|改为|改一下|继续(?:做|执行)|测试|运行)/u;
+const ZH_NEXT = /^(?:下一个|下一项|跳过(?:这个|这一项)?|继续下一个)(?:吧)?$/u;
+const ZH_DEFER = /^(?:(?:这个|这一项|这个项目)?(?:先放着|先留着|先不用处理|暂时不用处理)|我(?:会)?(?:稍后|晚点|之后|以后)再(?:看|审查|处理))(?:[，,。\s]+(?:我(?:会)?(?:稍后|晚点|之后|以后)再(?:看|审查|处理)|(?:看|继续)?下一个))?(?:吧)?$/u;
 
 function clean(v) {
   return String(v || '').replace(/\s+/g, ' ').trim();
@@ -14,18 +20,22 @@ function clean(v) {
 
 export function confirmationFrom(text) {
   const value = clean(text);
-  const strong = value.match(CONFIRM_PREFIX);
+  const chinese = value.match(ZH_CONFIRM);
+  const strong = chinese || value.match(CONFIRM_PREFIX);
   const soft = strong ? null : value.match(SOFT_CONFIRM_PREFIX);
   const match = strong || soft;
   if (!match) return null;
   let additional = value
     .slice(match[0].length)
-    .replace(/^[\s,.;:!-]+/, '')
+    .replace(/^[\s,.;:!，。；：！-]+/, '')
     .replace(/^(?:and\s+)?(?:also\s+)?/i, '')
     .trim();
+  if (chinese) additional = additional.replace(/^(?:另外|还有|并且|也)[，,\s]*/u, '').trim();
   // "Okay, but..." and "Yes, actually..." revise the pending request; they are not authorization
   // to send both the old and new versions.
-  if (/^(?:but|instead|actually|wait|no\b|change\b)/i.test(additional)) return null;
+  if (/^(?:but|instead|actually|wait|no\b|change\b|但是|但|不过|不是|等等|先别|不要|不对|改成)/iu.test(additional)) return null;
+  if (chinese && /^(?:好|好的|可以|行)$/u.test(match[0]) && additional && !/^(?:另外|还有|并且)/u.test(value.slice(match[0].length).replace(/^[，,\s]+/, ''))
+    && !isNavigationIntent(additional)) return null;
   // "Okay" is a conversational acknowledgement, not a universal approval prefix. With substantive
   // words after it ("Okay, moving on" / "Okay, tell me more"), route the whole turn by its meaning.
   if (soft && additional && !CONFIRM_ONLY.test(additional)) return null;
@@ -51,7 +61,9 @@ export function confirmedPendingReply(pending, userText) {
   // to append the question to the pending agent instruction.
   if (confirmation.additional && isVoiceInformationQuestion(confirmation.additional)) return null;
   return {
-    say: confirmation.additional
+    say: /\p{Script=Han}/u.test(userText)
+      ? confirmation.additional ? '好，我会把原来的指令和这项补充一起发送。' : '好，我现在发送这条指令。'
+      : confirmation.additional
       ? "Got it. I'll send the original instruction with that additional request."
       : "Got it. I'll send that now.",
     action: 'send',
@@ -61,7 +73,7 @@ export function confirmedPendingReply(pending, userText) {
 }
 
 export function asksForConfirmation(text) {
-  return CONFIRM_QUESTION.test(clean(text));
+  return CONFIRM_QUESTION.test(clean(text)) || ZH_CONFIRM_QUESTION.test(clean(text));
 }
 
 const DISCOURSE_PREFIX = /^(?:(?:okay|ok|alright|all right|right|well)[\s,.;:!-]+)+/i;
@@ -80,10 +92,10 @@ const CONFIRMATION_AS_DRAFT = /^(?:yes|yeah|yep|okay|ok|sure|go ahead|send it|do
 
 export function isVoiceInformationQuestion(text) {
   const value = clean(text);
-  if (POLITE_ACTION.test(value)) return false;
-  const withoutPreface = value.replace(DISCOURSE_PREFIX, '');
-  return value.endsWith('?') || INFO_QUESTION.test(value) || META_QUESTION.test(value)
-    || INFO_QUESTION.test(withoutPreface) || META_QUESTION.test(withoutPreface);
+  if (POLITE_ACTION.test(value) || ZH_ACTION.test(value)) return false;
+  const withoutPreface = value.replace(DISCOURSE_PREFIX, '').replace(/^(?:好的?|可以|行|是的|对的?|没错)[，,\s]+/u, '');
+  return /[?？]$/.test(value) || ZH_INFO.test(value) || INFO_QUESTION.test(value) || META_QUESTION.test(value)
+    || ZH_INFO.test(withoutPreface) || INFO_QUESTION.test(withoutPreface) || META_QUESTION.test(withoutPreface);
 }
 
 // Short live replies often use the assistant's immediately preceding report as their object:
@@ -91,6 +103,7 @@ export function isVoiceInformationQuestion(text) {
 // agent must receive the resolved object—not a useless pronoun or a clipped confirmation fragment.
 export function isVagueVoiceInstruction(text) {
   const value = clean(text).replace(DISCOURSE_PREFIX, '');
+  if (/^(?:请|帮我)?(?:修复|修一下|修改|更新|调整|改一下|处理|解决)(?:一下|它|这个|那个|这些|问题|这个问题|那个问题)?[。.!?？]*$/u.test(value)) return true;
   if (!REFERENTIAL_ACTION.test(value)) return false;
   const words = value.split(/\s+/).filter(Boolean);
   return UNRESOLVED_REFERENCE.test(value) || words.length <= 2;
@@ -99,12 +112,14 @@ export function isVagueVoiceInstruction(text) {
 export function voiceDraftGrounding(userText, draft) {
   const message = clean(draft);
   if (!message) return { ok: false, reason: 'empty' };
-  if (CONFIRMATION_AS_DRAFT.test(message) || DANGLING_DRAFT.test(message)) {
+  if (CONFIRMATION_AS_DRAFT.test(message) || DANGLING_DRAFT.test(message)
+    || /^(?:好的?|可以|是的|对的?|没错|确认|发送吧?|发吧|就这么办|执行吧)[。.!?？]*$/u.test(message)) {
     return { ok: false, reason: 'incomplete' };
   }
   if (isVagueVoiceInstruction(userText)) {
     const same = message.toLowerCase() === clean(userText).toLowerCase();
-    if (same || UNRESOLVED_REFERENCE.test(message) || message.split(/\s+/).length < 3) {
+    const han = [...message.matchAll(/\p{Script=Han}/gu)].length;
+    if (same || UNRESOLVED_REFERENCE.test(message) || (han < 6 && message.split(/\s+/).length < 3)) {
       return { ok: false, reason: 'unresolved-reference' };
     }
   }
@@ -112,8 +127,8 @@ export function voiceDraftGrounding(userText, draft) {
 }
 
 export function isNavigationIntent(text) {
-  const value = clean(text).replace(DISCOURSE_PREFIX, '');
-  return !!value && (NEXT.test(value) || DEFER.test(value));
+  const value = clean(text).replace(DISCOURSE_PREFIX, '').replace(/[。！？]+$/, '');
+  return !!value && (NEXT.test(value) || DEFER.test(value) || ZH_NEXT.test(value) || ZH_DEFER.test(value));
 }
 
 // Strong conversational models sometimes answer an obvious follow-up directly despite the request
@@ -157,7 +172,9 @@ export function requireVoiceConfirmation(reply, {
     ...out,
     action: 'await',
     message,
-    say: `I understood that as: ${spoken.slice(0, 220)}. Should I send that?`,
+    say: /\p{Script=Han}/u.test(userText)
+      ? `我的理解是：${spoken.slice(0, 220)}。要发送给这个会话吗？`
+      : `I understood that as: ${spoken.slice(0, 220)}. Should I send that?`,
     confirmationRequired: true,
   };
 }
@@ -180,6 +197,15 @@ export function voiceControlReply(userText, { hasPending = false } = {}) {
   const message = clean(userText);
   if (!message) return null;
   const intent = message.replace(DISCOURSE_PREFIX, '');
+  const zh = intent.replace(/^(?:好的?|可以)[，,\s]+/u, '').replace(/[。！？.!?]+$/, '').trim();
+  if (/^(?:停止|停|结束(?:对话|通话|助手))$/u.test(zh)) return { say: '好，结束对话。', action: 'stop', message: '', deterministic: true };
+  if (/^(?:等等|等一下|暂停|别读了|先别说|先停一下)$/u.test(zh)) return { say: '好，我停下来听你说。', action: 'await', message: '', pause: true, deterministic: true };
+  if (ZH_NEXT.test(zh) || ZH_DEFER.test(zh)) {
+    return { say: hasPending ? '好，没有发送这条反馈。我们看下一项。' : '好，我们看下一项。', action: 'next', message: '', deterministic: true, discardedPending: hasPending };
+  }
+  if (hasPending && /^(?:取消(?:发送)?|别发(?:送)?(?:了)?|不要发(?:送)?|先别发(?:送)?|不用发(?:送)?)$/u.test(zh)) {
+    return { say: '好，不发送。我们继续讨论这一项。', action: 'cancel', message: '', deterministic: true };
+  }
   if (STOP.test(intent)) return { say: 'Okay, stopping.', action: 'stop', message: '', deterministic: true };
   if (NEXT.test(intent)) return {
     say: hasPending
@@ -265,6 +291,7 @@ export function scopedVoicePending(dialogue, sessionId) {
 export function reduceVoiceDialogue(dialogue, { reply, userText, sessionId }) {
   const prior = dialogue || createVoiceDialogueState();
   if (reply?.action === 'ignore') return prior; // ambient speech cannot mutate a real pending turn
+  if (reply?.pause) return prior;
   if (['send', 'next', 'stop', 'cancel'].includes(reply?.action)) return createVoiceDialogueState();
   const canStage = reply?.action === 'await'
     && !!clean(reply.message)

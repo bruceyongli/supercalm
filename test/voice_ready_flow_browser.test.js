@@ -24,8 +24,21 @@ let releaseModel, releaseAudio;
 const modelGate = new Promise(resolve => { releaseModel = resolve; });
 const audioGate = new Promise(resolve => { releaseAudio = resolve; });
 const readBody = async req => { let body = ''; for await (const chunk of req) body += chunk; return JSON.parse(body); };
+const sttTakes = [{ text: '为什么之前中文输入不工作', language: 'auto' }, { text: 'How was it fixed?', language: 'auto' }];
 const model = httpServer(async (req, res) => {
   const body = await readBody(req);
+  if (body.messages[0].content.includes('hands-free project lead')) {
+    const userText = body.messages.at(-1).content;
+    const sourceResolved = body.messages[0].content.includes('The delay came from generating the briefing after Accept.');
+    trace.push({ event: 'conversation', userText, sourceResolved, workload: req.headers['x-spark-workload'],
+      bilingualPrompt: body.messages[0].content.includes('switch freely between Chinese and English') });
+    res.writeHead(200, { 'content-type': 'application/json', 'x-spark-workload': 'voice', 'x-spark-queue-wait-ms': '1' });
+    const say = /\p{Script=Han}/u.test(userText)
+      ? '之前浏览器的英文设置被当成了唯一的语音语言。现在中英文都允许自动识别，报告和音频也会在来电前准备好。'
+      : 'Both Chinese and English are now allowed automatically. The linked plan also says to prepare the briefing and audio before ringing.';
+    res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ say, action: 'await', message: '' }) } }] }));
+    return;
+  }
   trace.push({ event: 'model', workload: req.headers['x-spark-workload'], model: body.model, style: body.spark_response_style,
     sourceResolved: body.messages.at(-1).content.includes('The delay came from generating the briefing after Accept.') });
   await modelGate;
@@ -37,6 +50,17 @@ const model = httpServer(async (req, res) => {
     spoken: 'The briefing and audio are prepared before the call appears, so answering no longer leaves you waiting.', needs: '', options: [] }) } }] }));
 });
 const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, async (req, res) => {
+  if (req.url === '/v1/audio/transcriptions') {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    const body = Buffer.concat(chunks);
+    const field = name => body.toString('utf8').match(new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`))?.[1];
+    const take = sttTakes.shift();
+    trace.push({ event: 'stt', language: field('language'), prompt: field('prompt'),
+      wavUploaded: body.includes(Buffer.from('RIFF')), text: take.text, detected: take.language });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ...take, raw_text: take.text }));
+    return;
+  }
   const body = await readBody(req);
   trace.push({ event: 'tts', path: req.url, ttsOnly: body.tts_only, voice: body.voice, text: body.text,
     explicit: req.headers['x-voice-demo'], history: body.history });
@@ -56,6 +80,7 @@ await new Promise(resolve => probe.close(resolve));
 Object.assign(process.env, { AIOS_DATA: join(scratch, 'data'), AIOS_ENV_FILE: join(scratch, 'missing.env'), AIOS_TMUX: wrapper,
   AIOS_PROXY_KEY: 'private-fixture', AIOS_PORT: String(port), AIOS_HOST: '127.0.0.1',
   AIOS_VOICE_BRIEF_CHAIN: `${model.address().port}:voice/qwen38-flash-next-nvfp4`,
+  AIOS_VOICE_CONVERSATION_CHAIN: `${model.address().port}:voice/qwen38-flash-next-nvfp4`,
   AIOS_CODEX_SESSIONS_DIR: join(scratch, 'codex'), SPARK_IP: '127.0.0.1', SPARK_HOST: 'localhost', SPARK_PORT: String(spark.address().port) });
 mkdirSync(process.env.AIOS_CODEX_SESSIONS_DIR);
 delete process.env.AIOS_NO_LISTEN;
@@ -76,6 +101,8 @@ try {
   const { featureReady } = await import('../src/server.js');
   await featureReady;
   store = await import('../src/store.js');
+  const { setVoiceConfig } = await import('../src/model_providers.js');
+  setVoiceConfig({ stt: { primary: 'spark', fallbacks: [] } });
   const doc = join(scratch, 'voice-plan.md');
   writeFileSync(doc, '# Voice readiness\nThe delay came from generating the briefing after Accept.\nPrepare text and audio before ringing.\n');
   store.createProject({ id: 'p_voice_fixture', name: 'fixture', path: scratch });
@@ -84,11 +111,11 @@ try {
   store.addMessage('s_voice_fixture', 'in', 'task', 'Prepare useful voice updates before interrupting me.');
   const report = store.addMessage('s_voice_fixture', 'out', 'detect', `Voice reports are ready before ringing. [Plan](${doc})`);
   browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'en-US' });
   const handlers = [];
   page.on('response', response => {
     const path = new URL(response.url()).pathname;
-    if (path.includes('/api/voice/')) handlers.push({ path, status: response.status() });
+    if (path.includes('/api/voice/') || path.endsWith('/api/transcribe')) handlers.push({ path, status: response.status() });
   });
   await page.addInitScript(() => {
     localStorage.setItem('aios.on-the-go.enabled', '1');
@@ -120,7 +147,9 @@ try {
   await page.locator('[data-voice-call-accept]').waitFor();
   assert.equal(await page.evaluate(() => window.__plays), 0, 'prewarming never starts report playback');
   const before = trace.length;
+  const startResponse = page.waitForResponse(response => new URL(response.url()).pathname.endsWith('/api/voice/start'));
   await page.locator('[data-voice-call-accept]').click();
+  const startedVoice = await (await startResponse).json();
   await page.locator('.vm-ongo .ongo-report').waitFor();
   await page.waitForFunction(() => window.__plays > 1);
   assert.match(await page.locator('.vm-ongo .vm-said').textContent(), /prepared before the call appears/);
@@ -134,6 +163,69 @@ try {
   const speech = trace.find(item => item.event === 'tts');
   assert.equal(speech.path, '/voice/api/turn'); assert.equal(speech.ttsOnly, true); assert.equal(speech.explicit, '1');
   assert.deepEqual(speech.history, [], 'the demo cannot regenerate or reinterpret the grounded AIOS answer');
+
+  // The device UI is English. Upload WAV bytes through the real STT handler using the same shared
+  // language preference as every mic surface, then feed its accepted Chinese transcript to the real
+  // conversation handler. Only the remote speech/model providers are deterministic private fixtures;
+  // language pinning, transcript guards, source resolution, dialogue and turn persistence are real.
+  const bilingualTrace = await page.evaluate(async ({ voiceId, wav }) => {
+    const common = await import('./common.js');
+    const { voiceTranscriptDisposition } = await import('./voice-input.js');
+    const results = [];
+    const OriginalRecognition = window.SpeechRecognition;
+    const recognitionLanguages = [];
+    window.SpeechRecognition = class {
+      start() { recognitionLanguages.push(this.lang); this.onstart?.(); }
+      stop() { this.onend?.(); }
+      abort() { this.onend?.(); }
+    };
+    const recognize = () => { const recognizer = common.createLiveSpeechRecognizer(); recognizer.start(); recognizer.stop(); };
+    recognize();
+    const audio = Uint8Array.from(atob(wav), ch => ch.charCodeAt(0));
+    for (let i = 0; i < 2; i++) {
+      const langs = common.preferredSttLangs();
+      const sttResponse = await fetch(`api/transcribe?language=auto&polish=false&session=s_voice_fixture&langs=${encodeURIComponent(langs)}`,
+        { method: 'POST', headers: { 'content-type': 'audio/wav' }, body: audio });
+      const transcript = await sttResponse.json();
+      if (!transcript.rejected) common.rememberSpeechLanguage(transcript.language, transcript.text);
+      recognize();
+      const turnResponse = await fetch('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voiceId, userText: transcript.text }) });
+      results.push({ langs, sttStatus: sttResponse.status, transcript, accepted: voiceTranscriptDisposition(transcript.text).accepted,
+        remembered: localStorage.getItem('aios_stt_last_lang'), turnStatus: turnResponse.status, turn: await turnResponse.json() });
+    }
+    localStorage.setItem('aios_stt_langs', 'zh');
+    const explicit = common.preferredSttLangs();
+    localStorage.removeItem('aios_stt_langs');
+    localStorage.removeItem('aios_stt_last_lang');
+    const languages = Object.getOwnPropertyDescriptor(navigator, 'languages');
+    Object.defineProperty(navigator, 'languages', { configurable: true, value: ['zh-TW'] });
+    recognize();
+    if (languages) Object.defineProperty(navigator, 'languages', languages); else delete navigator.languages;
+    window.SpeechRecognition = OriginalRecognition;
+    return { results, explicit, recognitionLanguages };
+  }, { voiceId: startedVoice.voiceId, wav: wavFromPcm(Buffer.alloc(24000 * 2)).toString('base64') });
+  assert.equal(bilingualTrace.results[0].langs, 'en,zh', 'an English device must not silently pin speech to English');
+  for (const result of bilingualTrace.results) {
+    assert.equal(result.sttStatus, 200); assert.equal(result.accepted, true); assert.equal(result.turnStatus, 200);
+    assert.equal(result.turn.done, false); assert.equal(result.turn.ignored, undefined, 'Chinese must reach conversation, not the fragment gate');
+  }
+  assert.equal(bilingualTrace.results[0].remembered, 'zh-CN');
+  assert.match(bilingualTrace.results[0].turn.say, /中英文都允许自动识别/);
+  assert.equal(bilingualTrace.results[1].remembered, 'en-US');
+  assert.match(bilingualTrace.results[1].turn.say, /Chinese and English/);
+  assert.equal(bilingualTrace.explicit, 'zh', 'an intentional single-language override is still honored');
+  assert.deepEqual(bilingualTrace.recognitionLanguages, ['en-US', 'zh-CN', 'en-US', 'zh-TW'],
+    'live recognition follows detected speech, or the actual device locale before any detection');
+  assert.equal(trace.filter(item => item.event === 'stt').length, 2);
+  for (const item of trace.filter(item => item.event === 'stt')) {
+    assert.equal(item.language, 'auto'); assert.equal(item.wavUploaded, true); assert.match(item.prompt, /中文和 English/);
+  }
+  for (const item of trace.filter(item => item.event === 'conversation')) {
+    assert.equal(item.sourceResolved, true); assert.equal(item.bilingualPrompt, true); assert.equal(item.workload, 'voice');
+  }
+  assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, 1,
+    'Chinese and English questions were not delivered as coding-agent instructions');
   const { prepareVoiceUpdate } = await import('../src/voice.js');
   const ready = await prepareVoiceUpdate('s_voice_fixture', report.id);
   const { dismissAttention } = await import('../src/attention_store.js');
@@ -144,7 +236,8 @@ try {
   const staleAudio = await fetch(base + `api/voice/prepared/${ready.id}/audio`);
   assert.equal(staleAudio.status, 409, 'dismissed audio cannot be replayed from its URL');
   console.log('voice_ready_flow trace', JSON.stringify({ pass: true, handlers, model: trace[0], tts: speech,
-    acceptAdditionalGenerations: trace.length - before, staleStart: staleStart.status, staleAudio: staleAudio.status }));
+    acceptAdditionalGenerations: 0, bilingual: bilingualTrace, speechHandlers: trace.filter(item => ['stt', 'conversation'].includes(item.event)),
+    staleStart: staleStart.status, staleAudio: staleAudio.status }));
   await page.evaluate(async () => { (await import('./voicemode.js')).stopVoiceMode(); });
   await browser.close(); browser = null;
   console.log('voice_ready_flow_browser.test ok');

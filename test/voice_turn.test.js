@@ -22,6 +22,63 @@ import { deliverVoiceFeedback } from '../src/voice_delivery.js';
 
 const pending = 'Fix the report ordering and keep dismissed sessions hidden.';
 
+// Chinese must follow the same instruction -> clarification -> confirmation -> delivery contract.
+{
+  const instruction = '修复 iPhone 语音输入，并保留中英文自动识别。';
+  const sessionId = 's_chinese';
+  const staged = reduceVoiceDialogue(createVoiceDialogueState(), {
+    sessionId, userText: '修一下',
+    reply: { action: 'await', say: '我的理解是修复手机语音输入。要发送给这个会话吗？', message: instruction },
+  });
+  assert.equal(staged.phase, 'confirming', 'Chinese confirmation wording stages the draft');
+  assert.equal(scopedVoicePending(staged, sessionId), instruction);
+  assert.equal(scopedVoicePending(staged, 's_other'), '', 'Chinese drafts cannot cross session boundaries');
+  for (const question of ['为什么', '可以解释一下吗', '好，为什么', '能不能告诉我哪里出了问题', '我问的是更新的细节']) {
+    assert.equal(isVoiceInformationQuestion(question), true, question);
+    assert.equal(confirmedPendingReply(instruction, question), null, 'Chinese questions are not approval');
+    const clarified = await resolveVoiceTurn({ dialogue: staged, sessionId, userText: question,
+      brain: async () => ({ action: 'await', say: '之前把浏览器的英文设置当成了唯一的语音语言。', message: '' }) });
+    assert.equal(clarified.reply.action, 'await');
+    assert.equal(scopedVoicePending(clarified.dialogue, sessionId), instruction, 'clarification preserves the pending instruction');
+  }
+  for (const approval of ['好的', '可以', '确认发送', '发送吧']) {
+    const resolved = await resolveVoiceTurn({ dialogue: staged, sessionId, userText: approval,
+      brain: async () => { throw new Error('Chinese confirmation must not need another model call'); } });
+    assert.equal(resolved.reply.action, 'send');
+    assert.equal(resolved.reply.message, instruction);
+    assert.equal(resolved.dialogue.phase, 'listening');
+    assert.equal(scopedVoicePending(resolved.dialogue, sessionId), '', 'delivery clears the Chinese draft');
+  }
+  assert.equal(confirmedPendingReply('', '确认发送'), null, 'approval cannot manufacture a missing instruction');
+  assert.deepEqual(confirmationFrom('可以，另外保留中文'), { additional: '保留中文' });
+  assert.equal(confirmationFrom('好的，但是先不要发布'), null, 'a revision must be reconsidered before sending');
+  assert.equal(confirmationFrom('可以解释一下吗'), null);
+  assert.equal(isVoiceInformationQuestion('可以修复中文输入吗？'), false, 'a polite Chinese action is feedback');
+  assert.equal(isVoiceInformationQuestion('这是需要修复的手机输入框'), false, 'a Chinese statement is not automatically a question');
+  assert.equal(isVagueVoiceInstruction('修一下'), true);
+  assert.equal(voiceDraftGrounding('修一下', '修一下').ok, false);
+  assert.equal(voiceDraftGrounding('修一下', instruction).ok, true, 'a resolved Chinese target does not need English word boundaries');
+  assert.equal(voiceDraftGrounding('好的', '好的').ok, false);
+  const restaged = requireVoiceConfirmation({ action: 'send', say: '正在发送', message: instruction }, { userText: '修一下' });
+  assert.equal(restaged.action, 'await');
+  assert.match(restaged.say, /要发送给这个会话吗/);
+  const paused = await resolveVoiceTurn({ dialogue: staged, sessionId, userText: '暂停',
+    brain: async () => { throw new Error('pause is deterministic'); } });
+  assert.equal(paused.reply.pause, true);
+  assert.equal(scopedVoicePending(paused.dialogue, sessionId), instruction, 'pause keeps the conversation and draft alive');
+  for (const control of ['下一个', '跳过这个', '先放着', '我晚点再看', '先放着，我晚点再看']) {
+    const skipped = await resolveVoiceTurn({ dialogue: staged, sessionId, userText: control,
+      brain: async () => { throw new Error('navigation is deterministic'); } });
+    assert.equal(skipped.reply.action, 'next');
+    assert.equal(skipped.reply.message, '', 'navigation is never delivered to the coding agent');
+    assert.equal(scopedVoicePending(skipped.dialogue, sessionId), '');
+  }
+  assert.equal(voiceControlReply('停止').action, 'stop');
+  assert.equal(voiceControlReply('不要发送', { hasPending: true }).action, 'cancel');
+  assert.equal(voiceControlReply('先放着，不过请先修复输入框', { hasPending: true }), null,
+    'mixed feedback cannot be discarded just because its first words sound like deferral');
+}
+
 assert.deepEqual(confirmationFrom('Yes.'), { additional: '' });
 assert.deepEqual(confirmationFrom('Okay, go ahead and send it.'), { additional: '' });
 assert.deepEqual(

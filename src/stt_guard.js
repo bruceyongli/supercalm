@@ -135,8 +135,10 @@ export function guardTranscript(text, { langs } = {}) {
 // Whisper biasing prompt built from the REAL context ("read the context and use the context").
 // An English-vocabulary prompt also biases language detection toward the operator's working
 // language, which is half the wrong-language battle. Capped hard — Whisper only reads ~224 tokens.
-export function sttContextPrompt({ project, session, extra } = {}) {
-  const parts = ['Supercalm coding session dictation.'];
+export function sttContextPrompt({ project, session, extra, langs } = {}) {
+  const parts = [normalizeLangs(langs).includes('zh')
+    ? 'Supercalm 会话语音，中文和 English，自然对话与技术术语。'
+    : 'Supercalm coding session dictation.'];
   const name = String(project?.name || '').trim();
   if (name) parts.push(`Project: ${name}.`);
   const tool = String(session?.tool || '').trim();

@@ -402,7 +402,7 @@ async function transcribe(blob, agentHint, sessionId) {
     // in the server response for diagnostics.
     const r = await fetch('api/transcribe?language=auto&polish=true' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && !j.rejected) rememberSpeechLanguage(j.language);
+    if (r.ok && !j.rejected) rememberSpeechLanguage(j.language, j.text);
     return r.ok ? (j.text || '').trim() : ''; // rejected → '' → the loop re-asks instead of acting on noise
   } catch {
     return ''; // timeout/abort/network -> empty -> server re-asks, loop continues

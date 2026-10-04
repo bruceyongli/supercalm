@@ -18,4 +18,15 @@ assert.equal(isClearVoiceInterruption('People are talking beside the road today'
   'unaddressed ambient conversation does not seize the turn');
 assert.equal(isClearVoiceInterruption('', report), false);
 
+const chineseReport = 'AIOS 的语音输入已经更新，现在支持中文和 English。请检查手机上的录音功能。';
+for (const text of ['停一下', '暂停', '为什么', '怎么解决的', '请解释一下', '不是，我问的是中文输入', '我需要修改手机界面']) {
+  assert.equal(isClearVoiceInterruption(text, chineseReport), true, `${text} can interrupt a Chinese report`);
+}
+assert.equal(isClearVoiceInterruption('语音输入已经更新现在支持中文和 English', chineseReport), false,
+  'Chinese speaker echo is rejected even with different punctuation');
+assert.equal(isClearVoiceInterruption('我们去旁边的咖啡店聊天', chineseReport), false, 'nearby Chinese chatter does not seize the turn');
+const interrupted = 'AIOS 的语音输入已经更新现在支持中文和 English，等一下，为什么以前不支持中文？';
+assert.equal(isClearVoiceInterruption(interrupted, chineseReport), true);
+assert.equal(extractVoiceInterruption(interrupted, chineseReport), '等一下，为什么以前不支持中文？');
+
 console.log('voice_interruption.test ok');

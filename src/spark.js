@@ -161,7 +161,7 @@ route('POST', '/api/transcribe', async (req, res) => {
   // Operator 2026-08-12 ("what the heck kind of language … it's not actually read the context"):
   // dictation is grounded in the operator's languages + the real session/project context, and every
   // backend's output goes through guardTranscript before it can become a task/reply/title.
-  // `langs` = the languages dictation may legitimately be in (client sends its navigator languages;
+  // `langs` = the languages dictation may legitimately be in (client sends en/zh + device languages;
   // env AIOS_STT_LANGS overrides the default). One single lang → hard-pin Whisper instead of auto.
   const langs = normalizeLangs(url.searchParams.get('langs') ?? process.env.AIOS_STT_LANGS ?? '');
   if (language === 'auto' && langs.length === 1) language = langs[0];
@@ -172,7 +172,7 @@ route('POST', '/api/transcribe', async (req, res) => {
     const pid = url.searchParams.get('project') || '';
     const session = sid ? getSession(sid) : null;
     const project = pid ? getProject(pid) : session?.project_id ? getProject(session.project_id) : null;
-    prompt = sttContextPrompt({ session, project, extra: (url.searchParams.get('context') || '').slice(0, 300) });
+    prompt = sttContextPrompt({ session, project, langs, extra: (url.searchParams.get('context') || '').slice(0, 300) });
   } catch {}
   // Reject wrong-language/stock-hallucination output; hand the raw text back for diagnostics. 200 —
   // "heard nothing usable" is a normal outcome every mic surface already handles as empty input.

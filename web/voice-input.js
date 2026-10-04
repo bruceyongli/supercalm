@@ -4,7 +4,7 @@
 const SHORT_INTENT = new Set([
   'yes', 'yeah', 'yep', 'no', 'nope', 'ok', 'okay', 'sure', 'send', 'stop', 'pause', 'wait', 'next',
   'skip', 'later', 'done', 'repeat', 'continue', 'why', 'what', 'how', 'when', 'where', 'who', 'which',
-  '好', '不', '停', '继续', '下一个',
+  '好', '不', '停', '是', '对', '继续', '下一个',
 ]);
 
 export const VOICE_CAPTURE_DEFAULTS = Object.freeze({
@@ -34,9 +34,10 @@ export function voiceTranscriptDisposition(text, { spoken = '' } = {}) {
 
   const parts = tokens(clean);
   const compact = clean.replace(/\s/g, '');
+  const han = [...compact.matchAll(/\p{Script=Han}/gu)].length;
   // Spark occasionally returns one clipped letter/syllable for room noise. It has no safe semantic
   // interpretation and was the source of the iPhone's self-sustaining answer loop.
-  if (!parts.length || compact.length < 3 || (parts.length === 1 && compact.length < 4)) {
+  if (han < 2 && (!parts.length || compact.length < 3 || (parts.length === 1 && compact.length < 4))) {
     return { accepted: false, reason: 'fragment', text: '' };
   }
 
