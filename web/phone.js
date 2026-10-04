@@ -12,7 +12,7 @@
 
 import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, preferredSttLangs, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
-import { unlockAudio, newPlayback, splitSentences, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
+import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
 import { isVoiceModeActive, startVoiceMode, stopVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
@@ -380,7 +380,7 @@ function phoneVoiceConstraints() {
 async function voiceSay(text, { allowInterruption = false } = {}) {
   if (!text || V.stopFlag) return;
   V.state = 'speaking'; V.said = text;
-  V.segment = splitSentences(text)[0] || String(text);
+  V.segment = String(text); // actual stream metadata, not punctuation guesses, selects the spoken phrase
   render();
   let live = null;
   let accepted = null;

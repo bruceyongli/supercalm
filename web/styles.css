@@ -248,12 +248,12 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   font: 430 clamp(16px, 2.6vw, 19px)/1.48 'IBM Plex Sans', system-ui, sans-serif; text-wrap: pretty;
 }
 .ongo-segment {
-  display: block; margin: 0 0 7px; padding: 3px 7px; border-left: 2px solid transparent;
-  border-radius: 4px; opacity: .58; transition: opacity .18s ease, background .18s ease, border-color .18s ease;
+  display: inline; margin: 0; padding: 0; border-radius: 3px; opacity: .58;
+  transition: opacity .18s ease, background .18s ease;
 }
 .ongo-segment.done { opacity: .32; }
 .ongo-segment.current {
-  opacity: 1; border-left-color: #4ecb6c; background: rgba(78,203,108,.1); color: #fff;
+  opacity: 1; background: rgba(78,203,108,.13); color: #fff;
 }
 .ongo-heard {
   min-height: 54px; display: grid; grid-template-columns: 126px 1fr; align-items: start; gap: 10px;

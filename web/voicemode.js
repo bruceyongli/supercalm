@@ -1,5 +1,5 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage, preferredSttLangs } from './common.js';
-import { unlockAudio as unlockPlayer, newPlayback, splitSentences, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
+import { unlockAudio as unlockPlayer, newPlayback, speechTextRange, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 
@@ -96,8 +96,9 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
         setState('speaking', state.say);
         lastSpoken = state.say || lastSpoken;
         const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
+        const preparedSegments = preparedAudio ? preparedUpdate.segments || [] : [];
         preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
-        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio });
+        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments });
       }
       if (state.done || stopFlag) break;
       if (interruption?.text) {
@@ -188,9 +189,8 @@ function end(reason = 'complete') {
 }
 
 // ---- TTS: two modes ----
-// 'neural' (DEFAULT): Spark server TTS. English defaults to Kokoro realtime TTS; Qwen is still available
-//   through the server env/request options. The client pipelines per sentence so longer reports
-//   can start playing while the next sentence is being generated.
+// 'neural' (DEFAULT): Spark's promoted native Qwen BF16 stream. Start playing as frames arrive;
+//   the model/gateway supplies phrase boundaries, not client-side punctuation guesses.
 // 'browser': on-device speechSynthesis — instant, lower quality, no server round-trip.
 function ttsMode() {
   try { return localStorage.getItem('aios_tts') || 'neural'; } catch { return 'neural'; }
@@ -234,7 +234,7 @@ function renderVoiceControls() {
 }
 // Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
 // user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
-async function speak(text, { allowInterruption = false, preparedAudio = null } = {}) {
+async function speak(text, { allowInterruption = false, preparedAudio = null, preparedSegments = [] } = {}) {
   if (!text || stopFlag) return;
   if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Qwen when the network is better.', { offerDevice: true });
   else clearTtsNotice();
@@ -278,12 +278,14 @@ async function speak(text, { allowInterruption = false, preparedAudio = null } =
     live.start();
   }
   const playback = speakSmart(text, handle, {
-    // A live assistant reply is one utterance, not a report playlist. Sentence-streamed clips
-    // introduced audible gaps and made iOS sound as if the assistant stopped and restarted.
+    // One model-provided stream: native frames are queued continuously, never manually split into
+    // sentence clips. The opening call keeps its prewarmed bytes and real phrase timestamps.
     continuous: true,
     preparedAudio,
+    preparedSegments,
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
+    onPartial: () => showTtsNotice('The audio stream stopped before the end. Nothing was replayed.', { offerDevice: false }),
     onSegment: focusSpokenSegment,
   }).then(() => null, () => null);
   const playbackOrCapture = playback.then(() => capturingSpeech ? interruption : null);
@@ -746,42 +748,36 @@ function setState(s, said) {
   }
 }
 
-function spokenParts(text) {
-  return splitSentences(text);
-}
-
 function paintSpokenText(text) {
   if (!ui?.said) return;
   if (!ui.onTheGo) {
     ui.said.textContent = text;
     return;
   }
-  const parts = spokenParts(text);
-  ui.said.replaceChildren(...parts.map((part, index) => {
+  ui.spokenText = String(text || ''); ui.spokenEnd = 0; ui.spokenKey = '';
+  ui.said.replaceChildren(...['done', 'current', 'pending'].map(kind => {
     const span = document.createElement('span');
-    span.className = `ongo-segment${index === 0 ? ' current' : ''}`;
-    span.dataset.spoken = part.toLowerCase().replace(/\s+/g, ' ').trim();
-    span.textContent = part;
+    span.className = `ongo-segment ${kind}`;
+    span.dataset.speechPart = kind;
+    span.textContent = kind === 'current' ? ui.spokenText : '';
     return span;
   }));
 }
 
 function focusSpokenSegment(segment = {}) {
   if (!ui?.onTheGo || !ui.said) return;
-  const spans = [...ui.said.querySelectorAll('.ongo-segment')];
-  if (!spans.length) return;
-  const needle = String(segment.text || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  let next = needle
-    ? spans.find((span) => span.dataset.spoken === needle || span.dataset.spoken.includes(needle) || needle.includes(span.dataset.spoken))
-    : null;
-  if (!next && Number.isFinite(Number(segment.index))) next = spans[Math.max(0, Math.min(spans.length - 1, Number(segment.index)))];
-  next ||= spans.find((span) => !span.classList.contains('done')) || spans[0];
-  const at = spans.indexOf(next);
-  spans.forEach((span, index) => {
-    span.classList.toggle('current', index === at);
-    span.classList.toggle('done', index < at);
-  });
-  next.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
+  const key = `${segment.index}:${segment.text}`;
+  if (key === ui.spokenKey) return;
+  const range = speechTextRange(ui.spokenText, segment.text, ui.spokenEnd);
+  if (!range) return; // Unknown metadata cannot invent a current-reading position.
+  const current = ui.said.querySelector('[data-speech-part="current"]');
+  if (!current) return;
+  ui.spokenKey = key; ui.spokenEnd = range.end;
+  ui.said.querySelector('[data-speech-part="done"]').textContent = ui.spokenText.slice(0, range.start);
+  current.textContent = ui.spokenText.slice(range.start, range.end);
+  ui.said.querySelector('[data-speech-part="pending"]').textContent = ui.spokenText.slice(range.end);
+  const box = current.getBoundingClientRect(), parent = ui.said.getBoundingClientRect();
+  if (box.top < parent.top || box.bottom > parent.bottom) current.scrollIntoView?.({ block: 'nearest' });
 }
 
 function setHeard(text) {

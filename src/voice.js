@@ -446,9 +446,9 @@ export async function prepareVoiceUpdate(sessionId, reportId = null) {
     const item = buildVoiceItems(sessionId, { onTheGo: true }).find(it => it.sessionId === sessionId);
     if (!item || (reportId && Number(reportId) !== item.reportId)) throw Object.assign(new Error('The report has changed'), { status: 409 });
     const say = await present({ items: [item], pointer: 0, onTheGo: true }, true);
-    const { audio, headers } = await synthesizeSpeech({ text: say, readyOnly: true });
+    const { audio, headers, segments } = await synthesizeSpeech({ text: say, readyOnly: true });
     if (key !== voiceEpisodeKey(sessionId)) throw Object.assign(new Error('This report was handled or replaced while preparing'), { status: 409 });
-    return { item, say, audio, headers };
+    return { item, say, audio, headers, segments };
   }).then(entry => {
     if (!readyUpdate(entry.id)) throw Object.assign(new Error('The prepared report is stale'), { status: 409 });
     if (reportId && Number(reportId) !== entry.item.reportId) throw Object.assign(new Error('The report has changed'), { status: 409 });
@@ -463,7 +463,7 @@ route('POST', '/api/voice/prepare', async (req, res) => {
     const entry = await prepareVoiceUpdate(String(b.focusSessionId || '').slice(0, 80), b.reportId);
     json(res, 200, { preparationId: entry.id, say: entry.say, expiresAt: entry.expiresAt,
       summary: entry.item._brief?.quick || entry.item._brief?.standard || '',
-      audioUrl: `api/voice/prepared/${entry.id}/audio`, ttsSource: entry.headers['x-aios-tts-source'] });
+      audioUrl: `api/voice/prepared/${entry.id}/audio`, ttsSource: entry.headers['x-aios-tts-source'], segments: entry.segments || [] });
   } catch (e) { json(res, e.status || 502, { error: e.message }); }
 });
 route('GET', '/api/voice/prepared/:id/audio', (req, res, { id: preparationId }) => {

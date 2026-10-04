@@ -25,6 +25,7 @@ const modelGate = new Promise(resolve => { releaseModel = resolve; });
 const audioGate = new Promise(resolve => { releaseAudio = resolve; });
 const readBody = async req => { let body = ''; for await (const chunk of req) body += chunk; return JSON.parse(body); };
 const sttTakes = [{ text: '为什么之前中文输入不工作', language: 'auto' }, { text: 'How was it fixed?', language: 'auto' }];
+let streamBehavior = null;
 const model = httpServer(async (req, res) => {
   const body = await readBody(req);
   if (body.messages[0].content.includes('hands-free project lead')) {
@@ -64,6 +65,20 @@ const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, 
   const body = await readBody(req);
   trace.push({ event: 'tts', path: req.url, ttsOnly: body.tts_only, voice: body.voice, text: body.text,
     explicit: req.headers['x-voice-demo'], history: body.history });
+  if (streamBehavior) {
+    const behavior = streamBehavior;
+    res.on('close', () => { behavior.closed = true; behavior.release(); });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const frame = { index: 0, audio: wavFromPcm(Buffer.alloc(48000)).toString('base64'), model: NATIVE_TTS_MODEL,
+      precision: 'BF16', engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: 'Ryan',
+      phrase_index: 0, frame_index: 0, native_startup_one_frames: 2, text: 'First update uses PIXY. Gimbal, not the laptop camera.' };
+    res.write(`event: audio\ndata: ${JSON.stringify(frame)}\n\n`);
+    await behavior.gate;
+    if (res.destroyed) return;
+    if (behavior.fail) res.end('event: error\ndata: {"message":"fixture interrupted generation"}\n\n');
+    else res.end(`event: audio\ndata: ${JSON.stringify({ ...frame, index: 1, phrase_index: 1, text: '中文输入也能使用。' })}\n\nevent: done\ndata: ${JSON.stringify({ text: body.text })}\n\n`);
+    return;
+  }
   await audioGate;
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const pcm = Buffer.alloc(24000 * 2);
@@ -226,6 +241,51 @@ try {
   }
   assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, 1,
     'Chinese and English questions were not delivered as coding-agent instructions');
+
+  // Drive the real native streaming handler and shared browser player. Keep the gateway unfinished
+  // until the browser has actually started its first audio phrase, then prove completion waits for
+  // the last queued buffer; errors and interruption must not synthesize/replay the opening again.
+  const nativePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await nativePage.goto(base + '?view=desktop&noresize');
+  const nativeText = 'First update uses PIXY. Gimbal, not the laptop camera. 中文输入也能使用。';
+  await nativePage.evaluate(async text => {
+    const player = await import('./tts-player.js');
+    const button = document.createElement('button'); button.id = 'fixture-native-play'; button.textContent = 'Play native fixture';
+    button.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999';
+    button.onclick = () => {
+      player.unlockAudio(); window.__nativeSegments = []; window.__nativeDone = false; window.__partial = 0;
+      window.__nativeHandle = player.newPlayback();
+      window.__nativeRun = player.speakSmart(text, window.__nativeHandle, { continuous: true,
+        onSegment: value => window.__nativeSegments.push(value), onPartial: () => window.__partial++ }).then(() => { window.__nativeDone = true; });
+    };
+    document.body.append(button);
+  }, nativeText);
+  const streamingTrace = [];
+  for (const outcome of ['complete', 'partial', 'stop']) {
+    let release;
+    streamBehavior = { gate: new Promise(resolve => { release = resolve; }), release: () => release(), fail: outcome === 'partial', closed: false };
+    const behavior = streamBehavior;
+    const beforeTts = trace.filter(item => item.event === 'tts').length;
+    await nativePage.locator('#fixture-native-play').click();
+    await nativePage.waitForFunction(() => window.__nativeSegments.length === 1);
+    assert.equal(await nativePage.evaluate(() => window.__nativeDone), false, 'the first phrase plays before the unfinished gateway response');
+    assert.equal(behavior.closed, false);
+    assert.equal(trace.filter(item => item.event === 'tts').at(-1).text, nativeText, 'the complete reply is sent once, not split by AIOS');
+    if (outcome === 'stop') await nativePage.evaluate(() => window.__nativeHandle.stop());
+    else behavior.release();
+    if (outcome === 'complete') {
+      await nativePage.waitForFunction(() => window.__nativeSegments.length === 2);
+      assert.equal(await nativePage.evaluate(() => window.__nativeDone), false, 'EOF cannot advance the conversation while the last phrase is still playing');
+    }
+    await nativePage.evaluate(() => window.__nativeRun);
+    await until(() => behavior.closed);
+    const result = await nativePage.evaluate(() => ({ phrases: window.__nativeSegments.map(value => value.text), partial: window.__partial }));
+    assert.equal(trace.filter(item => item.event === 'tts').length - beforeTts, 1, 'partial speech or Stop never falls back and replays the opening');
+    assert.equal(result.phrases.length, outcome === 'complete' ? 2 : 1);
+    assert.equal(result.partial, outcome === 'partial' ? 1 : 0);
+    streamingTrace.push({ outcome, ...result, upstreamClosed: behavior.closed, ttsRequests: 1 });
+  }
+  streamBehavior = null; await nativePage.close();
   const { prepareVoiceUpdate } = await import('../src/voice.js');
   const ready = await prepareVoiceUpdate('s_voice_fixture', report.id);
   const { dismissAttention } = await import('../src/attention_store.js');
@@ -236,7 +296,7 @@ try {
   const staleAudio = await fetch(base + `api/voice/prepared/${ready.id}/audio`);
   assert.equal(staleAudio.status, 409, 'dismissed audio cannot be replayed from its URL');
   console.log('voice_ready_flow trace', JSON.stringify({ pass: true, handlers, model: trace[0], tts: speech,
-    acceptAdditionalGenerations: 0, bilingual: bilingualTrace, speechHandlers: trace.filter(item => ['stt', 'conversation'].includes(item.event)),
+    acceptAdditionalGenerations: 0, nativeStreaming: streamingTrace, bilingual: bilingualTrace, speechHandlers: trace.filter(item => ['stt', 'conversation'].includes(item.event)),
     staleStart: staleStart.status, staleAudio: staleAudio.status }));
   await page.evaluate(async () => { (await import('./voicemode.js')).stopVoiceMode(); });
   await browser.close(); browser = null;

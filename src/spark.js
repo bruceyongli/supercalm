@@ -55,7 +55,7 @@ async function toWav(audio, ext) {
 // Spark dictation is tailnet-only and MagicDNS does not resolve on host, so we
 // connect to the IP while overriding SNI + Host so the Tailscale-Serve TLS cert
 // and vhost routing match. rejectUnauthorized stays on (cert is valid for SPARK.host).
-export function sparkRequest(method, path, { body, contentType, timeout = 60000, headers: extraHeaders = {}, signal, maxBytes = 16000000 } = {}) {
+export function sparkRequest(method, path, { body, contentType, timeout = 60000, headers: extraHeaders = {}, signal, maxBytes = 16000000, onChunk } = {}) {
   const spark = effectiveSpark();
   return new Promise((resolve, reject) => {
     const headers = { ...extraHeaders, Host: spark.host };
@@ -67,7 +67,13 @@ export function sparkRequest(method, path, { body, contentType, timeout = 60000,
       { host: spark.ip, port: spark.port, path, method, servername: spark.host, headers, timeout, agent: sparkAgent },
       (res) => {
         const chunks = []; let size = 0;
-        res.on('data', (c) => { size += c.length; if (size > maxBytes) req.destroy(new Error('spark response exceeds limit')); else chunks.push(c); });
+        res.on('data', (c) => {
+          size += c.length;
+          if (size > maxBytes) return req.destroy(new Error('spark response exceeds limit'));
+          if (onChunk && res.statusCode === 200) {
+            try { onChunk(c, res); } catch (error) { req.destroy(error); }
+          } else chunks.push(c);
+        });
         res.on('error', reject);
         res.on('end', () => resolve({ status: res.statusCode, headers: res.headers || {}, body: Buffer.concat(chunks) }));
       }

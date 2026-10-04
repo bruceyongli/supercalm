@@ -45,8 +45,11 @@ const server = createServer(async (req, res) => {
     await player.speakSmart(text, handle, { onSegment: (item) => segments.push(item) });
     const continuousSegments = [];
     await player.speakSmart(text, player.newPlayback(), { continuous: true, onSegment: (item) => continuousSegments.push(item) });
-    await player.speakSmart('This update was prepared before ringing.', player.newPlayback(), { continuous: true, preparedAudio: new Blob(['prepared-audio']) });
-    window.__result = { segments, continuousSegments, plays: window.__audioPlays };
+    const preparedSegments = [];
+    await player.speakSmart('This update was prepared before ringing.', player.newPlayback(), { continuous: true, preparedAudio: new Blob(['prepared-audio']),
+      preparedSegments: [{ text: 'This update', start: 0 }, { text: 'was prepared before ringing.', start: 9 }],
+      onSegment: (item) => preparedSegments.push(item) });
+    window.__result = { segments, continuousSegments, preparedSegments, plays: window.__audioPlays };
   </script>`);
 });
 
@@ -76,12 +79,13 @@ try {
   const result = await page.evaluate(() => window.__result);
   assert.deepEqual(result.segments.map((item) => item.index), [0, 1, 2],
     'replayed stream chunk identities are spoken only once');
-  assert.equal(result.plays, 5, 'stream chunks, one continuous utterance, and one prepared utterance each play exactly once');
-  assert.equal(streamRequests, 1, 'ordinary long report playback retains the low-latency stream');
-  assert.equal(singleRequests, 1, 'continuous assistant speech uses one audio response instead of sentence clips');
-  assert.equal(singleRequests, 1, 'prepared utterances never issue a second TTS request after Accept');
-  assert.deepEqual(result.continuousSegments.map((item) => item.index), [0, 16],
-    'one continuous audio response can still advance the visible current-reading marker');
+  assert.equal(result.plays, 7, 'each legacy chunk is played once and the prepared opening plays once');
+  assert.equal(streamRequests, 2, 'assistant replies now use the stream too, not a whole-response wait');
+  assert.equal(singleRequests, 0, 'prepared utterances never issue a second TTS request after Accept');
+  assert.deepEqual(result.continuousSegments.map((item) => item.index), [0, 1, 2],
+    'reading markers follow upstream phrase identities, not guessed sentence weights');
+  assert.deepEqual(result.preparedSegments.map((item) => item.index), [0],
+    'at eight seconds the prepared opening still follows its real nine-second boundary, not text length');
 } finally {
   await browser.close();
   await new Promise((resolve) => server.close(resolve));

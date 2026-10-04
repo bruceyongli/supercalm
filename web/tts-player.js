@@ -3,8 +3,8 @@
 // server endpoints (/api/tts, /api/tts/stream) without duplicating the hard-won iOS handling:
 //   - one persistent Audio element, gesture-unlocked via a silent clip (unlockAudio must be
 //     called SYNCHRONOUSLY inside the user's tap, before any await);
-//   - streamed playback: consume /api/tts/stream's SSE (Spark sentence chunks, each a
-//     self-contained audio file → iOS-safe), play chunk 1 while later chunks synthesize;
+//   - streamed playback: queue native PCM frames on one gesture-unlocked audio clock;
+//     explicit legacy engines retain self-contained clips;
 //   - stall timers + absolute caps everywhere (iOS drops 'ended' on blob URLs);
 //   - opus when canPlayType allows, else mp3; playbackRate from localStorage.aios_tts_rate.
 // Differences from voicemode.js: no overlay/UI coupling (notices are the caller's business) and
@@ -14,6 +14,13 @@
 const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyLjEyLjEwMAAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAABQAAAqAAbW1tbW1tbW1tbW1tbW1tbW1tbZKSkpKSkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2tra2tra2trbb29vb29vb29vb29vb29vb29vb2///////////////////////////AAAAAExhdmM2Mi4yOAAAAAAAAAAAAAAAACQEUAAAAAAAAAKgvT/qZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExFMAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKYAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
 
 let player = null; // the one persistent, gesture-unlocked <audio> (never in the DOM — survives re-renders)
+let streamContext = null;
+function getStreamContext() {
+  const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!Context) throw new Error('native playback unavailable');
+  if (!streamContext || streamContext.state === 'closed') streamContext = new Context();
+  return streamContext;
+}
 
 const RATE_PRESETS = [1, 1.15, 1.25, 1.5, 1.75]; // shared with voicemode (same localStorage key)
 function ttsRate() {
@@ -27,7 +34,7 @@ export function currentRate() { return ttsRate(); }
 export function cycleRate() {
   const next = RATE_PRESETS[(RATE_PRESETS.indexOf(ttsRate()) + 1) % RATE_PRESETS.length];
   try { localStorage.setItem('aios_tts_rate', String(next)); } catch {}
-  if (player) applyRate(player);
+  applyRateLive();
   return next;
 }
 function applyRate(a) {
@@ -45,6 +52,7 @@ function getPlayer() {
 // MUST run synchronously inside the tap gesture, before any await — unlocks iOS audio for the
 // whole page session (later programmatic play() calls are then allowed however long TTS takes).
 export function unlockAudio() {
+  try { getStreamContext().resume().catch(() => {}); } catch {}
   try {
     const a = getPlayer();
     a.src = SILENT_MP3;
@@ -63,10 +71,16 @@ export function unlockAudio() {
 // registry + stopAllPlayback() make "leaving the view stops the voice" an invariant any view can enforce.
 const activeHandles = new Set();
 export function newPlayback() {
-  const h = { stopped: false, stop() {} };
+  const stoppers = new Set();
+  const h = { stopped: false, stop() {}, onStop(callback) {
+    if (h.stopped) { callback(); return () => {}; }
+    stoppers.add(callback); return () => stoppers.delete(callback);
+  } };
   h.stop = () => {
     h.stopped = true;
     activeHandles.delete(h);
+    for (const callback of stoppers) { try { callback(); } catch {} }
+    stoppers.clear();
     try { if (player) player.pause(); } catch {}
     try { speechSynthesis.cancel(); } catch {}
   };
@@ -96,6 +110,27 @@ export function textForTts(text) {
   return String(text || '').replace(/(\d)\.(?=\d)/g, '$1 point ').replace(/\s{2,}/g, ' ');
 }
 const ttsPayload = (text, extra = {}) => ({ text: textForTts(text), response_format: preferredTtsFormat(), ...extra });
+
+// Locate the model's spoken phrase in the unchanged visible report, including numeric-dot speech
+// normalization. No punctuation-based sentence guesses and no text-length timing approximation.
+export function speechTextRange(source, phrase, from = 0) {
+  source = String(source || '');
+  const origins = []; let spoken = '';
+  for (let at = 0; at < source.length; at++) {
+    const part = source[at] === '.' && /\d/.test(source[at - 1] || '') && /\d/.test(source[at + 1] || '') ? ' point ' : source[at];
+    for (const char of part.toLowerCase()) {
+      if (/\s/.test(char) && (!spoken || spoken.endsWith(' '))) continue;
+      spoken += /\s/.test(char) ? ' ' : char; origins.push(at);
+    }
+  }
+  const needle = textForTts(phrase).toLowerCase().trim();
+  if (!needle) return null;
+  const after = origins.findIndex(at => at >= from);
+  if (after < 0) return null;
+  const begin = spoken.indexOf(needle, after);
+  if (begin < 0) return null;
+  return { start: origins[begin], end: origins[begin + needle.length - 1] + 1 };
+}
 
 export function splitSentences(text) {
   const source = String(text || '');
@@ -153,11 +188,11 @@ function playUrl(url, h) {
   });
 }
 
-// Streamed: play Spark's sentence chunks as they arrive (~1s to first audio for a long text).
+// Streamed: play native frames as they arrive, following Omni's phrase metadata and cadence.
 // The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
 // has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
 // re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
-function speakStream(text, h, extra = {}, onSlow, onSegment) {
+function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
@@ -165,6 +200,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
     const seenChunkIds = new Set();
     let lastUnindexedText = '';
     let readingDone = false, playing = false, finished = false, played = 0;
+    let pcmQueue = null, native = false, nativeDone = false, unregisterStop = () => {};
     const capMs = Math.max(90000, 20000 + (text.length * 130) / ttsRate());
     const cap = setTimeout(() => finish(played ? undefined : new Error('tts stream timeout')), capMs);
     const slow = onSlow ? setTimeout(() => { if (!played && !finished) { try { onSlow(); } catch {} } }, 4500) : null; // still no audio → "spark is slow"
@@ -173,10 +209,12 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
       finished = true;
       clearTimeout(cap);
       if (slow) clearTimeout(slow);
+      unregisterStop(); pcmQueue?.stop(); h.setRate = null;
       try { ctrl.abort(); } catch {}
       for (const item of urls.splice(0)) { try { URL.revokeObjectURL(item.url); } catch {} }
       err ? reject(err) : resolve();
     };
+    unregisterStop = h.onStop?.(() => finish()) || (() => {});
     const pump = async () => {
       if (playing || finished) return;
       playing = true;
@@ -199,6 +237,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
           signal: ctrl.signal,
         });
         if (!r.ok || !r.body?.getReader) throw new Error('tts stream ' + r.status);
+        if (!String(r.headers.get('content-type')).startsWith('text/event-stream')) throw new Error('invalid tts stream');
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -212,7 +251,21 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
             buffer = buffer.slice(sep + 2);
             if (block) {
               const { event, data } = parseSseBlock(block);
-              if (event === 'chunk' && data.audio_base64) {
+              if (event === 'metadata' && data.transport === 'native-pcm-frames') native = true;
+              else if (event === 'audio') {
+                native = true;
+                if (!pcmQueue) {
+                  const { createPcmQueue } = await import('./voice-stream.js');
+                  const context = getStreamContext(); await context.resume();
+                  if (finished || h.stopped) return;
+                  if (context.state !== 'running') throw new Error('native playback unavailable');
+                  pcmQueue = createPcmQueue(context, { rate: ttsRate(), onSegment,
+                    onStarted: () => { played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
+                  h.setRate = value => pcmQueue.setRate(value);
+                }
+                pcmQueue.push(data);
+              } else if (event === 'chunk' && data.audio_base64) {
+                if (native) throw new Error('speech transport changed mid-stream');
                 const index = Number(data.index);
                 const chunkText = String(data.text || '').replace(/\s+/g, ' ').trim();
                 // A reconnecting/upstream streaming synthesizer can replay its first completed
@@ -237,8 +290,9 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
                 });
                 pump();
               } else if (event === 'done') {
+                nativeDone = true;
                 readingDone = true;
-                pump();
+                if (pcmQueue) pcmQueue.seal(); else pump();
               } else if (event === 'error') {
                 throw new Error(data.detail || 'tts stream error');
               }
@@ -246,10 +300,14 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
             sep = buffer.indexOf('\n\n');
           }
         }
+        if (native && !nativeDone) throw new Error('native speech ended before completion');
         readingDone = true;
-        pump();
+        if (pcmQueue) pcmQueue.seal(); else pump();
       } catch (e) {
-        if (!finished && !h.stopped) finish(played ? undefined : e);
+        if (!finished && !h.stopped) {
+          if (played) { try { onPartial?.(e); } catch {} }
+          finish(played ? undefined : e);
+        }
       }
     })();
   });
@@ -258,13 +316,11 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
 // Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
 // has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
-function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = null) {
+function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = null, preparedSegments = []) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     let done = false, cap = null, stall = null, playedSome = false, shownSegment = -1, audioUrl = null;
-    const segments = splitSentences(text);
-    const segmentWeights = segments.map((part) => Math.max(1, part.length));
-    const totalWeight = segmentWeights.reduce((sum, weight) => sum + weight, 0);
+    const segments = preparedSegments.length ? preparedSegments : [{ text, start: 0, index: 0 }];
     const ctrl = new AbortController();
     const slow = onSlow ? setTimeout(() => { if (!playedSome && !done) { try { onSlow(); } catch {} } }, 4500) : null;
     const finish = (err) => {
@@ -283,18 +339,10 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = nul
     // playback time so a long live answer remains easy to follow without chopping its audio up.
     const showProgress = (audio) => {
       let index = 0;
-      if (segments.length > 1 && Number.isFinite(audio.duration) && audio.duration > 0 && Number.isFinite(audio.currentTime)) {
-        const target = Math.max(0, Math.min(1, audio.currentTime / audio.duration)) * totalWeight;
-        let covered = 0;
-        index = segments.findIndex((_, at) => {
-          covered += segmentWeights[at];
-          return target < covered;
-        });
-        if (index < 0) index = segments.length - 1;
-      }
+      for (let at = 1; at < segments.length; at++) if (audio.currentTime >= segments[at].start) index = at;
       if (index === shownSegment) return;
       shownSegment = index;
-      try { onSegment?.({ text: segments[index] || text, index, total: segments.length || 1 }); } catch {}
+      try { onSegment?.({ text: segments[index].text || text, index, total: segments.length }); } catch {}
     };
     cap = setTimeout(() => finish(new Error('tts timeout')), 12000 + (text.length * 130) / ttsRate());
     (async () => {
@@ -384,19 +432,18 @@ let streamUnavailable = false;
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
 //   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment, continuous = false, preparedAudio = null } = {}) {
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onPartial, onSegment, continuous = false, preparedAudio = null, preparedSegments = [] } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
   if (mode === 'browser') return speakBrowser(text, h, onSegment, continuous);
   try {
-    if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio);
-    const long = text.length > 220 || splitSentences(text).length > 2;
-    if (!continuous && long && !streamUnavailable) {
-      return await speakStream(text, h, ttsExtra, onSlow, onSegment).catch((e) => {
+    if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio, preparedSegments);
+    if (!streamUnavailable) {
+      return await speakStream(text, h, ttsExtra, onSlow, onSegment, onPartial).catch((e) => {
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
-        if (/\b409\b/.test(String(e?.message || ''))) streamUnavailable = true;
+        if (/\b409\b|native playback unavailable/.test(String(e?.message || ''))) streamUnavailable = true;
         if (h.stopped) return;
         return speakSingle(text, h, ttsExtra, onSlow, onSegment);
       });
@@ -411,4 +458,7 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
 
 // Re-apply the current localStorage rate to the live shared element (for a rate control that should
 // take effect mid-utterance). cycleRate() already does this when cycling; this is for a direct set.
-export function applyRateLive() { if (player) applyRate(player); }
+export function applyRateLive() {
+  if (player) applyRate(player);
+  for (const handle of activeHandles) handle.setRate?.(ttsRate());
+}

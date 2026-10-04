@@ -241,6 +241,8 @@ try {
     'the ready report immediately orients the operator to the exact module and workstream');
   assert.equal(await page.locator('.vm-ongo .ongo-segment.current').count(), 1,
     'the exact sentence currently being spoken has a visible marker');
+  assert.equal(await page.locator('.vm-ongo .ongo-segment.current').evaluate(el => getComputedStyle(el).display), 'inline',
+    'reading highlights never force punctuation into separate report rows');
   assert.equal(await page.locator('.vm-ongo .ongo-heard').count(), 1,
     'the operator response region is always present, even before speech is recognized');
   assert.equal(await page.locator('.vm-ongo .vm-interrupt').textContent(), 'Speak now',
