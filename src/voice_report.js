@@ -23,7 +23,7 @@ const PART_MAX = 900;
 
 // Cheap chain, local/free first. Long inputs skip the 8k-ctx local model (see chainFor).
 export const REPORT_CHAIN = (process.env.AIOS_VOICE_REPORT_CHAIN ||
-  '8792:qwen38-flash-next-nvfp4,8791:gemini-3.1-flash-lite,8788:gpt-5.6-luna')
+  '8792:voice/qwen38-flash-next-nvfp4,8791:gemini-3.1-flash-lite,8788:gpt-5.6-luna')
   .split(',')
   .map((s) => {
     const [head, ...rest] = s.split(':');

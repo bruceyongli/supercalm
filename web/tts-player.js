@@ -258,10 +258,10 @@ function speakStream(text, h, extra = {}, onSlow, onSegment) {
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
 // Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
 // has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
-function speakSingle(text, h, extra = {}, onSlow, onSegment) {
+function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = null) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
-    let done = false, cap = null, stall = null, playedSome = false, shownSegment = -1;
+    let done = false, cap = null, stall = null, playedSome = false, shownSegment = -1, audioUrl = null;
     const segments = splitSentences(text);
     const segmentWeights = segments.map((part) => Math.max(1, part.length));
     const totalWeight = segmentWeights.reduce((sum, weight) => sum + weight, 0);
@@ -273,6 +273,7 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment) {
       if (cap) clearTimeout(cap);
       if (stall) clearTimeout(stall);
       if (slow) clearTimeout(slow);
+      if (audioUrl) { try { URL.revokeObjectURL(audioUrl); } catch {} audioUrl = null; }
       try { ctrl.abort(); } catch {}
       try { if (player) { player.onended = player.onerror = player.ontimeupdate = player.onplaying = player.onpause = null; player.pause(); } } catch {}
       err && !h.stopped && !playedSome ? reject(err) : resolve();
@@ -298,11 +299,15 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment) {
     cap = setTimeout(() => finish(new Error('tts timeout')), 12000 + (text.length * 130) / ttsRate());
     (async () => {
       try {
-        const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text, extra)), signal: ctrl.signal });
-        if (!r.ok) throw new Error('tts ' + r.status);
-        const blob = await r.blob();
+        let blob = preparedAudio;
+        if (!blob) {
+          const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text, extra)), signal: ctrl.signal });
+          if (!r.ok) throw new Error('tts ' + r.status);
+          blob = await r.blob();
+        }
         if (done || h.stopped) return finish();
         const url = URL.createObjectURL(blob);
+        audioUrl = url;
         const a = getPlayer();
         a.onended = () => { try { URL.revokeObjectURL(url); } catch {} finish(); };
         a.onerror = () => { try { URL.revokeObjectURL(url); } catch {} finish(new Error('audio playback failed')); };
@@ -379,12 +384,13 @@ let streamUnavailable = false;
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
 //   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment, continuous = false } = {}) {
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onSegment, continuous = false, preparedAudio = null } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
   if (mode === 'browser') return speakBrowser(text, h, onSegment, continuous);
   try {
+    if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio);
     const long = text.length > 220 || splitSentences(text).length > 2;
     if (!continuous && long && !streamUnavailable) {
       return await speakStream(text, h, ttsExtra, onSlow, onSegment).catch((e) => {

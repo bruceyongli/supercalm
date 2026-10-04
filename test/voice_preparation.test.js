@@ -1,0 +1,22 @@
+import assert from 'node:assert/strict';
+import { createVoicePreparationCache } from '../src/voice_preparation.js';
+
+let clock = 0, calls = 0, release;
+const cache = createVoicePreparationCache({ clock: () => clock, ttlMs: 100, maxEntries: 2, maxBytes: 10 });
+const produce = async () => { calls++; await new Promise(resolve => { release = resolve; }); return { say: 'Ready', audio: Buffer.alloc(4) }; };
+const first = cache.prepare('a', produce), duplicate = cache.prepare('a', produce);
+assert.equal(calls, 1, 'one pending generation is shared by simultaneous tabs and push');
+await assert.rejects(cache.prepare('b', produce), { status: 429 }, 'other reports cannot accumulate an inference queue');
+release();
+const entry = await first;
+assert.equal((await duplicate).id, entry.id);
+assert.equal((await cache.prepare('a', produce)).id, entry.id, 'ready cache never regenerates for Accept');
+assert.equal(cache.get(entry.id).say, 'Ready');
+clock = 100;
+assert.equal(cache.get(entry.id), null, 'an expired update has no reusable audio');
+await assert.rejects(cache.prepare('bad', async () => ({ say: 'No audio' })), /incomplete/);
+const fresh = await cache.prepare('fresh', async () => ({ say: 'Fresh', audio: Buffer.alloc(7) }));
+const newer = await cache.prepare('newer', async () => ({ say: 'Newer', audio: Buffer.alloc(7) }));
+assert.equal(cache.get(fresh.id), null, 'cached audio has a global byte bound');
+assert.equal(cache.get(newer.id).say, 'Newer', 'a failed preparation never blocks future work');
+console.log('voice_preparation.test ok');

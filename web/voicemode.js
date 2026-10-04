@@ -57,16 +57,29 @@ export function stopVoiceMode() {
   end('external');
 }
 
-export async function startVoiceMode({ focusSessionId = null, source = 'manual' } = {}) {
+export async function prepareVoiceUpdate({ focusSessionId, reportId } = {}) {
+  const prepared = await post('api/voice/prepare', { focusSessionId, reportId }, 90000);
+  const response = await fetch(prepared.audioUrl, { signal: AbortSignal.timeout(30000) });
+  if (!response.ok) throw new Error('The voice update changed before it was ready');
+  const audioBlob = await response.blob();
+  if (!audioBlob.size) throw new Error('The prepared voice update has no audio');
+  return { ...prepared, audioBlob };
+}
+
+export async function startVoiceMode({ focusSessionId = null, source = 'manual', preparedUpdate = null } = {}) {
   if (active) return;
   active = true;
   stopFlag = false;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
-  ui = buildOverlay({ onTheGo: String(source).startsWith('on-the-go') });
+  const onTheGo = String(source).startsWith('on-the-go');
+  if (!onTheGo) ui = buildOverlay();
   try {
-    let state = await post('api/voice/start', { focusSessionId, source });
-    let lastSpoken = '';
+    if (onTheGo && !preparedUpdate) preparedUpdate = await prepareVoiceUpdate({ focusSessionId });
+    let state = await post('api/voice/start', { focusSessionId, source, preparationId: preparedUpdate?.preparationId });
     voiceId = state.voiceId;
+    if (stopFlag) return;
+    if (onTheGo) ui = buildOverlay({ onTheGo, initialText: state.say });
+    let lastSpoken = '';
     while (!stopFlag) {
       if (state.current) updateProgress(state.current);
       if (state.delivery) updateDelivery(state.delivery, state.sentCount);
@@ -82,7 +95,9 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
       if (!state.ignored || state.say) {
         setState('speaking', state.say);
         lastSpoken = state.say || lastSpoken;
-        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current });
+        const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
+        preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
+        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio });
       }
       if (state.done || stopFlag) break;
       if (interruption?.text) {
@@ -138,6 +153,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual' 
       }
     }
   } catch (e) {
+    if (onTheGo && !ui) throw e;
     setState('error', 'Voice mode error: ' + (e.message || e));
     await sleep(1800);
   } finally {
@@ -218,9 +234,9 @@ function renderVoiceControls() {
 }
 // Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
 // user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
-async function speak(text, { allowInterruption = false } = {}) {
+async function speak(text, { allowInterruption = false, preparedAudio = null } = {}) {
   if (!text || stopFlag) return;
-  if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Kokoro when the network is better.', { offerDevice: true });
+  if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Qwen when the network is better.', { offerDevice: true });
   else clearTtsNotice();
   handle = newPlayback();
   let live = null;
@@ -265,6 +281,7 @@ async function speak(text, { allowInterruption = false } = {}) {
     // A live assistant reply is one utterance, not a report playlist. Sentence-streamed clips
     // introduced audible gaps and made iOS sound as if the assistant stopped and restarted.
     continuous: true,
+    preparedAudio,
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
     onSegment: focusSpokenSegment,
@@ -584,7 +601,7 @@ function renderPreview(panel, man) {
 }
 
 // ---- overlay UI ----
-function buildOverlay({ onTheGo = false } = {}) {
+function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
   const root = document.createElement('div');
   root.className = onTheGo ? 'vm vm-ongo' : 'vm';
   root.innerHTML = onTheGo
@@ -594,7 +611,7 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<div class="ongo-track"><div><span class="ongo-context">Ask a follow-up or give feedback naturally</span><span class="vm-prog-label"></span></div><div class="vm-bar"><i></i></div></div>' +
       '<div class="ongo-sources" aria-label="Report sources" hidden></div>' +
       '<div class="ongo-dialog">' +
-      '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">BRIEFING</span><div class="vm-said"><span class="ongo-segment current">Preparing a clear update…</span></div></section>' +
+      '<section class="ongo-report"><span class="ongo-label ongoing-spoken-label">BRIEFING</span><div class="vm-said"></div></section>' +
       '<section class="ongo-heard"><span class="ongo-label ongoing-heard-label">YOUR RESPONSE</span><div class="vm-heard empty">Your words will stay here.</div></section>' +
       '<div class="ongo-delivery" hidden></div></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
@@ -620,6 +637,7 @@ function buildOverlay({ onTheGo = false } = {}) {
       '<button class="btn danger vm-stop">Stop</button></div>' +
       PREVIEW_PANEL_HTML + '</div>';
   document.body.appendChild(root);
+  if (initialText) root.querySelector('.vm-said').textContent = initialText;
   const o = {
     root,
     orb: root.querySelector('.vm-orb'),

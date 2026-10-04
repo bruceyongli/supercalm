@@ -24,7 +24,7 @@ export async function voiceProviders() {
       id: 'spark', label: 'Local voice (Spark)', caps: { tts: true, stt: true }, location: 'tailnet',
       configured: !!sparkIp, available: !!sparkIp && !sparkMuted,
       status: !sparkIp ? 'not-configured' : sparkMuted ? 'unavailable' : 'ok',
-      detail: !sparkIp ? 'set SPARK_IP / SPARK_HOST' : sparkMuted ? 'muted' : 'Whisper + Kokoro, on your tailnet',
+      detail: !sparkIp ? 'set SPARK_IP / SPARK_HOST' : sparkMuted ? 'muted' : 'Whisper + Qwen3-TTS BF16, on your tailnet',
     },
     {
       id: 'codex', label: 'Codex — your ChatGPT login', caps: { tts: false, stt: true }, location: 'cloud',

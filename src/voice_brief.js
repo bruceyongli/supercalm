@@ -6,7 +6,7 @@
 import { chat } from './llm.js';
 
 const BRIEF_CHAIN = String(process.env.AIOS_VOICE_BRIEF_CHAIN
-  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen38-flash-next-nvfp4')
+  || '8792:voice/qwen38-flash-next-nvfp4,8788:gpt-5.6-luna,8789:claude-opus-5')
   .split(',')
   .map((entry) => {
     const [port, ...model] = entry.trim().split(':');
@@ -291,7 +291,7 @@ export async function buildVoiceBrief({
       [{ role: 'system', content: sys }, { role: 'user', content: u }],
       // Opus 5 rejects the legacy temperature option; its default is already appropriate for a
       // grounded structured brief. Omitting it also keeps the route compatible with older fallbacks.
-      { max_tokens: 800, timeout_ms: 14000 },
+      { max_tokens: 800, timeout_ms: 14000, signal: AbortSignal.timeout(14000) },
       BRIEF_CHAIN,
     );
     return out.content;
@@ -419,7 +419,7 @@ export function speakOnTheGoBrief(brief) {
     ? `For ${identity}, ${subject ? `this is about ${subject}` : 'here is the update'}`
     : subject ? `This is about ${subject}` : '';
   const integrated = spokenLimit(stripRepeatedOrientation(brief?.spoken, orientationParts), 68);
-  if (integrated) return [orientation ? `${orientation}.` : '', integrated].filter(Boolean).join(' ');
+  if (integrated) return [orientation ? `${orientation}.` : '', `${integrated.replace(/[.!?]+$/, '')}.`].filter(Boolean).join(' ');
   const request = spokenLimit(brief?.request, 22);
   const latest = spokenLimit(stripRoutineProcessEvidence(brief?.quick || brief?.standard || brief?.updates?.[0]?.latest), 28);
   const needs = spokenLimit(brief?.needs, 18);

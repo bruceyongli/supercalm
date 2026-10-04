@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { VOICE_CHAIN, chatJson } from '../src/llm.js';
 
-assert.equal(VOICE_CHAIN[0].model, 'gpt-5.6-luna', 'voice starts with the verified low-latency JSON route');
+assert.equal(VOICE_CHAIN[0].model, 'voice/qwen38-flash-next-nvfp4', 'voice starts with Spark’s dedicated Qwen voice lane');
 
 const denied = { port: 45501, model: 'voice-denied-regression' };
 const healthy = { port: 45502, model: 'voice-healthy-regression' };

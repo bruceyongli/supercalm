@@ -2,18 +2,12 @@ import http from 'node:http';
 import { fleetKey, userRoutes, routeForModel } from './model_catalog.js';
 import { callProxyModel, isRouteDenied, markRouteDenied, isAccessDenied } from './agents/model.js';
 
-// Local-proxy chat with a fallback chain. Default brain for the voice concierge,
-// chosen by a faithfulness+latency benchmark (NOT speed alone — see README/commit):
-// each model scored on the right action (await/send/next/stop), confirm-before-send,
-// strict JSON, and latency, on the real voice prompt. Provider-diverse so one upstream
-// outage can't kill voice:
-//   gpt-5.6-luna          (8788) — live subscription route, strict JSON, ~2.6s
-//   kimi-k2.6 / glm-5.2   (8790) — provider-diverse Aliyun fallbacks
-//   claude-haiku-4-5      (8789) — final fallback when Anthropic subscription auth permits it
-// Keep a provider-diverse chain, but lead with the currently reliable low-latency JSON route.
+// Local-proxy voice brain. Spark leads on its acknowledged, reserved voice lane; ordinary
+// streaming alone never declares this workload. Provider-diverse fallbacks retain the same
+// grounded JSON/action harness and explicit confirmation-before-delivery contract.
 // Override the chain with AIOS_VOICE_CHAIN ("port:model,port:model,...").
 export const VOICE_CHAIN = (process.env.AIOS_VOICE_CHAIN ||
-  '8788:gpt-5.6-luna,8790:kimi-k2.6,8790:glm-5.2,8789:claude-haiku-4-5')
+  '8792:voice/qwen38-flash-next-nvfp4,8788:gpt-5.6-luna,8790:kimi-k2.6,8789:claude-haiku-4-5')
   .split(',')
   .map((s) => {
     // "8791:model" = fleet port entry; a bare model id (or "api:model") = user API provider route.
@@ -32,18 +26,25 @@ function withUserTail(chain) {
   return tail.length ? [...chain, ...tail] : chain;
 }
 
-async function once(port, model, messages, { temperature = 0.3, max_tokens = 700, timeout_ms = 45000, signal } = {}) {
+async function once(port, model, messages, { temperature, max_tokens = 700, timeout_ms = 45000, signal } = {}) {
   const key = await fleetKey(); // the proxy fleet rejects keyless calls
   return new Promise((resolve, reject) => {
-    const data = Buffer.from(JSON.stringify({ model, messages, temperature, max_tokens }));
+    const voice = model.startsWith('voice/');
+    const data = Buffer.from(JSON.stringify({ model: voice ? model.slice(6) : model, messages, temperature, max_tokens,
+      ...(voice ? { spark_response_style: 'original' } : {}) }));
     const req = http.request(
-      { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}` }, timeout: timeout_ms },
+      { host: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { 'content-type': 'application/json', 'content-length': data.length, authorization: `Bearer ${key}`,
+        ...(voice ? { 'X-Spark-Workload': 'voice' } : {}) }, timeout: timeout_ms },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
           try {
             const env = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            if (res.statusCode >= 400) return reject(new Error(env.error?.message || `llm HTTP ${res.statusCode}`));
+            if (voice && (res.headers['x-spark-workload'] !== 'voice' || res.headers['x-spark-queue-wait-ms'] == null)) {
+              return reject(new Error('voice lane was not acknowledged'));
+            }
             const content = env.choices?.[0]?.message?.content;
             if (!content) return reject(new Error(env.error?.message || 'no content'));
             resolve(content);

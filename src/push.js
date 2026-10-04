@@ -5,6 +5,7 @@ import { DATA_DIR } from './config.js';
 import { route, json, readJson } from './server.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
+import { prepareVoiceNotification } from './voice_update_hook.js';
 
 // VAPID keys persist across restarts so existing subscriptions stay valid.
 const VAPID_PATH = join(DATA_DIR, '.vapid.json');
@@ -38,17 +39,23 @@ route('POST', '/api/unsubscribe', async (req, res) => {
 async function pushAll(payload) {
   const subs = store.listSubs();
   if (!subs.length) return;
+  // Ordinary alerts remain immediate. Only voice subscribers wait for a playable, current update.
+  const preparation = payload.focusSessionId && subs.some(sub => sub.aios?.onTheGo ?? sub.aios?.ride)
+    ? prepareVoiceNotification(payload.focusSessionId).catch(() => null) : Promise.resolve(null);
   await Promise.all(
     subs.map(async (sub) => {
       try {
         const onTheGo = !!(sub.aios?.onTheGo ?? sub.aios?.ride); // v0.3.273 subscription migration
         const voiceStyle = sub.aios?.voiceStyle === 'walkie' ? 'walkie' : 'call';
+        const ready = onTheGo ? await preparation : null;
+        const { focusSessionId, onTheGoUrl, voiceCallUrl, voiceAcceptUrl, ...publicPayload } = payload;
         const targeted = {
-          ...payload,
-          ...(onTheGo && payload.onTheGoUrl ? {
+          ...publicPayload,
+          ...(onTheGo && ready && payload.onTheGoUrl ? {
             url: voiceStyle === 'call' ? (payload.voiceCallUrl || payload.url) : payload.onTheGoUrl,
             onTheGo: true,
             voiceStyle,
+            onTheGoUrl: payload.onTheGoUrl,
             voiceCallUrl: payload.voiceCallUrl,
             voiceAcceptUrl: payload.voiceAcceptUrl,
             body: `${String(payload.body || '').replace(/\s+/g, ' ').slice(0, 112)} ${voiceStyle === 'call' ? 'Tap to answer.' : 'Tap to hear and reply.'}`,
@@ -90,6 +97,7 @@ bus.on('waiting', ({ session, summary, category }) => {
     voiceCallUrl: `./?voice-call=1&focus=${encodeURIComponent(session)}`,
     voiceAcceptUrl: `./?voice-call=accept&focus=${encodeURIComponent(session)}`,
     tag: session,
+    focusSessionId: session,
   }).catch(() => {});
 });
 

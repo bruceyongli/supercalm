@@ -1095,7 +1095,7 @@ function renderSheet() {
       ${sourceNames.length ? `<div class="ongo-sheet-sources" aria-label="Report sources">${sourceNames.map((name) => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
       <div class="ongo-sheet-report">
         <span>${spokenLabel}</span>
-        <p>${esc(V.segment || 'Preparing a clear update…')}</p>
+        <p>${esc(V.segment || V.say || '')}</p>
       </div>
       <div class="ongo-sheet-heard ${V.ignoredReason ? 'ignored' : ''}"><b>${heardLabel}</b><span>${esc(heard)}</span></div>
       ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}

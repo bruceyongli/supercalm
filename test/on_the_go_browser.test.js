@@ -27,6 +27,10 @@ const server = createServer(async (req, res) => {
       onTheGo.setOnTheGoVoiceAdapter({
         active: () => false,
         prepare: async ({ requestMic } = {}) => ({ audio: true, mic: requestMic ? true : null }),
+        prepareUpdate: async () => {
+          if (window.__holdPreparation) await new Promise(resolve => { window.__releasePreparation = resolve; });
+          return { preparationId: 'ready-fixture', expiresAt: Date.now() + 60000 };
+        },
         start: async (options) => { window.__onTheGoCalls.push(options); },
         stop: () => {},
       });
@@ -44,6 +48,13 @@ const server = createServer(async (req, res) => {
     subscriptions.push(JSON.parse(await readBody(req)));
     res.writeHead(201, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
+    return;
+  }
+  if (url.pathname === '/aios/api/voice/start') {
+    for await (const _ of req) { /* drain */ }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ voiceId: 'fixture', say: 'The briefing is already ready. Review the new voice layout.', listen: true,
+      current: { sessionId: 's_old', project: 'AIOS', module: 'Voice Assistant', workstream: 'Report readiness', n: 1, total: 1 } }));
     return;
   }
   let relative = url.pathname.replace(/^\/aios\/?/, '');
@@ -145,10 +156,16 @@ try {
   // assistant; Not now silences that snapshot without removing it from Needs You.
   const callOffer = await page.evaluate(async () => {
     window.__onTheGo.setVoiceUpdateStyle('call');
+    window.__holdPreparation = true;
     await window.__onTheGo.toggleOnTheGo();
     await new Promise((resolve) => setTimeout(resolve, 30));
-    return { beforeAccept: window.__onTheGoCalls.length, offered: window.__onTheGo.onTheGoState() };
+    return { beforeAccept: window.__onTheGoCalls.length, beforeReady: window.__onTheGo.onTheGoState() };
   });
+  assert.equal(callOffer.beforeReady.incoming, null, 'no call interrupts the operator while its briefing or audio is still generating');
+  assert.equal(await page.locator('[data-voice-update-call], .vm-ongo').count(), 0);
+  await page.evaluate(() => { window.__holdPreparation = false; window.__releasePreparation(); });
+  await page.waitForFunction(() => window.__onTheGo.onTheGoState().incoming);
+  callOffer.offered = await page.evaluate(() => window.__onTheGo.onTheGoState());
   await page.locator('[data-voice-update-call]').waitFor();
   await page.screenshot({ path: join(outDir, 'incoming-call-desktop.png') });
   await page.setViewportSize({ width: 390, height: 844 });
@@ -214,13 +231,14 @@ try {
   // window long enough to inspect the actual production DOM.
   await page.evaluate(async () => {
     const voice = await import('./voicemode.js');
-    void voice.startVoiceMode({ focusSessionId: 's_old', source: 'on-the-go-update' });
+    void voice.startVoiceMode({ focusSessionId: 's_old', source: 'on-the-go-update',
+      preparedUpdate: { preparationId: 'fixture', say: 'The briefing is already ready. Review the new voice layout.', audioBlob: new Blob(['audio']) } });
   });
   await page.locator('.vm-ongo .ongo-report').waitFor();
   assert.equal(await page.locator('.vm-ongo .ongo-kicker').textContent(), 'VOICE ASSISTANT');
   assert.equal(await page.locator('.vm-ongo .ongo-label').first().textContent(), 'BRIEFING');
-  assert.match(await page.locator('.vm-ongo .ongo-context').textContent(), /follow-up|feedback/i,
-    'the proactive report invites the same natural conversation as manual Voice');
+  assert.match(await page.locator('.vm-ongo .ongo-context').textContent(), /Voice Assistant.*Report readiness/i,
+    'the ready report immediately orients the operator to the exact module and workstream');
   assert.equal(await page.locator('.vm-ongo .ongo-segment.current').count(), 1,
     'the exact sentence currently being spoken has a visible marker');
   assert.equal(await page.locator('.vm-ongo .ongo-heard').count(), 1,

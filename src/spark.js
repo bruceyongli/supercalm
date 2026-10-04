@@ -55,10 +55,10 @@ async function toWav(audio, ext) {
 // Spark dictation is tailnet-only and MagicDNS does not resolve on host, so we
 // connect to the IP while overriding SNI + Host so the Tailscale-Serve TLS cert
 // and vhost routing match. rejectUnauthorized stays on (cert is valid for SPARK.host).
-export function sparkRequest(method, path, { body, contentType, timeout = 60000 } = {}) {
+export function sparkRequest(method, path, { body, contentType, timeout = 60000, headers: extraHeaders = {}, signal, maxBytes = 16000000 } = {}) {
   const spark = effectiveSpark();
   return new Promise((resolve, reject) => {
-    const headers = { Host: spark.host };
+    const headers = { ...extraHeaders, Host: spark.host };
     if (body) {
       headers['content-type'] = contentType;
       headers['content-length'] = body.length;
@@ -66,12 +66,19 @@ export function sparkRequest(method, path, { body, contentType, timeout = 60000 
     const req = https.request(
       { host: spark.ip, port: spark.port, path, method, servername: spark.host, headers, timeout, agent: sparkAgent },
       (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        const chunks = []; let size = 0;
+        res.on('data', (c) => { size += c.length; if (size > maxBytes) req.destroy(new Error('spark response exceeds limit')); else chunks.push(c); });
+        res.on('error', reject);
         res.on('end', () => resolve({ status: res.statusCode, headers: res.headers || {}, body: Buffer.concat(chunks) }));
       }
     );
     req.on('error', reject);
+    const abort = () => req.destroy(new Error('spark request aborted'));
+    if (signal) {
+      signal.addEventListener('abort', abort, { once: true });
+      req.on('close', () => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    }
     req.on('timeout', () => req.destroy(new Error('spark request timed out')));
     if (body) req.write(body);
     req.end();

@@ -45,6 +45,7 @@ const server = createServer(async (req, res) => {
     await player.speakSmart(text, handle, { onSegment: (item) => segments.push(item) });
     const continuousSegments = [];
     await player.speakSmart(text, player.newPlayback(), { continuous: true, onSegment: (item) => continuousSegments.push(item) });
+    await player.speakSmart('This update was prepared before ringing.', player.newPlayback(), { continuous: true, preparedAudio: new Blob(['prepared-audio']) });
     window.__result = { segments, continuousSegments, plays: window.__audioPlays };
   </script>`);
 });
@@ -75,9 +76,10 @@ try {
   const result = await page.evaluate(() => window.__result);
   assert.deepEqual(result.segments.map((item) => item.index), [0, 1, 2],
     'replayed stream chunk identities are spoken only once');
-  assert.equal(result.plays, 4, 'stream chunks plus one continuous utterance each play exactly once');
+  assert.equal(result.plays, 5, 'stream chunks, one continuous utterance, and one prepared utterance each play exactly once');
   assert.equal(streamRequests, 1, 'ordinary long report playback retains the low-latency stream');
   assert.equal(singleRequests, 1, 'continuous assistant speech uses one audio response instead of sentence clips');
+  assert.equal(singleRequests, 1, 'prepared utterances never issue a second TTS request after Accept');
   assert.deepEqual(result.continuousSegments.map((item) => item.index), [0, 16],
     'one continuous audio response can still advance the visible current-reading marker');
 } finally {

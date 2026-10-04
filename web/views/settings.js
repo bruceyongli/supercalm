@@ -403,8 +403,8 @@ function providerConfig(p, spk, sp) {
       <div class="vc-field-grid">
         ${f('st-spark-host', 'Server host / SNI', spk.host, 'host', 'spark.your-tailnet.ts.net')}
         ${f('st-spark-ip', 'Server IP', spk.ip, 'ip', 'tailnet IP')}
-        ${f('st-spark-engine', 'TTS engine', spk.ttsEngine, 'ttsEngine', 'kokoro · qwen')}
-        ${f('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'af_heart · Ryan')}
+        ${f('st-spark-engine', 'TTS engine', spk.ttsEngine, 'ttsEngine', 'qwen3-tts-bf16')}
+        ${f('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'auto · Ryan (EN) / Vivian (ZH)')}
         ${f('st-spark-instr', 'Speaking style (optional)', spk.ttsInstruct, 'ttsInstruct', 'e.g. calm colleague giving a status report')}
       </div>
       <div class="vc-detail-actions">

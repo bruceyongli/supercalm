@@ -1,5 +1,5 @@
 import { enablePush, setPushPreferences } from './common.js';
-import { isVoiceModeActive, prepareVoiceMode, startVoiceMode, stopVoiceMode } from './voicemode.js';
+import { isVoiceModeActive, prepareVoiceMode, prepareVoiceUpdate, startVoiceMode, stopVoiceMode } from './voicemode.js';
 import { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 export { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 
@@ -52,6 +52,13 @@ let currentNeeds = [];
 let initialObserved = false;
 let talking = false;
 let incoming = null;
+let incomingPrepared = null;
+let preparing = null;
+let preparationEpoch = 0;
+let retryTimer = null;
+let retryUntil = 0;
+let retryKey = '';
+let preparationFailures = 0;
 let push = 'unknown';
 let detail = enabled ? `Voice updates on · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}` : 'Off';
 let listeners = new Set();
@@ -73,6 +80,7 @@ if (notificationLaunch || callLaunch) {
 let voiceAdapter = {
   active: isVoiceModeActive,
   prepare: prepareVoiceMode,
+  prepareUpdate: prepareVoiceUpdate,
   start: startVoiceMode,
   stop: stopVoiceMode,
 };
@@ -89,7 +97,7 @@ export function onTheGoState() {
     incoming: incoming ? {
       id: incoming.id,
       project: incoming.project || incoming.title || 'Project update',
-      summary: incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.',
+      summary: incomingPrepared?.summary || incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.',
     } : null,
     detail,
   };
@@ -140,7 +148,7 @@ function renderIncomingCall() {
     document.body.append(layer);
   }
   layer.querySelector('h2').textContent = incoming.project || incoming.title || 'Project update';
-  layer.querySelector('p').textContent = incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.';
+  layer.querySelector('p').textContent = incomingPrepared?.summary || incoming.summary || incoming.question || incoming.title || 'A new update needs your attention.';
 }
 
 export function subscribeOnTheGo(listener) {
@@ -179,11 +187,12 @@ async function chime() {
   } catch {}
 }
 
-function offerCall(session) {
+function offerCall(session, prepared) {
   if (!enabled || style !== 'call' || talking || voiceAdapter.active?.() || !session || document.hidden) return false;
   const key = onTheGoAttentionKey(session);
   if (incoming && onTheGoAttentionKey(incoming) === key) return true;
   incoming = session;
+  incomingPrepared = prepared;
   detail = `Incoming update from ${session.project || session.title || 'a project'}`;
   emit();
   stopRinging();
@@ -194,11 +203,15 @@ function offerCall(session) {
 
 export async function acceptVoiceUpdate() {
   const session = incoming;
+  const prepared = incomingPrepared;
   if (!session) return false;
   stopRinging();
   incoming = null;
+  incomingPrepared = null;
   emit();
-  return speakNeeds(session, { manual: true });
+  if (!currentNeeds.some(item => onTheGoAttentionKey(item) === onTheGoAttentionKey(session))) return false;
+  if (!prepared || prepared.expiresAt <= Date.now()) return queueUpdate(session, { manual: true });
+  return speakNeeds(session, { manual: true, preparedUpdate: prepared });
 }
 
 export function declineVoiceUpdate() {
@@ -208,25 +221,28 @@ export function declineVoiceUpdate() {
   markAnnounced(currentNeeds);
   stopRinging();
   incoming = null;
+  incomingPrepared = null;
   detail = 'Call declined · Needs You is unchanged';
   emit();
   return true;
 }
 
-async function speakNeeds(session, { manual = false } = {}) {
+async function speakNeeds(session, { manual = false, preparedUpdate = null } = {}) {
   if (!enabled || talking || voiceAdapter.active?.() || !session || document.hidden) return false;
   // One concierge pass walks the complete current queue, so mark that snapshot together. A skipped
   // report remains visible in Needs You but does not immediately re-trigger another spoken pass.
   markAnnounced(currentNeeds);
   stopRinging();
   incoming = null;
+  incomingPrepared = null;
   talking = true;
   detail = `Talking about ${session.project || session.title || 'a project'}…`;
   emit();
   if (!manual) await chime();
   try {
-    await voiceAdapter.start?.({ focusSessionId: session.id, source: manual ? 'on-the-go-enable' : 'on-the-go-update' });
+    await voiceAdapter.start?.({ focusSessionId: session.id, source: manual ? 'on-the-go-enable' : 'on-the-go-update', preparedUpdate });
   } catch (error) {
+    announced.delete(onTheGoAttentionKey(session)); saveAnnounced();
     detail = `Voice could not start · ${error?.message || error}`;
   } finally {
     talking = false;
@@ -237,8 +253,41 @@ async function speakNeeds(session, { manual = false } = {}) {
   return true;
 }
 
+async function queueUpdate(session, { manual = false } = {}) {
+  if (preparing || !enabled || !session || talking || voiceAdapter.active?.() || document.hidden) return false;
+  const attempt = { key: onTheGoAttentionKey(session), epoch: preparationEpoch };
+  preparing = attempt;
+  clearTimeout(retryTimer);
+  retryUntil = 0;
+  try {
+    const prepared = await voiceAdapter.prepareUpdate({ focusSessionId: session.id, reportId: session.last_key?.id || session.report_id });
+    const current = currentNeeds.find(item => onTheGoAttentionKey(item) === attempt.key);
+    if (!enabled || attempt.epoch !== preparationEpoch || !current || document.hidden) return false;
+    preparationFailures = 0; retryKey = '';
+    if (style === 'call' && !acceptNotificationCall) return offerCall(current, prepared);
+    acceptNotificationCall = false;
+    return speakNeeds(current, { manual: true, preparedUpdate: prepared });
+  } catch (error) {
+    attempt.failed = true;
+    if (enabled && attempt.epoch === preparationEpoch) {
+      detail = 'Voice update is not ready yet · Needs You is unchanged';
+      emit();
+      retryKey = attempt.key;
+      const delay = Math.min(120000, 15000 * (2 ** Math.min(preparationFailures++, 3)));
+      retryUntil = Date.now() + delay;
+      retryTimer = setTimeout(() => { retryUntil = 0; scan({ manual }); }, delay);
+    }
+    return false;
+  } finally {
+    if (preparing === attempt) preparing = null;
+    if (enabled && !attempt.failed && (attempt.epoch !== preparationEpoch
+      || !currentNeeds.some(item => onTheGoAttentionKey(item) === attempt.key))) queueMicrotask(scan);
+  }
+}
+
 function scan({ manual = false } = {}) {
-  if (!enabled || talking || incoming || voiceAdapter.active?.() || document.hidden) return;
+  if (!enabled || talking || incoming || preparing || voiceAdapter.active?.() || document.hidden) return;
+  if (!manual && Date.now() < retryUntil) return;
   let next = null;
   if (pendingFocus) {
     next = currentNeeds.find((session) => session.id === pendingFocus) || null;
@@ -246,15 +295,17 @@ function scan({ manual = false } = {}) {
   }
   if (!next) next = manual ? currentNeeds[0] || null : nextOnTheGoAttention(currentNeeds, announced);
   if (!next) return;
-  if (style === 'call' && !manual && !acceptNotificationCall) offerCall(next);
-  else {
-    acceptNotificationCall = false;
-    speakNeeds(next, { manual: true });
-  }
+  void queueUpdate(next, { manual });
 }
 
 export function observeOnTheGoNeeds(needs) {
   currentNeeds = (needs || []).filter(Boolean);
+  if (retryKey && !currentNeeds.some(item => onTheGoAttentionKey(item) === retryKey)) {
+    clearTimeout(retryTimer); retryUntil = 0; retryKey = ''; preparationFailures = 0;
+  }
+  if (incoming && !currentNeeds.some(item => onTheGoAttentionKey(item) === onTheGoAttentionKey(incoming))) {
+    stopRinging(); incoming = null; incomingPrepared = null; emit();
+  }
   try {
     if ('setAppBadge' in navigator) {
       currentNeeds.length ? navigator.setAppBadge(currentNeeds.length).catch(() => {}) : navigator.clearAppBadge?.().catch(() => {});
@@ -274,10 +325,14 @@ export function observeOnTheGoNeeds(needs) {
 
 export async function toggleOnTheGo() {
   if (enabled) {
+    preparationEpoch++;
+    clearTimeout(retryTimer);
+    retryUntil = 0; retryKey = ''; preparationFailures = 0;
     enabled = false;
     talking = false;
     stopRinging();
     incoming = null;
+    incomingPrepared = null;
     detail = 'Off';
     try { localStorage.setItem(ENABLED_KEY, '0'); } catch {}
     try { voiceAdapter.stop?.(); } catch {}
@@ -307,7 +362,7 @@ export async function toggleOnTheGo() {
       : `Voice updates on in foreground · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}`;
   emit();
   const current = currentNeeds[0] || null;
-  if (style === 'call' && current) offerCall(current);
+  if (style === 'call' && current) void queueUpdate(current, { manual: true });
   else scan({ manual: true });
   return onTheGoState();
 }
@@ -319,7 +374,9 @@ export function setVoiceUpdateStyle(nextStyle) {
   try { localStorage.setItem(STYLE_KEY, style); } catch {}
   stopRinging();
   const offered = incoming;
+  const prepared = incomingPrepared;
   incoming = null;
+  incomingPrepared = null;
   detail = enabled
     ? `Voice updates on · ${style === 'call' ? 'asks before talking' : 'speaks new reports'}`
     : 'Off';
@@ -327,7 +384,7 @@ export function setVoiceUpdateStyle(nextStyle) {
   emit();
   // Switching an unanswered incoming call to walkie-talkie means "tell me now"; otherwise this
   // setting affects the next genuinely new report without inventing a duplicate update.
-  if (enabled && style === 'walkie' && offered) speakNeeds(offered, { manual: true });
+  if (enabled && style === 'walkie' && offered) speakNeeds(offered, { manual: true, preparedUpdate: prepared });
   return onTheGoState();
 }
 

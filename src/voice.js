@@ -1,10 +1,15 @@
 import { route, json, readJson } from './server.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { createHash } from 'node:crypto';
 import * as store from './store.js';
 import { questionProjection } from './codex_question.js';
 import * as sessions from './sessions.js';
 import { chat } from './llm.js';
+import { synthesizeSpeech, voiceConfig } from './tts.js';
+import { createVoicePreparationCache } from './voice_preparation.js';
+import { registerVoiceUpdatePreparer } from './voice_update_hook.js';
+import { getVoiceConfig, getSpeech } from './model_providers.js';
 import { id, now, stripAnsi } from './util.js';
 import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech, stripRoutineProcessEvidence, requestThreadForSpeech } from './voice_brief.js';
 import { buildVoiceSourcePack, voiceSourceContext, voiceSourceSummary } from './voice_sources.js';
@@ -62,7 +67,7 @@ const voiceSessions = new Map();
 const VOICE_TTL_MS = 30 * 60 * 1000;
 const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 18000); // must stay well inside the client's 30s /turn abort
 const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
-  || '8789:claude-opus-5,8788:gpt-5.6-luna,8792:qwen38-flash-next-nvfp4')
+  || '8792:voice/qwen38-flash-next-nvfp4,8788:gpt-5.6-luna,8789:claude-opus-5')
   .split(',')
   .map((entry) => {
     const [port, ...model] = entry.trim().split(':');
@@ -170,6 +175,7 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
       latestReport,
       summary: latestReport,
       category: s.category || 'review',
+      reportId: report?.id || null,
       onTheGo,
     };
   });
@@ -389,6 +395,11 @@ async function stateContext(vs, userText = '') {
 async function briefFor(it) {
   if (!it) return null;
   if (it._brief) return it._brief;
+  if (it._briefPromise) return it._briefPromise;
+  it._briefPromise = makeBrief(it);
+  try { return await it._briefPromise; } finally { it._briefPromise = null; }
+}
+async function makeBrief(it) {
   try {
     const s2 = store.getSession(it.sessionId);
     const evidence = await voiceEvidenceFor(it);
@@ -408,8 +419,57 @@ async function briefFor(it) {
   return it._brief;
 }
 function prefetchBriefs(vs) {
-  for (const it of vs.items.slice(0, 4)) briefFor(it).catch(() => {}); // fire-and-forget: item 2+ speak instantly
+  // One next item, not four simultaneous large-model calls on every /start.
+  const next = vs.items[vs.pointer + 1];
+  if (next) briefFor(next).catch(() => {});
 }
+
+const preparedUpdates = createVoicePreparationCache();
+function voiceEpisodeKey(sessionId) {
+  if (!stillNeedsAttention(sessionId)) return null;
+  const session = store.getSession(sessionId), messages = recentVoiceMessages(sessionId, 200);
+  return createHash('sha256').update(JSON.stringify({ sessionId, report: latestAttentionReportFrom(messages),
+    request: messages.filter(message => message.direction === 'in').at(-1),
+    category: session.category, question: session.structured_question, summary: session.summary,
+    config: { speech: voiceConfig(), selection: getVoiceConfig().tts, provider: getSpeech() } })).digest('hex');
+}
+function readyUpdate(preparationId) {
+  const entry = preparedUpdates.get(preparationId);
+  return entry && entry.key === voiceEpisodeKey(entry.item.sessionId) ? entry : null;
+}
+
+export async function prepareVoiceUpdate(sessionId, reportId = null) {
+  const key = voiceEpisodeKey(sessionId);
+  if (!key) throw Object.assign(new Error('This report no longer needs your attention'), { status: 409 });
+  return preparedUpdates.prepare(key, async () => {
+    const item = buildVoiceItems(sessionId, { onTheGo: true }).find(it => it.sessionId === sessionId);
+    if (!item || (reportId && Number(reportId) !== item.reportId)) throw Object.assign(new Error('The report has changed'), { status: 409 });
+    const say = await present({ items: [item], pointer: 0, onTheGo: true }, true);
+    const { audio, headers } = await synthesizeSpeech({ text: say, readyOnly: true });
+    if (key !== voiceEpisodeKey(sessionId)) throw Object.assign(new Error('This report was handled or replaced while preparing'), { status: 409 });
+    return { item, say, audio, headers };
+  }).then(entry => {
+    if (!readyUpdate(entry.id)) throw Object.assign(new Error('The prepared report is stale'), { status: 409 });
+    if (reportId && Number(reportId) !== entry.item.reportId) throw Object.assign(new Error('The report has changed'), { status: 409 });
+    return entry;
+  });
+}
+registerVoiceUpdatePreparer(prepareVoiceUpdate);
+
+route('POST', '/api/voice/prepare', async (req, res) => {
+  const b = await readJson(req).catch(() => ({}));
+  try {
+    const entry = await prepareVoiceUpdate(String(b.focusSessionId || '').slice(0, 80), b.reportId);
+    json(res, 200, { preparationId: entry.id, say: entry.say, expiresAt: entry.expiresAt,
+      summary: entry.item._brief?.quick || entry.item._brief?.standard || '',
+      audioUrl: `api/voice/prepared/${entry.id}/audio`, ttsSource: entry.headers['x-aios-tts-source'] });
+  } catch (e) { json(res, e.status || 502, { error: e.message }); }
+});
+route('GET', '/api/voice/prepared/:id/audio', (req, res, { id: preparationId }) => {
+  const entry = readyUpdate(preparationId);
+  if (!entry) return json(res, 409, { error: 'The prepared report is no longer current' });
+  res.writeHead(200, entry.headers); res.end(entry.audio);
+});
 
 async function present(vs, greet) {
   const it = vs.items[vs.pointer];
@@ -576,10 +636,23 @@ route('POST', '/api/voice/start', async (req, res) => {
   const focusSessionId = String(b.focusSessionId || '').slice(0, 80);
   const source = String(b.source || 'manual').slice(0, 40);
   const onTheGo = source.startsWith('on-the-go');
+  const prepared = b.preparationId ? readyUpdate(String(b.preparationId)) : null;
+  if (b.preparationId && (!prepared || prepared.item.sessionId !== focusSessionId)) {
+    return json(res, 409, { error: 'The prepared report was handled or replaced. No stale update was started.' });
+  }
   const items = buildVoiceItems(focusSessionId, { onTheGo });
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
   const vs = { id: id('v'), items, pointer: 0, history: [], dialogue: createVoiceDialogueState(), onTheGo, createdAt: now(), lastTouch: now() };
   voiceSessions.set(vs.id, vs);
+  if (prepared && onTheGo) {
+    items[0] = prepared.item;
+    items[0].presentedAt = now();
+    vs.lastSpoken = prepared.say;
+    vs.history.push({ role: 'assistant', content: prepared.say });
+    prefetchBriefs(vs);
+    return json(res, 200, { voiceId: vs.id, say: prepared.say, done: false, listen: true,
+      count: items.length, current: cur(vs), preparationId: prepared.id });
+  }
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
   if (p.ended) {
