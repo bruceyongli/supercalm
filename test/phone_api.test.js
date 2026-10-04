@@ -280,7 +280,9 @@ await featureReady;
   const ph = readFileSync(new URL('../web/phone.js', import.meta.url), 'utf8');
   assert.match(ph, /fake-?field/i, 'composer is a fake pill (focus rule)');
   assert.ok(!/autofocus/i.test(ph.replace(/autoFocus="\{\{ true \}\}"/g, '')), 'nothing autofocuses');
-  assert.match(ph, /stopped mid-queue: do NOT mark read/, 'read-on-completion semantics');
+  const explainEntry = ph.slice(ph.indexOf('async function playQueue('), ph.indexOf('// ---- Voice Assistant (home)'));
+  assert.match(explainEntry, /source: 'session-explain'/);
+  assert.doesNotMatch(explainEntry, /markRead/, 'just hearing an explanation never dismisses unresolved attention');
   assert.match(ph, /shared concierge/i,
     'phone Voice updates uses the same Voice Assistant conversation');
   assert.match(ph, /from '\.\/voicemode\.js'/,
@@ -305,8 +307,11 @@ await featureReady;
   const sharedVoice = readFileSync(new URL('../web/voicemode.js', import.meta.url), 'utf8');
   assert.match(sharedVoice, /api\/transcribe\?language=auto&polish=true/,
     'the shared Voice client keeps conversational transcript cleanup before reasoning');
-  assert.match(sharedVoice, /speakSmart\(text, handle,[\s\S]*continuous: true/,
-    'Voice Assistant replies are synthesized as one continuous utterance');
+  assert.match(sharedVoice, /continuous: true/);
+  assert.match(sharedVoice, /speakConversation\(handle/,
+    'Voice Assistant questions use the same continuous native stream');
+  assert.doesNotMatch(ph, /function voiceModeStart|const V =|voice-report|\/brief/,
+    'phone has no second voice conversation or script-generation flow');
   const sv = readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
   assert.match(sv, /\/phone'\) p = '\/phone\.html'/, 'extensionless /phone serves the app');
   // The canonical shell defaults to phone HOME at phone widths, while sessions use the one shared

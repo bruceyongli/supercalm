@@ -123,7 +123,7 @@ function boolQuery(req, name, fallback) {
 
 async function transcribeWithSpark({ audio, contentType, language, polish, prompt }) {
   const ext = extFor(contentType);
-  const fields = { language, polish: String(polish), response_format: 'json' };
+  const fields = { model: 'openai/whisper-large-v3-turbo', language, polish: String(polish), response_format: 'json' };
   if (prompt) fields.prompt = prompt; // Whisper biasing prompt (context grounding); ignored if Spark predates it
   const { body, contentType: multipartType } = buildMultipart(
     fields,
@@ -212,7 +212,7 @@ route('POST', '/api/transcribe', async (req, res) => {
 
   // Cancel server work the moment the browser gives up (today it kept uploading + falling back).
   const ctrl = new AbortController();
-  req.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
+  res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
   let wavP = null; // transcode once, lazily, shared across candidates that need WAV
   const getWav = () => (wavP ||= toWav(audio, extFor(ct)));
 

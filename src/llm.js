@@ -41,7 +41,8 @@ async function once(port, model, messages, { temperature, max_tokens = 700, time
         res.on('end', () => {
           try {
             const env = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            if (res.statusCode >= 400) return reject(new Error(env.error?.message || `llm HTTP ${res.statusCode}`));
+            if (res.statusCode >= 400) return reject(Object.assign(new Error(env.error?.message || `llm HTTP ${res.statusCode}`),
+              voice && [429, 503].includes(res.statusCode) ? { noFallback: true, status: res.statusCode } : {}));
             if (voice && (res.headers['x-spark-workload'] !== 'voice' || res.headers['x-spark-queue-wait-ms'] == null)) {
               return reject(new Error('voice lane was not acknowledged'));
             }
@@ -54,7 +55,7 @@ async function once(port, model, messages, { temperature, max_tokens = 700, time
         });
       }
     );
-    req.on('error', reject);
+    req.on('error', error => reject(Object.assign(error, voice ? { noFallback: true } : {})));
     req.on('timeout', () => req.destroy(new Error('llm timeout'))); // socket-inactivity bound, NOT a total deadline — callers with a hard budget pass `signal`
     if (signal) {
       const onAbort = () => req.destroy(new Error('llm aborted (budget)'));
@@ -93,6 +94,7 @@ export async function chat(messages, opts = {}, chain = VOICE_CHAIN, callFn = ca
       return { content: await callFn(entry, messages, opts), model: entry.model };
     } catch (e) {
       lastErr = e;
+      if (e.noFallback) throw e; // a saturated voice lane must not trigger an unrequested model swap
       if (isAccessDenied(e)) markRouteDenied(key);
       console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port} failed: ${e.message}`);
       if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain
@@ -155,6 +157,7 @@ export async function chatJson(messages, opts = {}, chain = VOICE_CHAIN, callFn 
       return { obj: parseJson(content), model: entry.model };
     } catch (e) {
       lastErr = e;
+      if (e.noFallback) throw e;
       if (isAccessDenied(e)) markRouteDenied(key);
       console.error(`[aios] llm ${entry.model}@${entry.api ? 'api' : entry.port}: ${e.message}`);
       if (opts.signal?.aborted) break; // budget blown — don't burn the rest of the chain

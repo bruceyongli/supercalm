@@ -62,15 +62,16 @@ assert.match(phone, /id="on-the-go-mode"/, 'the phone companion exposes the same
 assert.match(phone, /data-voice-update-style="call"[\s\S]*data-voice-update-style="walkie"/,
   'phone and PWA offer the same two styles');
 assert.match(phone, /observeOnTheGoNeeds\(phoneNeeds\(\)\)/, 'phone SSE/home updates feed the on-the-go coordinator');
-assert.match(phone, /phoneVoiceConstraints[\s\S]*noiseSuppression/,
-  'the iPhone capture path requests platform noise suppression before semantic filtering');
-assert.match(phone, /threshold = VOICE_CAPTURE_DEFAULTS\.threshold[\s\S]*noSpeech = !spokeAt/,
-  'phone uses the desktop speech threshold and stops a quiet capture instead of recording room noise forever');
-assert.match(phone, /onSegment:[\s\S]*paintVoiceSegment\(segment\)/, 'sentence progress updates only the spoken line');
-assert.doesNotMatch(phone, /onSegment:[\s\S]{0,180}V\.segment = segment;\s*render\(\)/,
-  'sentence synchronization never rebuilds the full phone app');
-assert.match(phone, /previousId[\s\S]*nextId[\s\S]*V\.lastHeard = ''/, 'a phone transcript is cleared when the next session is actually presented');
-assert.match(voice, /vm-ongo/, 'on-the-go narration has a presentation distinct from manual Voice mode');
+assert.match(phone, /setOnTheGoVoiceAdapter[\s\S]*startVoiceMode\(options\)/,
+  'iPhone and PWA capture use the shared Voice Assistant, not a second recorder');
+assert.match(voice, /microphoneConstraints[\s\S]*noiseSuppression/,
+  'the shared capture path requests platform noise suppression before semantic filtering');
+assert.match(voice, /threshold = VOICE_CAPTURE_DEFAULTS\.threshold[\s\S]*!spoke/,
+  'every device uses the same speech threshold and stops quiet capture');
+assert.match(voice, /onSegment: focusSpokenSegment/, 'sentence progress updates only the shared spoken line');
+assert.doesNotMatch(phone, /voiceLoop|paintVoiceSegment|phoneVoiceConstraints/,
+  'phone cannot reintroduce an independent recorder or full-page synchronization');
+assert.match(voice, /vm-ongo/, 'manual and proactive conversations share the compact responsive presentation');
 assert.match(voice, /BRIEFING/, 'the first pass is labeled as a briefing instead of generic reading');
 assert.match(voice, /SOURCE-GROUNDED RESPONSE/, 'follow-up turns identify source-grounded conversation');
 assert.match(voice, /ongo-sources/, 'approved report documents are visible without exposing file paths');
@@ -83,18 +84,14 @@ assert.match(voice, /markIgnoredSpeech\(state\.ignoredReason\)/,
   'nearby or silent speech is visibly ignored instead of becoming a response');
 assert.match(voice, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,
   'desktop Voice Assistant listens for a clear question or correction while it is speaking');
-assert.match(phone, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,
-  'phone Voice Assistant supports the same spoken interruption path');
-assert.match(phone, /voiceTranscriptDisposition\(text, \{ spoken: V\.said \}\)/,
-  'phone uses the shared transcript-quality boundary before sending a turn');
 assert.match(voice, /voiceTranscriptDisposition\(text, \{ spoken: lastSpoken \}\)/,
-  'desktop uses the same transcript-quality boundary');
+  'all devices use the shared transcript-quality boundary');
 assert.doesNotMatch(phone, /silentTurns\s*>=\s*3/,
   'phone silence never closes an active Voice Assistant conversation');
-assert.match(phone, /api\/voice\/keepalive/,
-  'phone keeps the server conversation alive while local VAD hears nothing usable');
+assert.match(voice, /api\/voice\/keepalive/,
+  'the shared client keeps phone and desktop conversations alive during silence');
 assert.match(voice, /vm-interrupt/, 'desktop and iPad retain a tap-to-interrupt fallback');
-assert.match(phone, /data-voice-interrupt/, 'phone retains a reachable tap-to-interrupt fallback');
+assert.match(voice, /vm-interrupt/, 'the shared phone overlay retains a reachable tap-to-interrupt fallback');
 assert.match(player, /onSegment/, 'the shared TTS stack exposes sentence progress to its presentation');
 assert.match(player, /seenChunkIds/, 'a repeated streaming chunk cannot replay the report opening');
 assert.doesNotMatch(voice, /ui\.heard\.textContent = ''/,
@@ -102,7 +99,7 @@ assert.doesNotMatch(voice, /ui\.heard\.textContent = ''/,
 assert.match(voice, /Sent to/, 'the briefing renders a visible per-session delivery receipt');
 assert.match(voice, /ui\.sessionId !== cur\.sessionId[\s\S]*Your words will stay here/,
   'desktop on-the-go also scopes the visible response to one session');
-assert.match(phone, /feedback message.*sent/, 'the phone reports the completed handoff count');
+assert.match(voiceServer, /I sent \$\{count\}.*feedback message/, 'the shared assistant reports the completed handoff count');
 assert.match(styles, /\.ongo-report/, 'the on-the-go report has its own responsive visual structure');
 assert.match(voiceServer, /isNeedsYouSession/, 'the spoken count uses the same unread and undismissed Needs You rule');
 assert.match(voiceServer, /originalRequest/, 'spoken items retain the operator’s original request');

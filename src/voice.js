@@ -34,6 +34,8 @@ import {
 import { deliverVoiceFeedback } from './voice_delivery.js';
 import { prepareVoicePreview } from './voice_preview.js';
 import { voiceTranscriptDisposition } from '../web/voice-input.js';
+import { nativeVoice } from './tts_native.js';
+import { gatewayConversation, relayOmniConversation } from './voice_gateway.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -279,8 +281,9 @@ function latestStoryEvidence(events) {
   return { requestContext: request.slice(0, 7000), reportContext: report.slice(0, 14000) };
 }
 
-export async function voiceEvidenceFor(it) {
+export async function voiceEvidenceFor(it, { refresh = false } = {}) {
   if (!it) return { projectContext: '', taskContext: '', recentConversation: '', requestContext: '', reportContext: '', sourceContext: '', sourcePack: { sources: [], totalChars: 0 } };
+  if (refresh) it._evidence = null;
   if (it._evidence) return it._evidence;
   if (it._evidencePromise) return it._evidencePromise;
   it._evidencePromise = (async () => {
@@ -290,13 +293,26 @@ export async function voiceEvidenceFor(it) {
     let requestContext = '';
     let reportContext = '';
     try {
-      const story = await storyFor(it.sessionId, { rounds: 4 });
-      recentConversation = storyConversation(story?.events);
-      ({ requestContext, reportContext } = latestStoryEvidence(story?.events));
-    } catch {}
+      let story = await storyFor(it.sessionId, { rounds: 4 });
+      let events = [...(story.events || [])];
+      // A tapped historical report is resolved from the server's Story, never client prose.
+      for (let page = 0; it.reportTs && !events.some(ev => ev.kind === 'report' && Number(ev.ts) === it.reportTs)
+        && story.meta?.cursor && page < 4; page++) {
+        story = await storyFor(it.sessionId, { rounds: 4, cursor: story.meta.cursor });
+        events = [...(story.events || []), ...events];
+      }
+      if (it.reportTs) {
+        const at = events.findIndex(ev => ev.kind === 'report' && Number(ev.ts) === it.reportTs);
+        if (at < 0) throw Object.assign(new Error('The selected report is no longer available in Story'), { status: 409 });
+        events = events.slice(0, at + 1);
+      }
+      recentConversation = storyConversation(events);
+      ({ requestContext, reportContext } = latestStoryEvidence(events));
+      it._storySource = story.meta?.source || 'story';
+    } catch (error) { if (it.reportTs) throw error; }
     const sourcePack = await buildVoiceSourcePack({
       session,
-      reportText: [reportContext, it.latestReport].filter(Boolean).join('\n\n'),
+      reportText: it.reportTs ? reportContext : [reportContext, it.latestReport].filter(Boolean).join('\n\n'),
       resolveFile: sessions.resolveSessionFile,
     });
     const sourceContext = voiceSourceContext(sourcePack, requestContext || it.originalRequest || 'explain the report details', { maxChars: 9000 });
@@ -480,7 +496,7 @@ async function present(vs, greet) {
   } else {
     const n = vs.items.length;
     const where = it.projectIdentity && it.projectIdentity !== 'adhoc' ? it.projectIdentity : it.tool;
-    const lead = greet
+    const lead = vs.sessionOnly ? `${where}.` : greet
       ? vs.onTheGo
         ? `New Needs You update.`
         : `You have ${n} ${n > 1 ? 'items' : 'item'} in Needs You. First up, ${where}.`
@@ -530,7 +546,7 @@ async function present(vs, greet) {
 async function presentNext(vs, greet) {
   let skipped = 0;
   for (;;) {
-    while (vs.pointer < vs.items.length && !stillNeedsAttention(vs.items[vs.pointer].sessionId)) {
+    while (vs.pointer < vs.items.length && !vs.sessionOnly && !stillNeedsAttention(vs.items[vs.pointer].sessionId)) {
       vs.pointer++; skipped++;
     }
     if (vs.pointer >= vs.items.length) return { ended: true, skipped };
@@ -544,7 +560,7 @@ async function presentNext(vs, greet) {
       if (next) prepareVoicePreview(next.sessionId);
     } catch {}
     const say = await present(vs, greet);
-    if (stillNeedsAttention(it.sessionId)) {
+    if (vs.sessionOnly || stillNeedsAttention(it.sessionId)) {
       it.presentedAt = now();
       const lead = skipped ? (skipped === 1 ? 'One item got handled in the meantime. ' : `${skipped} items got handled in the meantime. `) : '';
       const full = lead + say;
@@ -641,9 +657,21 @@ route('POST', '/api/voice/start', async (req, res) => {
   if (b.preparationId && (!prepared || prepared.item.sessionId !== focusSessionId)) {
     return json(res, 409, { error: 'The prepared report was handled or replaced. No stale update was started.' });
   }
-  const items = buildVoiceItems(focusSessionId, { onTheGo });
+  const sessionOnly = source === 'session-explain';
+  let items = buildVoiceItems(focusSessionId, { onTheGo });
+  if (sessionOnly) {
+    const session = store.getSession(focusSessionId);
+    if (!session) return json(res, 404, { error: 'no such session' });
+    const messages = recentVoiceMessages(session.id);
+    const project = session.project_id ? store.getProject(session.project_id) : null;
+    items = [{ sessionId: session.id, projectId: session.project_id, project: project?.name || 'adhoc',
+      projectIdentity: projectIdentityFor(project), tool: session.tool, category: session.category || 'discussion',
+      originalRequest: originalRequestFrom(messages, session.title || ''), latestReport: latestReportFor(session, messages),
+      reportTs: Number(b.reportTs) || null, presentedAt: now() }];
+  }
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
-  const vs = { id: id('v'), items, pointer: 0, history: [], dialogue: createVoiceDialogueState(), onTheGo, createdAt: now(), lastTouch: now() };
+  const vs = { id: id('v'), items, pointer: 0, history: [], dialogue: createVoiceDialogueState(), onTheGo, sessionOnly,
+    realtime: b.realtime === true && getVoiceConfig().tts.primary === 'spark', voice: nativeVoice(voiceConfig().ttsVoice), createdAt: now(), lastTouch: now() };
   voiceSessions.set(vs.id, vs);
   if (prepared && onTheGo) {
     items[0] = prepared.item;
@@ -652,7 +680,12 @@ route('POST', '/api/voice/start', async (req, res) => {
     vs.history.push({ role: 'assistant', content: prepared.say });
     prefetchBriefs(vs);
     return json(res, 200, { voiceId: vs.id, say: prepared.say, done: false, listen: true,
-      count: items.length, current: cur(vs), preparationId: prepared.id });
+      count: items.length, current: cur(vs), preparationId: prepared.id, voice: vs.voice });
+  }
+  if (vs.realtime) {
+    items[0].presentedAt = now();
+    return json(res, 200, { voiceId: vs.id, say: '', done: false, listen: true, count: items.length,
+      current: cur(vs), voice: vs.voice, realtimeOpening: true });
   }
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
@@ -711,6 +744,12 @@ route('POST', '/api/voice/turn', async (req, res) => {
     vs.fragmentTurns = 0;
 
     const userText = normalizeVoiceAddress(disposition.text);
+    // Questions use the same live source-grounded path as opening a report. They never enter
+    // the delivery reducer. Old clients keep receiving JSON answers until they reload.
+    if (vs.realtime && b.realtime !== false && isVoiceInformationQuestion(userText)) {
+      return json(res, 200, { say: '', realtimeQuestion: userText, voice: vs.voice, done: false,
+        listen: true, current: cur(vs), acceptedText: userText });
+    }
     const sourceGrounded = isVoiceInformationQuestion(userText)
       && (vs.items[vs.pointer]?._sourceSummary?.count || 0) > 0;
 
@@ -863,6 +902,51 @@ route('POST', '/api/voice/keepalive', async (req, res) => {
   json(res, 200, { ok: true, current: cur(vs) });
 });
 
+route('POST', '/api/voice/converse', async (req, res) => {
+  gcVoiceSessions();
+  const b = await readJson(req).catch(() => ({}));
+  const vs = voiceSessions.get(b.voiceId);
+  if (!vs) return json(res, 404, { error: 'no voice session' });
+  if (vs.inflight) return json(res, 409, { error: 'turn already in flight' });
+  const item = vs.items[vs.pointer];
+  const question = normalizeVoiceAddress(String(b.userText || '').trim());
+  if (!item || (!vs.sessionOnly && !stillNeedsAttention(item.sessionId))) return json(res, 409, { error: 'This report was handled or replaced' });
+  if (!b.opening && !isVoiceInformationQuestion(question)) return json(res, 400, { error: 'Instructions must use the confirmation flow' });
+  const ctrl = new AbortController(), deadline = setTimeout(() => ctrl.abort(), 120000);
+  const stop = () => { if (!res.writableEnded) ctrl.abort(); };
+  res.on('close', stop); res.on('error', stop);
+  vs.inflight = true; vs.streamAbort = ctrl; touch(vs);
+  let partial = '';
+  try {
+    const evidence = await voiceEvidenceFor(item, { refresh: !b.opening });
+    if (ctrl.signal.aborted || !voiceSessions.has(vs.id)) throw Object.assign(new Error('Voice conversation cancelled. Your question is kept.'), { status: 503 });
+    const payload = gatewayConversation({ item, evidence, question, history: vs.history, opening: !!b.opening, voice: vs.voice });
+    store.addEvent(item.sessionId, 'voice-conversation-start', { mode: 'realtime', opening: !!b.opening,
+      question: question.slice(0, 8000), source: item._storySource, sourceNames: voiceSourceSummary(evidence.sourcePack).names });
+    const out = await relayOmniConversation(payload, { res, signal: ctrl.signal, onEvent(event) {
+      if (event.event === 'text') partial += String(event.data.delta || '');
+    } });
+    vs.lastSpoken = out.text;
+    if (!b.opening) vs.history.push({ role: 'user', content: question });
+    vs.history.push({ role: 'assistant', content: out.text }); trim(vs.history); touch(vs);
+    const evidenceTrace = { mode: 'realtime', action: 'explain', source: item._storySource,
+      sourceNames: voiceSourceSummary(evidence.sourcePack).names, question: question.slice(0, 8000), answer: out.text,
+      voice: vs.voice, model: 'qwen38-flash-next-nvfp4', frames: out.frames };
+    store.addEvent(item.sessionId, 'voice-grounded-answer', evidenceTrace);
+    res.write(`event: done\ndata: ${JSON.stringify({ text: out.text, grounded: true, sourceCount: evidence.sourcePack.sources.length,
+      current: cur(vs), voice: vs.voice })}\n\n`); res.end();
+  } catch (error) {
+    if (!res.destroyed) {
+      const detail = error.message;
+      if (!res.headersSent) json(res, error.status || 503, { error: detail, preservedText: question });
+      else { res.write(`event: error\ndata: ${JSON.stringify({ detail, partial: !!partial, preservedText: question })}\n\n`); res.end(); }
+    }
+  } finally {
+    clearTimeout(deadline); res.off('close', stop); res.off('error', stop);
+    vs.inflight = false; if (vs.streamAbort === ctrl) vs.streamAbort = null;
+  }
+});
+
 route('POST', '/api/voice/continue', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
@@ -870,6 +954,17 @@ route('POST', '/api/voice/continue', async (req, res) => {
   if (!vs) return json(res, 404, { error: 'no voice session' });
   if (vs.inflight) return json(res, 409, { error: 'turn already in flight' }); // a /continue racing a live /turn would double-advance
   touch(vs);
+  if (vs.sessionOnly && vs.pointer >= vs.items.length) {
+    voiceSessions.delete(vs.id);
+    return json(res, 200, { say: 'That session discussion is finished.', done: true, listen: false });
+  }
+  if (vs.realtime && vs.pointer < vs.items.length) {
+    while (vs.pointer < vs.items.length && !vs.sessionOnly && !stillNeedsAttention(vs.items[vs.pointer].sessionId)) vs.pointer++;
+    if (vs.pointer < vs.items.length) {
+      vs.items[vs.pointer].presentedAt = now();
+      return json(res, 200, { say: '', realtimeOpening: true, voice: vs.voice, done: false, listen: true, current: cur(vs) });
+    }
+  }
   const p = await presentNext(vs, false);
   if (p.ended) {
     voiceSessions.delete(vs.id);
@@ -888,6 +983,7 @@ route('POST', '/api/voice/continue', async (req, res) => {
 route('POST', '/api/voice/stop', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
+  voiceSessions.get(b.voiceId)?.streamAbort?.abort();
   voiceSessions.delete(b.voiceId);
   json(res, 200, { ok: true });
 });

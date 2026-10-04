@@ -6,19 +6,24 @@ assert.equal(textForPreparedSpeech('Release v0.3.292 on 2026.07.22 costs 3.14.')
   'Release v0 point 3 point 292 on 2026 point 07 point 22 costs 3 point 14.',
   'server-prepared audio retains the dotted-number fix even though it bypasses the browser TTS request');
 const frame = index => ({ index, audio: wavFromPcm(pcm).toString('base64'), model: NATIVE_TTS_MODEL,
-  precision: 'BF16', backend: 'faster-ggml', engine: 'qwen', streaming: 'native-pcm-frames', voice: 'Ryan' });
+  precision: 'BF16', backend: 'faster-ggml', engine: 'qwen', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3' });
 const event = (name, data) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
 const completed = event('done', { text: 'A whole update.' });
 const good = event('audio', frame(0)) + event('audio', frame(1)) + completed;
 const output = nativeSpeechFromSse(Buffer.from(good), 'A whole update.');
 assert.deepEqual(pcmFromWav(output.audio), Buffer.concat([pcm, pcm]), 'PCM frames become one file without embedded WAV headers or invented pauses');
 assert.equal(output.headers['x-tts-precision'], 'BF16');
-for (const changed of [{ precision: 'Q8_0' }, { model: 'kokoro' }, { backend: 'torch' }, { index: 1 }]) {
+for (const changed of [{ precision: 'Q8_0' }, { model: 'kokoro' }, { backend: 'torch' }, { index: 1 }, { prosody_profile: 'legacy' }]) {
   assert.throws(() => nativeSpeechFromSse(Buffer.from(event('audio', { ...frame(0), ...changed }) + completed), 'A whole update.'), /identity|order/);
 }
 assert.throws(() => nativeSpeechFromSse(Buffer.from(event('audio', frame(0))), 'A whole update.'), /without completion/);
 assert.throws(() => nativeSpeechFromSse(Buffer.from(event('audio', frame(0)) + event('audio', frame(0)) + completed), 'A whole update.'), /order/);
 assert.throws(() => nativeSpeechFromSse(Buffer.from(good), 'Wrong report.'), /Incomplete/);
+assert.throws(() => nativeSpeechFromSse(Buffer.from(event('audio', frame(0)) + event('audio', { ...frame(1), voice: 'Vivian' }) + completed), 'A whole update.'), /identity/);
+const live = createNativeSpeechDecoder(null, { voice: 'Ryan' });
+live.feed(Buffer.from(event('text', { delta: '中文第一句。' }) + event('audio', { ...frame(0), text: '中文第一句。' })));
+live.feed(Buffer.from(event('text', { delta: ' Later sentence.' }) + event('audio', frame(1)) + event('done', { text: '中文第一句。 Later sentence.' })));
+assert.equal(live.finish().text, '中文第一句。 Later sentence.', 'conversation completion must match incremental model text');
 assert.throws(() => pcmFromWav(output.audio.subarray(0, 46)), /Truncated/);
 const incremental = createNativeSpeechDecoder('中文第一句。 Second phrase.');
 const firstPhrase = Buffer.from(event('audio', { ...frame(0), text: '中文第一句。' }));

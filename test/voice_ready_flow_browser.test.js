@@ -26,6 +26,7 @@ const audioGate = new Promise(resolve => { releaseAudio = resolve; });
 const readBody = async req => { let body = ''; for await (const chunk of req) body += chunk; return JSON.parse(body); };
 const sttTakes = [{ text: '为什么之前中文输入不工作', language: 'auto' }, { text: 'How was it fixed?', language: 'auto' }];
 let streamBehavior = null;
+let conversationBehavior = null;
 const model = httpServer(async (req, res) => {
   const body = await readBody(req);
   if (body.messages[0].content.includes('hands-free project lead')) {
@@ -63,6 +64,27 @@ const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, 
     return;
   }
   const body = await readBody(req);
+  if (!body.tts_only) {
+    const context = body.history?.map(row => row.content).join('\n') || '';
+    const zh = body.text.startsWith('为什么');
+    const first = zh ? '现在中英文都允许自动识别。' : 'Chinese and English are now both allowed.';
+    const second = zh ? '报告已经提前准备好，你也可以继续问计划里的细节。' : 'The briefing is prepared before Accept, and you can ask about its plan.';
+    trace.push({ event: 'live-conversation', sourceResolved: context.includes('The delay came from generating the briefing after Accept.'),
+      text: body.text, voice: body.voice, ttsOnly: body.tts_only });
+    const behavior = conversationBehavior;
+    if (behavior?.busy) { res.writeHead(429); res.end('{}'); return; }
+    res.on('close', () => { if (behavior) { behavior.closed = true; behavior.release?.(); } });
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    const frame = { index: 0, audio: wavFromPcm(Buffer.alloc(48000)).toString('base64'), model: NATIVE_TTS_MODEL,
+      precision: 'BF16', engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: body.voice,
+      prosody_profile: 'steady-v3', phrase_index: 0, frame_index: 0, native_startup_one_frames: 2, text: first };
+    res.write(`event: text\ndata: ${JSON.stringify({ delta: first, model: 'qwen38-flash-next-nvfp4' })}\n\nevent: audio\ndata: ${JSON.stringify(frame)}\n\n`);
+    if (behavior?.gate) await behavior.gate;
+    if (res.destroyed) return;
+    if (behavior?.fail) { res.end('event: error\ndata: {"message":"fixture voice failure"}\n\n'); return; }
+    res.end(`event: text\ndata: ${JSON.stringify({ delta: second, model: 'qwen38-flash-next-nvfp4' })}\n\nevent: audio\ndata: ${JSON.stringify({ ...frame, index: 1, phrase_index: 1, text: second })}\n\nevent: done\ndata: ${JSON.stringify({ text: first + second })}\n\n`);
+    return;
+  }
   trace.push({ event: 'tts', path: req.url, ttsOnly: body.tts_only, voice: body.voice, text: body.text,
     explicit: req.headers['x-voice-demo'], history: body.history });
   if (streamBehavior) {
@@ -70,7 +92,7 @@ const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, 
     res.on('close', () => { behavior.closed = true; behavior.release(); });
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     const frame = { index: 0, audio: wavFromPcm(Buffer.alloc(48000)).toString('base64'), model: NATIVE_TTS_MODEL,
-      precision: 'BF16', engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: 'Ryan',
+      precision: 'BF16', engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3',
       phrase_index: 0, frame_index: 0, native_startup_one_frames: 2, text: 'First update uses PIXY. Gimbal, not the laptop camera.' };
     res.write(`event: audio\ndata: ${JSON.stringify(frame)}\n\n`);
     await behavior.gate;
@@ -83,7 +105,7 @@ const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, 
   res.writeHead(200, { 'content-type': 'text/event-stream' });
   const pcm = Buffer.alloc(24000 * 2);
   const frame = { index: 0, audio: wavFromPcm(pcm).toString('base64'), model: NATIVE_TTS_MODEL, precision: 'BF16',
-    engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: 'Ryan' };
+    engine: 'qwen', backend: 'faster-ggml', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3' };
   res.end(`event: audio\ndata: ${JSON.stringify(frame)}\n\nevent: done\ndata: ${JSON.stringify({ text: body.text })}\n\n`);
 });
 await new Promise(resolve => model.listen(0, '127.0.0.1', resolve));
@@ -123,8 +145,18 @@ try {
   store.createProject({ id: 'p_voice_fixture', name: 'fixture', path: scratch });
   store.createSession({ id: 's_voice_fixture', project_id: 'p_voice_fixture', tool: 'codex', tmux: 'fixture-only', status: 'waiting' });
   store.updateSession('s_voice_fixture', { category: 'review' });
+  store.addMessage('s_voice_fixture', 'in', 'task', 'Explain the historical microphone change.');
+  const older = store.addMessage('s_voice_fixture', 'out', 'agent', 'The historical microphone change kept the same audio clock.');
+  await new Promise(resolve => setTimeout(resolve, 5));
   store.addMessage('s_voice_fixture', 'in', 'task', 'Prepare useful voice updates before interrupting me.');
-  const report = store.addMessage('s_voice_fixture', 'out', 'detect', `Voice reports are ready before ringing. [Plan](${doc})`);
+  const report = store.addMessage('s_voice_fixture', 'out', 'agent', `Voice reports are ready before ringing. [Plan](${doc})`);
+  const { voiceEvidenceFor } = await import('../src/voice.js');
+  const historical = await voiceEvidenceFor({ sessionId: 's_voice_fixture', reportTs: older.ts,
+    latestReport: `Voice reports are ready before ringing. [Plan](${doc})` });
+  assert.equal(historical.requestContext, 'Explain the historical microphone change.');
+  assert.equal(historical.reportContext, 'The historical microphone change kept the same audio clock.', 'a selected historical report cannot become the latest report');
+  assert.equal(historical.sourcePack.sources.length, 0, 'newer reports cannot leak their linked documents into an older report');
+  const inboundBefore = store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'en-US' });
   const handlers = [];
@@ -177,7 +209,8 @@ try {
   assert.equal(trace[0].style, 'original');
   const speech = trace.find(item => item.event === 'tts');
   assert.equal(speech.path, '/voice/api/turn'); assert.equal(speech.ttsOnly, true); assert.equal(speech.explicit, '1');
-  assert.deepEqual(speech.history, [], 'the demo cannot regenerate or reinterpret the grounded AIOS answer');
+  assert.equal(speech.history, undefined, 'TTS-only never sends conversation history');
+  assert.equal(speech.voice, 'Ryan', 'the speaker is explicit and fixed, not selected by language');
 
   // The device UI is English. Upload WAV bytes through the real STT handler using the same shared
   // language preference as every mic surface, then feed its accepted Chinese transcript to the real
@@ -206,8 +239,15 @@ try {
       recognize();
       const turnResponse = await fetch('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ voiceId, userText: transcript.text }) });
+      const turn = await turnResponse.json();
+      if (turn.realtimeQuestion) {
+        const answer = await fetch('api/voice/converse', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ voiceId, userText: turn.realtimeQuestion }) });
+        const stream = await answer.text();
+        turn.say = stream.split('\n\n').filter(block => block.startsWith('event: text')).map(block => JSON.parse(block.match(/data: (.*)/)[1]).delta).join('');
+      }
       results.push({ langs, sttStatus: sttResponse.status, transcript, accepted: voiceTranscriptDisposition(transcript.text).accepted,
-        remembered: localStorage.getItem('aios_stt_last_lang'), turnStatus: turnResponse.status, turn: await turnResponse.json() });
+        remembered: localStorage.getItem('aios_stt_last_lang'), turnStatus: turnResponse.status, turn });
     }
     localStorage.setItem('aios_stt_langs', 'zh');
     const explicit = common.preferredSttLangs();
@@ -239,7 +279,9 @@ try {
   for (const item of trace.filter(item => item.event === 'conversation')) {
     assert.equal(item.sourceResolved, true); assert.equal(item.bilingualPrompt, true); assert.equal(item.workload, 'voice');
   }
-  assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, 1,
+  assert.ok(trace.filter(item => item.event === 'live-conversation').length >= 2);
+  assert.ok(trace.filter(item => item.event === 'live-conversation').every(item => item.sourceResolved && item.voice === 'Ryan'));
+  assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, inboundBefore,
     'Chinese and English questions were not delivered as coding-agent instructions');
 
   // Drive the real native streaming handler and shared browser player. Keep the gateway unfinished
@@ -285,7 +327,56 @@ try {
     assert.equal(result.partial, outcome === 'partial' ? 1 : 0);
     streamingTrace.push({ outcome, ...result, upstreamClosed: behavior.closed, ttsRequests: 1 });
   }
-  streamBehavior = null; await nativePage.close();
+  streamBehavior = null;
+  const sessionStart = await fetch(base + 'api/voice/start', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ focusSessionId: 's_voice_fixture', source: 'session-explain', reportTs: report.ts, realtime: true }) });
+  const liveSession = await sessionStart.json();
+  assert.equal(liveSession.realtimeOpening, true, 'opening a Story report does not first generate a separate script');
+  await nativePage.evaluate(async state => {
+    const player = await import('./tts-player.js');
+    const button = document.createElement('button'); button.id = 'fixture-live-play'; button.textContent = 'Ask about the plan';
+    button.style.cssText = 'position:fixed;top:50px;right:10px;z-index:999999';
+    button.onclick = () => {
+      player.unlockAudio(); window.__liveSegments = []; window.__liveText = ''; window.__liveResult = null; window.__liveError = ''; window.__livePartial = 0;
+      window.__liveHandle = player.newPlayback();
+      window.__liveRun = player.speakConversation(window.__liveHandle, { voiceId: state.voiceId, voice: state.voice,
+        userText: 'What changed in the plan?', onText: text => window.__liveText += text,
+        onSegment: segment => window.__liveSegments.push(segment), onPartial: () => window.__livePartial++,
+      }).then(result => { window.__liveResult = result; }, error => { window.__liveError = error.message; });
+    };
+    document.body.append(button);
+  }, liveSession);
+  const liveTrace = [];
+  for (const outcome of ['complete', 'partial', 'stop', 'busy']) {
+    let release;
+    const behavior = conversationBehavior = { gate: new Promise(resolve => { release = resolve; }), release: () => release(),
+      busy: outcome === 'busy', fail: outcome === 'partial', closed: false };
+    const before = trace.filter(item => item.event === 'live-conversation').length;
+    await nativePage.locator('#fixture-live-play').click();
+    if (outcome !== 'busy') {
+      await nativePage.waitForFunction(() => window.__liveSegments.length === 1 || window.__liveError);
+      assert.equal(await nativePage.evaluate(() => window.__liveError), '', `live ${outcome} must start native playback`);
+      assert.equal(await nativePage.evaluate(() => window.__liveResult), null, 'first sentence plays before the LLM finishes');
+      const overlap = await fetch(base + 'api/voice/converse', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ voiceId: liveSession.voiceId, userText: 'Tell me more.' }) });
+      assert.equal(overlap.status, 409, 'duplicate turns cannot start a second gateway request');
+      if (outcome === 'stop') await nativePage.evaluate(() => window.__liveHandle.stop()); else behavior.release();
+    }
+    await nativePage.evaluate(() => window.__liveRun);
+    if (outcome !== 'busy') await until(() => behavior.closed);
+    const result = await nativePage.evaluate(() => ({ text: window.__liveText, answer: window.__liveResult?.text,
+      phrases: window.__liveSegments.length, partial: window.__livePartial, error: window.__liveError }));
+    assert.equal(trace.filter(item => item.event === 'live-conversation').length - before, 1, 'Stop and capacity errors never re-submit or change models');
+    if (outcome === 'complete') { assert.equal(result.phrases, 2); assert.match(result.answer, /briefing is prepared before Accept/); }
+    if (outcome === 'busy') assert.match(result.error, /busy/);
+    liveTrace.push({ outcome, ...result });
+  }
+  conversationBehavior = null;
+  const groundedEvents = store.db.prepare("SELECT payload FROM events WHERE session_id = ? AND type = 'voice-grounded-answer' ORDER BY id").all('s_voice_fixture').map(row => JSON.parse(row.payload));
+  assert.ok(groundedEvents.some(event => event.sourceNames.includes('Plan') && event.answer.includes('briefing is prepared before Accept')),
+    'the real handler persisted the resolved document and grounded generated answer');
+  assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, inboundBefore, 'explanations never deliver coding-agent input');
+  await nativePage.close();
   const { prepareVoiceUpdate } = await import('../src/voice.js');
   const ready = await prepareVoiceUpdate('s_voice_fixture', report.id);
   const { dismissAttention } = await import('../src/attention_store.js');
@@ -296,7 +387,8 @@ try {
   const staleAudio = await fetch(base + `api/voice/prepared/${ready.id}/audio`);
   assert.equal(staleAudio.status, 409, 'dismissed audio cannot be replayed from its URL');
   console.log('voice_ready_flow trace', JSON.stringify({ pass: true, handlers, model: trace[0], tts: speech,
-    acceptAdditionalGenerations: 0, nativeStreaming: streamingTrace, bilingual: bilingualTrace, speechHandlers: trace.filter(item => ['stt', 'conversation'].includes(item.event)),
+    acceptAdditionalGenerations: 0, nativeStreaming: streamingTrace, interactive: liveTrace, groundedEvents, bilingual: bilingualTrace,
+    speechHandlers: trace.filter(item => ['stt', 'conversation', 'live-conversation'].includes(item.event)),
     staleStart: staleStart.status, staleAudio: staleAudio.status }));
   await page.evaluate(async () => { (await import('./voicemode.js')).stopVoiceMode(); });
   await browser.close(); browser = null;

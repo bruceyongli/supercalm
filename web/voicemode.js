@@ -1,5 +1,5 @@
 import { api, createLiveSpeechRecognizer, rememberSpeechLanguage, preferredSttLangs } from './common.js';
-import { unlockAudio as unlockPlayer, newPlayback, speechTextRange, stopAllPlayback, speakSmart, applyRateLive } from './tts-player.js';
+import { unlockAudio as unlockPlayer, voiceAudioContext, newPlayback, speechTextRange, stopAllPlayback, speakSmart, speakConversation, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 
@@ -11,6 +11,7 @@ import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-inpu
 let active = false,
   stopFlag = false,
   voiceId = null,
+  selectedVoice = 'Ryan',
   handle = null, // current tts-player playback handle (for stop)
   requestInterrupt = null,
   ui = null;
@@ -26,8 +27,7 @@ let vadCtx = null; // ONE gesture-unlocked AudioContext for every turn's VAD ana
 function unlockAudio() {
   unlockPlayer(); // shared <audio> gesture-unlock + speechSynthesis warm (tts-player)
   try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    vadCtx = vadCtx || new AC();
+    vadCtx = vadCtx || voiceAudioContext();
     if (vadCtx.state !== 'running') vadCtx.resume().catch(() => {});
   } catch {}
 }
@@ -66,17 +66,18 @@ export async function prepareVoiceUpdate({ focusSessionId, reportId } = {}) {
   return { ...prepared, audioBlob };
 }
 
-export async function startVoiceMode({ focusSessionId = null, source = 'manual', preparedUpdate = null } = {}) {
+export async function startVoiceMode({ focusSessionId = null, source = 'manual', preparedUpdate = null, reportTs = null } = {}) {
   if (active) return;
   active = true;
   stopFlag = false;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
   const onTheGo = String(source).startsWith('on-the-go');
-  if (!onTheGo) ui = buildOverlay();
+  if (!onTheGo) ui = buildOverlay({ onTheGo: true });
   try {
     if (onTheGo && !preparedUpdate) preparedUpdate = await prepareVoiceUpdate({ focusSessionId });
-    let state = await post('api/voice/start', { focusSessionId, source, preparationId: preparedUpdate?.preparationId });
+    let state = await post('api/voice/start', { focusSessionId, source, reportTs, realtime: ttsMode() !== 'browser', preparationId: preparedUpdate?.preparationId });
     voiceId = state.voiceId;
+    selectedVoice = state.voice || 'Ryan';
     if (stopFlag) return;
     if (onTheGo) ui = buildOverlay({ onTheGo, initialText: state.say });
     let lastSpoken = '';
@@ -98,7 +99,9 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
         const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
         const preparedSegments = preparedAudio ? preparedUpdate.segments || [] : [];
         preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
-        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments });
+        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments,
+          realtime: state.realtimeOpening || state.realtimeQuestion ? { opening: !!state.realtimeOpening, userText: state.realtimeQuestion || '' } : null });
+        lastSpoken = ui?.spokenText || state.say || lastSpoken;
       }
       if (state.done || stopFlag) break;
       if (interruption?.text) {
@@ -111,7 +114,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
         }
         setHeard(disposition.text);
         setState('thinking');
-        state = await post('api/voice/turn', { voiceId, userText: disposition.text });
+        state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
       } else if (state.listen || interruption?.tap) {
         setState('listening');
         let text = '';
@@ -147,7 +150,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
           continue;
         }
         setHeard(disposition.text);
-        state = await post('api/voice/turn', { voiceId, userText: disposition.text });
+        state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
       } else {
         setState('thinking');
         state = await post('api/voice/continue', { voiceId });
@@ -229,13 +232,13 @@ function renderVoiceControls() {
   ui.speed.querySelectorAll('[data-rate]').forEach((btn) => {
     btn.onclick = () => setTtsRate(Number(btn.dataset.rate));
   });
-  if (ui.mode) ui.mode.textContent = ttsMode() === 'browser' ? 'Device voice fallback' : 'Spark Kokoro voice';
+  if (ui.mode) ui.mode.textContent = ttsMode() === 'browser' ? 'Device voice' : `Omni voice · ${selectedVoice}`;
   if (ui.deviceVoice) ui.deviceVoice.textContent = ttsMode() === 'browser' ? 'Use Spark voice' : 'Use device voice';
 }
 // Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
 // user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
-async function speak(text, { allowInterruption = false, preparedAudio = null, preparedSegments = [] } = {}) {
-  if (!text || stopFlag) return;
+async function speak(text, { allowInterruption = false, preparedAudio = null, preparedSegments = [], realtime = null } = {}) {
+  if ((!text && !realtime) || stopFlag) return;
   if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Qwen when the network is better.', { offerDevice: true });
   else clearTtsNotice();
   handle = newPlayback();
@@ -262,14 +265,15 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     if (ui?.interrupt) ui.interrupt.hidden = false;
     live = createLiveSpeechRecognizer({
       onUpdate: (heard) => {
-        if (accepted || (!capturingSpeech && !isClearVoiceInterruption(heard, text))) return;
+        const spoken = ui?.spokenText || text;
+        if (accepted || (!capturingSpeech && !isClearVoiceInterruption(heard, spoken))) return;
         if (!capturingSpeech) {
           capturingSpeech = true;
           haltPlayback(); // barge-in is immediate; delivery waits briefly for the whole utterance
           setState('listening');
           if (ui?.interrupt) ui.interrupt.hidden = true;
         }
-        pendingSpeech = extractVoiceInterruption(heard, text) || heard.trim();
+        pendingSpeech = extractVoiceInterruption(heard, spoken) || heard.trim();
         setHeard(pendingSpeech);
         if (speechTimer) clearTimeout(speechTimer);
         speechTimer = setTimeout(() => accept({ text: pendingSpeech }), 700);
@@ -277,17 +281,25 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     });
     live.start();
   }
-  const playback = speakSmart(text, handle, {
+  const options = {
     // One model-provided stream: native frames are queued continuously, never manually split into
     // sentence clips. The opening call keeps its prewarmed bytes and real phrase timestamps.
     continuous: true,
     preparedAudio,
     preparedSegments,
+    ttsExtra: { voice: selectedVoice },
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
     onPartial: () => showTtsNotice('The audio stream stopped before the end. Nothing was replayed.', { offerDevice: false }),
     onSegment: focusSpokenSegment,
-  }).then(() => null, () => null);
+  };
+  const run = realtime ? speakConversation(handle, { ...options, ...realtime, voiceId, voice: selectedVoice,
+    onText: appendSpokenText,
+  }).then(result => { if (result?.current) updateProgress(result.current); }) : speakSmart(text, handle, options);
+  const playback = run.then(() => null, error => {
+    showTtsNotice(error.message || 'Voice is unavailable. Your response is kept; please retry.', { offerDevice: true });
+    return null;
+  });
   const playbackOrCapture = playback.then(() => capturingSpeech ? interruption : null);
   const result = allowInterruption ? await Promise.race([playbackOrCapture, interruption]) : await playback;
   if (requestInterrupt === accept) requestInterrupt = null;
@@ -669,14 +681,14 @@ function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
   o.deviceVoice.onclick = () => {
     if (ttsMode() === 'browser') {
       setTtsMode('neural');
-      showTtsNotice('Trying Spark Kokoro voice again for the next response.', { offerDevice: true });
+      showTtsNotice('Using Omni voice for the next response.', { offerDevice: true });
     } else {
       setTtsMode('browser');
       showTtsNotice('Using your device voice for the rest of this voice conversation.', { offerDevice: true });
     }
   };
   renderVoiceControls();
-  if (ttsMode() === 'browser') showTtsNotice('Using your device voice fallback. You can switch back to Spark Kokoro when the network is better.', { offerDevice: true });
+  if (ttsMode() === 'browser') showTtsNotice('Using your device voice. You can switch back to Omni when ready.', { offerDevice: true });
   return o;
 }
 function updateProgress(cur) {
@@ -762,6 +774,14 @@ function paintSpokenText(text) {
     span.textContent = kind === 'current' ? ui.spokenText : '';
     return span;
   }));
+}
+
+function appendSpokenText(delta) {
+  if (!ui?.said || stopFlag) return;
+  ui.spokenText = (ui.spokenText || '') + delta;
+  const pending = ui.said.querySelector('[data-speech-part="pending"]');
+  if (pending) pending.textContent = ui.spokenText.slice(ui.spokenEnd || 0);
+  else ui.said.textContent = ui.spokenText;
 }
 
 function focusSpokenSegment(segment = {}) {

@@ -3,7 +3,7 @@
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
 import { api, renderMarkdown, renderLinkedText } from './common.js';
 import { localFilePath } from './file-reference.js';
-import { unlockAudio, newPlayback, speakSmart, cycleRate, currentRate } from './tts-player.js';
+import { unlockAudio } from './tts-player.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
 const COLOR = { you: '#58a6ff', sys: '#3a4453', work: '#8a95a5', plan: '#79b8ff', note: '#5c6675', sub: '#9aa7b8', edit: '#d9924e', fail: '#f2554d', check: '#4ecb6c', ship: '#2fd6be', report: '#b9c4d4', ask: '#e2b23e', stop: '#e2b23e' };
@@ -42,8 +42,8 @@ function askKey(ev) { return ev.askId && ev.questionId != null ? `${ev.askId}|${
 // "Listen to this report" — playback state lives in MODULE vars (the openSteps/answeredAsks rule:
 // render() wipes the DOM wholesale every SSE tick, so buttons re-derive their label from this map;
 // the Audio element itself lives in tts-player.js, never in the DOM, so re-renders can't cut audio).
-const listenState = new Map(); // evKey -> {phase:'loading'|'playing'|'error', part, total}
-let listenActive = null; // {key, handle} — one playback at a time
+let explainingSession = null; // the shared Voice Assistant owns playback and conversation state
+let storyVoiceClient = null;
 
 // Composer echoes — a send appears in the story INSTANTLY (optimistic 'you' bubble) with a read
 // lifecycle: '⏳ queued · unread' while it sits in the agent's input queue, '✓ read' once the CLI
@@ -318,39 +318,10 @@ function askHtml(ev) {
     <button class="story-ask-opt${j === pi ? ' primary' : ''}" data-story-ask-opt data-askkey="${ak}" data-label="${esc(o.label || o.spoken || o.key || '')}" data-key="${esc(o.key ?? o.label ?? '')}">${esc(o.key ? o.key + ' — ' : '')}${esc(o.label || o.spoken || '')}</button>`).join('')}</div>`;
 }
 
-function listenLabel(st, idleLabel) {
-  if (!st) return idleLabel;
-  if (st.phase === 'loading') return st.level === 'verbatim' ? '… preparing' : '… tailoring';
-  if (st.phase === 'playing') return st.total > 1 ? `⏹ stop · ${st.part}/${st.total}` : '⏹ stop';
-  if (st.phase === 'error') return '⚠ retry';
-  return idleLabel;
-}
-// The listen controls on reports long enough to be worth hearing:
-// guided = owner-prompt-aware structured report; quick = ~30s; read all = no summarization.
-// A live speech-rate chip appears while playing.
-// Labels re-derive from listenState on every wholesale re-render; between renders paintListen()
-// repaints the row in place. Clicks are DELEGATED on panelEl (initStoryView), so repaints and
-// re-renders never need handler rebinding.
-function listenRowInner(key, srcLen) {
-  const st = listenState.get(key); // {phase, part, total, level}
-  const btn = (level, idleLabel, title) => {
-    const on = st && st.level === level;
-    return `<button class="story-listen${on ? ' ' + st.phase : ''}" data-story-listen data-evkey="${esc(key)}" data-level="${level}" title="${title}">${on ? listenLabel(st, idleLabel) : idleLabel}</button>`;
-  };
-  let html = btn('full', '▶ guided', 'A structured voice report focused on what you asked');
-  // Offer the ~30s digest once the full read-out is long enough for it to help (buildScript gives full
-  // ≥150 words above ~800 chars = a 1-2 min listen). The old 2000-char gate hid it on most reports.
-  if (srcLen > 800) html += btn('brief', '▶ quick', 'Quick ~30-second version');
-  if (srcLen > 800) html += btn('verbatim', '▶ read all', 'Read the complete report without summarizing');
-  if (st && st.phase === 'playing') html += `<button class="story-listen rate" data-story-listen-rate title="Speech speed">${currentRate()}×</button>`;
-  return html;
-}
+// One report entry point into the same interactive Voice Assistant used by Needs You and PWA.
 function listenRowHtml(ev) {
-  if (ev.kind !== 'report') return '';
-  const text = String(ev.body || ev.text || '');
-  if (text.length <= 200) return '';
-  const key = evKey(ev);
-  return `<div class="story-listen-row" data-story-listen-row data-evkey="${esc(key)}" data-srclen="${text.length}">${listenRowInner(key, text.length)}</div>`;
+  if (ev.kind !== 'report' || !String(ev.body || ev.text || '').trim()) return '';
+  return `<div class="story-listen-row"><button type="button" class="story-listen" data-story-listen data-evkey="${esc(evKey(ev))}" title="Explain this report and ask follow-up questions">▶ Explain</button></div>`;
 }
 
 // A compact outcome entry point, not a second transcript. It appears only on events that can prove,
@@ -372,77 +343,21 @@ function evidenceResultHtml(ev) {
     <span class="story-result-key">E</span>
   </div>`;
 }
-function paintListen(key) {
-  const row = panelEl && panelEl.querySelector(`[data-story-listen-row][data-evkey="${CSS.escape(key)}"]`);
-  if (!row) return; // scrolled/windowed out of the DOM — the state map still drives the next render
-  row.innerHTML = listenRowInner(key, Number(row.dataset.srclen) || 0);
-}
-function setListen(key, st) { listenState.set(key, st); paintListen(key); }
-function clearListen(key) { listenState.delete(key); paintListen(key); }
 function stopListen() {
-  if (!listenActive) return;
-  const { key, handle } = listenActive;
-  listenActive = null;
-  try { handle.stop(); } catch {}
-  clearListen(key);
+  if (!explainingSession) return;
+  explainingSession = null;
+  storyVoiceClient?.stopVoiceMode();
 }
-async function onListenTap(key, level = 'full') {
-  if (listenActive && listenActive.key === key && listenActive.level === level) return stopListen(); // tap while playing = stop
-  stopListen(); // one playback at a time — a new tap silences the previous one
-  const ev = events.find((e) => evKey(e) === key);
-  const text = String(ev?.body || ev?.text || ''); // captured NOW — survives later window trims
-  if (!text) return;
-  unlockAudio(); // synchronously inside the tap gesture (iOS) — before any await
-  const handle = newPlayback();
-  listenActive = { key, handle, level };
-  setListen(key, { phase: 'loading', level });
-  try {
-    // Guided/quick context belongs to this report's round only. Use the preceding report as a hard
-    // lower boundary so the server can include same-round refinements without pulling a completed
-    // request/report pair into this voice script.
-    const eventIndex = events.findIndex((candidate) => evKey(candidate) === key);
-    let focusAfterTs = 0;
-    for (let i = eventIndex - 1; i >= 0; i--) {
-      if (events[i]?.kind === 'report') {
-        focusAfterTs = Number(events[i].ts) || 0;
-        break;
-      }
-    }
-    const requestBody = JSON.stringify({ text, ts: ev.ts || 0, level, focusAfterTs });
-    const prepareDeadline = Date.now() + 90000;
-    let vr = null;
-    while (!handle.stopped && Date.now() < prepareDeadline) {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 15000);
-      const r = await fetch(`api/session/${sid}/voice-report`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: requestBody, signal: ctrl.signal,
-      }).finally(() => clearTimeout(t));
-      const body = await r.json().catch(() => ({}));
-      if (r.status === 202 || body.status === 'preparing') {
-        await new Promise((resolve) => setTimeout(resolve, Math.max(300, Math.min(2000, Number(body.retryAfterMs) || 700))));
-        continue;
-      }
-      if (!r.ok) throw new Error('voice-report ' + r.status);
-      vr = body;
-      break;
-    }
-    if (handle.stopped) return clearListen(key);
-    const parts = Array.isArray(vr?.parts) && vr.parts.length && vr.parts.every((part) => typeof part === 'string' && part)
-      ? vr.parts : null;
-    if (!parts) throw new Error('voice report did not become ready');
-    for (let i = 0; i < parts.length; i++) {
-      if (handle.stopped) break;
-      setListen(key, { phase: 'playing', part: i + 1, total: parts.length, level });
-      await speakSmart(parts[i], handle, { ttsExtra: vr.tts || {} });
-    }
-    clearListen(key);
-  } catch {
-    if (handle.stopped) clearListen(key);
-    else { setListen(key, { phase: 'error', level }); setTimeout(() => { if (listenState.get(key)?.phase === 'error') clearListen(key); }, 2400); }
-  } finally {
-    if (listenActive && listenActive.key === key && listenActive.handle === handle) listenActive = null;
-  }
+async function onListenTap(key) {
+  const ev = events.find(event => evKey(event) === key);
+  if (!ev || !sid) return;
+  unlockAudio(); // unlock the shared playback AND microphone-analysis clock inside this tap
+  const selectedSession = sid;
+  explainingSession = selectedSession;
+  const { startVoiceMode, stopVoiceMode } = storyVoiceClient = await import('./voicemode.js');
+  if (sid !== selectedSession || explainingSession !== selectedSession) return;
+  stopVoiceMode();
+  await startVoiceMode({ focusSessionId: selectedSession, source: 'session-explain', reportTs: Number(ev.ts) || null });
 }
 
 function eventHtml(ev, i, previewVideo = false) {
@@ -869,15 +784,8 @@ export function initStoryView({ sessionId, panel }) {
   if (panel && !panel._listenWired) {
     panel._listenWired = true;
     panel.addEventListener('click', (e) => {
-      const rate = e.target.closest('[data-story-listen-rate]');
-      if (rate) {
-        cycleRate(); // applies live to the playing audio; persists (shared with voice mode)
-        const key = rate.closest('[data-story-listen-row]')?.dataset.evkey;
-        if (key) paintListen(key);
-        return;
-      }
       const b = e.target.closest('[data-story-listen]');
-      if (b) onListenTap(b.dataset.evkey, b.dataset.level || 'full');
+      if (b) onListenTap(b.dataset.evkey);
     });
   }
   if (!learnedListenerWired) {
@@ -891,7 +799,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); listenState.clear(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; panelEl.innerHTML = ''; }
+  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; panelEl.innerHTML = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;

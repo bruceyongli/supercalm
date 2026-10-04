@@ -20,7 +20,7 @@ const context = {
 let ended = 0;
 const queue = createPcmQueue(context, { onSegment: segment => segments.push(segment), onEmpty: () => ended++ });
 const frame = (index, text = '') => ({ index, audio, text, model: NATIVE_TTS_MODEL, engine: 'qwen',
-  backend: 'faster-ggml', precision: 'BF16', streaming: 'native-pcm-frames', voice: 'Ryan',
+  backend: 'faster-ggml', precision: 'BF16', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3',
   phrase_index: index === 2 ? 1 : 0, frame_index: index === 1 ? 1 : 0, native_startup_one_frames: 2 });
 queue.push(frame(0, 'First phrase.'));
 queue.push(frame(1)); queue.push(frame(2, 'Second phrase.'));
@@ -30,6 +30,8 @@ assert.equal(sources[0].when, 10.6, 'the initial reserve matches Omni native BF1
 assert.ok(Math.abs(sources[1].when - 10.7) < 1e-8);
 assert.ok(Math.abs(sources[2].when - 10.8) < 1e-8, 'a phrase boundary adds no pause to already queued audio');
 assert.throws(() => queue.push(frame(4)), /order/);
+assert.throws(() => queue.push({ ...frame(3), voice: 'Vivian' }), /identity/);
+assert.throws(() => queue.push({ ...frame(3), prosody_profile: 'legacy' }), /identity/);
 context.currentTime = 10.65;
 queue.setRate(2);
 assert.ok(sources.slice(0, 3).every(source => source.stopped));

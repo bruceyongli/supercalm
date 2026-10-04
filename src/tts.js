@@ -5,7 +5,7 @@ import { sparkRequest, sparkEnabled, effectiveSpark } from './spark.js';
 import { getSpeech, getVoiceOverride, getVoiceConfig } from './model_providers.js';
 import { resolveChain } from './voice_chain.js';
 import { voiceProviders, availabilityMap } from './voice_providers.js';
-import { createNativeSpeechDecoder, nativeSpeechFromSse, nativeTextParts, pcmFromWav, wavFromPcm, textForPreparedSpeech } from './tts_native.js';
+import { createNativeSpeechDecoder, nativeSpeechFromSse, nativeTextParts, nativeVoice, pcmFromWav, wavFromPcm, textForPreparedSpeech } from './tts_native.js';
 
 // TTS for the voice concierge. Two backends:
 //   'spark' (default) — Omni's promoted native Qwen3-TTS 1.7B BF16 at /voice/api/turn,
@@ -86,7 +86,7 @@ function proxyTtsHeaders(upstreamHeaders = {}, source = 'spark', format = 'mp3')
     'cache-control': 'no-store',
     'x-aios-tts-source': source,
   };
-  for (const name of ['x-tts-engine', 'x-tts-backend', 'x-tts-model', 'x-tts-precision', 'x-tts-speaker', 'x-tts-language', 'x-tts-timings']) {
+  for (const name of ['x-tts-engine', 'x-tts-backend', 'x-tts-model', 'x-tts-precision', 'x-tts-speaker', 'x-tts-prosody-profile', 'x-tts-language', 'x-tts-timings']) {
     if (upstreamHeaders[name]) out[name] = upstreamHeaders[name];
   }
   return out;
@@ -97,16 +97,17 @@ function proxyTtsHeaders(upstreamHeaders = {}, source = 'spark', format = 'mp3')
 // early enough for the provider (25s) / local-say (20s) fallbacks to still land inside that window.
 async function speakSpark(text, voice, engine, format, instruct = '') {
   if (engine === 'qwen3-tts-bf16') {
+    voice = nativeVoice(voice);
     // Use the promoted public gateway, not its retired port-7081 API or private model ports.
     // tts_only explicitly bypasses ASR and the demo LLM; our grounded answer is spoken verbatim.
     const pcm = [], segments = []; let headers, offset = 0;
     const signal = AbortSignal.timeout(45000);
     for (const phrase of nativeTextParts(text)) {
-      const payload = Buffer.from(JSON.stringify({ text: phrase, tts_only: true, engine: 'qwen', voice: 'auto', language: 'auto', history: [] }));
+      const payload = Buffer.from(JSON.stringify({ text: phrase, tts_only: true, engine: 'qwen', voice, language: 'auto' }));
       const r = await sparkRequest('POST', '/voice/api/turn', { body: payload, contentType: 'application/json',
         headers: { 'X-Voice-Demo': '1' }, signal, maxBytes: 18000000, timeout: 45000 });
-      if (r.status !== 200) throw new Error(`native Spark TTS ${r.status}: ${r.body.toString('utf8').slice(0, 180)}`);
-      const spoken = nativeSpeechFromSse(r.body, phrase.trim());
+      if (r.status !== 200) throw Object.assign(new Error(r.status === 429 ? 'Voice is busy. Please retry later.' : 'Native voice is unavailable. Please retry later.'), { status: r.status === 429 ? 429 : 503, noFallback: true });
+      const spoken = nativeSpeechFromSse(r.body, phrase.trim(), { voice });
       pcm.push(pcmFromWav(spoken.audio)); headers = spoken.headers;
       for (const segment of spoken.segments) segments.push({ ...segment, index: segments.length, start: offset + segment.start, end: offset + segment.end });
       offset += spoken.bytes / 48000;
@@ -204,6 +205,7 @@ export async function synthesizeSpeech(b) {
         responseHeaders['x-tts-engine'] = 'local'; responseHeaders['x-tts-backend'] = 'macos-say'; break;
       }
     } catch (e) {
+      if (name === 'spark' && engine === 'qwen3-tts-bf16') throw Object.assign(e, { noFallback: true });
       lastErr = e.message; console.error(`[aios] tts ${name} failed, falling through:`, e.message);
       if (b.readyOnly && name === chain[0]) throw e; // do not ring with a silently downgraded voice
     }
@@ -218,7 +220,7 @@ route('POST', '/api/tts', async (req, res) => {
   try {
     const { audio, headers } = await synthesizeSpeech(b);
     res.writeHead(200, headers); res.end(audio);
-  } catch (e) { json(res, 502, { error: e.message }); }
+  } catch (e) { json(res, e.status || 502, { error: e.message, noFallback: !!e.noFallback }); }
 });
 
 // Streaming TTS: the promoted Qwen model supplies native PCM `audio` frames and phrase metadata.
@@ -236,7 +238,7 @@ route('POST', '/api/tts/stream', async (req, res) => {
   const chain = await ttsServerChain(b);
   if (chain[0] !== 'spark' || !sparkEnabled()) return json(res, 409, { error: 'streaming requires the spark backend' });
   const engine = normalizeEngine(b.engine || b.model || vc.ttsEngine);
-  if (engine === 'qwen3-tts-bf16') return streamNativeSpeech(textForPreparedSpeech(text), res);
+  if (engine === 'qwen3-tts-bf16') return streamNativeSpeech(textForPreparedSpeech(text), res, nativeVoice(b.voice || vc.ttsVoice));
   const format = normalizeFormat(b.response_format || b.format || 'mp3');
   const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
   const streamBody = sparkTtsBody(text, { engine, voice, format, stream: true, instruct: b.instruct ?? vc.ttsInstruct });
@@ -268,7 +270,7 @@ route('POST', '/api/tts/stream', async (req, res) => {
 
 // Relay the promoted model's real frame stream, including its phrase text. Never re-split the
 // reply, buffer the whole response, or turn tiny PCM packets into separate HTML Audio players.
-async function streamNativeSpeech(text, res) {
+async function streamNativeSpeech(text, res, voice) {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 240000);
   const disconnect = () => { if (!res.writableEnded) ctrl.abort(); };
@@ -277,9 +279,9 @@ async function streamNativeSpeech(text, res) {
   const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   try {
     for (const part of nativeTextParts(text)) {
-      const decoder = createNativeSpeechDecoder(part.trim());
+      const decoder = createNativeSpeechDecoder(part.trim(), { voice });
       const offset = bytes / 48000;
-      const payload = Buffer.from(JSON.stringify({ text: part, tts_only: true, engine: 'qwen', voice: 'auto', language: 'auto', history: [] }));
+      const payload = Buffer.from(JSON.stringify({ text: part, tts_only: true, engine: 'qwen', voice, language: 'auto' }));
       const response = await sparkRequest('POST', '/voice/api/turn', { body: payload, contentType: 'application/json',
         headers: { 'X-Voice-Demo': '1' }, signal: ctrl.signal, maxBytes: 18000000, timeout: 60000,
         onChunk(chunk, upstream) {
@@ -291,7 +293,7 @@ async function streamNativeSpeech(text, res) {
             if (bytes > 12000000 || frames >= 10000) throw new Error('Native audio exceeds limit');
             if (!res.headersSent) {
               res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', 'x-aios-tts-source': 'spark' });
-              send('metadata', { transport: 'native-pcm-frames', sampleRate: 24000, engine: 'qwen3-tts-bf16' });
+              send('metadata', { transport: 'native-pcm-frames', sampleRate: 24000, engine: 'qwen3-tts-bf16', voice });
             }
             writable = send('audio', { ...event.data, index: frames++, start: offset + event.data.start,
               segmentIndex: segmentBase + event.data.segmentIndex }) && writable;
@@ -301,13 +303,13 @@ async function streamNativeSpeech(text, res) {
           }
         },
       });
-      if (response.status !== 200) throw new Error(`native Spark TTS ${response.status}: ${response.body.toString('utf8').slice(0, 160)}`);
+      if (response.status !== 200) throw Object.assign(new Error(response.status === 429 ? 'Voice is busy. Please retry later.' : 'Native voice is unavailable. Please retry later.'), { status: response.status === 429 ? 429 : 503 });
       const result = decoder.finish(); segmentBase += result.segments.length;
     }
     send('done', { text, frames }); res.end();
   } catch (error) {
     if (!res.destroyed) {
-      if (!res.headersSent) json(res, 502, { error: error.message });
+      if (!res.headersSent) json(res, error.status || 503, { error: error.message, noFallback: true });
       else { send('error', { detail: error.message, partial: frames > 0 }); res.end(); }
     }
   } finally {
@@ -346,4 +348,4 @@ route('GET', '/api/tts/health', async (req, res) => {
   json(res, h ? 200 : 502, { ok: !!h, backend: 'local', tts_available: !!(h && h.tts_available), engine: h && h.tts_engine });
 });
 
-console.log(`[aios] tts proxy ready (backend=${TTS_BACKEND}${TTS_BACKEND === 'spark' ? ` -> Spark ${TTS_ENGINE} TTS, local say fallback` : ` -> 127.0.0.1:${TTS_PORT} say`})`);
+console.log(`[aios] tts proxy ready (backend=${TTS_BACKEND}${TTS_BACKEND === 'spark' ? ` -> Spark ${TTS_ENGINE} TTS` : ` -> 127.0.0.1:${TTS_PORT} say`})`);

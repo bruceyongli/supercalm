@@ -155,8 +155,12 @@ export async function buildVoiceSourcePack({
 }
 
 function termsFor(query) {
-  return [...new Set(String(query || '').toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) || [])]
-    .filter((term) => !STOP_WORDS.has(term));
+  const value = String(query || '').toLowerCase();
+  const terms = (value.match(/[a-z0-9][a-z0-9-]{2,}/g) || []).filter(term => !STOP_WORDS.has(term));
+  for (const run of value.match(/\p{Script=Han}{2,}/gu) || []) {
+    for (let at = 0; at + 1 < run.length; at++) terms.push(run.slice(at, at + 2));
+  }
+  return [...new Set(terms)];
 }
 
 function scoreSection(source, section, terms, index) {

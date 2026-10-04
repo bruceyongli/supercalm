@@ -12,13 +12,11 @@
 
 import { api, coalesce, createLiveSpeechRecognizer, escapeHtml as esc, preferredSttLangs, registerSW, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
-import { unlockAudio, newPlayback, stopAllPlayback, speakSmart } from './tts-player.js'; // the ONE shared TTS stack
+import { stopAllPlayback } from './tts-player.js';
 import { isVoiceModeActive, startVoiceMode, stopVoiceMode } from './voicemode.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
-import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
-import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
 import { splitSessionRecency } from './session-recency.js';
 
 registerSW();
@@ -236,101 +234,23 @@ async function markRead(ids, sid = null) {
   render();
 }
 
-// ---- spoken briefs (shared Voice Assistant briefing route) -----------------------------------------
-const briefCache = new Map();
-async function fetchBrief(sid) {
-  if (briefCache.has(sid)) return briefCache.get(sid);
-  try {
-    const r = await Promise.race([
-      api(`api/session/${sid}/brief`, { method: 'POST' }),
-      new Promise((_, rej) => setTimeout(() => rej(new Error('brief timeout')), 6000)),
-    ]);
-    if (r?.brief) { briefCache.set(sid, r.brief); setTimeout(() => briefCache.delete(sid), 90000); return r.brief; }
-  } catch {}
-  return null;
-}
-function spokenFromBrief(b, fallback) {
-  if (!b) return fallback;
-  const opts = b.options?.length ? ' Options: ' + b.options.map((o) => `${o.key}, ${o.spoken || o.label}`).join('. ') + '.' : '';
-  return `${b.topic}. ${b.standard}${opts}`.trim();
-}
-
-// ---- TTS — the ONE shared stack (tts-player.js): stream → single → device voice --------------------
-let phoneHandle = null; // current tts-player playback handle
+// All report playback entry points use the same interactive session conversation.
 function stopSpeech() {
-  S.queue = [];
-  S.speakingId = null;
-  S.playScope = null;
-  try { phoneHandle?.stop(); } catch {}
+  S.queue = []; S.speakingId = null; S.playScope = null;
   try { stopAllPlayback(); } catch {}
   render();
 }
-async function speakOne(text, options = {}) {
-  phoneHandle = newPlayback();
-  try { await speakSmart(text, phoneHandle, options); } catch {}
-  return !phoneHandle.stopped; // done (true) unless it was stopped mid-line
-}
-async function playQueue(items, scope) {
-  unlockAudio(); // gesture-unlock the shared player (this runs inside the tap that started the queue)
-  stopSpeech();
-  S.queue = items.slice();
-  S.playScope = scope;
-  render();
-  while (S.queue.length && S.playScope === scope) {
-    const it = S.queue.shift();
-    S.speakingId = it.mid || null;
-    render();
-    let text = it.text;
-    if (it.briefSid) text = spokenFromBrief(await fetchBrief(it.briefSid), it.text);
-    if (S.playScope !== scope) return;
-    const done = await speakOne(text);
-    if (S.playScope !== scope) return; // stopped mid-queue: do NOT mark read (design)
-    if (done && it.mid != null) await markRead([it.mid], it.sid || null);
-  }
-  S.speakingId = null;
-  S.playScope = null;
-  render();
+async function playQueue(items) {
+  const first = items[0]; const focusSessionId = first?.sid || S.sid;
+  if (!focusSessionId) return;
+  stopVoiceMode(); stopSpeech();
+  return startVoiceMode({ focusSessionId, source: 'session-explain', reportTs: first?.ts || null });
 }
 
 // ---- Voice Assistant (home): the shared concierge, hands-free on the phone -------------------------
 // start → server presents item (TTS) → we auto-listen (VAD: speech start on energy, end on ~1.4s of
 // silence) → polished STT → shared intent reasoning → questions stay with the assistant; instructions
 // are restated and confirmed before they reach the agent. One tap in, zero after.
-const V = { on: false, voiceId: null, state: 'idle', current: null, lastHeard: '', ignoredReason: '', silentTurns: 0, stream: null, ac: null, stopFlag: false, onTheGo: false, said: '', segment: '', delivery: null, sentCount: 0, responseGrounded: false };
-let phoneInterrupt = null;
-function setVoiceCurrent(next) {
-  const previousId = V.current?.sessionId || '';
-  const nextId = next?.sessionId || '';
-  V.current = next || null;
-  // A reply and its delivery receipt belong only to the session that received them. Keep both visible
-  // through that session's confirmation, then clear them as the next session is presented.
-  if (previousId && nextId && previousId !== nextId) {
-    V.lastHeard = '';
-    V.ignoredReason = '';
-    V.delivery = null;
-    V.segment = '';
-    V.responseGrounded = false;
-  }
-}
-function paintVoiceSegment(text) {
-  const line = app.querySelector('.ongo-sheet-report p');
-  if (line && text) line.textContent = text;
-}
-function paintVoiceHeard(text) {
-  const line = app.querySelector('.ongo-sheet-heard span');
-  if (line && text) line.textContent = `“${text.slice(0, 260)}”`;
-}
-function phoneVoiceThreadLabel(cur) {
-  const parts = [];
-  for (const value of [cur?.topic, cur?.module, cur?.workstream]) {
-    const clean = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!clean) continue;
-    const key = clean.toLowerCase();
-    if (parts.some((part) => part.toLowerCase() === key || part.toLowerCase().includes(key) || key.includes(part.toLowerCase()))) continue;
-    parts.push(clean);
-  }
-  return parts.slice(0, 2).join(' · ');
-}
 let onTheGoUi = onTheGoState();
 // Phone used to override the shared adapter with the legacy implementation below. That second loop
 // created its VAD AudioContext after the initiating tap, so iOS left it suspended and loud replies
@@ -347,225 +267,6 @@ subscribeOnTheGo((state) => {
 window.addEventListener('aios:voice-mode-end', () => {
   if (S.screen === 'home') renderSoft();
 });
-
-async function voiceModeStart(focusSessionId = null, { onTheGo = false } = {}) {
-  if (V.on) return;
-  unlockAudio(); // gesture-unlock the shared player before any await
-  stopSpeech();
-  try { V.stream = await navigator.mediaDevices.getUserMedia(phoneVoiceConstraints()); } catch (e) { toast('Mic unavailable: ' + (e.message || e)); return; }
-  V.on = true; V.state = 'starting'; V.stopFlag = false; V.onTheGo = onTheGo; V.said = ''; V.segment = ''; V.lastHeard = ''; V.ignoredReason = ''; V.silentTurns = 0; V.delivery = null; V.sentCount = 0; V.responseGrounded = false; S.sheet = 'voicemode';
-  render();
-  try {
-    const r = await api('api/voice/start', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ focusSessionId, source: onTheGo ? 'on-the-go-update' : 'manual' }),
-    });
-    V.voiceId = r.voiceId; setVoiceCurrent(r.current || null);
-    const interruption = await voiceSay(r.say, { allowInterruption: !r.done });
-    if (r.done) return voiceModeEnd('done');
-    if (interruption?.text) return voiceSubmitTurn(interruption.text);
-    if (r.listen || interruption?.tap) return voiceLoopListen();
-  } catch (e) { toast('Voice mode failed: ' + (e.message || e)); voiceModeEnd('error'); }
-}
-function phoneVoiceConstraints() {
-  const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-  const audio = {};
-  if (supported.echoCancellation) audio.echoCancellation = true;
-  if (supported.noiseSuppression) audio.noiseSuppression = true;
-  if (supported.autoGainControl) audio.autoGainControl = true;
-  if (supported.channelCount) audio.channelCount = { ideal: 1 };
-  return Object.keys(audio).length ? { audio } : { audio: true };
-}
-async function voiceSay(text, { allowInterruption = false } = {}) {
-  if (!text || V.stopFlag) return;
-  V.state = 'speaking'; V.said = text;
-  V.segment = String(text); // actual stream metadata, not punctuation guesses, selects the spoken phrase
-  render();
-  let live = null;
-  let accepted = null;
-  let capturingSpeech = false;
-  let pendingSpeech = '';
-  let speechTimer = null;
-  let resolveInterruption;
-  const interruption = new Promise((resolve) => { resolveInterruption = resolve; });
-  const haltPlayback = () => {
-    try { phoneHandle?.stop(); } catch {}
-    try { stopAllPlayback(); } catch {}
-  };
-  const accept = (result) => {
-    if (accepted || V.stopFlag) return;
-    accepted = result;
-    if (speechTimer) clearTimeout(speechTimer);
-    resolveInterruption(result);
-    haltPlayback();
-  };
-  if (allowInterruption) {
-    phoneInterrupt = accept;
-    live = createLiveSpeechRecognizer({
-      onUpdate: (heard) => {
-        if (accepted || (!capturingSpeech && !isClearVoiceInterruption(heard, text))) return;
-        if (!capturingSpeech) {
-          capturingSpeech = true;
-          haltPlayback(); // stop now, then retain subsequent interim words before sending the turn
-          V.state = 'listening';
-          render();
-        }
-        pendingSpeech = extractVoiceInterruption(heard, text) || heard.trim();
-        V.lastHeard = pendingSpeech;
-        paintVoiceHeard(pendingSpeech);
-        if (speechTimer) clearTimeout(speechTimer);
-        speechTimer = setTimeout(() => accept({ text: pendingSpeech }), 700);
-      },
-    });
-    live.start();
-  }
-  const playback = speakOne(text, {
-    onSegment: ({ text: segment }) => {
-      if (!segment || V.stopFlag) return;
-      V.segment = segment;
-      // Only the sentence being read changes here. Rebuilding the whole sheet on every boundary made
-      // the iPhone view visibly flash and reset scroll/touch state.
-      paintVoiceSegment(segment);
-    },
-  }).then(() => null, () => null);
-  const playbackOrCapture = playback.then(() => capturingSpeech ? interruption : null);
-  const result = allowInterruption ? await Promise.race([playbackOrCapture, interruption]) : await playback;
-  if (phoneInterrupt === accept) phoneInterrupt = null;
-  if (speechTimer) clearTimeout(speechTimer);
-  live?.abort();
-  if (accepted) await Promise.race([playback, new Promise((resolve) => setTimeout(resolve, 250))]);
-  return accepted || result;
-}
-async function voiceLoopListen() {
-  if (V.stopFlag) return;
-  V.state = 'listening'; render();
-  const blob = await vadRecord(V.stream, { maxMs: 45000 });
-  if (V.stopFlag) return;
-  if (!blob || blob.size < 800) {
-    return voiceMissedInput('no-speech');
-  }
-  V.state = 'thinking'; render();
-  let text = '';
-  try {
-    const r = await fetch(`api/transcribe?polish=true&langs=${encodeURIComponent(preferredSttLangs())}${V.current?.sessionId ? `&session=${encodeURIComponent(V.current.sessionId)}` : ''}`, { method: 'POST', headers: { 'content-type': blob.type || 'audio/webm' }, body: blob });
-    const j = await r.json();
-    text = (j.text || '').trim(); // server-rejected noise arrives as '' → voiceMissedInput re-asks
-  } catch {}
-  if (V.stopFlag) return;
-  if (!text) {
-    return voiceMissedInput('no-speech');
-  }
-  return voiceSubmitTurn(text);
-}
-async function voiceSubmitTurn(text) {
-  if (V.stopFlag || !text) return;
-  const disposition = voiceTranscriptDisposition(text, { spoken: V.said });
-  if (!disposition.accepted) {
-    return voiceMissedInput(disposition.reason);
-  }
-  text = disposition.text;
-  V.silentTurns = 0; V.lastHeard = text; V.ignoredReason = ''; render();
-  try {
-    const r = await api('api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, userText: text }) });
-    setVoiceCurrent(r.current || V.current);
-    if (r.acceptedText) V.lastHeard = r.acceptedText;
-    V.ignoredReason = r.ignored ? (r.ignoredReason || 'not-addressed') : '';
-    V.delivery = r.delivery || V.delivery;
-    V.sentCount = Number(r.sentCount ?? V.sentCount) || 0;
-    V.responseGrounded = !!r.grounded;
-    const interruption = await voiceSay(r.say, { allowInterruption: !r.done });
-    render();
-    if (V.stopFlag) return;
-    if (r.done) return voiceModeEnd('done');
-    if (interruption?.text) return voiceSubmitTurn(interruption.text);
-    if (r.listen || interruption?.tap) return voiceLoopListen();
-    // sent/skipped -> ask the server to present the next item
-    const c = await api('api/voice/continue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) });
-    setVoiceCurrent(c.current || null);
-    const nextInterruption = await voiceSay(c.say, { allowInterruption: !c.done });
-    if (V.stopFlag) return;
-    if (c.done) return voiceModeEnd('done');
-    if (nextInterruption?.text) return voiceSubmitTurn(nextInterruption.text);
-    return voiceLoopListen();
-  } catch (e) { toast('Voice turn failed: ' + (e.message || e)); return voiceModeEnd('error'); }
-}
-async function voiceMissedInput(reason) {
-  if (V.stopFlag) return;
-  V.ignoredReason = reason;
-  V.lastHeard = '';
-  V.silentTurns++;
-  render();
-  if (V.voiceId) {
-    await api('api/voice/keepalive', {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId, reason }),
-    }).catch(() => {});
-  }
-  // A broken recorder can resolve immediately; keep the assistant alive without creating a hot loop.
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  return voiceLoopListen();
-}
-function voiceModeEnd(why) {
-  const sentCount = V.sentCount;
-  V.stopFlag = true; V.on = false; V.state = 'idle'; V.onTheGo = false; V.said = ''; V.segment = '';
-  phoneInterrupt = null;
-  try { V.stream?.getTracks().forEach((t) => t.stop()); } catch {}
-  V.stream = null;
-  if (V.voiceId) api('api/voice/stop', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ voiceId: V.voiceId }) }).catch(() => {});
-  V.voiceId = null;
-  stopSpeech();
-  if (S.sheet === 'voicemode') S.sheet = null;
-  if (why === 'done') loadHome();
-  if (sentCount) toast(`${sentCount} ${sentCount === 1 ? 'feedback message' : 'feedback messages'} sent`);
-  render();
-}
-// energy-gated recorder: resolves with the utterance blob once the speaker pauses
-function vadRecord(stream, {
-  maxMs = 45000,
-  silenceMs = VOICE_CAPTURE_DEFAULTS.silenceMs,
-  minSpeechMs = VOICE_CAPTURE_DEFAULTS.minSpeechMs,
-  threshold = VOICE_CAPTURE_DEFAULTS.threshold,
-  graceMs = VOICE_CAPTURE_DEFAULTS.graceMs,
-} = {}) {
-  return new Promise((resolve) => {
-    let rec;
-    try {
-      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus'
-        : MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '';
-      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
-    } catch { return resolve(null); }
-    const chunks = [];
-    rec.ondataavailable = (e) => { if (e.data?.size) chunks.push(e.data); };
-    if (!V.ac) { try { V.ac = new (window.AudioContext || window.webkitAudioContext)(); } catch {} }
-    const ac = V.ac;
-    let src, an, buf;
-    try {
-      src = ac.createMediaStreamSource(stream);
-      an = ac.createAnalyser();
-      an.fftSize = 1024;
-      src.connect(an);
-      buf = new Float32Array(an.fftSize);
-    } catch { /* no VAD -> fixed window */ }
-    let spokeAt = 0, silentSince = 0, t0 = Date.now();
-    rec.start(200);
-    const timer = setInterval(() => {
-      const nowT = Date.now();
-      let rms = 1; // no analyser -> pretend speech so the max window applies
-      if (an) { an.getFloatTimeDomainData(buf); rms = Math.sqrt(buf.reduce((a, v) => a + v * v, 0) / buf.length); }
-      if (rms > threshold) { if (!spokeAt) spokeAt = nowT; silentSince = 0; }
-      else if (spokeAt && !silentSince) silentSince = nowT;
-      const spokeLong = spokeAt && nowT - spokeAt > minSpeechMs;
-      const silentLong = silentSince && nowT - silentSince > silenceMs;
-      const noSpeech = !spokeAt && nowT - t0 > graceMs;
-      if (V.stopFlag || noSpeech || nowT - t0 > maxMs || (spokeLong && silentLong)) {
-        clearInterval(timer);
-        try { src?.disconnect(); } catch {}
-        rec.onstop = () => resolve((spokeAt || !an) && !noSpeech ? new Blob(chunks, { type: rec.mimeType || 'audio/webm' }) : null);
-        try { rec.stop(); } catch { resolve(null); }
-      }
-    }, 120);
-  });
-}
 
 // ---- voice reply (mic → /api/transcribe → review sheet) ------------------------------------------
 async function startRec() {
@@ -1058,68 +759,7 @@ function renderRaw() {
 
 function renderSheet() {
   const scrim = '<button class="scrim" data-close-sheet aria-label="close"></button>';
-  if (S.sheet === 'voicemode') {
-    const st = V.state;
-    const label = st === 'speaking' ? 'Speaking…' : st === 'listening' ? 'Listening — pause to send' : st === 'thinking' ? 'Thinking…' : 'Starting…';
-    const project = V.current?.projectIdentity || V.current?.project || 'Project update';
-    const context = V.current
-      ? phoneVoiceThreadLabel(V.current) || V.current.category
-      : 'Needs You';
-    const progress = V.current?.total ? `${V.current.n} of ${V.current.total}` : '';
-    const heard = V.ignoredReason === 'no-speech'
-      ? 'No response heard. Nothing was sent.'
-      : V.ignoredReason === 'fragment'
-        ? 'A clipped sound was ignored. Still listening.'
-        : V.lastHeard
-          ? `“${V.lastHeard.slice(0, 260)}”`
-          : st === 'listening' ? 'Listening — your words will appear here.' : 'Your response will stay here.';
-    const heardLabel = V.ignoredReason === 'no-speech'
-      ? 'NO RESPONSE · NOTHING SENT'
-      : V.ignoredReason === 'fragment'
-        ? 'AUDIO FRAGMENT · NOT USED'
-      : V.ignoredReason
-        ? 'HEARD NEARBY · NOT USED'
-        : V.lastHeard ? 'YOUR LAST RESPONSE' : 'YOUR RESPONSE';
-    const sourceNames = [...new Set((V.current?.sourceNames || []).map((name) => String(name || '').trim()).filter(Boolean))].slice(0, 4);
-    const spokenLabel = V.lastHeard
-      ? V.responseGrounded ? 'SOURCE-GROUNDED RESPONSE' : 'ASSISTANT RESPONSE'
-      : 'BRIEFING';
-    if (V.onTheGo) return `
-    <button class="scrim" data-voice-end aria-label="end"></button>
-    <div class="sheet ongoing-sheet">
-      <div class="ongo-sheet-head">
-        <div><span class="ongo-sheet-kicker">VOICE ASSISTANT</span><div class="ongo-sheet-title">${esc(project)}</div></div>
-        <div class="ongo-sheet-live"><i></i>${esc(label)}</div>
-      </div>
-      <div class="ongo-sheet-progress"><span>${esc(context || 'Needs You')}</span><b>${esc(progress)}</b></div>
-      ${sourceNames.length ? `<div class="ongo-sheet-sources" aria-label="Report sources">${sourceNames.map((name) => `<span>${esc(name)}</span>`).join('')}</div>` : ''}
-      <div class="ongo-sheet-report">
-        <span>${spokenLabel}</span>
-        <p>${esc(V.segment || V.say || '')}</p>
-      </div>
-      <div class="ongo-sheet-heard ${V.ignoredReason ? 'ignored' : ''}"><b>${heardLabel}</b><span>${esc(heard)}</span></div>
-      ${V.delivery ? `<div class="ongo-sheet-delivery ${V.delivery.status === 'sent' ? '' : 'failed'}">${V.delivery.status === 'sent' ? `✓ Sent to ${esc(V.delivery.project)}${V.sentCount > 1 ? ` · ${V.sentCount} sent` : ''}` : `Not sent · ${esc(String(V.delivery.status || 'delivery failed').replace(/-/g, ' '))}`}</div>` : ''}
-      <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
-      <div class="sheetrow">${st === 'speaking' ? '<button class="sbtn" data-voice-interrupt>Speak now</button>' : ''}<button class="sbtn neutral" data-voice-end>■ End assistant</button></div>
-      <div class="footnote">ask follow-ups naturally · instructions are confirmed before anything is sent</div>
-    </div>`;
-    return `
-    <button class="scrim" data-voice-end aria-label="end"></button>
-    <div class="sheet">
-      <div class="rec-status">
-        <span class="rec-dot" style="${st === 'listening' ? '' : 'background:var(--teal)'}"></span>
-        <span>${esc(label)}</span>
-      </div>
-      ${V.current ? `<div class="footnote">${esc([project, context, progress].filter(Boolean).join(' · '))}</div>` : ''}
-      ${V.lastHeard ? `<div class="pm-goal" style="text-align:center;color:var(--tx-2)">“${esc(V.lastHeard.slice(0, 160))}”</div>` : ''}
-      <div class="wave" style="${st === 'listening' ? '' : 'opacity:.25'}">${[-0.9, -0.7, -0.5, -0.3, -0.6, -0.15, -0.45].map((d, i) => `<span style="height:${[20, 32, 42, 26, 38, 22, 34][i]}px;animation-delay:${d}s"></span>`).join('')}</div>
-      <div class="sheetrow">
-        ${st === 'speaking' ? '<button class="sbtn" data-voice-interrupt>Speak now</button>' : ''}
-        <button class="sbtn neutral" data-voice-end>■ End</button>
-      </div>
-      <div class="footnote">say “skip” for the next item · “stop” to end · ask any question about the session or project</div>
-    </div>`;
-  }
+
   if (S.sheet === 'rec') {
     return scrim + `
     <div class="sheet">
@@ -1367,8 +1007,6 @@ function wire() {
 
   // overlays + sheets
   for (const el of app.querySelectorAll('[data-close-overlay]')) el.addEventListener('click', () => history.back());
-  for (const el of app.querySelectorAll('[data-voice-interrupt]')) el.addEventListener('click', () => phoneInterrupt?.({ tap: true }));
-  for (const el of app.querySelectorAll('[data-voice-end]')) el.addEventListener('click', () => voiceModeEnd('user'));
   for (const el of app.querySelectorAll('[data-close-sheet]')) el.addEventListener('click', () => { if (S.sheet === 'rec') return cancelRec(); S.sheet = null; render(); });
   $('#rec-stop')?.addEventListener('click', () => stopRecAndReview());
   $('#re-rec')?.addEventListener('click', () => { S.sheet = null; render(); startRec(); });

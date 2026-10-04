@@ -21,6 +21,7 @@ function getStreamContext() {
   if (!streamContext || streamContext.state === 'closed') streamContext = new Context();
   return streamContext;
 }
+export function voiceAudioContext() { return getStreamContext(); }
 
 const RATE_PRESETS = [1, 1.15, 1.25, 1.5, 1.75]; // shared with voicemode (same localStorage key)
 function ttsRate() {
@@ -192,7 +193,7 @@ function playUrl(url, h) {
 // The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
 // has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
 // re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
-function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
+function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {}) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     const ctrl = new AbortController();
@@ -230,13 +231,16 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
     };
     (async () => {
       try {
-        const r = await fetch('api/tts/stream', {
+        const r = await fetch(live.path || 'api/tts/stream', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(ttsPayload(text, extra)),
+          body: JSON.stringify(live.body || ttsPayload(text, extra)),
           signal: ctrl.signal,
         });
-        if (!r.ok || !r.body?.getReader) throw new Error('tts stream ' + r.status);
+        if (!r.ok || !r.body?.getReader) {
+          const error = await r.json().catch(() => ({}));
+          throw Object.assign(new Error(error.error || 'tts stream ' + r.status), { noFallback: !!error.noFallback || !!live.path });
+        }
         if (!String(r.headers.get('content-type')).startsWith('text/event-stream')) throw new Error('invalid tts stream');
         const reader = r.body.getReader();
         const decoder = new TextDecoder();
@@ -259,11 +263,13 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
                   const context = getStreamContext(); await context.resume();
                   if (finished || h.stopped) return;
                   if (context.state !== 'running') throw new Error('native playback unavailable');
-                  pcmQueue = createPcmQueue(context, { rate: ttsRate(), onSegment,
+                  pcmQueue = createPcmQueue(context, { rate: ttsRate(), voice: live.voice || extra.voice, onSegment,
                     onStarted: () => { played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
                   h.setRate = value => pcmQueue.setRate(value);
                 }
                 pcmQueue.push(data);
+              } else if (event === 'text') {
+                live.onText?.(String(data.delta || ''));
               } else if (event === 'chunk' && data.audio_base64) {
                 if (native) throw new Error('speech transport changed mid-stream');
                 const index = Number(data.index);
@@ -291,6 +297,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
                 pump();
               } else if (event === 'done') {
                 nativeDone = true;
+                live.onDone?.(data);
                 readingDone = true;
                 if (pcmQueue) pcmQueue.seal(); else pump();
               } else if (event === 'error') {
@@ -306,6 +313,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial) {
       } catch (e) {
         if (!finished && !h.stopped) {
           if (played) { try { onPartial?.(e); } catch {} }
+          if (native || live.path) e.noFallback = true;
           finish(played ? undefined : e);
         }
       }
@@ -350,7 +358,10 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = nul
         let blob = preparedAudio;
         if (!blob) {
           const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text, extra)), signal: ctrl.signal });
-          if (!r.ok) throw new Error('tts ' + r.status);
+          if (!r.ok) {
+            const error = await r.json().catch(() => ({}));
+            throw Object.assign(new Error(error.error || 'tts ' + r.status), { noFallback: !!error.noFallback });
+          }
           blob = await r.blob();
         }
         if (done || h.stopped) return finish();
@@ -441,6 +452,7 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
     if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio, preparedSegments);
     if (!streamUnavailable) {
       return await speakStream(text, h, ttsExtra, onSlow, onSegment, onPartial).catch((e) => {
+        if (e.noFallback) throw e;
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
         if (/\b409\b|native playback unavailable/.test(String(e?.message || ''))) streamUnavailable = true;
@@ -449,11 +461,23 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
       });
     }
     return await speakSingle(text, h, ttsExtra, onSlow, onSegment);
-  } catch {
+  } catch (error) {
     if (h.stopped) return;
+    if (error.noFallback) throw error;
     try { onFallback?.(); } catch {}
     return speakBrowser(text, h, onSegment, continuous);
   }
+}
+
+// The same PCM player for interactive answers. Text arrives alongside audio from Omni's
+// LLM->sentence->TTS pipeline; no script polling, sentence splitting or extra synthesis call.
+export async function speakConversation(h, { voiceId, userText = '', opening = false, voice, onText, onSegment, onPartial, onSlow } = {}) {
+  let result = null;
+  await speakStream('Live conversation', h, {}, onSlow, onSegment, onPartial, {
+    path: 'api/voice/converse', body: { voiceId, userText, opening }, voice,
+    onText, onDone: data => { result = data; },
+  });
+  return result;
 }
 
 // Re-apply the current localStorage rate to the live shared element (for a rate control that should

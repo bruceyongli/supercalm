@@ -24,9 +24,9 @@ export function nativePcmSamples(encoded) {
   return samples;
 }
 
-export function createPcmQueue(context, { rate = 1, onSegment, onStarted, onEmpty } = {}) {
+export function createPcmQueue(context, { rate = 1, voice, onSegment, onStarted, onEmpty } = {}) {
   const records = new Set(), seen = new Set();
-  let until = 0, stopped = false, sealed = false, last = -1;
+  let until = 0, stopped = false, sealed = false, last = -1, speaker = voice;
   const announce = record => {
     if (stopped || record.announced) return;
     // iOS can suspend its audio clock when backgrounded. A wall-clock timer alone is not proof
@@ -57,7 +57,9 @@ export function createPcmQueue(context, { rate = 1, onSegment, onStarted, onEmpt
       if (seen.has(data.index)) return; // transport replay cannot repeat a spoken frame
       if (data.index !== last + 1 || data.model !== 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice'
         || data.precision !== 'BF16' || data.backend !== 'faster-ggml' || data.streaming !== 'native-pcm-frames'
-        || data.engine !== 'qwen' || !['Ryan', 'Vivian'].includes(data.voice)) throw new Error('Unexpected native speech identity or frame order');
+        || data.engine !== 'qwen' || !['Ryan', 'Vivian'].includes(data.voice)
+        || (speaker && speaker !== data.voice) || data.prosody_profile !== 'steady-v3') throw new Error('Unexpected native speech identity or frame order');
+      speaker = data.voice;
       const samples = nativePcmSamples(data.audio);
       const buffer = context.createBuffer(1, samples.length, 24000); buffer.copyToChannel(samples, 0);
       const { audio, ...metadata } = data;

@@ -3,6 +3,8 @@
 // duplicate, wrong-model, or downgraded stream cannot be announced as a ready voice update.
 import { StringDecoder } from 'node:string_decoder';
 export const NATIVE_TTS_MODEL = 'Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice';
+export const NATIVE_PROSODY = 'steady-v3';
+export const nativeVoice = value => value === 'Vivian' ? 'Vivian' : 'Ryan';
 
 // Preparation happens on the server, before the browser's textForTts pass. Preserve that existing
 // speech fix here too: dotted versions/dates/decimals are one phrase, never sentence stops.
@@ -51,10 +53,10 @@ export function wavFromPcm(pcm) {
   return Buffer.concat([header, pcm]);
 }
 
-export function createNativeSpeechDecoder(expectedText) {
+export function createNativeSpeechDecoder(expectedText, { voice, prosody = NATIVE_PROSODY } = {}) {
   const decoder = new StringDecoder('utf8');
   const segments = [];
-  let buffer = '', bytes = 0, count = 0, complete = false, speaker = '';
+  let buffer = '', bytes = 0, count = 0, complete = false, speaker = '', generated = '';
   const accept = block => {
     const lines = block.split(/\r?\n/);
     const name = lines.find(line => line.startsWith('event:'))?.slice(6).trim();
@@ -63,10 +65,12 @@ export function createNativeSpeechDecoder(expectedText) {
     const data = JSON.parse(raw);
     if (complete) throw new Error('Native audio after completion');
     if (name === 'error' || name === 'retry') throw new Error(data.message || 'Native TTS unavailable');
+    if (name === 'text' && expectedText == null) generated += String(data.delta || '');
     if (name === 'audio') {
       if (data.model !== NATIVE_TTS_MODEL || data.precision !== 'BF16' || data.backend !== 'faster-ggml'
         || data.streaming !== 'native-pcm-frames' || data.engine !== 'qwen' || data.index !== count
-        || !['Ryan', 'Vivian'].includes(data.voice) || typeof data.audio !== 'string'
+        || !['Ryan', 'Vivian'].includes(data.voice) || (voice && data.voice !== voice)
+        || (speaker && data.voice !== speaker) || data.prosody_profile !== prosody || typeof data.audio !== 'string'
         || data.audio.length % 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data.audio)) throw new Error('Unexpected native TTS identity or frame order');
       const pcm = pcmFromWav(Buffer.from(data.audio, 'base64'));
       if (pcm.length > 512000) throw new Error('Native frame exceeds limit');
@@ -79,7 +83,7 @@ export function createNativeSpeechDecoder(expectedText) {
       return { event: name, data: { ...data, start, segmentIndex: segments.length - 1 }, pcm };
     }
     if (name === 'done') {
-      if (!count || data.text !== expectedText) throw new Error('Incomplete native TTS response');
+      if (!count || data.text !== (expectedText ?? generated) || !data.text) throw new Error('Incomplete native TTS response');
       complete = true;
     }
     return { event: name, data };
@@ -99,16 +103,16 @@ export function createNativeSpeechDecoder(expectedText) {
     finish() {
       buffer += decoder.end();
       if (!complete || buffer.trim()) throw new Error('Native TTS ended without completion');
-      return { segments, bytes, frames: count, headers: {
+      return { segments, bytes, frames: count, text: expectedText ?? generated, headers: {
         'content-type': 'audio/wav', 'x-tts-engine': 'qwen3-tts-bf16', 'x-tts-model': NATIVE_TTS_MODEL,
-        'x-tts-backend': 'faster-ggml', 'x-tts-precision': 'BF16', 'x-tts-speaker': speaker,
+        'x-tts-backend': 'faster-ggml', 'x-tts-precision': 'BF16', 'x-tts-speaker': speaker, 'x-tts-prosody-profile': prosody,
       } };
     },
   };
 }
 
-export function nativeSpeechFromSse(body, expectedText) {
-  const decoder = createNativeSpeechDecoder(expectedText);
+export function nativeSpeechFromSse(body, expectedText, options = {}) {
+  const decoder = createNativeSpeechDecoder(expectedText, options);
   const frames = decoder.feed(body).filter(event => event.pcm).map(event => event.pcm);
   const result = decoder.finish();
   return { ...result, audio: wavFromPcm(Buffer.concat(frames)) };
