@@ -24,7 +24,7 @@ export function nativePcmSamples(encoded) {
   return samples;
 }
 
-export function createPcmQueue(context, { rate = 1, voice, onSegment, onStarted, onEmpty } = {}) {
+export function createPcmQueue(context, { voice, onSegment, onStarted, onEmpty } = {}) {
   const records = new Set(), seen = new Set();
   let until = 0, stopped = false, sealed = false, last = -1, speaker = voice;
   const announce = record => {
@@ -39,8 +39,10 @@ export function createPcmQueue(context, { rate = 1, voice, onSegment, onStarted,
   };
   const schedule = (record, when) => {
     const node = context.createBufferSource(); node.buffer = record.buffer;
-    node.playbackRate.value = rate; node.connect(context.destination);
-    record.node = node; record.start = when; record.end = when + (record.buffer.duration - record.offset) / rate;
+    // BufferSource playbackRate resamples and changes pitch. Native speech must retain the model's
+    // natural voice; unlike HTML audio, this transport has no built-in pitch-preserving speed control.
+    node.playbackRate.value = 1; node.connect(context.destination);
+    record.node = node; record.start = when; record.end = when + record.buffer.duration - record.offset;
     node.onended = () => {
       node.disconnect();
       if (record.node !== node || stopped) return;
@@ -64,29 +66,14 @@ export function createPcmQueue(context, { rate = 1, voice, onSegment, onStarted,
       const buffer = context.createBuffer(1, samples.length, 24000); buffer.copyToChannel(samples, 0);
       const { audio, ...metadata } = data;
       const record = { buffer, data: metadata, offset: 0, announced: false };
-      const first = data.frame_index === 0;
-      const reserve = first && data.phrase_index === 0 && data.native_startup_one_frames === 2 ? .6 : first ? .45 : .03;
+      // Buffer ONCE at stream start, not again at every sentence boundary.
+      const reserve = last < 0 ? .6 : .005;
       const when = Math.max(context.currentTime + reserve, until);
       if (when - context.currentTime > 250) throw new Error('Speech queue exceeds limit');
       records.add(record); schedule(record, when); seen.add(data.index); last = data.index;
     },
     seal() { sealed = true; if (!records.size) onEmpty?.(); },
-    setRate(value) {
-      if (stopped || value === rate || !Number.isFinite(value) || value <= 0) return;
-      const now = context.currentTime;
-      const pending = [...records].sort((a, b) => a.start - b.start);
-      for (const record of pending) {
-        if (record.start < now) record.offset = Math.min(record.buffer.duration, record.offset + (now - record.start) * rate);
-        clearTimeout(record.timer);
-        const old = record.node; record.node = null; old.onended = null; old.stop(); old.disconnect();
-      }
-      rate = value; until = now + .01;
-      for (const record of pending) {
-        if (record.offset >= record.buffer.duration) { records.delete(record); continue; }
-        schedule(record, until);
-      }
-      if (sealed && !records.size) onEmpty?.();
-    },
+    setRate() {}, // never raise pitch or consume a live stream faster than it can be generated
     stop() {
       stopped = true;
       for (const record of records) {

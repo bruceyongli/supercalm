@@ -110,7 +110,7 @@ try {
 
   const result = await page.evaluate(async () => {
     window.__onTheGo.setVoiceUpdateStyle('walkie');
-    const old = { id: 's_old', project: 'Old project', status: 'waiting', unread: 1, category: 'review', last_key: { id: 10 }, last_activity: 10 };
+    const old = { id: 's_old', project: 'Old project', status: 'waiting', unread: 1, category: 'review', last_key: { id: 10 }, last_activity: Date.now() };
     window.__onTheGo.observeOnTheGoNeeds([old]); // normal-load baseline: no surprise speech
     await new Promise((resolve) => setTimeout(resolve, 20));
     const baselineCalls = window.__onTheGoCalls.length;
@@ -123,7 +123,7 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 30));
     const unchangedCalls = window.__onTheGoCalls.length;
 
-    const updated = { ...old, project: 'Changed project', last_key: { id: 11 }, last_activity: 11 };
+    const updated = { ...old, project: 'Changed project', last_key: { id: 11 }, last_activity: Date.now() };
     window.__onTheGo.observeOnTheGoNeeds([updated]);
     await new Promise((resolve) => setTimeout(resolve, 40));
     const updatedCalls = [...window.__onTheGoCalls];
@@ -178,7 +178,7 @@ try {
   const callResult = await page.evaluate(async () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
     const afterAccept = window.__onTheGoCalls.length;
-    const latest = { id: 's_old', project: 'Another update', status: 'waiting', unread: 1, category: 'review', last_key: { id: 13 }, last_activity: 13 };
+    const latest = { id: 's_old', project: 'Another update', status: 'waiting', unread: 1, category: 'review', last_key: { id: 13 }, last_activity: Date.now() };
     window.__onTheGo.observeOnTheGoNeeds([latest]);
     await new Promise((resolve) => setTimeout(resolve, 30));
     const offeredAgain = window.__onTheGo.onTheGoState();
@@ -218,7 +218,7 @@ try {
       unread: 1,
       category: 'review',
       last_key: { id: 12 },
-      last_activity: 12,
+      last_activity: Date.now(),
     }]);
     await new Promise((resolve) => setTimeout(resolve, 40));
     return window.__onTheGoCalls;

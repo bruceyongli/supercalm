@@ -112,11 +112,19 @@ Questions are read-only: they cannot send input to a coding agent. Instructions 
 grounded JSON/action harness (`llm.js`, reserved `voice/qwen38-flash-next-nvfp4` lane on :8792), explicit
 confirmation and acknowledged delivery. A prepared incoming call has text AND audio ready before it
 rings; accepting it never starts another generation. Keep cross-device attention dismissal authoritative.
+Automatic/manual queue reports include only live sessions with genuine operator input or reports in
+the past 24 hours, not heartbeat/supervisor timestamps. This does not dismiss older Needs You items;
+explicit Story Explain may still open an older report. Transient control/microphone errors pause the
+conversation with its report and response intact, never auto-hang up. Retried turn/continue controls
+reuse an idempotency key and replay successful acknowledgements, never double-deliver or double-advance.
 - **TTS — the client picks the engine** (`web/voicemode.js`; toggle in the voice overlay, stored in
   `localStorage.aios_tts`; iOS audio is unlocked on the tap via a silent clip on a reused `<audio>` element):
   - **`neural` (DEFAULT)**: Omni Qwen3-TTS BF16 native 24kHz mono PCM frames on ONE AudioContext
     timeline, shared with microphone capture. Sentence buffering belongs to Omni, not AIOS. Never
     concatenate WAV headers, create an Audio element per frame, or replay after partial playback.
+    Play native PCM at 1x: WebAudio playbackRate changes pitch. Saved browser/file speed settings
+    must never accelerate native speech. Buffer once at startup, not at each sentence boundary;
+    valid queued frames may drain after a partial failure, but do not claim successful completion.
   - **`browser`**: on-device `speechSynthesis` — instant, no server round-trip, lower quality. Speaks
     sentence-by-sentence (iOS truncates long single utterances); resolves on onend + an idle-poll + an absolute
     cap, and only after it has STARTED, so the loop never wedges and never ends mid-speech.

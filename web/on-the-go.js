@@ -1,6 +1,7 @@
 import { enablePush, setPushPreferences } from './common.js';
 import { isVoiceModeActive, prepareVoiceMode, prepareVoiceUpdate, startVoiceMode, stopVoiceMode } from './voicemode.js';
 import { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
+import { isRecentVoiceSession } from './voice-recency.js';
 export { nextOnTheGoAttention, onTheGoAttentionKey } from './on-the-go-state.js';
 
 // Voice updates connects three existing reliable paths:
@@ -299,7 +300,7 @@ function scan({ manual = false } = {}) {
 }
 
 export function observeOnTheGoNeeds(needs) {
-  currentNeeds = (needs || []).filter(Boolean);
+  currentNeeds = (needs || []).filter(session => isRecentVoiceSession(session));
   if (retryKey && !currentNeeds.some(item => onTheGoAttentionKey(item) === retryKey)) {
     clearTimeout(retryTimer); retryUntil = 0; retryKey = ''; preparationFailures = 0;
   }

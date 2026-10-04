@@ -15,6 +15,7 @@ let active = false,
   handle = null, // current tts-player playback handle (for stop)
   requestInterrupt = null,
   ui = null;
+let recoveryResume = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TTS_RATE_KEY = 'aios_tts_rate';
@@ -132,12 +133,12 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
           setState('thinking');
           text = (await transcribe(blob, state.current?.tool, state.current?.sessionId)) || live.getText();
         } catch (e) {
-          // Mic permission/device failures would otherwise loop forever: capture fails instantly,
-          // an empty turn is posted, the server politely re-asks, repeat. Name the cause and stop.
+          live?.abort(); // a paused permission/device failure must not keep hearing nearby people
+          // Permission/device failures need a deliberate retry, not empty turns or an auto-hangup.
           if (/NotAllowed|PermissionDenied|NotFound|NotReadable|Security/i.test(e?.name || '')) {
-            setState('error', 'Microphone blocked — allow mic access for this site, then tap Voice again.');
-            await sleep(2800);
-            break;
+            if (!await waitVoiceRetry('Microphone unavailable. Check microphone access, then retry. The conversation is still open.')) break;
+            state = { ...state, say: '', ignored: true, listen: true, realtimeOpening: false, realtimeQuestion: '' };
+            continue;
           }
         } finally {
           live?.abort();
@@ -157,9 +158,14 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
       }
     }
   } catch (e) {
+    if (stopFlag) return;
     if (onTheGo && !ui) throw e;
-    setState('error', 'Voice mode error: ' + (e.message || e));
-    await sleep(1800);
+    // An unexpected/startup failure must not erase the report or operator's last words. Keep the
+    // overlay until the operator ends it; never replay an unknown turn just to restart the loop.
+    setState('paused');
+    showTtsNotice('Voice connection stopped: ' + (e.message || e) + '. Your report and response are kept here. End and reopen the assistant to reconnect.', { offerDevice: false });
+    if (ui?.interrupt) ui.interrupt.hidden = true;
+    await new Promise(resolve => { recoveryResume = resolve; });
   } finally {
     end('complete');
   }
@@ -171,16 +177,53 @@ async function keepVoiceAlive(reason = '') {
   await sleep(250); // avoid a hot retry loop when MediaRecorder is present but unusable
 }
 
-function post(path, body, ms = 30000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms); // a hung /turn or /continue must not freeze the loop
-  return api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal }).finally(() => clearTimeout(t));
+async function post(path, body, ms = 30000) {
+  const control = /api\/voice\/(turn|continue)$/.test(path);
+  const requestBody = control ? { ...body, requestId: crypto.randomUUID() } : body;
+  const busyUntil = Date.now() + 3000;
+  for (;;) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody), signal: ctrl.signal });
+    } catch (error) {
+      if (stopFlag || !control) throw error;
+      // Barge-in can arrive before cancellation releases the previous stream. This 409 means the
+      // turn was NOT processed, so a short control-only wait is safe; never retry the model stream.
+      if (error.status === 409 && error.message === 'turn already in flight' && Date.now() < busyUntil) {
+        await sleep(150); continue;
+      }
+      const message = error.status === 404
+        ? 'The voice connection expired. Your report and words are kept here. End and reopen the assistant to reconnect.'
+        : 'Connection interrupted. Your report and response are kept. Retry to continue; nothing will be sent twice.';
+      if (!await waitVoiceRetry(message, { retry: error.status !== 404 })) throw error;
+      // The SAME request id replays its acknowledged result, including a successful delivery whose
+      // HTTP response was lost. A manual retry cannot double-send or skip a second project.
+    } finally { clearTimeout(t); }
+  }
+}
+
+function waitVoiceRetry(message, { retry = true } = {}) {
+  if (stopFlag || !ui) return Promise.resolve(false);
+  setState('paused');
+  showTtsNotice(message, { offerDevice: false });
+  return new Promise(resolve => {
+    recoveryResume = resolve;
+    if (!retry) { requestInterrupt = null; ui.interrupt.hidden = true; return; }
+    requestInterrupt = () => {
+      recoveryResume = null; requestInterrupt = null;
+      if (ui?.interrupt) { ui.interrupt.hidden = true; ui.interrupt.textContent = 'Speak now'; }
+      clearTtsNotice(); resolve(true);
+    };
+    ui.interrupt.textContent = 'Retry'; ui.interrupt.hidden = false;
+  });
 }
 
 function end(reason = 'complete') {
   const wasActive = active;
   stopFlag = true;
   active = false;
+  recoveryResume?.(false); recoveryResume = null;
   if (voiceId) post('api/voice/stop', { voiceId }).catch(() => {});
   voiceId = null;
   requestInterrupt = null;
@@ -227,8 +270,9 @@ function clearTtsNotice() {
 }
 function renderVoiceControls() {
   if (!ui?.speed) return;
-  const rate = ttsRate();
-  ui.speed.innerHTML = TTS_RATE_PRESETS.map((r) => `<button class="vm-speed-btn ${r === rate ? 'on' : ''}" data-rate="${r}" type="button">${r === 1 ? '1x' : r + 'x'}</button>`).join('');
+  const natural = ui.nativeSpeech && ttsMode() !== 'browser';
+  const rate = natural ? 1 : ttsRate();
+  ui.speed.innerHTML = (natural ? [1] : TTS_RATE_PRESETS).map((r) => `<button class="vm-speed-btn ${r === rate ? 'on' : ''}" data-rate="${r}" type="button"${natural ? ' disabled' : ''}>${natural ? 'Natural speed' : r === 1 ? '1x' : r + 'x'}</button>`).join('');
   ui.speed.querySelectorAll('[data-rate]').forEach((btn) => {
     btn.onclick = () => setTtsRate(Number(btn.dataset.rate));
   });
@@ -287,10 +331,11 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     continuous: true,
     preparedAudio,
     preparedSegments,
+    onNative: () => { if (ui) { ui.nativeSpeech = true; renderVoiceControls(); } },
     ttsExtra: { voice: selectedVoice },
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
-    onPartial: () => showTtsNotice('The audio stream stopped before the end. Nothing was replayed.', { offerDevice: false }),
+    onPartial: () => showTtsNotice('The audio stream stopped early. The conversation is still open; you can ask me to continue. Nothing was replayed.', { offerDevice: false }),
     onSegment: focusSpokenSegment,
   };
   const run = realtime ? speakConversation(handle, { ...options, ...realtime, voiceId, voice: selectedVoice,
@@ -445,7 +490,7 @@ function recorderOptions() {
 
 // ---- record until silence (energy VAD) ----
 // getUserMedia rejections (NotAllowedError…) propagate TYPED to the caller — the loop names the
-// cause and stops instead of nagging forever. Everything after acquisition is try/finally so a
+// cause and pauses instead of nagging forever. Everything after acquisition is try/finally so a
 // constructor failure can never leak the mic.
 async function recordUntilSilence({
   maxMs = 90000,
@@ -676,7 +721,7 @@ function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
     onTheGo,
   };
   wirePreview(o);
-  root.querySelector('.vm-stop').onclick = end;
+  root.querySelector('.vm-stop').onclick = () => end('user');
   o.interrupt.onclick = () => requestInterrupt?.({ tap: true });
   o.deviceVoice.onclick = () => {
     if (ttsMode() === 'browser') {
@@ -753,7 +798,7 @@ function updateDelivery(delivery, sentCount = 0) {
 function setState(s, said) {
   if (!ui) return;
   ui.root.dataset.state = s;
-  ui.state.textContent = { speaking: 'Speaking…', listening: 'Listening…', thinking: 'Thinking…', error: 'Error' }[s] || s;
+  ui.state.textContent = { speaking: 'Speaking…', listening: 'Listening…', thinking: 'Thinking…', paused: 'Connection paused', error: 'Error' }[s] || s;
   if (said != null) paintSpokenText(said);
   if (ui.onTheGo && s === 'listening' && ui.heard?.classList.contains('empty')) {
     ui.heard.textContent = 'Listening — your words will appear here.';

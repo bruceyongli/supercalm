@@ -1,5 +1,6 @@
 // Pure report-episode identity for the on-the-go assistant. Kept DOM-free so deduplication can be
 // tested without a browser and shared by future notification surfaces.
+import { isRecentVoiceSession } from './voice-recency.js';
 function contentStamp(session) {
   const text = [
     session?.category,
@@ -30,6 +31,6 @@ export function nextOnTheGoAttention(needs, announcedKeys) {
   const seen = announcedKeys instanceof Set ? announcedKeys : new Set(announcedKeys || []);
   return (needs || []).find((session) => {
     const key = onTheGoAttentionKey(session);
-    return key && !seen.has(key);
+    return isRecentVoiceSession(session) && key && !seen.has(key);
   }) || null;
 }

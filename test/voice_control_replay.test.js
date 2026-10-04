@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { createVoiceControlReplay } from '../src/voice_control_replay.js';
+let time = 10;
+const ledger = createVoiceControlReplay({ now: () => time, ttlMs: 1000, max: 2 });
+const request = { voiceId: 'v_one', requestId: 'same-request', userText: 'Yes, send it.' };
+const reply = { delivery: { status: 'sent', sessionId: 's_one' }, current: { sessionId: 's_one' } };
+ledger.record('turn', request, 200, reply);
+assert.deepEqual(ledger.get('turn', request), reply, 'a lost delivery acknowledgement replays the original receipt');
+assert.equal(ledger.get('continue', request), null, 'one turn id cannot replay a different control');
+assert.equal(ledger.get('turn', { ...request, voiceId: 'v_other' }), null);
+ledger.record('turn', { ...request, requestId: 'busy' }, 409, { error: 'busy' });
+assert.equal(ledger.get('turn', { ...request, requestId: 'busy' }), null, 'unprocessed 409 is not a completed turn');
+time += 1001;
+assert.equal(ledger.get('turn', request), null);
+console.log('voice_control_replay.test ok');

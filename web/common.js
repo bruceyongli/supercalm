@@ -8,7 +8,7 @@ export async function api(path, opts) {
   const r = await fetch(path, opts);
   const ct = r.headers.get('content-type') || '';
   const body = ct.includes('json') ? await r.json().catch(() => ({})) : await r.text();
-  if (!r.ok) throw new Error((body && body.error) || r.status);
+  if (!r.ok) throw Object.assign(new Error((body && body.error) || r.status), { status: r.status, code: body?.code });
   return body;
 }
 

@@ -7,7 +7,7 @@ const report = (id, reportId, activity = reportId) => ({
   status: 'waiting',
   unread: 1,
   category: 'decision',
-  last_activity: activity,
+  last_activity: Date.now() + activity,
   last_key: { id: reportId },
 });
 

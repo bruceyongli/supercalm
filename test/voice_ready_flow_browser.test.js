@@ -150,7 +150,14 @@ try {
   await new Promise(resolve => setTimeout(resolve, 5));
   store.addMessage('s_voice_fixture', 'in', 'task', 'Prepare useful voice updates before interrupting me.');
   const report = store.addMessage('s_voice_fixture', 'out', 'agent', `Voice reports are ready before ringing. [Plan](${doc})`);
-  const { voiceEvidenceFor } = await import('../src/voice.js');
+  const { voiceEvidenceFor, buildVoiceItems } = await import('../src/voice.js');
+  store.createSession({ id: 's_old_voice_fixture', project_id: 'p_voice_fixture', tool: 'codex', tmux: 'old-fixture-only', status: 'waiting' });
+  store.updateSession('s_old_voice_fixture', { category: 'review' });
+  const oldReport = store.addMessage('s_old_voice_fixture', 'out', 'agent', 'An old unresolved report must stay in Needs You, not be spoken today.');
+  store.db.prepare('UPDATE messages SET ts = ? WHERE id = ?').run(Date.now() - 2 * 86400000, oldReport.id);
+  store.updateSession('s_old_voice_fixture', { last_activity: Date.now() });
+  assert.deepEqual(buildVoiceItems().map(item => item.sessionId), ['s_voice_fixture'],
+    'real backend queue excludes old reports even with a fresh lifecycle heartbeat');
   const historical = await voiceEvidenceFor({ sessionId: 's_voice_fixture', reportTs: older.ts,
     latestReport: `Voice reports are ready before ringing. [Plan](${doc})` });
   assert.equal(historical.requestContext, 'Explain the historical microphone change.');
@@ -182,7 +189,7 @@ try {
   await page.evaluate(async reportId => {
     const mode = await import('./on-the-go.js');
     window.__mode = mode;
-    mode.observeOnTheGoNeeds([{ id: 's_voice_fixture', project: 'fixture', status: 'waiting', category: 'review', unread: 1, last_key: { id: reportId } }]);
+    mode.observeOnTheGoNeeds([{ id: 's_voice_fixture', project: 'fixture', status: 'waiting', category: 'review', unread: 1, last_key: { id: reportId, ts: Date.now() } }]);
   }, report.id);
   const until = async predicate => { for (let i = 0; i < 200; i++) { if (predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)); } throw new Error('fixture did not settle'); };
   await until(() => trace.some(item => item.event === 'model'));
@@ -372,6 +379,18 @@ try {
     liveTrace.push({ outcome, ...result });
   }
   conversationBehavior = null;
+  const failures = store.db.prepare("SELECT payload FROM events WHERE session_id = ? AND type = 'voice-conversation-failed'").all('s_voice_fixture').map(row => JSON.parse(row.payload));
+  assert.ok(failures.some(event => event.partialChars > 0 && event.error), 'interrupted answers capture their partial length and exact handler failure');
+  const beforeReplay = trace.filter(item => item.event === 'conversation').length;
+  const control = { voiceId: liveSession.voiceId, requestId: 'private-lost-ack', realtime: false, userText: 'How was it fixed?' };
+  const answers = [];
+  for (let i = 0; i < 2; i++) {
+    const response = await fetch(base + 'api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(control) });
+    assert.equal(response.status, 200); answers.push(await response.json());
+  }
+  assert.deepEqual(answers[1], answers[0], 'the actual handler replays its acknowledged control response');
+  assert.equal(trace.filter(item => item.event === 'conversation').length - beforeReplay, 1,
+    'retrying the real handler does not run the dialogue/model a second time');
   const groundedEvents = store.db.prepare("SELECT payload FROM events WHERE session_id = ? AND type = 'voice-grounded-answer' ORDER BY id").all('s_voice_fixture').map(row => JSON.parse(row.payload));
   assert.ok(groundedEvents.some(event => event.sourceNames.includes('Plan') && event.answer.includes('briefing is prepared before Accept')),
     'the real handler persisted the resolved document and grounded generated answer');

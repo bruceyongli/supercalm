@@ -36,6 +36,8 @@ import { prepareVoicePreview } from './voice_preview.js';
 import { voiceTranscriptDisposition } from '../web/voice-input.js';
 import { nativeVoice } from './tts_native.js';
 import { gatewayConversation, relayOmniConversation } from './voice_gateway.js';
+import { isRecentVoiceSession } from '../web/voice-recency.js';
+import { createVoiceControlReplay } from './voice_control_replay.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -67,6 +69,18 @@ Do not mention other sessions, stopped work, or general system status unless the
 Reply with STRICT minified JSON ONLY, no fences: {"say":"...","action":"await|send|next|stop|cancel|ignore","message":"...draft only when awaiting explicit confirmation; final instruction when sending..."}`;
 
 const voiceSessions = new Map();
+const controlReplay = createVoiceControlReplay();
+function replayControl(path, body, res) {
+  const cached = controlReplay.get(path, body);
+  if (!cached) return false;
+  json(res, 200, cached); return true;
+}
+function controlResponder(path, body) {
+  return (res, status, response) => {
+    controlReplay.record(path, body, status, response);
+    return json(res, status, response);
+  };
+}
 const VOICE_TTL_MS = 30 * 60 * 1000;
 const TURN_BUDGET_MS = Number(process.env.AIOS_VOICE_TURN_BUDGET_MS || 18000); // must stay well inside the client's 30s /turn abort
 const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
@@ -164,6 +178,7 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
     }); // otherwise oldest waiting first
   return live.map((s) => {
     const messages = recentVoiceMessages(s.id, 200);
+    if (!isRecentVoiceSession(s, now(), messages)) return null;
     const report = latestAttentionReportFrom(messages);
     const latestReport = latestReportFor(s, messages);
     const project = s.project_id ? store.getProject(s.project_id) : null;
@@ -181,7 +196,7 @@ export function buildVoiceItems(focusSessionId = '', { onTheGo = false } = {}) {
       reportId: report?.id || null,
       onTheGo,
     };
-  });
+  }).filter(Boolean);
 }
 
 function supervisorNoteFor(sessionId) {
@@ -700,6 +715,8 @@ route('POST', '/api/voice/start', async (req, res) => {
 route('POST', '/api/voice/turn', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
+  if (replayControl('turn', b, res)) return;
+  const json = controlResponder('turn', b);
   const vs = voiceSessions.get(b.voiceId);
   if (!vs) return json(res, 404, { error: 'no voice session' });
   // One turn at a time per voice session: the client never legitimately overlaps, so a second /turn
@@ -936,6 +953,10 @@ route('POST', '/api/voice/converse', async (req, res) => {
     res.write(`event: done\ndata: ${JSON.stringify({ text: out.text, grounded: true, sourceCount: evidence.sourcePack.sources.length,
       current: cur(vs), voice: vs.voice })}\n\n`); res.end();
   } catch (error) {
+    try { store.addEvent(item.sessionId, 'voice-conversation-failed', {
+      voiceId: vs.id, opening: !!b.opening, error: error.message, cancelled: ctrl.signal.aborted,
+      partialChars: partial.length, question: question.slice(0, 8000),
+    }); } catch {}
     if (!res.destroyed) {
       const detail = error.message;
       if (!res.headersSent) json(res, error.status || 503, { error: detail, preservedText: question });
@@ -950,6 +971,8 @@ route('POST', '/api/voice/converse', async (req, res) => {
 route('POST', '/api/voice/continue', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
+  if (replayControl('continue', b, res)) return;
+  const json = controlResponder('continue', b);
   const vs = voiceSessions.get(b.voiceId);
   if (!vs) return json(res, 404, { error: 'no voice session' });
   if (vs.inflight) return json(res, 409, { error: 'turn already in flight' }); // a /continue racing a live /turn would double-advance
