@@ -117,6 +117,13 @@ the past 24 hours, not heartbeat/supervisor timestamps. This does not dismiss ol
 explicit Story Explain may still open an older report. Transient control/microphone errors pause the
 conversation with its report and response intact, never auto-hang up. Retried turn/continue controls
 reuse an idempotency key and replay successful acknowledgements, never double-deliver or double-advance.
+Live audio downloads use a bounded, lossless-gzip event journal (`voice_stream_job.js`): reconnect
+with the SAME request id and last received event, never retry LLM/TTS generation. A missing/expired
+journal returns 410, not a fresh answer. Reader backpressure must not pause upstream generation;
+the small `/voice/conversation/progress` channel keeps text independent of bulky PCM audio. Explicit
+interrupt/end cancels the generation; a brief broken download only detaches its reader. Keep replay
+memory/TTL bounded and clear stale journals. Progressing streams reset the client idle timeout;
+partial failures pause the conversation instead of pretending the report finished and starting STT.
 Exact assistant speaker changes are local controls (`web/voice-controls.js`): never ask the coding agent
 or a model to change the caller's voice. Only an explicit operator choice may change Ryan/Vivian between
 turns. **Dismiss report** uses `/api/voice/dismiss` and the same durable attention action as Needs You;

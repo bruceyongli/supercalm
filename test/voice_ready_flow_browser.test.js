@@ -388,6 +388,37 @@ try {
     liveTrace.push({ outcome, ...result });
   }
   conversationBehavior = null;
+  // Drive the actual backend journal through a broken reader while its single upstream generation
+  // is still active. A tiny progress read remains independent; resume replays only unseen events.
+  let releaseResumed;
+  const resumedBehavior = conversationBehavior = { gate: new Promise(resolve => { releaseResumed = resolve; }),
+    release: () => releaseResumed(), closed: false };
+  const resumeBody = { voiceId: liveSession.voiceId, requestId: 'actual-readonly-stream-resume', userText: 'What changed in the plan?' };
+  const generationBefore = trace.filter(event => event.event === 'live-conversation').length;
+  const download = new AbortController();
+  const broken = await fetch(base + 'api/voice/converse', { method: 'POST', signal: download.signal,
+    headers: { 'content-type': 'application/json' }, body: JSON.stringify(resumeBody) });
+  assert.equal(broken.headers.get('x-aios-voice-resumable'), '1');
+  assert.equal(broken.headers.get('content-encoding'), 'gzip');
+  const reader = broken.body.getReader(), textDecoder = new TextDecoder(); let initial = '', afterEvent = 0;
+  while (!initial.includes('event: text')) {
+    const next = await reader.read(); assert.equal(next.done, false); initial += textDecoder.decode(next.value, { stream: true });
+  }
+  for (const block of initial.split('\n\n').slice(0, -1)) afterEvent = Math.max(afterEvent, Number(block.match(/^id: (\d+)/m)?.[1]) || 0);
+  download.abort(); await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(resumedBehavior.closed, false, 'a broken phone download cannot cancel the active model');
+  const progress = await fetch(base + 'api/voice/conversation/progress', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(resumeBody) });
+  assert.match((await progress.json()).text, /both allowed/);
+  const resumed = await fetch(base + 'api/voice/converse', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...resumeBody, resume: true, afterEvent }) });
+  assert.equal(resumed.status, 200); resumedBehavior.release();
+  assert.match(await resumed.text(), /event: done/);
+  assert.equal(trace.filter(event => event.event === 'live-conversation').length - generationBefore, 1);
+  const missing = await fetch(base + 'api/voice/converse', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...resumeBody, requestId: 'expired-no-regeneration', resume: true, afterEvent: 2 }) });
+  assert.equal(missing.status, 410, 'an expired replay id cannot silently start another model call');
+  assert.equal(trace.filter(event => event.event === 'live-conversation').length - generationBefore, 1);
+  conversationBehavior = null;
   const beforeSpeaker = trace.filter(item => item.event === 'conversation').length;
   const speakerResponse = await fetch(base + 'api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ voiceId: liveSession.voiceId, requestId: 'speaker-control', userText: 'okay can you change to your female voice instead of male voice' }) });

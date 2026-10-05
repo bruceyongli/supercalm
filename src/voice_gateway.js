@@ -3,9 +3,10 @@ import { createNativeSpeechDecoder } from './tts_native.js';
 import { sparkRequest } from './spark.js';
 export { gatewayConversation, utf8Limit } from './voice_gateway_context.js';
 
-export async function relayOmniConversation(payload, { res, signal, onEvent }) {
+export async function relayOmniConversation(payload, { res, signal, onEvent, emit }) {
   const decoder = createNativeSpeechDecoder(null, { voice: payload.voice });
-  const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  const send = emit || ((event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+  let started = false;
   const response = await sparkRequest('POST', '/voice/api/turn', {
     body: Buffer.from(JSON.stringify(payload)), contentType: 'application/json',
     headers: { 'X-Voice-Demo': '1' }, signal, timeout: 60000, maxBytes: 18000000,
@@ -14,14 +15,15 @@ export async function relayOmniConversation(payload, { res, signal, onEvent }) {
       let writable = true;
       for (const event of decoder.feed(chunk)) {
         if (event.event === 'transcript' || event.event === 'done') continue;
-        if (!res.headersSent) {
-          res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+        if (!started) {
+          started = true;
+          if (!emit) res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
           send('metadata', { transport: 'native-pcm-frames', voice: payload.voice });
         }
         onEvent?.(event);
         writable = send(event.event, event.data) && writable;
       }
-      if (!writable && !upstream.isPaused()) { upstream.pause(); res.once('drain', () => upstream.resume()); }
+      if (!emit && !writable && !upstream.isPaused()) { upstream.pause(); res.once('drain', () => upstream.resume()); }
     },
   });
   if (response.status !== 200) throw Object.assign(new Error(response.status === 429

@@ -162,6 +162,27 @@ function parseSseBlock(block) {
   return { event, data };
 }
 
+async function* legacySpeechEvents(text, extra, signal) {
+  const r = await fetch('api/tts/stream', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(ttsPayload(text, extra)), signal });
+  if (!r.ok || !r.body?.getReader) {
+    const error = await r.json().catch(() => ({}));
+    throw Object.assign(new Error(error.error || 'tts stream ' + r.status), { noFallback: !!error.noFallback });
+  }
+  if (!String(r.headers.get('content-type')).startsWith('text/event-stream')) throw new Error('invalid tts stream');
+  const reader = r.body.getReader(), decoder = new TextDecoder(); let buffer = '';
+  try {
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buffer += decoder.decode(value, { stream: true }); let end;
+      while ((end = buffer.indexOf('\n\n')) !== -1) {
+        const block = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 2);
+        if (block) yield parseSseBlock(block);
+      }
+    }
+  } finally { reader.releaseLock(); }
+}
+
 // Play one blob URL on the gesture-unlocked element; ALWAYS resolves (ended/error/stop, an iOS
 // dropped-'ended' stall timer, and an absolute cap).
 function playUrl(url, h) {
@@ -190,9 +211,9 @@ function playUrl(url, h) {
 }
 
 // Streamed: play native frames as they arrive, following Omni's phrase metadata and cadence.
-// The absolute cap SCALES with the text (~2min of audio per 1800 chars at 1×) and, once any chunk
-// has PLAYED, firing it resolves instead of rejecting — a rejection here makes the caller
-// re-synthesize the same part and replay it from the top (the "loops back to the beginning" bug).
+// Legacy TTS bounds scale with text length. Live conversation uses a progress-reset idle timeout
+// plus a six-minute absolute bound; slow but progressing downloads must not hit a fixed 90s cap.
+// Once audio has played, failures are partial (never regenerate/replay the opening sentences).
 function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {}) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
@@ -203,16 +224,19 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {
     let readingDone = false, playing = false, finished = false, played = 0;
     let pcmQueue = null, native = false, nativeDone = false, unregisterStop = () => {};
     const capMs = Math.max(90000, 20000 + (text.length * 130) / ttsRate());
-    const cap = setTimeout(() => {
+    const expire = () => {
       const error = Object.assign(new Error('tts stream timeout'), { noFallback: native || !!live.path });
       if (played) onPartial?.(error);
       finish(played ? undefined : error);
-    }, capMs);
+    };
+    let cap = setTimeout(expire, capMs);
+    const absoluteCap = live.path ? setTimeout(expire, 360000) : null;
     const slow = onSlow ? setTimeout(() => { if (!played && !finished) { try { onSlow(); } catch {} } }, 4500) : null; // still no audio → "spark is slow"
     const finish = (err) => {
       if (finished) return;
       finished = true;
       clearTimeout(cap);
+      clearTimeout(absoluteCap);
       if (slow) clearTimeout(slow);
       unregisterStop(); pcmQueue?.stop(); h.setRate = null;
       try { ctrl.abort(); } catch {}
@@ -235,81 +259,62 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {
     };
     (async () => {
       try {
-        const r = await fetch(live.path || 'api/tts/stream', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(live.body || ttsPayload(text, extra)),
-          signal: ctrl.signal,
-        });
-        if (!r.ok || !r.body?.getReader) {
-          const error = await r.json().catch(() => ({}));
-          throw Object.assign(new Error(error.error || 'tts stream ' + r.status), { noFallback: !!error.noFallback || !!live.path });
-        }
-        if (!String(r.headers.get('content-type')).startsWith('text/event-stream')) throw new Error('invalid tts stream');
-        const reader = r.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        while (!finished) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep = buffer.indexOf('\n\n');
-          while (sep !== -1) {
-            const block = buffer.slice(0, sep).trim();
-            buffer = buffer.slice(sep + 2);
-            if (block) {
-              const { event, data } = parseSseBlock(block);
-              if (event === 'metadata' && data.transport === 'native-pcm-frames') { native = true; live.onNative?.(); }
-              else if (event === 'audio') {
-                native = true;
-                if (!pcmQueue) {
-                  live.onNative?.();
-                  const { createPcmQueue } = await import('./voice-stream.js');
-                  const context = getStreamContext(); await context.resume();
-                  if (finished || h.stopped) return;
-                  if (context.state !== 'running') throw new Error('native playback unavailable');
-                  pcmQueue = createPcmQueue(context, { voice: live.voice || extra.voice, onSegment,
-                    onStarted: () => { if (!played) live.onStarted?.(); played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
-                  h.setRate = value => pcmQueue.setRate(value);
-                }
-                pcmQueue.push(data);
-              } else if (event === 'text') {
-                live.onText?.(String(data.delta || ''));
-              } else if (event === 'chunk' && data.audio_base64) {
-                if (native) throw new Error('speech transport changed mid-stream');
-                const index = Number(data.index);
-                const chunkText = String(data.text || '').replace(/\s+/g, ' ').trim();
-                // A reconnecting/upstream streaming synthesizer can replay its first completed
-                // chunks. Their indices are transport identities: enqueue each one exactly once or
-                // the listener hears the opening sentences repeated even though the transcript is
-                // correct. Older streams without indices get a conservative consecutive-text guard.
-                if (Number.isFinite(index)) {
-                  if (seenChunkIds.has(index)) {
-                    sep = buffer.indexOf('\n\n');
-                    continue;
-                  }
-                  seenChunkIds.add(index);
-                } else if (chunkText && chunkText === lastUnindexedText) {
-                  sep = buffer.indexOf('\n\n');
-                  continue;
-                }
-                lastUnindexedText = Number.isFinite(index) ? '' : chunkText;
-                urls.push({
-                  url: URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)),
-                  text: chunkText,
-                  index,
-                });
-                pump();
-              } else if (event === 'done') {
-                nativeDone = true;
-                live.onDone?.(data);
-                readingDone = true;
-                if (pcmQueue) pcmQueue.seal(); else pump();
-              } else if (event === 'error') {
-                throw new Error(data.detail || 'tts stream error');
-              }
+        const stream = live.path
+          ? (await import('./voice-network.js')).voiceStreamEvents(live, ctrl.signal)
+          : legacySpeechEvents(text, extra, ctrl.signal);
+        for await (const { event, data } of stream) {
+          if (finished || h.stopped) return;
+          // A healthy, progressing mobile download is not a 90-second failed generation.
+          if (live.path && ['metadata', 'text', 'audio', 'stage', 'generation_done', 'done'].includes(event)) {
+            clearTimeout(cap); cap = setTimeout(expire, capMs);
+          }
+          if (event === 'metadata' && data.transport === 'native-pcm-frames') { native = true; live.onNative?.(); }
+          else if (event === 'audio') {
+            native = true;
+            if (!pcmQueue) {
+              live.onNative?.();
+              const { createPcmQueue } = await import('./voice-stream.js');
+              const context = getStreamContext(); await context.resume();
+              if (finished || h.stopped) return;
+              if (context.state !== 'running') throw new Error('native playback unavailable');
+              pcmQueue = createPcmQueue(context, { voice: live.voice || extra.voice, onSegment,
+                onStarted: () => { if (!played) live.onStarted?.(); played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
+              h.setRate = value => pcmQueue.setRate(value);
             }
-            sep = buffer.indexOf('\n\n');
+            pcmQueue.push(data);
+          } else if (event === 'text') {
+            live.onText?.(String(data.delta || ''));
+          } else if (event === 'chunk' && data.audio_base64) {
+            if (native) throw new Error('speech transport changed mid-stream');
+            const index = Number(data.index);
+            const chunkText = String(data.text || '').replace(/\s+/g, ' ').trim();
+            // A reconnecting/upstream streaming synthesizer can replay its first completed
+            // chunks. Their indices are transport identities: enqueue each one exactly once or
+            // the listener hears the opening sentences repeated even though the transcript is
+            // correct. Older streams without indices get a conservative consecutive-text guard.
+            if (Number.isFinite(index)) {
+              if (seenChunkIds.has(index)) {
+                continue;
+              }
+              seenChunkIds.add(index);
+            } else if (chunkText && chunkText === lastUnindexedText) {
+              continue;
+            }
+            lastUnindexedText = Number.isFinite(index) ? '' : chunkText;
+            urls.push({
+              url: URL.createObjectURL(base64ToBlob(data.audio_base64, data.media_type)),
+              text: chunkText,
+              index,
+            });
+            pump();
+          } else if (event === 'done') {
+            nativeDone = true;
+            if (live.path) clearTimeout(cap); // completed transfer; allow queued audio to drain
+            live.onDone?.(data);
+            readingDone = true;
+            if (pcmQueue) pcmQueue.seal(); else pump();
+          } else if (event === 'error') {
+            throw new Error(data.detail || 'tts stream error');
           }
         }
         if (native && !nativeDone) throw new Error('native speech ended before completion');
@@ -479,11 +484,11 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
 
 // The same PCM player for interactive answers. Text arrives alongside audio from Omni's
 // LLM->sentence->TTS pipeline; no script polling, sentence splitting or extra synthesis call.
-export async function speakConversation(h, { voiceId, userText = '', opening = false, voice, onText, onSegment, onPartial, onSlow, onNative, onStarted } = {}) {
+export async function speakConversation(h, { voiceId, userText = '', opening = false, voice, onText, onSegment, onPartial, onSlow, onNative, onStarted, onReconnecting, onConnected, onProgress } = {}) {
   let result = null;
   await speakStream('Live conversation', h, {}, onSlow, onSegment, onPartial, {
     path: 'api/voice/converse', body: { voiceId, userText, opening }, voice,
-    onText, onNative, onStarted, onDone: data => { result = data; },
+    onText, onNative, onStarted, onReconnecting, onConnected, onProgress, onDone: data => { result = data; },
   });
   return result;
 }

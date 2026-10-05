@@ -120,6 +120,13 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
         }
         if (state.done || stopFlag) break;
         if (pendingDismiss) continue;
+        if (interruption?.failed) {
+          const resume = await waitVoiceRetry('This report was interrupted. Your report and words are kept. Ask a follow-up to continue the conversation, or dismiss this report.', { label: 'Ask a follow-up' });
+          if (pendingDismiss) continue;
+          if (!resume) break;
+          state = { ...state, say: '', listen: true, ignored: true, realtimeOpening: false, realtimeQuestion: '' };
+          continue;
+        }
         if (interruption?.text) {
           const disposition = voiceTranscriptDisposition(interruption.text, { spoken: lastSpoken });
           if (!disposition.accepted) {
@@ -235,7 +242,7 @@ async function post(path, body, ms = 30000) {
   }
 }
 
-function waitVoiceRetry(message, { retry = true } = {}) {
+function waitVoiceRetry(message, { retry = true, label = 'Retry' } = {}) {
   if (stopFlag || !ui) return Promise.resolve(false);
   setState('paused');
   showTtsNotice(message, { offerDevice: false });
@@ -247,7 +254,7 @@ function waitVoiceRetry(message, { retry = true } = {}) {
       if (ui?.interrupt) { ui.interrupt.hidden = true; ui.interrupt.textContent = 'Speak now'; }
       clearTtsNotice(); resolve(true);
     };
-    ui.interrupt.textContent = 'Retry'; ui.interrupt.hidden = false;
+    ui.interrupt.textContent = label; ui.interrupt.hidden = false;
   });
 }
 
@@ -325,6 +332,7 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
   let capturingSpeech = false;
   let pendingSpeech = '';
   let speechTimer = null;
+  let partialFailure = null;
   let resolveInterruption;
   const interruption = new Promise((resolve) => { resolveInterruption = resolve; });
   const haltPlayback = () => {
@@ -370,13 +378,16 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true, kind: 'slow' }),
     onStarted: () => { if (ui?.ttsNotice?.dataset.kind === 'slow') clearTtsNotice(); },
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
-    onPartial: () => showTtsNotice('The audio stream stopped early. The conversation is still open; you can ask me to continue. Nothing was replayed.', { offerDevice: false }),
+    onReconnecting: () => showTtsNotice('Connection interrupted — reconnecting to the same report. Your words are kept; nothing is being regenerated.', { kind: 'reconnecting' }),
+    onConnected: () => { if (ui?.ttsNotice?.dataset.kind === 'reconnecting') clearTtsNotice(); },
+    onPartial: error => { partialFailure = error; },
     onSegment: focusSpokenSegment,
   };
   const run = realtime ? speakConversation(handle, { ...options, ...realtime, voiceId, voice: selectedVoice,
     onText: appendSpokenText,
   }).then(result => { if (result?.current) updateProgress(result.current); }) : speakSmart(text, handle, options);
   const playback = run.then(() => null, error => {
+    partialFailure = error;
     showTtsNotice(error.message || 'Voice is unavailable. Your response is kept; please retry.', { offerDevice: true });
     return null;
   });
@@ -389,7 +400,7 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
   // Let the stopped audio promise unwind, but never hold the conversation hostage to a browser that
   // missed its pause event.
   if (accepted) await Promise.race([playback, sleep(250)]);
-  return accepted || result;
+  return accepted || (partialFailure ? { failed: true } : result);
 }
 
 // ---- on-device voice selection ----

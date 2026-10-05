@@ -21,7 +21,7 @@ export function gatewayConversation({ item, evidence, history = [], question = '
   // Omni's 6000-byte window includes its system prompt. Keep our payload below 5200 bytes so
   // it cannot silently discard the source row. The question is never replaced by a report.
   const instruction = opening
-    ? 'Explain this current work update: identify the project, naturally rephrase the owner goal, then the reported outcome and remaining decision. Do not repeat the prompt literally or lead with test counts. Ask one useful follow-up only if needed.'
+    ? 'Briefly explain this update in two or three short spoken sentences: project, naturally rephrased goal, reported outcome, then remaining decision if any. Do not repeat the prompt literally or lead with test counts.'
     : 'Answer my question about this session from the reference below. Distinguish a plan from completed work. If evidence is missing, say so. Resolve this/that from the previous answer. No paths, hashes, markdown or routine test-count recital.';
   const openingQuestion = /\p{Script=Han}/u.test(evidence.requestContext || item.originalRequest || '') ? '请讲解这次工作的最新进展。' : 'Explain the latest update.';
   const text = (question || openingQuestion) + '\n' + instruction;
@@ -34,9 +34,9 @@ export function gatewayConversation({ item, evidence, history = [], question = '
     `Work thread: ${utf8Limit([item.module, item.workstream].filter(Boolean).join(' / '), 150)}`,
     previous ? `Previous voice exchange: ${previous}` : '',
     `Owner request: ${utf8Limit(evidence.requestContext || item.originalRequest, 500)}`,
-    `Latest report: ${excerpt(evidence.reportContext || item.latestReport || '', question, 1450)}`,
-    source ? `Approved documents: ${utf8Limit(source, 950)}` : '',
-    `Story conversation: ${excerpt(evidence.recentConversation || '', question, 700)}`,
+    `Latest report: ${excerpt(evidence.reportContext || item.latestReport || '', question, opening ? 950 : 1450)}`,
+    source ? `Approved documents: ${utf8Limit(source, opening ? 450 : 950)}` : '',
+    opening ? '' : `Story conversation: ${excerpt(evidence.recentConversation || '', question, 700)}`,
   ].filter(Boolean).join('\n');
   return { text, history: [{ role: 'user', content: utf8Limit(context, 5200 - Buffer.byteLength(text)) }],
     engine: 'qwen', voice: nativeVoice(voice), language: 'auto' };

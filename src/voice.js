@@ -40,6 +40,7 @@ import { isRecentVoiceSession } from '../web/voice-recency.js';
 import { createVoiceControlReplay } from './voice_control_replay.js';
 import { voiceSpeakerControl } from '../web/voice-controls.js';
 import { dismissAttentionReport } from './attention_actions.js';
+import { createVoiceStreamJob } from './voice_stream_job.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -95,10 +96,16 @@ const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
   .filter((entry) => Number.isFinite(entry.port) && entry.model);
 const trim = (h) => { while (h.length > 16) h.shift(); };
 const touch = (vs) => { vs.lastTouch = now(); };
+function removeVoiceSession(id) {
+  for (const job of voiceSessions.get(id)?.streamJobs?.values() || []) job.dispose();
+  voiceSessions.delete(id);
+}
 // Lazy expiry keyed on LAST TOUCH, run on every voice endpoint — a createdAt-based sweep would kill
 // a live long pass mid-conversation, and a timer-only sweep left abandoned sessions until the next /start.
 function gcVoiceSessions() {
-  for (const [k, v] of voiceSessions) if (now() - (v.lastTouch || v.createdAt) > VOICE_TTL_MS) voiceSessions.delete(k);
+  for (const [k, v] of voiceSessions) if (now() - (v.lastTouch || v.createdAt) > VOICE_TTL_MS) {
+    v.streamAbort?.abort(); v.turnAbort?.abort(); removeVoiceSession(k);
+  }
 }
 const cur = (vs) => {
   const it = vs.items[vs.pointer];
@@ -710,7 +717,7 @@ route('POST', '/api/voice/start', async (req, res) => {
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
   if (p.ended) {
-    voiceSessions.delete(vs.id);
+    removeVoiceSession(vs.id);
     return json(res, 200, { voiceId: null, say: 'Everything that was waiting just got handled. All caught up.', done: true, listen: false });
   }
   vs.lastSpoken = p.say;
@@ -912,7 +919,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
     }
     if (r.action === 'stop') {
       vs.done = true;
-      voiceSessions.delete(vs.id);
+      removeVoiceSession(vs.id);
       const count = vs.sentCount || 0;
       const say = vs.onTheGo
         ? count
@@ -946,11 +953,38 @@ route('POST', '/api/voice/converse', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   const vs = voiceSessions.get(b.voiceId);
   if (!vs) return json(res, 404, { error: 'no voice session' });
+  const requestId = typeof b.requestId === 'string' && /^[a-zA-Z0-9_-]{8,100}$/.test(b.requestId) ? b.requestId : '';
+  if (requestId && vs.streamJobs?.has(requestId)) {
+    const job = vs.streamJobs.get(requestId);
+    if (job.question !== String(b.userText || '') || job.opening !== !!b.opening) return json(res, 409, { error: 'Voice request identity changed' });
+    if (job.released || job.epoch !== (vs.actionEpoch || 0)) return json(res, 410, { error: 'This voice stream expired. Nothing was regenerated.' });
+    const after = Number(b.afterEvent || 0);
+    try { job.attach(res, { after, compressed: /\bgzip\b/.test(req.headers['accept-encoding'] || '') }); }
+    catch (error) { return json(res, error.status || 400, { error: error.message }); }
+    touch(vs); return;
+  }
+  if (b.resume) return json(res, 410, { error: 'This voice stream is no longer available. Nothing was regenerated.' });
   if (vs.inflight) return json(res, 409, { error: 'turn already in flight' });
   const item = vs.items[vs.pointer];
   const question = normalizeVoiceAddress(String(b.userText || '').trim());
   if (!item || (!vs.sessionOnly && !stillNeedsAttention(item.sessionId))) return json(res, 409, { error: 'This report was handled or replaced' });
   if (!b.opening && !isVoiceInformationQuestion(question)) return json(res, 400, { error: 'Instructions must use the confirmation flow' });
+  if (requestId) {
+    const jobs = vs.streamJobs ||= new Map();
+    // Retain only the latest audio journal; tombstones prevent an old request from regenerating.
+    for (const job of jobs.values()) if (!job.released && !job.release()) return json(res, 409, { error: 'Previous voice playback is still connected' });
+    if (jobs.size >= 100) return json(res, 429, { error: 'Please reopen this long voice conversation' });
+    const ctrl = new AbortController(), epoch = vs.actionEpoch || 0;
+    let job;
+    try { job = createVoiceStreamJob({ requestId, controller: ctrl }); }
+    catch (error) { return json(res, error.status || 503, { error: error.message }); }
+    job.epoch = epoch;
+    job.question = String(b.userText || ''); job.opening = !!b.opening;
+    jobs.set(requestId, job); vs.inflight = true; vs.streamAbort = ctrl; touch(vs);
+    job.attach(res, { compressed: /\bgzip\b/.test(req.headers['accept-encoding'] || '') });
+    runResumableConversation(vs, item, question, b, job, epoch).catch(() => {});
+    return;
+  }
   const ctrl = new AbortController(), deadline = setTimeout(() => ctrl.abort(), 120000);
   const epoch = vs.actionEpoch || 0;
   const stop = () => { if (!res.writableEnded) ctrl.abort(); };
@@ -993,6 +1027,58 @@ route('POST', '/api/voice/converse', async (req, res) => {
   }
 });
 
+async function runResumableConversation(vs, item, question, body, job, epoch) {
+  const started = now(), ctrl = job.controller;
+  const deadline = setTimeout(() => ctrl.abort(), 120000);
+  let firstTextMs, firstAudioMs;
+  try {
+    const evidence = await voiceEvidenceFor(item, { refresh: !body.opening });
+    if (ctrl.signal.aborted || (vs.actionEpoch || 0) !== epoch || !voiceSessions.has(vs.id)) throw new Error('Voice report cancelled');
+    const payload = gatewayConversation({ item, evidence, question, history: vs.history, opening: !!body.opening, voice: vs.voice });
+    store.addEvent(item.sessionId, 'voice-conversation-start', { mode: 'realtime', opening: !!body.opening, requestId: job.requestId,
+      question: question.slice(0, 8000), source: item._storySource, sourceNames: voiceSourceSummary(evidence.sourcePack).names });
+    const out = await relayOmniConversation(payload, { signal: ctrl.signal,
+      emit: (event, data) => { job.append(event, data); return true; },
+      onEvent(event) {
+        if (event.event === 'text' && firstTextMs == null) firstTextMs = now() - started;
+        if (event.event === 'audio' && firstAudioMs == null) firstAudioMs = now() - started;
+      },
+    });
+    if (ctrl.signal.aborted || (vs.actionEpoch || 0) !== epoch || !voiceSessions.has(vs.id)) throw new Error('Voice report cancelled');
+    vs.lastSpoken = out.text;
+    if (!body.opening) vs.history.push({ role: 'user', content: question });
+    vs.history.push({ role: 'assistant', content: out.text }); trim(vs.history); touch(vs);
+    store.addEvent(item.sessionId, 'voice-grounded-answer', { mode: 'realtime', action: 'explain', source: item._storySource,
+      sourceNames: voiceSourceSummary(evidence.sourcePack).names, question: question.slice(0, 8000), answer: out.text,
+      voice: vs.voice, model: 'qwen38-flash-next-nvfp4', frames: out.frames, requestId: job.requestId,
+      firstTextMs, firstAudioMs, generationMs: now() - started, upstreamTimings: job.timings });
+    job.append('done', { text: out.text, grounded: true, sourceCount: evidence.sourcePack.sources.length,
+      current: cur(vs), voice: vs.voice });
+  } catch (error) {
+    try { store.addEvent(item.sessionId, 'voice-conversation-failed', { voiceId: vs.id, requestId: job.requestId,
+      opening: !!body.opening, error: error.message, cancelled: ctrl.signal.aborted, partialChars: job.text.length,
+      firstTextMs, firstAudioMs, generationMs: now() - started, upstreamTimings: job.timings, question: question.slice(0, 8000) }); } catch {}
+    job.append('error', { detail: error.message, partial: !!job.text, preservedText: question });
+  } finally {
+    clearTimeout(deadline);
+    if ((vs.actionEpoch || 0) === epoch) vs.inflight = false;
+    if (vs.streamAbort === ctrl) vs.streamAbort = null;
+  }
+}
+
+route('POST', '/api/voice/conversation/progress', async (req, res) => {
+  const b = await readJson(req).catch(() => ({})), vs = voiceSessions.get(b.voiceId);
+  const job = vs?.streamJobs?.get(b.requestId);
+  if (!job || job.released || job.epoch !== (vs.actionEpoch || 0)) return json(res, 410, { error: 'Voice stream expired' });
+  touch(vs);
+  json(res, 200, { text: job.text, stage: job.stage, complete: job.closed, timings: job.timings });
+});
+route('POST', '/api/voice/conversation/cancel', async (req, res) => {
+  const b = await readJson(req).catch(() => ({}));
+  voiceSessions.get(b.voiceId)?.streamJobs?.get(b.requestId)?.cancel();
+  json(res, 200, { ok: true });
+});
+
 route('POST', '/api/voice/dismiss', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
@@ -1023,7 +1109,7 @@ route('POST', '/api/voice/continue', async (req, res) => {
   if (vs.inflight) return json(res, 409, { error: 'turn already in flight' }); // a /continue racing a live /turn would double-advance
   touch(vs);
   if (vs.sessionOnly && vs.pointer >= vs.items.length) {
-    voiceSessions.delete(vs.id);
+    removeVoiceSession(vs.id);
     return json(res, 200, { say: 'That session discussion is finished.', done: true, listen: false });
   }
   if (vs.realtime && vs.pointer < vs.items.length) {
@@ -1035,7 +1121,7 @@ route('POST', '/api/voice/continue', async (req, res) => {
   }
   const p = await presentNext(vs, false);
   if (p.ended) {
-    voiceSessions.delete(vs.id);
+    removeVoiceSession(vs.id);
     // Recount from the LIVE store — sent items are now 'working' (gone), but skipped items
     // are still 'waiting', so don't claim "all caught up" when the queue isn't actually empty.
     const remaining = buildVoiceItems().length;
@@ -1053,7 +1139,7 @@ route('POST', '/api/voice/stop', async (req, res) => {
   const b = await readJson(req).catch(() => ({}));
   voiceSessions.get(b.voiceId)?.streamAbort?.abort();
   voiceSessions.get(b.voiceId)?.turnAbort?.abort();
-  voiceSessions.delete(b.voiceId);
+  removeVoiceSession(b.voiceId);
   json(res, 200, { ok: true });
 });
 
