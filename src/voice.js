@@ -38,6 +38,8 @@ import { nativeVoice } from './tts_native.js';
 import { gatewayConversation, relayOmniConversation } from './voice_gateway.js';
 import { isRecentVoiceSession } from '../web/voice-recency.js';
 import { createVoiceControlReplay } from './voice_control_replay.js';
+import { voiceSpeakerControl } from '../web/voice-controls.js';
+import { dismissAttentionReport } from './attention_actions.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -102,6 +104,7 @@ const cur = (vs) => {
   const it = vs.items[vs.pointer];
   return it ? {
     sessionId: it.sessionId,
+    reportId: it.reportId || null,
     project: it.project,
     projectIdentity: it.projectIdentity || it.project,
     module: it.module || '',
@@ -595,6 +598,7 @@ async function brainReply(vs, userText) {
   // an upstream model/provider failure.
   const it = vs.items[vs.pointer];
   const ac = new AbortController();
+  vs.turnAbort = ac;
   const timer = setTimeout(() => ac.abort(), TURN_BUDGET_MS);
   try {
     const ctx = await stateContext(vs, userText);
@@ -659,6 +663,7 @@ async function brainReply(vs, userText) {
     return providerFailureReply(userText, it?.project);
   } finally {
     clearTimeout(timer);
+    if (vs.turnAbort === ac) vs.turnAbort = null;
   }
 }
 
@@ -722,6 +727,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
   // One turn at a time per voice session: the client never legitimately overlaps, so a second /turn
   // is a retry/duplicate — processing it would double-advance the pointer or double-send.
   if (vs.inflight) return json(res, 409, { error: 'turn already in flight' });
+  const epoch = vs.actionEpoch || 0;
   vs.inflight = true;
   try {
     touch(vs);
@@ -761,6 +767,14 @@ route('POST', '/api/voice/turn', async (req, res) => {
     vs.fragmentTurns = 0;
 
     const userText = normalizeVoiceAddress(disposition.text);
+    const speaker = voiceSpeakerControl(userText);
+    if (speaker) {
+      vs.voice = speaker.voice; vs.lastSpoken = speaker.say;
+      const item = vs.items[vs.pointer];
+      try { if (item) store.addEvent(item.sessionId, 'voice-control', { control: 'speaker', voice: vs.voice, transcript: userText }); } catch {}
+      return json(res, 200, { say: speaker.say, voice: vs.voice, acceptedText: userText,
+        done: false, listen: true, current: cur(vs), assistantControl: 'speaker' });
+    }
     // Questions use the same live source-grounded path as opening a report. They never enter
     // the delivery reducer. Old clients keep receiving JSON answers until they reload.
     if (vs.realtime && b.realtime !== false && isVoiceInformationQuestion(userText)) {
@@ -781,6 +795,9 @@ route('POST', '/api/voice/turn', async (req, res) => {
       userText,
       brain: () => brainReply(vs, userText),
     });
+    if ((vs.actionEpoch || 0) !== epoch || !voiceSessions.has(vs.id)) {
+      return json(res, 200, { say: '', done: false, listen: false, interrupted: true });
+    }
     const r = resolved.reply;
     if (r.action === 'ignore') {
       vs.history.pop(); // nearby speech must not become context for the next real operator turn
@@ -838,6 +855,11 @@ route('POST', '/api/voice/turn', async (req, res) => {
         try { store.addEvent(it.sessionId, 'voice-reply', { len: outcome.delivery.length, mode: vs.onTheGo ? 'on-the-go' : 'manual' }); } catch {}
       }
       try { if (it) store.addEvent(it.sessionId, 'voice-delivery', outcome.delivery); } catch {}
+      // Delivery already submitted before a dismissal cannot be undone. Keep its audit/receipt,
+      // but never advance again or restore its old draft into the newly presented project.
+      if ((vs.actionEpoch || 0) !== epoch || !voiceSessions.has(vs.id)) {
+        return json(res, 200, { say: '', done: false, listen: false, interrupted: true, delivery: outcome.delivery });
+      }
       if (outcome.retry) {
         const retryMessage = String(r.message || userText).trim();
         // Delivery did not cross the session boundary, so restore the confirmed draft instead of
@@ -904,7 +926,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
     }
     return json(res, 200, { say: r.say, done: false, listen: true, current: cur(vs), grounded: sourceGrounded, ...(vs.onTheGo ? { acceptedText: userText } : {}) });
   } finally {
-    vs.inflight = false;
+    if ((vs.actionEpoch || 0) === epoch) vs.inflight = false;
   }
 });
 
@@ -930,19 +952,21 @@ route('POST', '/api/voice/converse', async (req, res) => {
   if (!item || (!vs.sessionOnly && !stillNeedsAttention(item.sessionId))) return json(res, 409, { error: 'This report was handled or replaced' });
   if (!b.opening && !isVoiceInformationQuestion(question)) return json(res, 400, { error: 'Instructions must use the confirmation flow' });
   const ctrl = new AbortController(), deadline = setTimeout(() => ctrl.abort(), 120000);
+  const epoch = vs.actionEpoch || 0;
   const stop = () => { if (!res.writableEnded) ctrl.abort(); };
   res.on('close', stop); res.on('error', stop);
   vs.inflight = true; vs.streamAbort = ctrl; touch(vs);
   let partial = '';
   try {
     const evidence = await voiceEvidenceFor(item, { refresh: !b.opening });
-    if (ctrl.signal.aborted || !voiceSessions.has(vs.id)) throw Object.assign(new Error('Voice conversation cancelled. Your question is kept.'), { status: 503 });
+    if (ctrl.signal.aborted || (vs.actionEpoch || 0) !== epoch || !voiceSessions.has(vs.id)) throw Object.assign(new Error('Voice conversation cancelled. Your question is kept.'), { status: 503 });
     const payload = gatewayConversation({ item, evidence, question, history: vs.history, opening: !!b.opening, voice: vs.voice });
     store.addEvent(item.sessionId, 'voice-conversation-start', { mode: 'realtime', opening: !!b.opening,
       question: question.slice(0, 8000), source: item._storySource, sourceNames: voiceSourceSummary(evidence.sourcePack).names });
     const out = await relayOmniConversation(payload, { res, signal: ctrl.signal, onEvent(event) {
       if (event.event === 'text') partial += String(event.data.delta || '');
     } });
+    if (ctrl.signal.aborted || (vs.actionEpoch || 0) !== epoch) throw new Error('Voice report dismissed or conversation stopped');
     vs.lastSpoken = out.text;
     if (!b.opening) vs.history.push({ role: 'user', content: question });
     vs.history.push({ role: 'assistant', content: out.text }); trim(vs.history); touch(vs);
@@ -964,8 +988,29 @@ route('POST', '/api/voice/converse', async (req, res) => {
     }
   } finally {
     clearTimeout(deadline); res.off('close', stop); res.off('error', stop);
-    vs.inflight = false; if (vs.streamAbort === ctrl) vs.streamAbort = null;
+    if ((vs.actionEpoch || 0) === epoch) vs.inflight = false;
+    if (vs.streamAbort === ctrl) vs.streamAbort = null;
   }
+});
+
+route('POST', '/api/voice/dismiss', async (req, res) => {
+  gcVoiceSessions();
+  const b = await readJson(req).catch(() => ({}));
+  if (replayControl('dismiss', b, res)) return;
+  const vs = voiceSessions.get(b.voiceId), item = vs?.items[vs.pointer];
+  if (!vs) return json(res, 404, { error: 'no voice session' });
+  if (!item?.reportId || item.sessionId !== b.sessionId || item.reportId !== Number(b.reportId)) {
+    return json(res, 409, { code: 'voice_report_changed', error: 'The displayed report changed. Nothing else was dismissed.' });
+  }
+  const result = dismissAttentionReport(item.sessionId, item.reportId);
+  // A click can arrive during generation or speech. Invalidate that exact turn before advancing;
+  // its eventual result cannot stage/send feedback, overwrite history, or unlock a newer turn.
+  vs.actionEpoch = (vs.actionEpoch || 0) + 1;
+  vs.streamAbort?.abort(); vs.turnAbort?.abort(); vs.inflight = false;
+  vs.dialogue = createVoiceDialogueState(); vs.history = []; vs.lastSpoken = '';
+  vs.pointer++; touch(vs);
+  try { store.addEvent(item.sessionId, 'voice-report-dismissed', { reportId: item.reportId, voiceId: vs.id, raced: !!result.dismissal.raced }); } catch {}
+  return controlResponder('dismiss', b)(res, 200, { ...result, say: '', done: false, listen: false, current: null });
 });
 
 route('POST', '/api/voice/continue', async (req, res) => {
@@ -1007,6 +1052,7 @@ route('POST', '/api/voice/stop', async (req, res) => {
   gcVoiceSessions();
   const b = await readJson(req).catch(() => ({}));
   voiceSessions.get(b.voiceId)?.streamAbort?.abort();
+  voiceSessions.get(b.voiceId)?.turnAbort?.abort();
   voiceSessions.delete(b.voiceId);
   json(res, 200, { ok: true });
 });

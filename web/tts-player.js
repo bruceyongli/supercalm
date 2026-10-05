@@ -269,7 +269,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {
                   if (finished || h.stopped) return;
                   if (context.state !== 'running') throw new Error('native playback unavailable');
                   pcmQueue = createPcmQueue(context, { voice: live.voice || extra.voice, onSegment,
-                    onStarted: () => { played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
+                    onStarted: () => { if (!played) live.onStarted?.(); played = 1; }, onEmpty: () => { if (readingDone) finish(); } });
                   h.setRate = value => pcmQueue.setRate(value);
                 }
                 pcmQueue.push(data);
@@ -451,7 +451,7 @@ let streamUnavailable = false;
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
 //   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onPartial, onSegment, onNative, continuous = false, preparedAudio = null, preparedSegments = [] } = {}) {
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onPartial, onSegment, onNative, onStarted, continuous = false, preparedAudio = null, preparedSegments = [] } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
@@ -459,7 +459,7 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
   try {
     if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio, preparedSegments);
     if (!streamUnavailable) {
-      return await speakStream(text, h, ttsExtra, onSlow, onSegment, onPartial, { onNative }).catch((e) => {
+      return await speakStream(text, h, ttsExtra, onSlow, onSegment, onPartial, { onNative, onStarted }).catch((e) => {
         if (e.noFallback) throw e;
         // 409 = the configured backend can't stream (a config state — remember it until reload);
         // anything else is a transient Spark/network failure — retry streaming on the next part.
@@ -479,11 +479,11 @@ export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, o
 
 // The same PCM player for interactive answers. Text arrives alongside audio from Omni's
 // LLM->sentence->TTS pipeline; no script polling, sentence splitting or extra synthesis call.
-export async function speakConversation(h, { voiceId, userText = '', opening = false, voice, onText, onSegment, onPartial, onSlow, onNative } = {}) {
+export async function speakConversation(h, { voiceId, userText = '', opening = false, voice, onText, onSegment, onPartial, onSlow, onNative, onStarted } = {}) {
   let result = null;
   await speakStream('Live conversation', h, {}, onSlow, onSegment, onPartial, {
     path: 'api/voice/converse', body: { voiceId, userText, opening }, voice,
-    onText, onNative, onDone: data => { result = data; },
+    onText, onNative, onStarted, onDone: data => { result = data; },
   });
   return result;
 }

@@ -8,11 +8,10 @@ import { db } from './store.js';
 import { bus } from './bus.js';
 import { questionProjection } from './codex_question.js';
 import {
-  attentionUnreadCount,
-  dismissAttention,
   listAttentionDismissals,
   restoreAttention,
 } from './attention_store.js';
+import { dismissAttentionReport } from './attention_actions.js';
 
 // r4 class C: the triage question a card shows must be the DERIVED question (last unanswered ask from
 // the story parser, else the last report), never raw TUI scrollback ("bypass permissions on…",
@@ -71,14 +70,11 @@ route('POST', '/api/messages/read', async (req, res) => {
   const throughId = Number.isSafeInteger(Number(b.through_id)) && Number(b.through_id) > 0 ? Number(b.through_id) : null;
   const ts = Date.now();
   let n = 0;
-  let dismissal = null;
   const touched = new Set(sid ? [sid] : []);
   if (wantsDismissal) {
     if (!sid) return json(res, 400, { error: 'session_id required for dismissal' });
-    const before = attentionUnreadCount(sid);
-    dismissal = dismissAttention(sid, throughId, ts);
-    if (!dismissal) return json(res, 404, { error: 'attention report not found' });
-    n = Math.max(0, before - attentionUnreadCount(sid));
+    try { return json(res, 200, dismissAttentionReport(sid, throughId, ts)); }
+    catch (error) { return json(res, error.status || 500, { error: error.message }); }
   } else if (ids.length) {
     const rows = db.prepare(`SELECT DISTINCT session_id FROM messages WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
     for (const row of rows) if (row.session_id) touched.add(row.session_id);
@@ -92,19 +88,13 @@ route('POST', '/api/messages/read', async (req, res) => {
     return json(res, 400, { error: 'ids[] or session_id required' });
   }
   const unread = unreadBySession();
-  if (n || dismissal) {
+  if (n) {
     // The normalized clients intentionally ignore broad `changed` invalidations. Publish only the
     // affected unread counters so another desktop/phone reconciles immediately without reloading home.
     for (const session of touched) bus.emit('session-status', {
       session,
       unread: unread.get(session)?.n || 0,
-      ...(dismissal ? {
-        dismissed: !!dismissal.dismissed,
-        dismissed_at: dismissal.dismissed ? dismissal.dismissed_at : null,
-        dismissed_report_id: dismissal.dismissed ? dismissal.report_id : null,
-        dismissed_report_text: dismissal.dismissed ? dismissal.report_text : null,
-      } : {}),
-      source: dismissal ? 'dismiss' : 'read',
+      source: 'read',
       ts,
     });
     bus.emit('changed'); // legacy clients remain compatible during the transition
@@ -112,7 +102,6 @@ route('POST', '/api/messages/read', async (req, res) => {
   return json(res, 200, {
     ok: true,
     marked: n,
-    ...(dismissal ? { dismissal } : {}),
     ...(sid ? { unread: unread.get(sid)?.n || 0 } : {}),
   });
 });

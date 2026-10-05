@@ -79,7 +79,9 @@ assert.match(voice, /YOUR LAST RESPONSE/, 'the operator transcript remains a fir
 assert.match(voice, /Ask a follow-up or give feedback naturally/,
   'proactive reports continue as a normal Voice Assistant conversation');
 assert.match(voice, /api\/transcribe\?language=auto&polish=true/,
-  'Voice Assistant uses Spark transcript cleanup before intent reasoning');
+  'ordinary session feedback retains Spark transcript cleanup before intent reasoning');
+assert.match(voice, /voiceSpeakerControl\(heard\) \? heard/,
+  'exact assistant settings bypass redundant transcription, not general project feedback');
 assert.match(voice, /markIgnoredSpeech\(state\.ignoredReason\)/,
   'nearby or silent speech is visibly ignored instead of becoming a response');
 assert.match(voice, /isClearVoiceInterruption[\s\S]*createLiveSpeechRecognizer[\s\S]*allowInterruption/,

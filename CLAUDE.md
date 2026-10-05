@@ -117,6 +117,11 @@ the past 24 hours, not heartbeat/supervisor timestamps. This does not dismiss ol
 explicit Story Explain may still open an older report. Transient control/microphone errors pause the
 conversation with its report and response intact, never auto-hang up. Retried turn/continue controls
 reuse an idempotency key and replay successful acknowledgements, never double-deliver or double-advance.
+Exact assistant speaker changes are local controls (`web/voice-controls.js`): never ask the coding agent
+or a model to change the caller's voice. Only an explicit operator choice may change Ryan/Vivian between
+turns. **Dismiss report** uses `/api/voice/dismiss` and the same durable attention action as Needs You;
+bind the click to its displayed session/report id. Cancel/fence an in-flight old turn before advancing,
+clear its unconfirmed draft, and never let late feedback land on the next project. Newer reports survive.
 - **TTS — the client picks the engine** (`web/voicemode.js`; toggle in the voice overlay, stored in
   `localStorage.aios_tts`; iOS audio is unlocked on the tap via a silent clip on a reused `<audio>` element):
   - **`neural` (DEFAULT)**: Omni Qwen3-TTS BF16 native 24kHz mono PCM frames on ONE AudioContext
@@ -130,7 +135,8 @@ reuse an idempotency key and replay successful acknowledgements, never double-de
     cap, and only after it has STARTED, so the loop never wedges and never ends mid-speech.
 - **Server TTS** (`tts.js`): prepared speech uses Omni `tts_only:true`; live answers do not. Native
   identity is `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, BF16, faster-ggml, `steady-v3`. Choose Ryan or
-  Vivian at conversation start and keep that speaker for BOTH English and Chinese (`auto` means Ryan).
+  Vivian at conversation start and keep that speaker for BOTH English and Chinese (`auto` means Ryan),
+  unless the operator explicitly asks to change it between turns.
   Busy/503/connection failures keep the operator's question and show an explicit retry; never silently
   swap models, speakers or playback engines. Cloud/device speech remains an explicit user choice.
 - **STT** (`spark.js`): `openai/whisper-large-v3-turbo`, Spark `/v1/audio/transcriptions` via `/api/transcribe` (ffmpeg→16k mono wav;

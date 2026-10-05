@@ -2,6 +2,7 @@ import { api, createLiveSpeechRecognizer, rememberSpeechLanguage, preferredSttLa
 import { unlockAudio as unlockPlayer, voiceAudioContext, newPlayback, speechTextRange, stopAllPlayback, speakSmart, speakConversation, applyRateLive } from './tts-player.js';
 import { extractVoiceInterruption, isClearVoiceInterruption } from './voice-interruption.js';
 import { VOICE_CAPTURE_DEFAULTS, voiceTranscriptDisposition } from './voice-input.js';
+import { voiceSpeakerControl } from './voice-controls.js';
 
 // Hands-free voice concierge loop:
 //   speak (TTS) -> [listen with VAD -> STT -> /turn]  OR  [/continue] -> speak -> ...
@@ -16,6 +17,7 @@ let active = false,
   requestInterrupt = null,
   ui = null;
 let recoveryResume = null;
+let pendingDismiss = null, controlAbort = null, captureAbort = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TTS_RATE_KEY = 'aios_tts_rate';
@@ -71,6 +73,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
   if (active) return;
   active = true;
   stopFlag = false;
+  pendingDismiss = null;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
   const onTheGo = String(source).startsWith('on-the-go');
   if (!onTheGo) ui = buildOverlay({ onTheGo: true });
@@ -83,78 +86,101 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
     if (onTheGo) ui = buildOverlay({ onTheGo, initialText: state.say });
     let lastSpoken = '';
     while (!stopFlag) {
-      if (state.current) updateProgress(state.current);
-      if (state.delivery) updateDelivery(state.delivery, state.sentCount);
-      if (state.acceptedText) {
-        setHeard(state.acceptedText);
-        if (ui?.spokenLabel) ui.spokenLabel.textContent = state.grounded ? 'SOURCE-GROUNDED RESPONSE' : 'ASSISTANT RESPONSE';
-      }
-      if (state.ignored) markIgnoredSpeech(state.ignoredReason);
-      if (state.done && ui) ui.bar.style.width = '100%';
-      // Ignored nearby speech and silent windows are intentionally silent responses: keep listening
-      // without erasing/re-reading the project brief or pretending a conversational turn happened.
-      let interruption = null;
-      if (!state.ignored || state.say) {
-        setState('speaking', state.say);
-        lastSpoken = state.say || lastSpoken;
-        const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
-        const preparedSegments = preparedAudio ? preparedUpdate.segments || [] : [];
-        preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
-        interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments,
-          realtime: state.realtimeOpening || state.realtimeQuestion ? { opening: !!state.realtimeOpening, userText: state.realtimeQuestion || '' } : null });
-        lastSpoken = ui?.spokenText || state.say || lastSpoken;
-      }
-      if (state.done || stopFlag) break;
-      if (interruption?.text) {
-        const disposition = voiceTranscriptDisposition(interruption.text, { spoken: lastSpoken });
-        if (!disposition.accepted) {
-          markIgnoredSpeech(disposition.reason);
-          await keepVoiceAlive(disposition.reason);
-          state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
+      try {
+        if (pendingDismiss) {
+          try { await post('api/voice/dismiss', { voiceId, ...pendingDismiss }); }
+          catch (error) { if (error.code !== 'voice_report_changed') throw error; }
+          // A late click must never dismiss a different report. Reconcile the displayed item rather
+          // than endlessly retrying the stale target or advancing a second time.
+          pendingDismiss = null; clearTtsNotice();
+          state = await post('api/voice/continue', { voiceId });
           continue;
         }
-        setHeard(disposition.text);
-        setState('thinking');
-        state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
-      } else if (state.listen || interruption?.tap) {
-        setState('listening');
-        let text = '';
-        let live = null;
-        try {
-          live = createLiveSpeechRecognizer({
-            onUpdate: (heard) => {
-              if (heard) setHeard(heard);
-            },
-          });
-          live.start();
-          const blob = await recordUntilSilence();
-          if (stopFlag) break;
-          live.stop();
-          setState('thinking');
-          text = (await transcribe(blob, state.current?.tool, state.current?.sessionId)) || live.getText();
-        } catch (e) {
-          live?.abort(); // a paused permission/device failure must not keep hearing nearby people
-          // Permission/device failures need a deliberate retry, not empty turns or an auto-hangup.
-          if (/NotAllowed|PermissionDenied|NotFound|NotReadable|Security/i.test(e?.name || '')) {
-            if (!await waitVoiceRetry('Microphone unavailable. Check microphone access, then retry. The conversation is still open.')) break;
-            state = { ...state, say: '', ignored: true, listen: true, realtimeOpening: false, realtimeQuestion: '' };
+        if (state.voice && state.voice !== selectedVoice) { selectedVoice = state.voice; renderVoiceControls(); }
+        if (state.current) updateProgress(state.current);
+        if (state.delivery) updateDelivery(state.delivery, state.sentCount);
+        if (state.acceptedText) {
+          setHeard(state.acceptedText);
+          if (ui?.spokenLabel) ui.spokenLabel.textContent = state.grounded ? 'SOURCE-GROUNDED RESPONSE' : 'ASSISTANT RESPONSE';
+        }
+        if (state.ignored) markIgnoredSpeech(state.ignoredReason);
+        if (state.done && ui) ui.bar.style.width = '100%';
+        // Ignored nearby speech and silent windows are intentionally silent responses: keep listening
+        // without erasing/re-reading the project brief or pretending a conversational turn happened.
+        let interruption = null;
+        if (!state.ignored || state.say) {
+          setState('speaking', state.say);
+          lastSpoken = state.say || lastSpoken;
+          const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
+          const preparedSegments = preparedAudio ? preparedUpdate.segments || [] : [];
+          preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
+          interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments,
+            realtime: state.realtimeOpening || state.realtimeQuestion ? { opening: !!state.realtimeOpening, userText: state.realtimeQuestion || '' } : null });
+          lastSpoken = ui?.spokenText || state.say || lastSpoken;
+        }
+        if (state.done || stopFlag) break;
+        if (pendingDismiss) continue;
+        if (interruption?.text) {
+          const disposition = voiceTranscriptDisposition(interruption.text, { spoken: lastSpoken });
+          if (!disposition.accepted) {
+            markIgnoredSpeech(disposition.reason);
+            await keepVoiceAlive(disposition.reason);
+            state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
             continue;
           }
-        } finally {
-          live?.abort();
+          setHeard(disposition.text);
+          setState('thinking');
+          state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
+        } else if (state.listen || interruption?.tap) {
+          setState('listening');
+          let text = '';
+          let live = null;
+          try {
+            live = createLiveSpeechRecognizer({
+              onUpdate: (heard) => {
+                if (heard) setHeard(heard);
+              },
+            });
+            live.start();
+            const blob = await recordUntilSilence();
+            if (stopFlag) break;
+            if (pendingDismiss) continue;
+            live.stop();
+            setState('thinking');
+            // Exact assistant settings do not need a second, potentially stalled Whisper round trip.
+            const heard = live.getText();
+            text = voiceSpeakerControl(heard) ? heard : (await transcribe(blob, state.current?.tool, state.current?.sessionId)) || heard;
+            if (pendingDismiss) continue;
+          } catch (e) {
+            live?.abort(); // a paused permission/device failure must not keep hearing nearby people
+            if (pendingDismiss) continue;
+            // Permission/device failures need a deliberate retry, not empty turns or an auto-hangup.
+            if (/NotAllowed|PermissionDenied|NotFound|NotReadable|Security/i.test(e?.name || '')) {
+              const retry = await waitVoiceRetry('Microphone unavailable. Check microphone access, then retry. The conversation is still open.');
+              if (pendingDismiss) continue;
+              if (!retry) break;
+              state = { ...state, say: '', ignored: true, listen: true, realtimeOpening: false, realtimeQuestion: '' };
+              continue;
+            }
+          } finally {
+            live?.abort();
+          }
+          const disposition = voiceTranscriptDisposition(text, { spoken: lastSpoken });
+          if (!disposition.accepted) {
+            markIgnoredSpeech(disposition.reason);
+            await keepVoiceAlive(disposition.reason);
+            state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
+            continue;
+          }
+          setHeard(disposition.text);
+          state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
+        } else {
+          setState('thinking');
+          state = await post('api/voice/continue', { voiceId });
         }
-        const disposition = voiceTranscriptDisposition(text, { spoken: lastSpoken });
-        if (!disposition.accepted) {
-          markIgnoredSpeech(disposition.reason);
-          await keepVoiceAlive(disposition.reason);
-          state = { ...state, say: '', ignored: true, ignoredReason: disposition.reason, listen: true };
-          continue;
-        }
-        setHeard(disposition.text);
-        state = await post('api/voice/turn', { voiceId, userText: disposition.text, realtime: ttsMode() !== 'browser' });
-      } else {
-        setState('thinking');
-        state = await post('api/voice/continue', { voiceId });
+      } catch (error) {
+        if (pendingDismiss && !stopFlag) continue;
+        throw error;
       }
     }
   } catch (e) {
@@ -166,6 +192,11 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
     showTtsNotice('Voice connection stopped: ' + (e.message || e) + '. Your report and response are kept here. End and reopen the assistant to reconnect.', { offerDevice: false });
     if (ui?.interrupt) ui.interrupt.hidden = true;
     await new Promise(resolve => { recoveryResume = resolve; });
+    if (pendingDismiss && !stopFlag) {
+      try { await post('api/voice/dismiss', { voiceId, ...pendingDismiss }); }
+      catch (error) { if (error.code !== 'voice_report_changed') throw error; }
+      pendingDismiss = null;
+    }
   } finally {
     end('complete');
   }
@@ -178,16 +209,17 @@ async function keepVoiceAlive(reason = '') {
 }
 
 async function post(path, body, ms = 30000) {
-  const control = /api\/voice\/(turn|continue)$/.test(path);
+  const control = /api\/voice\/(turn|continue|dismiss)$/.test(path);
   const requestBody = control ? { ...body, requestId: crypto.randomUUID() } : body;
   const busyUntil = Date.now() + 3000;
   for (;;) {
     const ctrl = new AbortController();
+    if (control) controlAbort = ctrl;
     const t = setTimeout(() => ctrl.abort(), ms);
     try {
       return await api(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody), signal: ctrl.signal });
     } catch (error) {
-      if (stopFlag || !control) throw error;
+      if (stopFlag || !control || error.code === 'voice_report_changed' || (pendingDismiss && !path.endsWith('/dismiss'))) throw error;
       // Barge-in can arrive before cancellation releases the previous stream. This 409 means the
       // turn was NOT processed, so a short control-only wait is safe; never retry the model stream.
       if (error.status === 409 && error.message === 'turn already in flight' && Date.now() < busyUntil) {
@@ -199,7 +231,7 @@ async function post(path, body, ms = 30000) {
       if (!await waitVoiceRetry(message, { retry: error.status !== 404 })) throw error;
       // The SAME request id replays its acknowledged result, including a successful delivery whose
       // HTTP response was lost. A manual retry cannot double-send or skip a second project.
-    } finally { clearTimeout(t); }
+    } finally { clearTimeout(t); if (controlAbort === ctrl) controlAbort = null; }
   }
 }
 
@@ -223,6 +255,7 @@ function end(reason = 'complete') {
   const wasActive = active;
   stopFlag = true;
   active = false;
+  controlAbort?.abort(); captureAbort?.abort(); pendingDismiss = null;
   recoveryResume?.(false); recoveryResume = null;
   if (voiceId) post('api/voice/stop', { voiceId }).catch(() => {});
   voiceId = null;
@@ -256,10 +289,11 @@ function setTtsRate(rate) {
   applyRateLive(); // apply to the shared player mid-utterance (tts-player)
   renderVoiceControls();
 }
-function showTtsNotice(message, { offerDevice = false } = {}) {
+function showTtsNotice(message, { offerDevice = false, kind = 'info' } = {}) {
   if (!ui?.ttsNotice) return;
   ui.ttsNotice.hidden = false;
   ui.ttsNotice.textContent = message;
+  ui.ttsNotice.dataset.kind = kind;
   if (ui.deviceVoice) ui.deviceVoice.hidden = !offerDevice;
 }
 function clearTtsNotice() {
@@ -333,7 +367,8 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     preparedSegments,
     onNative: () => { if (ui) { ui.nativeSpeech = true; renderVoiceControls(); } },
     ttsExtra: { voice: selectedVoice },
-    onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true }),
+    onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true, kind: 'slow' }),
+    onStarted: () => { if (ui?.ttsNotice?.dataset.kind === 'slow') clearTtsNotice(); },
     onFallback: () => showTtsNotice('Spark voice is slow or unreachable, so this line is using your device voice. You can switch the rest too.', { offerDevice: true }),
     onPartial: () => showTtsNotice('The audio stream stopped early. The conversation is still open; you can ask me to continue. Nothing was replayed.', { offerDevice: false }),
     onSegment: focusSpokenSegment,
@@ -451,14 +486,14 @@ export function openVoicePicker() {
 async function transcribe(blob, agentHint, sessionId) {
   if (!blob || blob.size < 1200) return '';
   const ctrl = new AbortController();
+  captureAbort = ctrl;
   const t = setTimeout(() => ctrl.abort(), 30000); // never let STT wedge the loop
   try {
     const q = (agentHint ? `&agent=${encodeURIComponent(agentHint)}` : '')
       + (sessionId ? `&session=${encodeURIComponent(sessionId)}` : '')
       + `&langs=${encodeURIComponent(preferredSttLangs())}`;
-    // Voice Assistant is conversational speech, not verbatim code dictation. Spark's polish pass fixes
-    // Whisper fragments and punctuation before intent reasoning; the raw transcript remains available
-    // in the server response for diagnostics.
+    // Ordinary conversational feedback retains transcript cleanup before intent reasoning. Exact
+    // assistant controls recognized locally bypass this request above, without altering that path.
     const r = await fetch('api/transcribe?language=auto&polish=true' + q, { method: 'POST', headers: { 'content-type': blob.type }, body: blob, signal: ctrl.signal });
     const j = await r.json().catch(() => ({}));
     if (r.ok && !j.rejected) rememberSpeechLanguage(j.language, j.text);
@@ -467,6 +502,7 @@ async function transcribe(blob, agentHint, sessionId) {
     return ''; // timeout/abort/network -> empty -> server re-asks, loop continues
   } finally {
     clearTimeout(t);
+    if (captureAbort === ctrl) captureAbort = null;
   }
 }
 
@@ -527,7 +563,7 @@ async function recordUntilSilence({
     let spoke = false;
     await new Promise((resolve) => {
       const tick = () => {
-        if (stopFlag) return resolve();
+        if (stopFlag || pendingDismiss) return resolve();
         let rms = 0;
         if (an) {
           an.getByteTimeDomainData(buf);
@@ -678,6 +714,7 @@ function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
       '<div class="vm-speed" role="group" aria-label="Speech speed"></div>' +
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div></details>' +
       '<div class="ongo-actions"><button class="btn ghost vm-preview" type="button" title="See the screenshots for this session — desktop, iPad, and phone">Preview</button>' +
+      '<button class="btn ghost vm-dismiss" type="button" hidden title="Dismiss this report on every device, without stopping the session">Dismiss report</button>' +
       '<button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
       '<button class="btn danger vm-stop">End assistant</button></div></div>' +
       PREVIEW_PANEL_HTML + '</div>'
@@ -692,6 +729,7 @@ function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
       '<button class="btn ghost sm vm-device-voice" type="button" hidden>Use device voice</button></div>' +
       '<div class="vm-tts-notice" hidden></div>' +
       '<div class="vm-action-row"><button class="btn ghost vm-preview" type="button" title="See the screenshots for this session — desktop, iPad, and phone">Preview</button>' +
+      '<button class="btn ghost vm-dismiss" type="button" hidden>Dismiss report</button>' +
       '<button class="btn vm-interrupt" type="button" hidden>Speak now</button>' +
       '<button class="btn danger vm-stop">Stop</button></div>' +
       PREVIEW_PANEL_HTML + '</div>';
@@ -717,12 +755,23 @@ function buildOverlay({ onTheGo = false, initialText = '' } = {}) {
     heardLabel: root.querySelector('.ongoing-heard-label'),
     interrupt: root.querySelector('.vm-interrupt'),
     preview: root.querySelector('.vm-preview'),
+    dismiss: root.querySelector('.vm-dismiss'),
     previewPanel: root.querySelector('.vm-preview-panel'),
     onTheGo,
   };
   wirePreview(o);
   root.querySelector('.vm-stop').onclick = () => end('user');
   o.interrupt.onclick = () => requestInterrupt?.({ tap: true });
+  o.dismiss.onclick = () => {
+    if (!voiceId || !o.reportId || pendingDismiss) return;
+    pendingDismiss = { sessionId: o.sessionId, reportId: o.reportId };
+    o.dismiss.disabled = true;
+    controlAbort?.abort(); captureAbort?.abort();
+    if (recoveryResume) { recoveryResume(false); recoveryResume = null; requestInterrupt = null; }
+    else requestInterrupt?.({ dismiss: true });
+    try { handle?.stop(); stopAllPlayback(); } catch {}
+    setState('thinking');
+  };
   o.deviceVoice.onclick = () => {
     if (ttsMode() === 'browser') {
       setTtsMode('neural');
@@ -753,6 +802,8 @@ function updateProgress(cur) {
     if (ui.spokenLabel) ui.spokenLabel.textContent = 'BRIEFING';
   }
   ui.sessionId = cur.sessionId || ui.sessionId || '';
+  ui.reportId = Number(cur.reportId) || null;
+  if (ui.dismiss) { ui.dismiss.hidden = !ui.reportId; ui.dismiss.disabled = false; }
   // An open visual check follows the queue: advancing to the next session reloads its screenshots.
   if (ui.previewPanel && !ui.previewPanel.hidden && ui.previewPanel.dataset.sid && ui.previewPanel.dataset.sid !== ui.sessionId) loadPreviewPanel(true);
   ui.prog.textContent = ui.onTheGo ? `${cur.n} of ${cur.total}` : `Item ${cur.n} of ${cur.total}`;

@@ -9,7 +9,7 @@ const reportFor = sid => sid === 's_zh'
   : 'AIOS Supercalm. Voice Assistant. Report quality. The update now leads with the issue and explains the actual repair in plain language.';
 
 const root = new URL('../', import.meta.url);
-const assets = new Map(['voicemode.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js', 'voice-interruption.js', 'voice-input.js']
+const assets = new Map(['voicemode.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js', 'voice-interruption.js', 'voice-input.js', 'voice-controls.js']
   .map((name) => [`/${name}`, readFileSync(new URL(`web/${name}`, root))]));
 const turns = [];
 const readBody = async (req) => {

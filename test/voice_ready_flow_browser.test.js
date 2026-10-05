@@ -27,6 +27,7 @@ const readBody = async req => { let body = ''; for await (const chunk of req) bo
 const sttTakes = [{ text: '为什么之前中文输入不工作', language: 'auto' }, { text: 'How was it fixed?', language: 'auto' }];
 let streamBehavior = null;
 let conversationBehavior = null;
+let heldDialogue = null;
 const model = httpServer(async (req, res) => {
   const body = await readBody(req);
   if (body.messages[0].content.includes('hands-free project lead')) {
@@ -34,6 +35,12 @@ const model = httpServer(async (req, res) => {
     const sourceResolved = body.messages[0].content.includes('The delay came from generating the briefing after Accept.');
     trace.push({ event: 'conversation', userText, sourceResolved, workload: req.headers['x-spark-workload'],
       bilingualPrompt: body.messages[0].content.includes('switch freely between Chinese and English') });
+    if (heldDialogue?.text === userText) {
+      const held = heldDialogue; held.started = true;
+      res.on('close', () => { held.cancelled = true; held.release(); });
+      await held.gate;
+      if (res.destroyed) return;
+    }
     res.writeHead(200, { 'content-type': 'application/json', 'x-spark-workload': 'voice', 'x-spark-queue-wait-ms': '1' });
     const say = /\p{Script=Han}/u.test(userText)
       ? '之前浏览器的英文设置被当成了唯一的语音语言。现在中英文都允许自动识别，报告和音频也会在来电前准备好。'
@@ -302,9 +309,10 @@ try {
     const button = document.createElement('button'); button.id = 'fixture-native-play'; button.textContent = 'Play native fixture';
     button.style.cssText = 'position:fixed;top:10px;right:10px;z-index:999999';
     button.onclick = () => {
-      player.unlockAudio(); window.__nativeSegments = []; window.__nativeDone = false; window.__partial = 0;
+      player.unlockAudio(); window.__nativeSegments = []; window.__nativeDone = false; window.__partial = 0; window.__nativeStarted = 0;
       window.__nativeHandle = player.newPlayback();
       window.__nativeRun = player.speakSmart(text, window.__nativeHandle, { continuous: true,
+        onStarted: () => window.__nativeStarted++,
         onSegment: value => window.__nativeSegments.push(value), onPartial: () => window.__partial++ }).then(() => { window.__nativeDone = true; });
     };
     document.body.append(button);
@@ -328,7 +336,8 @@ try {
     }
     await nativePage.evaluate(() => window.__nativeRun);
     await until(() => behavior.closed);
-    const result = await nativePage.evaluate(() => ({ phrases: window.__nativeSegments.map(value => value.text), partial: window.__partial }));
+    const result = await nativePage.evaluate(() => ({ phrases: window.__nativeSegments.map(value => value.text), partial: window.__partial, started: window.__nativeStarted }));
+    assert.equal(result.started, 1, 'the slow warning clears once actual audio starts, not once per phrase');
     assert.equal(trace.filter(item => item.event === 'tts').length - beforeTts, 1, 'partial speech or Stop never falls back and replays the opening');
     assert.equal(result.phrases.length, outcome === 'complete' ? 2 : 1);
     assert.equal(result.partial, outcome === 'partial' ? 1 : 0);
@@ -379,6 +388,18 @@ try {
     liveTrace.push({ outcome, ...result });
   }
   conversationBehavior = null;
+  const beforeSpeaker = trace.filter(item => item.event === 'conversation').length;
+  const speakerResponse = await fetch(base + 'api/voice/turn', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ voiceId: liveSession.voiceId, requestId: 'speaker-control', userText: 'okay can you change to your female voice instead of male voice' }) });
+  assert.equal(speakerResponse.status, 200);
+  const switched = await speakerResponse.json();
+  assert.equal(switched.assistantControl, 'speaker'); assert.equal(switched.voice, 'Vivian');
+  assert.equal(trace.filter(item => item.event === 'conversation').length, beforeSpeaker, 'the exact failed spoken request must work without a model call');
+  const femaleAnswer = await fetch(base + 'api/voice/converse', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ voiceId: liveSession.voiceId, userText: 'What changed in the plan?' }) });
+  const femaleStream = await femaleAnswer.text();
+  assert.match(femaleStream, /event: done/); assert.match(femaleStream, /"voice":"Vivian"/);
+  assert.equal(trace.filter(item => item.event === 'live-conversation').at(-1).voice, 'Vivian', 'the real next gateway request uses the operator-selected speaker');
   const failures = store.db.prepare("SELECT payload FROM events WHERE session_id = ? AND type = 'voice-conversation-failed'").all('s_voice_fixture').map(row => JSON.parse(row.payload));
   assert.ok(failures.some(event => event.partialChars > 0 && event.error), 'interrupted answers capture their partial length and exact handler failure');
   const beforeReplay = trace.filter(item => item.event === 'conversation').length;
@@ -405,6 +426,50 @@ try {
   assert.equal(staleStart.status, 409, 'a cross-device dismissal rejects a prepared call instead of speaking stale content');
   const staleAudio = await fetch(base + `api/voice/prepared/${ready.id}/audio`);
   assert.equal(staleAudio.status, 409, 'dismissed audio cannot be replayed from its URL');
+  // Dismiss while an old model turn is running. The actual route must fence/cancel it, synchronize
+  // attention across browsers, replay a lost acknowledgement, and preserve a newer report race.
+  const actionReports = [];
+  for (const id of ['s_dismiss_first', 's_dismiss_second']) {
+    store.createSession({ id, project_id: 'p_voice_fixture', tool: 'codex', tmux: id + '-private', status: 'waiting' });
+    store.updateSession(id, { category: 'review' });
+    actionReports.push(store.addMessage(id, 'out', 'agent', 'Ready for your review.'));
+  }
+  const postVoice = async (path, body) => {
+    const response = await fetch(base + 'api/voice/' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  };
+  const actions = (await postVoice('start', { source: 'manual', realtime: true, focusSessionId: 's_dismiss_first' })).body;
+  assert.equal(actions.count, 2); assert.equal(actions.current.reportId, actionReports[0].id);
+  let releaseHeld;
+  heldDialogue = { text: 'Please fix the report UI.', gate: new Promise(resolve => { releaseHeld = resolve; }), release: () => releaseHeld() };
+  const lateTurn = postVoice('turn', { voiceId: actions.voiceId, requestId: 'held-old-turn', userText: heldDialogue.text, realtime: false });
+  await until(() => heldDialogue.started);
+  const dismiss = { voiceId: actions.voiceId, sessionId: 's_dismiss_first', reportId: actionReports[0].id, requestId: 'dismiss-exact-report' };
+  const dismissed = await postVoice('dismiss', dismiss);
+  assert.equal(dismissed.status, 200); assert.equal(dismissed.body.dismissal.dismissed, true);
+  assert.equal((await lateTurn).body.interrupted, true, 'a late old model result cannot stage or deliver feedback after dismissal');
+  await until(() => heldDialogue.cancelled);
+  assert.equal(heldDialogue.cancelled, true, 'the old model request is actively aborted'); heldDialogue = null;
+  assert.deepEqual((await postVoice('dismiss', dismiss)).body, dismissed.body, 'a lost dismissal acknowledgement cannot dismiss a second report');
+  assert.equal(store.getSession('s_dismiss_first').status, 'waiting', 'dismissal never kills/stops the coding session');
+  assert.equal(store.messagesFor('s_dismiss_first').filter(message => message.direction === 'in').length, 0);
+  const otherBrowser = await browser.newContext();
+  const otherBrowserHome = await otherBrowser.request.get(base + 'api/phone/home');
+  assert.equal((await otherBrowserHome.json()).sessions.find(session => session.id === 's_dismiss_first').dismissed, true,
+    'a different browser reads the same durable dismissal');
+  await otherBrowser.close();
+  const next = await postVoice('continue', { voiceId: actions.voiceId });
+  assert.equal(next.body.current.sessionId, 's_dismiss_second');
+  const staleClick = await postVoice('dismiss', { ...dismiss, requestId: 'stale-report-click' });
+  assert.equal(staleClick.status, 409); assert.equal(staleClick.body.code, 'voice_report_changed');
+  assert.equal((await postVoice('continue', { voiceId: actions.voiceId })).body.current.sessionId, 's_dismiss_second',
+    'a stale click cannot dismiss or advance the next report');
+  const newer = store.addMessage('s_dismiss_second', 'out', 'agent', 'A genuinely newer request must remain in Needs You.');
+  const race = await postVoice('dismiss', { voiceId: actions.voiceId, sessionId: 's_dismiss_second', reportId: actionReports[1].id, requestId: 'old-report-race' });
+  assert.equal(race.body.dismissal.raced, true); assert.equal(race.body.dismissal.dismissed, false);
+  assert.equal(store.db.prepare('SELECT read_at FROM messages WHERE id = ?').get(newer.id).read_at, null);
+  assert.equal(store.messagesFor('s_dismiss_second').filter(message => message.direction === 'in').length, 0);
+  await postVoice('stop', { voiceId: actions.voiceId });
   console.log('voice_ready_flow trace', JSON.stringify({ pass: true, handlers, model: trace[0], tts: speech,
     acceptAdditionalGenerations: 0, nativeStreaming: streamingTrace, interactive: liveTrace, groundedEvents, bilingual: bilingualTrace,
     speechHandlers: trace.filter(item => ['stt', 'conversation', 'live-conversation'].includes(item.event)),

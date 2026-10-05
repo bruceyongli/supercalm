@@ -12,11 +12,12 @@ import { wavFromPcm, NATIVE_TTS_MODEL } from '../src/tts_native.js';
 const web = fileURLToPath(new URL('../web/', import.meta.url));
 const ledger = createVoiceControlReplay(), turns = [];
 let handled = 0, stops = 0, starts = 0;
+let dismissalCount = 0, heldTurn = false, cancelledTurn = false, staleClicks = 0;
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   if (url.pathname === '/aios/harness') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end(`<base href="/aios/"><script type="module">
+    res.end(`<base href="/aios/"><link rel="stylesheet" href="styles.css"><script type="module">
       window.__voice = await import('./voicemode.js'); window.__ready = true;
     </script>`); return;
   }
@@ -25,11 +26,16 @@ const server = createServer(async (req, res) => {
     const body = JSON.parse(raw || '{}');
     const reply = (status, payload) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(payload)); };
     if (url.pathname.endsWith('/start')) {
-      if (++starts > 1) return reply(503, { error: 'fixture startup unavailable' });
+      if (++starts === 2) return reply(503, { error: 'fixture startup unavailable' });
+      if (starts > 2) return reply(200, { voiceId: 'dismiss-flow', say: 'First dismissal report is ready.', listen: true,
+        current: { sessionId: 's_first', reportId: 100, project: 'First project', n: 1, total: 2 } });
       return reply(200, { voiceId: 'recovery', say: 'The microphone update is ready for review.', listen: true,
         current: { sessionId: 's_private', project: 'AIOS', n: 1, total: 1 } });
     }
     if (url.pathname.endsWith('/turn')) {
+      if (body.voiceId === 'dismiss-flow') {
+        heldTurn = true; res.on('close', () => { cancelledTurn = true; }); return;
+      }
       turns.push(body);
       if (turns.length === 1) return reply(409, { error: 'turn already in flight' });
       const cached = ledger.get('turn', body);
@@ -40,12 +46,26 @@ const server = createServer(async (req, res) => {
       ledger.record('turn', body, 200, answer);
       return reply(500, { error: 'fixture acknowledgement lost after processing' });
     }
+    if (url.pathname.endsWith('/dismiss')) {
+      const cached = ledger.get('dismiss', body); if (cached) return reply(200, cached);
+      if (!staleClicks++) return reply(409, { code: 'voice_report_changed', error: 'The displayed report changed. Nothing else was dismissed.' });
+      assert.equal(body.sessionId, dismissalCount ? 's_second' : 's_first');
+      assert.equal(body.reportId, dismissalCount ? 101 : 100);
+      dismissalCount++;
+      const result = { say: '', done: false, listen: false, current: null };
+      ledger.record('dismiss', body, 200, result); return reply(200, result);
+    }
+    if (url.pathname.endsWith('/continue') && body.voiceId === 'dismiss-flow') return reply(200, dismissalCount === 0
+      ? { say: 'The current report is ready.', listen: true, current: { sessionId: 's_first', reportId: 100, project: 'First project', n: 1, total: 2 } }
+      : dismissalCount === 1
+      ? { say: 'Next report, second project.', listen: true, current: { sessionId: 's_second', reportId: 101, project: 'Second project', n: 2, total: 2 } }
+      : { say: '', done: true, listen: false, current: null });
     if (url.pathname.endsWith('/stop')) stops++;
     return reply(200, { ok: true });
   }
   const path = resolve(join(web, url.pathname.replace(/^\/aios\//, '')));
   if (!path.startsWith(web)) { res.writeHead(403); res.end(); return; }
-  try { res.writeHead(200, { 'content-type': extname(path) === '.js' ? 'text/javascript' : 'text/plain' }); res.end(readFileSync(path)); }
+  try { res.writeHead(200, { 'content-type': extname(path) === '.js' ? 'text/javascript' : extname(path) === '.css' ? 'text/css' : 'text/plain' }); res.end(readFileSync(path)); }
   catch { res.writeHead(404); res.end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -66,7 +86,7 @@ try {
         if (!utterance.text) return;
         window.__spoken.push(utterance.text); this.speaking = true;
         utterance.onstart?.();
-        if (window.__spoken.length > 1) setTimeout(() => { this.speaking = false; utterance.onend?.(); }, 30);
+        if (window.__spoken.length > 1 && !utterance.text.startsWith('First dismissal report')) setTimeout(() => { this.speaking = false; utterance.onend?.(); }, 30);
       } };
     Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: synth });
     let recognized = false;
@@ -131,5 +151,39 @@ try {
   assert.equal(await page.evaluate(() => window.__voice.isVoiceModeActive()), true, 'startup failure also stays visible until deliberately ended');
   await page.locator('.vm-stop').click(); await page.evaluate(() => window.__running);
   assert.deepEqual(await page.evaluate(() => window.__ended), ['user', 'user']);
+  await page.evaluate(() => {
+    let once = false;
+    window.SpeechRecognition = class {
+      start() {
+        this.onstart?.();
+        if (!once) { once = true; setTimeout(() => this.onresult?.({ results: [Object.assign([{ transcript: 'Please fix the report UI.' }], { isFinal: true })] }), 150); }
+      }
+      abort() { this.onend?.(); } stop() { this.onend?.(); }
+    };
+    window.__running = window.__voice.startVoiceMode();
+  });
+  for (let i = 0; !heldTurn && i < 100; i++) await page.waitForTimeout(30);
+  assert.equal(heldTurn, true);
+  await page.locator('.vm-dismiss').click();
+  await page.waitForFunction(() => document.querySelector('.vm-tts-notice')?.textContent.includes('Microphone unavailable'));
+  assert.equal(dismissalCount, 0, 'a stale click reconciles the current report without dismissing another one or looping retries');
+  assert.equal(staleClicks, 1); assert.equal(await page.evaluate(() => window.__voice.isVoiceModeActive()), true);
+  await page.locator('.vm-dismiss').click();
+  await page.waitForFunction(() => document.querySelector('.ongo-title')?.textContent === 'Second project');
+  assert.equal(dismissalCount, 1, 'Dismiss interrupts an in-flight turn and advances exactly once');
+  assert.equal(cancelledTurn, true, 'the stale browser request is cancelled');
+  await page.waitForFunction(() => document.querySelector('.vm-tts-notice')?.textContent.includes('Microphone unavailable'));
+  assert.doesNotMatch(await page.locator('.vm-heard').textContent(), /fix the report UI/, 'the first project reply never leaks to the next report');
+  for (const viewport of [{ width: 390, height: 844 }, { width: 1024, height: 768 }, { width: 1440, height: 900 }]) {
+    await page.setViewportSize(viewport);
+    const layout = await page.evaluate(() => ({ button: document.querySelector('.vm-dismiss').getBoundingClientRect().toJSON(),
+      warning: document.querySelector('.vm-tts-notice').getBoundingClientRect().toJSON() }));
+    assert.ok(layout.button.x >= 0 && layout.button.right <= viewport.width && layout.button.bottom <= viewport.height,
+      'Dismiss stays reachable on phone/iPad/desktop');
+    assert.ok(layout.warning.height <= 100, 'a visible warning never expands into the main transcript area');
+  }
+  await page.locator('.vm-dismiss').click(); await page.evaluate(() => window.__running);
+  assert.equal(dismissalCount, 2, 'Dismiss is also usable while microphone recovery is paused');
+  assert.equal(await page.evaluate(() => window.__voice.isVoiceModeActive()), false);
   console.log('voice_recovery_browser.test ok', JSON.stringify({ busyControls: 1, logicalTurns: handled, httpAttempts: turns.length, preservedReply: true, micPaused: true, endReason: 'user' }));
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
