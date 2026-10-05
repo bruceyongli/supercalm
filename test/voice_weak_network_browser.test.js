@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { createVoiceStreamJob } from '../src/voice_stream_job.js';
 import { wavFromPcm, NATIVE_TTS_MODEL } from '../src/tts_native.js';
+import { createVoiceDialogueState, resolveVoiceTurn } from '../src/voice_turn.js';
 
 // Production PCM player + resumable/gzip journal under mobile bandwidth, a dropped connection,
 // and temporary offline status. The only generated audio/model answers are private CPU fixtures.
 const web = fileURLToPath(new URL('../web/', import.meta.url));
 const jobs = new Map(), readers = new Set(), requests = [], timers = [];
 let generations = 0, progressReads = 0, cancelCalls = 0, partialGenerations = 0;
+const reviewTurns = []; let reviewContinues = 0, receiptErrors = 0;
 const first = 'The connection can recover without repeating the report. ';
 const second = 'Your feedback stays with this project.';
 const pcm = Buffer.alloc(48000);
@@ -22,18 +24,42 @@ const frame = index => ({ index, audio: wavFromPcm(pcm).toString('base64'), mode
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://fixture');
   if (url.pathname === '/aios/harness') {
-    res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<base href="/aios/"><link rel="stylesheet" href="styles.css"><button id="play">Play</button><button id="assistant">Assistant</button>
+    res.writeHead(200, { 'content-type': 'text/html' }); res.end(`<base href="/aios/"><link rel="stylesheet" href="styles.css"><button id="play">Play</button><button id="assistant">Assistant</button><button id="review">Review</button>
       <script type="module">const p=await import('./tts-player.js');
       const v=await import('./voicemode.js');window.__ready=true;document.querySelector('#assistant').onclick=()=>{window.__assistant=v.startVoiceMode({focusSessionId:'private'});};
+      document.querySelector('#review').onclick=()=>{window.__review=v.startVoiceMode({source:'fixture-review-later'});};
       document.querySelector('#play').onclick=()=>{p.unlockAudio();window.__phrases=[];window.__text='';window.__reconnects=0;window.__partial=0;
       window.__h=p.newPlayback();window.__run=p.speakConversation(window.__h,{voiceId:'private',voice:'Ryan',opening:true,
       onText:delta=>window.__text+=delta,onSegment:p=>window.__phrases.push(p.text),onPartial:()=>window.__partial++,
       onReconnecting:()=>window.__reconnects++}).then(result=>window.__result=result);};</script>`); return;
   }
+  if (url.pathname === '/aios/api/tts/stream') {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    const b = JSON.parse(raw); res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('event: metadata\ndata: {"transport":"native-pcm-frames"}\n\n');
+    if (b.text.startsWith('好，收到')) { receiptErrors++; res.end('event: error\ndata: {"detail":"Fixture receipt audio unavailable"}\n\n'); }
+    else res.end(`event: audio\ndata: ${JSON.stringify({ ...frame(0), text: b.text })}\n\nevent: done\ndata: ${JSON.stringify({ text: b.text })}\n\n`);
+    return;
+  }
   if (url.pathname.startsWith('/aios/api/voice/')) {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const b = JSON.parse(raw || '{}');
     const reply = body => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
+    if (url.pathname.endsWith('/start') && b.source === 'fixture-review-later') return reply({ voiceId: 'review', say: 'First review report is ready.', listen: true,
+      current: { sessionId: 'review_first', project: 'First review project', reportId: 2, n: 1, total: 2 } });
+    if (url.pathname.endsWith('/turn') && b.voiceId === 'review') {
+      reviewTurns.push(b);
+      const resolved = await resolveVoiceTurn({ dialogue: createVoiceDialogueState(), sessionId: 'review_first', userText: b.userText,
+        brain: async () => { throw new Error('Review-later replies must not need a model'); } });
+      assert.equal(resolved.reply.control, 'review-later');
+      return reply({ say: resolved.reply.say, listen: false, done: false,
+        delivery: { status: 'skipped', reason: 'operator-review-later' },
+        current: { sessionId: 'review_first', project: 'First review project', reportId: 2, n: 1, total: 2 } });
+    }
+    if (url.pathname.endsWith('/continue') && b.voiceId === 'review') {
+      reviewContinues++;
+      return reply({ say: '', listen: true, done: false, current: { sessionId: 'review_second', project: 'Second review project', reportId: 3, n: 2, total: 2 } });
+    }
     if (url.pathname.endsWith('/start')) return reply({ voiceId: 'partial', say: '', realtimeOpening: true, listen: true,
       current: { sessionId: 'private', project: 'Weak network fixture', reportId: 1, n: 1, total: 1 } });
     if (/\/(dismiss|continue|stop|keepalive)$/.test(url.pathname)) return reply({ ok: true, say: '', done: true });
@@ -133,6 +159,38 @@ try {
   assert.equal(await page.locator('.vm').count(), 0, 'Dismiss remains usable after a partial report');
   console.log('voice_weak_network_browser partial trace', JSON.stringify({ pass: true, generations: partialGenerations,
     paused: true, prematureRecording: false, dismissible: true }));
+
+  // After an accepted navigation action, even an unavailable spoken receipt cannot strand the UI
+  // on the old report. Drive bilingual navigation through the real voice loop and reducer; the
+  // exact screenshot reply (without an interruption cue) is covered by the actual backend test.
+  await page.evaluate(() => {
+    let recognized = false; window.__receipts = [];
+    window.SpeechRecognition = class {
+      start() { this.onstart?.(); if (!recognized) { recognized = true; setTimeout(() => this.onresult?.({ results: [
+        Object.assign([{ transcript: '下一个，OK,非常棒,我待会儿会测试一下。' }], { isFinal: true })] }), 150); } }
+      abort() { this.onend?.(); } stop() { this.onend?.(); }
+    };
+    new MutationObserver(() => {
+      const receipt = document.querySelector('.ongo-delivery');
+      if (receipt && !receipt.hidden) window.__receipts.push({ text: receipt.textContent, failed: receipt.classList.contains('failed') });
+    }).observe(document.body, { subtree: true, childList: true, attributes: true });
+  });
+  await page.locator('#review').click();
+  try { await page.waitForFunction(() => document.querySelector('.ongo-title')?.textContent === 'Second review project'); }
+  catch (error) {
+    console.log('review navigation failure trace', JSON.stringify({ reviewTurns, reviewContinues, receiptErrors,
+      ui: await page.evaluate(() => ({ title: document.querySelector('.ongo-title')?.textContent,
+        state: document.querySelector('.vm-state')?.textContent, heard: document.querySelector('.vm-heard')?.textContent,
+        notice: document.querySelector('.vm-tts-notice')?.textContent, receipts: window.__receipts })) }));
+    throw error;
+  }
+  assert.equal(reviewTurns.length, 1); assert.match(reviewTurns[0].userText, /非常棒.*待会儿会测试一下/);
+  assert.equal(reviewContinues, 1); assert.equal(receiptErrors, 1, 'the actual native receipt failed');
+  const receipts = await page.evaluate(() => window.__receipts);
+  assert.ok(receipts.some(receipt => receipt.text.includes('later review') && !receipt.failed), 'deferral is not rendered as a failed message send');
+  await page.locator('.vm-stop').click(); await page.evaluate(() => window.__review);
+  console.log('voice_review_navigation_browser trace', JSON.stringify({ pass: true, heard: reviewTurns[0].userText,
+    nextProject: 'Second review project', continues: reviewContinues, unavailableReceiptDidNotBlock: true, misleadingFailureReceipt: false }));
 } finally {
   for (const timer of timers) clearTimeout(timer);
   for (const job of jobs.values()) job.cancel();

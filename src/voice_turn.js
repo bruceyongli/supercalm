@@ -55,6 +55,7 @@ export function combineVoiceInstructions(pending, additional = '') {
 export function confirmedPendingReply(pending, userText) {
   const instruction = clean(pending);
   if (!instruction) return null;
+  if (reviewConversationIntent(userText)?.kind === 'defer') return null;
   const confirmation = confirmationFrom(userText);
   if (!confirmation) return null;
   // "Yes, what exactly failed?" acknowledges that we spoke but asks a follow-up; it is not approval
@@ -81,6 +82,30 @@ const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end 
 const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on|moving on|let(?:'s| us) move on|go (?:to )?(?:the )?next(?: one| item)?)[\s.!]*$/i;
 const DEFER = /\b(?:(?:just\s+)?leave (?:it|this|this one)(?: alone)?|i(?:'ll| will) (?:(?:do|handle) (?:the |a )?review|review (?:it|this)|handle (?:it|this)) (?:myself )?later|i(?:'ll| will) (?:do|review|handle) (?:it|this) (?:myself )?later|nothing else (?:here|for (?:this|that)(?: item)?)|nothing (?:needs?|need) (?:the )?agent to do (?:right )?now|no(?:thing| action) (?:is )?needed (?:from (?:the )?agent )?(?:right )?now)\b/i;
 const CANCEL_PENDING = /^(?:never mind|nevermind|cancel that|forget that|don'?t send (?:that|it)|do not send (?:that|it)|leave that unsent)[\s.!]*$/i;
+const ACK_PREFIX = /^(?:(?:okay|ok|yes|yeah|yep|sure|alright|all right|right|great|very good|excellent|awesome|perfect|nice|thanks|thank you|sounds good|that(?:'s| is) great|got it|understood)\b|好的?|可以|行|是的|没错|对的?|非常棒|太棒了|太好了|很好|不错|明白了?|知道了?|收到|谢谢)[\s,.;:!，。；：！-]*/iu;
+const DEFER_CLAUSE = new RegExp(`^(?:${DEFER.source})$`, 'i');
+const SELF_REVIEW_EN = /^i(?:'ll| will| can| am going to| plan to)\s+(?:(?:later|afterwards|tomorrow)\s+)?(?:do (?:a |the )?review|run (?:a |the )?test|review|test|verify|check|try)(?:\s+(?:it|this|that|this one|the update|the app|the report|the changes|the new version))?(?:\s+out)?(?:\s+myself)?(?:\s+(?:later|afterwards|tomorrow))?(?:\s+myself)?$/i;
+const REVIEW_TIME_ZH = '(?:待会儿?|等会儿?|一会儿?|过一会儿?|晚点|稍后|回头|之后|以后)';
+const SELF_REVIEW_ZH = new RegExp(`^我(?:自己)?(?:(?:会|来|准备|打算)?${REVIEW_TIME_ZH}(?:会|再|来|自己)?|(?:会|来|准备|打算)(?:自己)?)(?:测试|试用|验证|检查|复核|审查|评审|review|看看|试试|测测|看|试|测)(?:一下|一遍|下)?(?:这个(?:项目|版本|更新)?|这一项|它|效果)?(?:一下|一遍|下)?(?:${REVIEW_TIME_ZH})?(?:再说|吧)?$`, 'iu');
+
+// A report response is not always a coding instruction. Consume the WHOLE utterance as known
+// acknowledgement / owner-review / navigation clauses, so "great, I'll test later" works across
+// languages without allowing "I'll review later, but fix the UI first" to discard real feedback.
+function reviewConversationIntent(text) {
+  const value = clean(text).replace(/[’‘]/g, "'");
+  if (!value || /[?？]/u.test(value)) return null;
+  const clauses = value.split(/[,.!;，。！；]+|\s+(?:and|so)\s+/iu).map(clean).filter(Boolean);
+  let defer = false, next = false, acknowledged = false;
+  for (let clause of clauses) {
+    let match;
+    while ((match = clause.match(ACK_PREFIX))) { acknowledged = true; clause = clause.slice(match[0].length).trim(); }
+    if (!clause) continue;
+    if (SELF_REVIEW_EN.test(clause) || SELF_REVIEW_ZH.test(clause) || DEFER_CLAUSE.test(clause) || ZH_DEFER.test(clause)) defer = true;
+    else if (NEXT.test(clause) || ZH_NEXT.test(clause)) next = true;
+    else return null;
+  }
+  return defer ? { kind: 'defer' } : next ? { kind: 'next' } : acknowledged ? { kind: 'ack' } : null;
+}
 const INFO_QUESTION = /^(?:what(?:'s| is| are| was| were| did| does| do| happened| should| would| could| can)\b|why\b|how(?:'s| is| are| did| does| do| should| would| could| can)?\b|when\b|where\b|who\b|which\b|more(?: details?)?\b|details?\b|tell me\b|explain\b|give me (?:more|details|the status)\b|read\b|repeat\b|do you think\b|(?:can|could|would) you (?:tell|explain|summarize|repeat|read|give me|check the status)\b|is (?:it|this|that|the|there)\b|are (?:they|these|those|the|there)\b|was (?:it|this|that|the|there)\b|were (?:they|these|those|the|there)\b|did (?:the|it|this|that|they)\b|does (?:the|it|this|that)\b|has (?:the|it|this|that)\b|have (?:the|it|this|that|they)\b)/i;
 const POLITE_ACTION = /^(?:can|could|would|will) you (?!tell\b|explain\b|summarize\b|repeat\b|read\b|give me\b|check the status\b)/i;
 const META_QUESTION = /\b(?:i (?:was|am|'m) (?:asking|wondering)|i asked|my question (?:was|is)|what i (?:asked|wanted to know))\b.{0,80}\b(?:detail|explain|why|what|how|status|happen|mean|think|recommend)/i;
@@ -128,7 +153,8 @@ export function voiceDraftGrounding(userText, draft) {
 
 export function isNavigationIntent(text) {
   const value = clean(text).replace(DISCOURSE_PREFIX, '').replace(/[。！？]+$/, '');
-  return !!value && (NEXT.test(value) || DEFER.test(value) || ZH_NEXT.test(value) || ZH_DEFER.test(value));
+  const review = reviewConversationIntent(text);
+  return !!value && (NEXT.test(value) || ZH_NEXT.test(value) || ZH_DEFER.test(value) || !!(review && review.kind !== 'ack'));
 }
 
 // Strong conversational models sometimes answer an obvious follow-up directly despite the request
@@ -213,13 +239,24 @@ export function voiceControlReply(userText, { hasPending = false } = {}) {
       : 'Okay, moving to the next item.',
     action: 'next', message: '', deterministic: true, discardedPending: hasPending,
   };
-  if (DEFER.test(intent)) return {
-    say: hasPending
-      ? "Okay. I didn't send the pending feedback. I'll leave this item for your later review and move on."
-      : "Okay. I'll leave this item for your later review and move to the next one.",
-    action: 'next', message: '', deterministic: true, discardedPending: hasPending,
-  };
   if (hasPending && CANCEL_PENDING.test(intent)) return { say: "Okay, I won't send that. We can stay on this item.", action: 'cancel', message: '', deterministic: true };
+  const review = reviewConversationIntent(message);
+  if (review?.kind === 'next' && hasPending && CONFIRM_PREFIX.test(message) && confirmationFrom(message)) return null;
+  if (review?.kind === 'ack' && hasPending && !confirmationFrom(message)) return {
+    say: /\p{Script=Han}/u.test(message) ? '好，收到。反馈草稿还没发送，你可以修改、确认发送，或跳过。'
+      : 'Understood. The draft is still unsent; you can revise it, confirm sending, or skip this item.',
+    action: 'await', message: '', pause: true, deterministic: true, control: 'acknowledged-pending',
+  };
+  // A bare "okay" while confirming still approves that exact draft. Outside confirmation, a
+  // positive acknowledgement means this report was heard—not an incomplete agent instruction.
+  if (review && (review.kind !== 'ack' || !hasPending)) {
+    const chinese = /\p{Script=Han}/u.test(message), deferred = review.kind === 'defer';
+    const say = chinese
+      ? `${hasPending ? '好，这条反馈没有发送。' : '好，收到。'}${deferred ? '留给你稍后验证，' : ''}我们看下一项。`
+      : `${hasPending ? "Okay. I didn't send the pending feedback." : 'Okay, understood.'} ${deferred ? "I'll leave this for your later review and move to the next item." : 'Moving to the next item.'}`;
+    return { say, action: 'next', message: '', deterministic: true, discardedPending: hasPending,
+      control: deferred ? 'review-later' : review.kind === 'ack' ? 'report-acknowledged' : 'next' };
+  }
   return null;
 }
 

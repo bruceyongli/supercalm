@@ -110,6 +110,57 @@ for (const utterance of [
 assert.equal(scopedVoicePending(staged('Change session one.', 's_one'), 's_two'), '',
   'a pending instruction is unusable after the conversation advances to another session');
 
+// Exact bilingual live failure: the transcript reached /turn, but the old English-only navigation
+// vocabulary rejected the model's correct next action as an "incomplete instruction".
+for (const utterance of [
+  'OK,非常棒,我待会儿会测试一下。',
+  'OK，非常棒，我待会儿会测试一下。',
+  '非常棒我待会儿会测试一下',
+  '好的，我自己晚点再验证。',
+  '收到，我稍后再看一下。谢谢。',
+  '太好了，我会测试一下。',
+  "Sounds good, I'll try it out later.",
+  "Great. I'll test the update myself later. Thanks!",
+  'Okay, I will review this tomorrow.',
+]) {
+  for (const dialogue of [createVoiceDialogueState(), staged()]) {
+    const result = await resolve(utterance, { dialogue });
+    assert.equal(result.reply.action, 'next', utterance);
+    assert.equal(result.reply.control, 'review-later', utterance);
+    assert.equal(result.reply.message, '', 'owner review is never agent feedback');
+    assert.equal(result.brainCalls, 0, 'an acknowledgement must not need a model round-trip');
+    assert.equal(result.dialogue.phase, 'listening');
+    assert.equal(scopedVoicePending(result.dialogue, 's_current'), '', 'deferral discards, never sends, a pending draft');
+  }
+}
+
+for (const utterance of ['好的，谢谢。', '非常棒', 'Great, thanks!', 'Okay.']) {
+  const result = await resolve(utterance);
+  assert.equal(result.reply.action, 'next'); assert.equal(result.reply.control, 'report-acknowledged');
+  assert.equal(result.reply.message, ''); assert.equal(result.brainCalls, 0);
+}
+{
+  const result = await resolve('Great, thanks!', { dialogue: staged() });
+  assert.equal(result.reply.action, 'await');
+  assert.equal(scopedVoicePending(result.dialogue, 's_current'), 'Make the report shorter.',
+    'thanks alone cannot send or erase an unconfirmed instruction');
+  assert.equal(result.brainCalls, 0);
+}
+
+for (const utterance of [
+  'OK,非常棒,我待会儿会测试一下，但请先修复输入框。',
+  '我稍后再看，不过需要你现在修复这个错误',
+  "Great, I'll test it later, but first fix the UI.",
+  'Okay, I will test it after you deploy the fix.',
+  "I'll review later and run the migration now.",
+  '非常棒，可以解释一下怎么修复的吗？',
+  '我待会儿会测试一下吗？',
+]) {
+  const result = await resolve(utterance);
+  assert.equal(result.reply.action, 'await', 'mixed instructions/questions cannot be discarded as navigation: ' + utterance);
+  assert.equal(result.brainCalls, 1, 'substantive feedback still reaches reasoning');
+}
+
 {
   const instruction = 'approve D-002 and run the decisive split';
   const result = await resolve(instruction, {

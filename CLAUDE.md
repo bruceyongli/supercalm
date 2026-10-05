@@ -124,6 +124,11 @@ the small `/voice/conversation/progress` channel keeps text independent of bulky
 interrupt/end cancels the generation; a brief broken download only detaches its reader. Keep replay
 memory/TTL bounded and clear stale journals. Progressing streams reset the client idle timeout;
 partial failures pause the conversation instead of pretending the report finished and starting STT.
+Natural report acknowledgements and owner-review promises (EN/ZH, including "OK, 非常棒，我待会儿会
+测试一下") are conversation controls, not missing coding instructions. Recognize the whole utterance;
+mixed requests/questions still require reasoning. Defer advances this pass without sending feedback,
+dismissing Needs You, or stopping a session. A staged draft's bare approval still confirms that draft.
+Once a next/send control was acknowledged, failure to speak its receipt must not block continuation.
 Exact assistant speaker changes are local controls (`web/voice-controls.js`): never ask the coding agent
 or a model to change the caller's voice. Only an explicit operator choice may change Ryan/Vivian between
 turns. **Dismiss report** uses `/api/voice/dismiss` and the same durable attention action as Needs You;

@@ -469,6 +469,28 @@ try {
     const response = await fetch(base + 'api/voice/' + path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
+  const deferredVoice = (await postVoice('start', { source: 'manual', realtime: true, focusSessionId: 's_dismiss_first' })).body;
+  const deferralBody = { voiceId: deferredVoice.voiceId, requestId: 'review-later-exact-utterance', userText: 'OK,非常棒,我待会儿会测试一下。' };
+  const beforeDeferralCalls = trace.length;
+  const deferred = await postVoice('turn', deferralBody);
+  assert.equal(deferred.status, 200); assert.equal(deferred.body.listen, false);
+  assert.match(deferred.body.say, /稍后验证.*下一项/);
+  assert.equal(deferred.body.delivery.status, 'skipped'); assert.equal(deferred.body.delivery.reason, 'operator-review-later');
+  assert.deepEqual((await postVoice('turn', deferralBody)).body, deferred.body, 'a lost acknowledgement cannot advance twice');
+  const afterDeferral = await postVoice('continue', { voiceId: deferredVoice.voiceId });
+  assert.equal(afterDeferral.body.current.sessionId, 's_dismiss_second', 'the actual queue moves, not just the spoken promise');
+  assert.equal(trace.length, beforeDeferralCalls, 'deferral reaches no LLM/TTS/coding-agent handler');
+  const deferralEvents = store.eventsFor('s_dismiss_first', 20).filter(event => event.type === 'voice-turn').map(event => JSON.parse(event.payload));
+  assert.equal(deferralEvents.length, 1); assert.equal(deferralEvents[0].transcript, deferralBody.userText);
+  assert.equal(deferralEvents[0].action, 'next'); assert.equal(deferralEvents[0].control, 'review-later');
+  assert.equal(store.getSession('s_dismiss_first').status, 'waiting');
+  assert.equal(store.messagesFor('s_dismiss_first').filter(message => message.direction === 'in').length, 0);
+  assert.equal(store.db.prepare('SELECT read_at FROM messages WHERE id = ?').get(actionReports[0].id).read_at, null,
+    'later review keeps the Needs You report for the owner, unlike Dismiss');
+  await postVoice('stop', { voiceId: deferredVoice.voiceId });
+  console.log('voice_review_deferral trace', JSON.stringify({ pass: true, handler: '/api/voice/turn', transcript: deferralBody.userText,
+    action: deferralEvents[0].action, control: deferralEvents[0].control, sourceSession: 's_dismiss_first', nextSession: afterDeferral.body.current.sessionId,
+    generations: trace.length - beforeDeferralCalls, deliveredMessages: 0, doubleAdvance: false, reportStillUnread: true }));
   const actions = (await postVoice('start', { source: 'manual', realtime: true, focusSessionId: 's_dismiss_first' })).body;
   assert.equal(actions.count, 2); assert.equal(actions.current.reportId, actionReports[0].id);
   let releaseHeld;

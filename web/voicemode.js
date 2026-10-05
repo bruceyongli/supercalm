@@ -120,7 +120,8 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
         }
         if (state.done || stopFlag) break;
         if (pendingDismiss) continue;
-        if (interruption?.failed) {
+        const completedControl = state.listen === false && ['sent', 'skipped'].includes(state.delivery?.status);
+        if (interruption?.failed && !completedControl) {
           const resume = await waitVoiceRetry('This report was interrupted. Your report and words are kept. Ask a follow-up to continue the conversation, or dismiss this report.', { label: 'Ask a follow-up' });
           if (pendingDismiss) continue;
           if (!resume) break;
@@ -852,6 +853,13 @@ function renderVoiceSources(names) {
 function updateDelivery(delivery, sentCount = 0) {
   if (!ui?.delivery || !delivery) return;
   ui.delivery.hidden = false;
+  if (delivery.status === 'skipped') {
+    ui.delivery.classList.remove('failed');
+    ui.delivery.textContent = delivery.reason === 'operator-review-later' ? 'Left for your later review · nothing sent'
+      : delivery.reason === 'report-acknowledged' ? 'Report acknowledged · nothing sent'
+      : delivery.reason === 'pending-not-sent' ? 'Skipped this pass · draft not sent' : 'Skipped this pass · nothing sent';
+    return;
+  }
   ui.delivery.classList.toggle('failed', delivery.status !== 'sent');
   ui.delivery.textContent = delivery.status === 'sent'
     ? `✓ Sent to ${delivery.project}${sentCount > 1 ? ` · ${sentCount} sent` : ''}`

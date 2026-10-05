@@ -835,6 +835,7 @@ route('POST', '/api/voice/turn', async (req, res) => {
         // instruction impossible to recover or audit after the model misclassified it.
         transcript: userText.slice(0, 8000),
         assistant: String(r.say || '').slice(0, 4000),
+        ...(r.control ? { control: r.control } : {}),
         ...(r.rejectedModelControl ? { rejected_model_control: r.rejectedModelControl } : {}),
         // Keep a private recoverable draft from the confirmation boundary onward. Successful sends
         // are also normal inbound messages; a closed client or state-machine fault must not erase a
@@ -904,7 +905,9 @@ route('POST', '/api/voice/turn', async (req, res) => {
         sessionId: currentItem?.sessionId || '',
         project: currentItem?.project || 'this session',
         status: 'skipped',
-        reason: r.discardedPending ? 'pending-not-sent' : 'operator-skipped',
+        reason: r.discardedPending ? 'pending-not-sent'
+          : r.control === 'review-later' ? 'operator-review-later'
+          : r.control === 'report-acknowledged' ? 'report-acknowledged' : 'operator-skipped',
       };
       try { if (currentItem) store.addEvent(currentItem.sessionId, 'voice-delivery', delivery); } catch {}
       vs.pointer++;
