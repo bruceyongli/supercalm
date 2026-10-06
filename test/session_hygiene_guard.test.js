@@ -45,8 +45,10 @@ assert.match(sessions, /lifecycle: parent \? 'temporary' : 'persistent'/,
   'fallback generic session launches from agent curl cannot create permanent list clutter');
 assert.match(sessions, /AIOS_SESSION_TMPDIR[\s\S]*AIOS_SESSION_ARTIFACTS/,
   'every agent receives separate disposable and durable session storage instructions');
-assert.match(sessions, /const argv = TOOLS\[tool\]\.argv\(/,
-  'launch argv reaches the tool binary directly');
+assert.match(sessions, /const nativeArgv = TOOLS\[tool\]\.argv\(/,
+  'launch begins with the unwrapped native tool argv');
+assert.match(sessions, /const argv = tool === 'claude' \? adaptClaudeLaunch\(nativeArgv, argvOpts\) : nativeArgv/,
+  'only Claude receives its compatibility adapter; Codex uses the original native argv unchanged');
 assert.doesNotMatch(sessions, /guardAgentArgv|sandbox-exec/,
   'launches are NEVER exec-wrapped: macOS seatbelt cannot nest, so a wrapped codex/claude dies on every command (2026-08-11 fleet outage)');
 assert.match(sessions, /scheduleSessionStorageCleanup\(entry\.id\)/,
