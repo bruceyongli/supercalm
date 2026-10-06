@@ -40,6 +40,7 @@ import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
+import { adaptClaudeLaunch } from './claude_launch.js';
 import { originalTaskSeed } from './resume_seed.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
@@ -1084,7 +1085,8 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // an exec-level seatbelt profile: macOS forbids nested profiles, so codex (which applies its own
   // in workspace-write) died on every command, and claude broke on home-root config writes. Any
   // future confinement must go through the tool's OWN sandbox settings, never an exec wrapper.
-  const argv = TOOLS[tool].argv(launchTask, argvOpts);
+  const nativeArgv = TOOLS[tool].argv(launchTask, argvOpts);
+  const argv = tool === 'claude' ? adaptClaudeLaunch(nativeArgv, argvOpts) : nativeArgv;
   const cmd = argv.map(shquote).join(' ');
   // per-tool env. For claude this is resolved per-launch (auto-detect): external proxy if
   // reachable, else Supercalm's own dashboard login via the local shim, else the CLI's own

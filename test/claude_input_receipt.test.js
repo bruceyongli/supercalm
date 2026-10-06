@@ -42,16 +42,21 @@ try {
   assert.equal(enters, 1, 'a native queue receipt never retries or interrupts the agent');
   process.env.AIOS_DATA = join(dir, 'data');
   const { TOOLS } = await import('../src/config.js');
-  const ask = TOOLS.claude.argv(null, { autonomy: 'ask', resume: true, resumeId: nativeId });
-  assert.deepEqual(ask.slice(0, 3), ['claude', '--resume', nativeId]);
-  assert.deepEqual(ask.slice(3), ['--permission-mode', 'default'], 'ask does not inherit the new CLI auto default');
-  assert.ok(TOOLS.claude.argv(null, { resume: true }).includes('--continue'), 'legacy unbound conversations retain compatibility');
+  const { adaptClaudeLaunch } = await import('../src/claude_launch.js');
+  const claudeArgs = (opts, task = null) => adaptClaudeLaunch(TOOLS.claude.argv(task, opts), opts);
+  const ask = claudeArgs({ autonomy: 'ask', resume: true, resumeId: nativeId });
+  assert.deepEqual(ask, ['claude', '--permission-mode', 'default', '--resume', nativeId], 'ask stays manual and resumes the exact native conversation');
+  assert.ok(claudeArgs({ resume: true }).includes('--continue'), 'legacy unbound conversations retain compatibility');
   assert.ok(TOOLS.codex.argv(null, { resume: true, resumeId: nativeId }).includes(nativeId), 'Codex identity remains unchanged');
-  const refreshed = TOOLS.claude.argv(null, { resume: true, resumeId: nativeId, appendPrompt: 'Current project rules.', refreshSystemPrompt: true });
+  const refreshed = claudeArgs({ resume: true, resumeId: nativeId, appendPrompt: 'Current project rules.', refreshSystemPrompt: true });
   assert.ok(refreshed.includes('--system-prompt-snapshot'));
   assert.equal(refreshed[refreshed.indexOf('--system-prompt-snapshot') + 1], 'off');
-  assert.ok(!TOOLS.claude.argv(null, { resume: true, appendPrompt: 'Rules.' }).includes('--system-prompt-snapshot'), 'unsupported Claude builds never receive an unknown flag');
-  assert.ok(!TOOLS.claude.argv('task', { appendPrompt: 'Rules.', refreshSystemPrompt: true }).includes('--system-prompt-snapshot'), 'fresh launches keep the native prompt-cache default');
-  assert.ok(!TOOLS.codex.argv(null, { resume: true, resumeId: nativeId, appendPrompt: 'Rules.', refreshSystemPrompt: true }).includes('--system-prompt-snapshot'), 'Claude snapshot option cannot leak into Codex');
+  assert.ok(!claudeArgs({ resume: true, appendPrompt: 'Rules.' }).includes('--system-prompt-snapshot'), 'unsupported Claude builds never receive an unknown flag');
+  assert.ok(!claudeArgs({ appendPrompt: 'Rules.', refreshSystemPrompt: true }, 'task').includes('--system-prompt-snapshot'), 'fresh launches keep the native prompt-cache default');
+  const codex = TOOLS.codex.argv(null, { resume: true, resumeId: nativeId, appendPrompt: 'Rules.' });
+  assert.equal(adaptClaudeLaunch(codex, { autonomy: 'ask', resume: true, resumeId: nativeId, refreshSystemPrompt: true }), codex,
+    'Claude launch adapter is a literal no-op for Codex, including array identity');
+  assert.deepEqual(claudeArgs({ autonomy: 'full' }), TOOLS.claude.argv(null, { autonomy: 'full' }));
+  assert.deepEqual(claudeArgs({ autonomy: 'auto' }), TOOLS.claude.argv(null, { autonomy: 'auto' }));
 } finally { await rm(dir, { recursive: true, force: true }); }
 console.log('claude_input_receipt: exact new native queue/consumption, no duplicate sends, bounded reads and pinned resume/permissions passed');

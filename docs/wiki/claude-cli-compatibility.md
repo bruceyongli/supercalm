@@ -17,6 +17,7 @@ assuming any disappeared draft was delivered.
 Claude changes are tool-scoped. Codex launch arguments, notify precedence, Enter timing/retries and
 ten-minute background-server hold retain their existing behavior. No coding session is interrupted,
 force-resumed or sent an additional instruction by this audit.
+Launch adjustments live in `src/claude_launch.js`; the shared boot/provider configuration is unchanged.
 
 ## Reviewed surfaces and implementation
 
