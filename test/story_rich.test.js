@@ -340,7 +340,7 @@ assert.ok(storyView.includes('storyVideoPreviews(bodyText)')
     && storyView.includes('controls playsinline preload="metadata"'),
   'story reports turn local video references into responsive, non-autoplaying inline players');
 assert.ok(storyView.includes("feedEvents.findLast((ev) => ev.kind === 'report')")
-    && storyView.includes('eventHtml(ev, i, evKey(ev) === latestReportKey)'),
+    && storyView.includes('eventHtml(ev, sourceIndex, evKey(ev) === latestReportKey)'),
   'only the newest report auto-loads video previews');
 assert.ok(storyView.includes('<ol class="story-plan-list"') && storyView.includes("ev.kind === 'plan' ? planHtml(ev)"),
   'story plan events render as a semantic ordered list');

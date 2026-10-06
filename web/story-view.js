@@ -95,7 +95,11 @@ export function cancelComposerSend(echo) {
 // out?" — a new send must APPEND, never re-window the story down to the newest message. ts is near-unique
 // per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
 // keys (so answered/meta updates land) and add new ones; already-loaded atoms with no incoming match are KEPT.
-function evKey(e) { return e.kind === 'ask' && e.askId && e.questionId != null ? `ask|${e.askId}|${e.questionId}` : `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`; }
+function evKey(e) {
+  if (e.messageId) return `claude|${e.messageId}`;
+  if (e.toolId) return `${e.kind}|${e.toolId}`;
+  return e.kind === 'ask' && e.askId && e.questionId != null ? `ask|${e.askId}|${e.questionId}` : `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`;
+}
 
 // The scroll position belongs to the USER, not to us. It is preserved across every re-render / refresh /
 // story-update / session-switch, and restored (persisted per session) on reopen. We NEVER auto-scroll to
@@ -130,7 +134,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // v6: plan events now carry status-aware list items instead of the old pill-only shape.
 // v7: flush missing native assistant messages and commentary falsely promoted to reports.
 // v8: native async questions replace the CLI's plain-text question/report mirror.
-export const STORY_CACHE_KEY = (id) => `aios_story8_${id}`;
+// v9: Claude native identities/stop reasons, specific tool descriptions and inspectable errors.
+export const STORY_CACHE_KEY = (id) => `aios_story9_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -257,14 +262,15 @@ function rollup(evs) {
 function stepsBodyHtml(steps) {
   return `<div class="story-steps" data-story-steps>${steps.map((st) => `
       <div class="story-step">${esc(st.human || '')}</div>
-      ${st.cmd ? `<div class="story-cmd">$ ${esc(String(st.cmd).slice(0, 200))}</div>` : ''}`).join('')}</div>`;
+      ${st.cmd ? `<div class="story-cmd">$ ${esc(String(st.cmd).slice(0, 200))}</div>` : ''}
+      ${st.output ? `<pre class="story-tool-output">${esc(st.output)}</pre>` : ''}`).join('')}</div>`;
 }
 function stepsHtml(ev, i) {
   const steps = ev.steps || [];
   if (!steps.length) return '';
   const open = openSteps.has(i);
   return `
-    <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${steps.length > 1 ? steps.length + ' steps' : 'show the command'}</div>
+    <div class="story-steps-toggle${open ? ' open' : ''}" data-story-steps-toggle data-i="${i}">${open ? '▾' : '▸'} ${ev.kind === 'fail' ? 'show error details' : steps.length > 1 ? steps.length + ' steps' : 'show the command'}</div>
     ${open ? stepsBodyHtml(steps) : ''}`;
 }
 
@@ -292,6 +298,7 @@ export function primaryIndex(opts) {
 
 function askHtml(ev) {
   const opts = ev.options || [];
+  if (ev.cancelled) return '<div class="story-answered">Question cancelled — no answer submitted</div>';
   const local = answeredAsks.get(askKey(ev));
   if (ev.answered || local != null) {
     const w = ev.answeredWith || local || '';
@@ -460,7 +467,8 @@ function calmEvents(source) {
     const previous = out[out.length - 1];
     if (!showFull && ev.kind === 'work' && previous?.kind === 'work') {
       previous.steps = [...(previous.steps || []), ...(ev.steps || [])];
-      previous.ts = ev.ts || previous.ts;
+      previous.lastTs = ev.lastTs || ev.ts || previous.lastTs;
+      previous.title = ev.title || previous.title;
       previous.meta = previous.steps.length > 1 ? `${previous.steps.length} steps` : (ev.meta || previous.meta);
       if (!previous.body && ev.body) previous.body = ev.body;
       continue;
@@ -525,7 +533,7 @@ function render() {
     old.delete(key);
     if (!row || row._storySignature !== signature) {
       const template = document.createElement('template');
-      template.innerHTML = eventHtml(ev, i, evKey(ev) === latestReportKey).trim();
+      template.innerHTML = eventHtml(ev, sourceIndex, evKey(ev) === latestReportKey).trim();
       const next = template.content.firstElementChild;
       next.dataset.storyKey = key;
       next._storySignature = signature;
@@ -533,7 +541,7 @@ function render() {
       row = next;
     }
     const steps = row.querySelector('[data-story-steps-toggle]');
-    if (steps) steps.dataset.i = sourceIndex;
+    if (steps) { steps.dataset.i = sourceIndex; steps._storySteps = ev.steps || []; }
     if (previous.nextElementSibling !== row) previous.after(row);
     previous = row;
   });
@@ -624,7 +632,7 @@ function wire() {
         t.textContent = `▸ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
       } else {
         openSteps.add(i);
-        t.insertAdjacentHTML('afterend', stepsBodyHtml(events[i]?.steps || []));
+        t.insertAdjacentHTML('afterend', stepsBodyHtml(t._storySteps || events[i]?.steps || []));
         t.classList.add('open');
         t.textContent = `▾ ${t.textContent.replace(/^[▸▾]\s*/, '')}`;
       }

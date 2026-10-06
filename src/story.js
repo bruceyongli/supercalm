@@ -84,7 +84,7 @@ function humanizeCmd(cmd) {
 const CLAUDE_TOOL_KIND = {
   Read: 'work', Grep: 'work', Glob: 'work', LS: 'work', Bash: null /* classify by command */,
   Edit: 'edit', Write: 'edit', NotebookEdit: 'edit', MultiEdit: 'edit',
-  WebFetch: 'web', WebSearch: 'web', TodoWrite: 'plan', Task: 'sub',
+  WebFetch: 'web', WebSearch: 'web', TodoWrite: 'plan', Task: 'sub', Agent: 'sub', Monitor: 'sub',
   AskUserQuestion: 'ask', ExitPlanMode: 'plan',
 };
 
@@ -94,7 +94,7 @@ const CLAUDE_TOOL_KIND = {
 function normalizePlanItems(items) {
   return (Array.isArray(items) ? items : []).map((item) => {
     if (typeof item === 'string') return { text: item, status: 'pending' };
-    const text = item?.step || item?.title || item?.content || item?.activeForm || '';
+    const text = item?.step || item?.title || item?.content || item?.text || item?.activeForm || '';
     const rawStatus = String(item?.status || '').toLowerCase().replace(/[\s-]+/g, '_');
     const status = ['completed', 'complete', 'done'].includes(rawStatus) ? 'completed'
       : ['in_progress', 'active', 'working'].includes(rawStatus) ? 'in_progress'
@@ -337,18 +337,54 @@ const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function atomsFromClaude(lines) {
   const atoms = [];
+  const calls = new Map(); // current CLI results refer to tool_use_id, not the previous visible step
+  const taskLists = new Map(); // a helper's task #1 is not the main agent's task #1
+  const assistantBlocks = new Map();
   const askIds = new Set(); // AskUserQuestion tool_use ids — their tool_result IS the answer
   // The tool_result ("Your questions have been answered: \"q\"=\"a\", …") is the DURABLE answer
   // record: menu selections leave NO operator text turn in the transcript, so the old you-after-ask
   // rule never marked them answered — the option buttons resurrected whenever the client's local
   // memory reset on a session switch (operator report 2026-07-16, s_07814eddc4).
-  const answerAsks = (toolUseId, res) => {
+  const answerAsks = (toolUseId, res, result) => {
+    let answers = result?.answers;
+    if (!answers) { try { answers = JSON.parse(res)?.answers; } catch {} }
+    if (!answers || typeof answers !== 'object' || Array.isArray(answers)) answers = null;
     for (const a of atoms) {
       if (a.askId !== toolUseId) continue;
+      // The new structured result can contain only some answers. Do not invent a reply for the rest.
+      if (answers && !Object.hasOwn(answers, a.text)) continue;
       a.answered = true;
       const m = a.text && res.match(new RegExp(`"${escapeRx(a.text)}"="([\\s\\S]*?)"(?:, "|\\.? ?You can now|$)`));
-      a.answeredWith = ((m ? m[1] : res.replace(/^Your questions have been answered:\s*/i, '')).split('\n')[0] || '').slice(0, 60);
+      const answer = answers ? answers[a.text] : (m ? m[1] : res.replace(/^(?:Your questions have been answered|User has answered your questions):\s*/i, ''));
+      a.answeredWith = (Array.isArray(answer) ? answer.join(', ') : String(answer ?? '')).split('\n')[0].slice(0, 60);
     }
+  };
+  const taskResult = (call, result, text) => {
+    if (!/^Task(?:Create|Update|Get|List)$/.test(call?.name || '')) return;
+    if (!taskLists.has(call.chain)) taskLists.set(call.chain, new Map());
+    const tasks = taskLists.get(call.chain);
+    let data = result;
+    if (!data?.task && !data?.taskId && !data?.tasks && !Array.isArray(data)) { try { data = JSON.parse(text); } catch {} }
+    const task = data?.task;
+    if (call.name === 'TaskCreate') {
+      const id = task?.id || data?.taskId || text.match(/Task #([^\s]+) created successfully/i)?.[1];
+      if (!id) return; // a pending/unknown result must not manufacture a completed task mutation
+      tasks.set(String(id), { text: task?.subject || call.input?.subject, status: task?.status || 'pending' });
+    } else if (call.name === 'TaskUpdate') {
+      const id = String(call.input?.taskId || task?.id || '');
+      if (!id) return;
+      const previous = tasks.get(id);
+      if (!previous && !task?.subject && !call.input?.subject) return;
+      if (call.input?.status === 'deleted') tasks.delete(id);
+      else tasks.set(id, { text: task?.subject || call.input?.subject || previous?.text,
+        status: task?.status || call.input?.status || previous?.status || 'pending' });
+    } else {
+      const list = call.name === 'TaskGet' ? [task || data] : (data?.tasks || (Array.isArray(data) ? data : []));
+      if (!Array.isArray(list)) return;
+      if (call.name === 'TaskList') tasks.clear();
+      for (const item of list) if (item?.id && item.subject) tasks.set(String(item.id), { text: item.subject, status: item.status });
+    }
+    if (call.planAtom) Object.assign(call.planAtom, { title: 'Updated the plan', planItems: normalizePlanItems([...tasks.values()]) });
   };
   for (const l of lines) {
     let j; try { j = JSON.parse(l); } catch { continue; }
@@ -365,28 +401,83 @@ function atomsFromClaude(lines) {
           else attachImagesToYou(atoms, ts, images); // image-stub turn → fold into the adjacent bubble
         }
       } else if (Array.isArray(c)) {
+        const userText = c.filter(part => part?.type === 'text' && part.text).map(part => part.text).join('\n\n');
+        if (userText) {
+          if (/\[Request interrupted/.test(userText)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
+          else {
+            const images = extractAttachmentImages(userText);
+            const text = cleanUserText(userText);
+            if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
+            else attachImagesToYou(atoms, ts, images, indent);
+          }
+        }
         for (const part of c) {
-          if (part.type === 'text' && part.text) {
-            // F7: array-content user turns were dropped before
-            if (/\[Request interrupted/.test(part.text)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
-            else {
-              const images = extractAttachmentImages(part.text);
-              const text = cleanUserText(part.text);
-              if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
-              else attachImagesToYou(atoms, ts, images, indent);
-            }
-          } else if (part.type === 'tool_result' && !part.is_error && askIds.has(part.tool_use_id)) {
-            answerAsks(part.tool_use_id, textOf(part.content)); // the ask's durable answer record
+          if (!part || typeof part !== 'object') continue;
+          if (part.type === 'tool_result' && !part.is_error && askIds.has(part.tool_use_id)) {
+            answerAsks(part.tool_use_id, textOf(part.content), j.toolUseResult); // the ask's durable answer record
           } else if (part.type === 'tool_result' && part.is_error) {
-            atoms.push({ ts, kind: 'fail', title: 'Hit a snag', text: firstLines(deMd(textOf(part.content)), 2), indent });
+            const call = calls.get(part.tool_use_id);
+            if (askIds.has(part.tool_use_id)) for (const ask of atoms) if (ask.askId === part.tool_use_id) {
+              ask.cancelled = true; ask.answered = true; ask.answeredWith = '';
+            }
+            const output = textOf(part.content) || j.toolUseResult?.stderr || '';
+            const exit = output.match(/^Exit code (\d+)\b/m)?.[1];
+            atoms.push({ ts, kind: 'fail', title: call?.description ? `Failed: ${call.description}` : 'Hit a snag',
+              text: claudeFailureSummary(output), indent, exitCode: exit == null ? undefined : Number(exit),
+              toolId: part.tool_use_id,
+              steps: [{ human: call?.description || call?.name || 'Tool result', cmd: call?.command,
+                output: output.slice(-8000) }] });
+          } else if (part.type === 'tool_result') {
+            taskResult(calls.get(part.tool_use_id), j.toolUseResult, textOf(part.content));
           }
         }
       }
     } else if (j.type === 'assistant' && j.message) {
-      for (const part of j.message.content || []) {
-        if (part.type === 'text' && part.text) atoms.push({ ts, kind: 'note', text: part.text, indent }); // final text => report (promoted below)
+      const content = typeof j.message.content === 'string' ? [{ type: 'text', text: j.message.content }]
+        : (Array.isArray(j.message.content) ? j.message.content : []);
+      const reason = j.message.stop_reason;
+      const messageId = j.message.id ? `${j.message.id}|${indent}` : null;
+      const previousMessage = messageId && assistantBlocks.get(messageId);
+      if (previousMessage && reason) Object.assign(previousMessage.atom, {
+        kind: reason === 'end_turn' || previousMessage.atom.kind === 'report' ? 'report' : 'note', reportCandidate: false,
+      });
+      for (const [index, part] of content.entries()) {
+        if (!part || typeof part !== 'object') continue;
+        if (part.type === 'text' && part.text) {
+          // Claude 2.1 emits one record per API content block, carrying the real stop reason. A
+          // growing log ending on tool_use/pause_turn is NOT a completed report. Old unphased logs
+          // keep buildStory's compatibility inference. Identity dedupes rewritten/mirrored blocks,
+          // not different messages that happen to contain the same words.
+          const kind = reason === 'end_turn' ? 'report' : 'note';
+          const blockId = `${j.apiBlockIndex ?? j.uuid ?? 'content'}|${index}`;
+          const existing = messageId && assistantBlocks.get(messageId);
+          if (existing) {
+            if (ts >= (existing.blocks.get(blockId)?.ts || 0)) existing.blocks.set(blockId, { text: part.text, ts });
+            Object.assign(existing.atom, { kind: existing.atom.kind === 'report' ? 'report' : kind,
+              text: [...existing.blocks.values()].map(block => block.text).join('\n\n'), reportCandidate: reason ? false : existing.atom.reportCandidate });
+          }
+          else {
+            const atom = { ts, kind, text: part.text, indent, messageId, reportCandidate: reason ? false : undefined };
+            atoms.push(atom);
+            if (messageId) assistantBlocks.set(messageId, { atom, blocks: new Map([[blockId, { text: part.text, ts }]]) });
+          }
+        }
         else if (part.type === 'thinking') atoms.push({ ts, kind: '_thinking', indent });
         else if (part.type === 'tool_use') {
+          if (part.id && calls.has(part.id)) {
+            if (part.name === 'AskUserQuestion' && part.input?.answers) answerAsks(part.id, '', part.input);
+            continue; // resume/replayed blocks are the same invocation, not another Story step
+          }
+          const call = { name: part.name, input: part.input, chain: indent ? (j.agentId || j.sessionId || 'sidechain') : 'main',
+            description: part.input?.description, command: part.input?.command };
+          calls.set(part.id, call);
+          if (/^Task(?:Create|Update|Get|List)$/.test(part.name)) {
+            call.planAtom = { ts, kind: 'plan', indent, toolId: part.id,
+              title: part.input?.subject || 'Updating the plan',
+              steps: [{ human: part.input?.subject || part.name, cmd: part.name }] };
+            atoms.push(call.planAtom);
+            continue; // project confirmed results as a checklist, unknown/pending calls stay inspectable
+          }
           if (part.name === 'TodoWrite') {
             atoms.push({
               ts, kind: 'plan', indent, title: 'Made a plan',
@@ -404,18 +495,24 @@ function atomsFromClaude(lines) {
                 ts, kind: 'ask', indent, askId: part.id,
                 title: q.header ? `Needs your decision — ${q.header}` : 'Needs your decision',
                 text: q.question, options: q.options || [], multiSelect: !!q.multiSelect,
+                requiresResult: !!reason,
               });
             }
             askIds.add(part.id);
+            if (part.input?.answers) answerAsks(part.id, '', part.input);
             continue;
           }
           const base = CLAUDE_TOOL_KIND[part.name];
           const kind = base === null ? classifyCommand(part.input?.command) : (base || 'work');
+          const description = part.input?.description || (part.name === 'Skill' ? `Used skill: ${part.input?.skill || part.name}` : '');
+          const cmd = part.input?.command || part.name + ' ' + (part.input?.file_path || part.input?.pattern || '');
+          const human = description || humanizeCmd(cmd);
           atoms.push({
             ts, kind, indent,
-            cmd: part.input?.command || part.name + ' ' + (part.input?.file_path || part.input?.pattern || ''),
-            human: part.input?.description || humanizeCmd(part.input?.command || part.name),
-            title: part.name === 'Task' ? (part.input?.description || 'Sent a helper agent') : undefined,
+            toolId: part.id,
+            cmd, human,
+            humanTitle: description || (base === undefined ? part.name : part.input?.file_path ? human : undefined),
+            title: kind === 'sub' ? (description || (part.name === 'Monitor' ? 'Started a background monitor' : 'Sent a helper agent')) : undefined,
           });
         }
       }
@@ -423,6 +520,16 @@ function atomsFromClaude(lines) {
     // hidden: attachment, file-history-snapshot, mode, permission-mode, last-prompt (no story value)
   }
   return atoms;
+}
+
+function claudeFailureSummary(output) {
+  const lines = deMd(output).split('\n').map(line => line.trim()).filter(Boolean);
+  const blocked = lines.find(line => /^(?:Error: )?Blocked:.*followed by:/i.test(line));
+  if (blocked) return blocked.split(/ followed by:/i)[0].slice(0, 600);
+  // CLI Bash output starts with "Exit code 1", and successful stdout may precede the traceback.
+  // Prefer the actual diagnostic (usually at the tail), never "Exit code 1 · ok" or Python source.
+  const diagnostic = lines.findLast(line => /^[\w.]+(?:Error|Exception):|^(?:error|fatal):|\bcommand not found\b|\bpermission denied\b|\bno such file or directory\b|^\(eval\):.*not found/i.test(line));
+  return String(diagnostic || lines.findLast(line => !/^Exit code \d+\b|^Traceback\b/i.test(line)) || output).slice(0, 600);
 }
 
 // ---------- clustering: atoms -> story events ----------
@@ -441,21 +548,22 @@ function buildStory(atoms) {
     if (clusterable) {
       if (cluster && cluster.kind === a.kind && !!cluster.indent === !!a.indent && a.ts - cluster.lastTs <= CLUSTER_WINDOW_MS) {
         cluster.steps.push({ human: a.human, cmd: a.cmd });
+        if (a.humanTitle) cluster.title = a.humanTitle;
         cluster.lastTs = a.ts;
       } else {
         flush();
-        cluster = { kind: a.kind, ts: a.ts, lastTs: a.ts, indent: a.indent, steps: [{ human: a.human, cmd: a.cmd }] };
+        cluster = { kind: a.kind, ts: a.ts, lastTs: a.ts, indent: a.indent, title: a.humanTitle, toolId: a.toolId, steps: [{ human: a.human, cmd: a.cmd }] };
       }
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, reportCandidate: a.reportCandidate });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, steps: a.steps, toolId: a.toolId, messageId: a.messageId, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, cancelled: a.cancelled, requiresResult: a.requiresResult, reportCandidate: a.reportCandidate });
   }
   flush();
 
   for (const ev of out) {
-    if (ev.steps) {
-      ev.title = ev.kind === 'work' ? humanizeCluster(ev.steps.map(s => s.cmd || '')) :
+    if (ev.steps && ev.kind !== 'fail') {
+      ev.title ||= ev.kind === 'work' ? humanizeCluster(ev.steps.map(s => s.cmd || '')) :
                  ev.kind === 'web' ? 'Looked things up online' :
                  ev.kind === 'edit' ? 'Made changes to the code' : 'Ran the checks';
       const dur = ev.lastTs > ev.ts ? Math.max(1, Math.round((ev.lastTs - ev.ts) / 1000)) + 's' : '';
@@ -472,10 +580,8 @@ function buildStory(atoms) {
   }
   // Promote each agent turn's FINAL 'note' to 'report' so EVERY historical report gets the listen
   // control, not just the newest (operator: "voice report should appear in all history reports").
-  // Claude emits ALL assistant text as notes (interleaved with tool calls); a note is that turn's
-  // report when the next non-gap event hands back to the operator ('you') or ends the story. Codex
-  // tags final/final_answer explicitly; its commentary must remain a note even at a live tail.
-  // Legacy unphased text keeps this compatibility inference.
+  // Current Claude uses stop_reason; Codex tags final/final_answer. Only legacy unphased text needs
+  // the next-operator/tail inference; explicit tool_use/commentary must remain a note at a live tail.
   for (let i = 0; i < out.length; i++) {
     if (out[i].kind !== 'note' || out[i].reportCandidate === false) continue;
     let j = i + 1;
@@ -526,17 +632,17 @@ function parseSessionLog(jsonlText) {
   const fmt = detectFormat(lines[0]);
   const atoms = fmt === 'codex' ? atomsFromCodex(lines) : atomsFromClaude(lines);
   const out = buildStory(atoms);
-  // S7: an ask followed by any later operator input is ANSWERED — the server data must agree
-  // with the client's optimistic stamp, or the next refetch resurrects the buttons. Asks already
-  // answered via their tool_result/function_call_output (the durable record) keep that stamp.
+  // Legacy S7 compatibility: an ask followed by operator input was inferred answered. Modern Claude
+  // carries authoritative results: an unrelated steering message cannot answer its remaining questions.
   for (let i = 0; i < out.length; i++) {
-    if (out[i].kind !== 'ask' || out[i].answered) continue;
+    if (out[i].kind !== 'ask' || out[i].answered || out[i].requiresResult) continue;
     const reply = out.slice(i + 1).find((e) => e.kind === 'you');
     if (reply) {
       out[i].answered = true;
       out[i].answeredWith = String(reply.body || reply.title || '').split('\n')[0].slice(0, 60);
     }
   }
+  for (const event of out) delete event.requiresResult;
   // F8: gap titles (needs `answered` above)
   for (let i = 0; i < out.length; i++) {
     if (out[i].kind !== 'gap') continue;
