@@ -40,6 +40,7 @@ import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
+import { stashClaudeComposer } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
@@ -803,26 +804,33 @@ export async function sendText(name, text, options = {}) {
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
 
-async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false, claudeTranscript = null } = {}) {
+async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false, claudeTranscript = null, tool = null } = {}) {
   // Claude-only evidence. Codex keeps its established TUI submit/retry protocol unchanged.
   const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text) : null;
+  const claudeComposer = requireOperatorTarget && !menuAnswer && (tool === 'claude' || !!claudeTranscript);
+  const draftMaxLines = claudeComposer ? 768 : 120;
+  // A phone-sized viewport can crop the start of a tall draft. Include a bounded scrollback
+  // window for Claude input only; verification still requires the live bottom composer/footer.
+  const readInputScreen = () => claudeComposer
+    ? tmux('capture-pane', '-p', '-t', name, '-S', '-512')
+    : tmux('capture-pane', '-p', '-t', name);
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
   try {
-    screen = await tmux('capture-pane', '-p', '-t', name);
+    screen = await readInputScreen();
   } catch {}
   // Claude's session-feedback survey ("How is Claude doing…? 1: Bad … 0: Dismiss") swallows
   // keystrokes ahead of the composer — replies typed under it sat unsubmitted for hours. If it's
   // showing in the live tail (bottom lines ONLY — survey wording quoted higher up in a transcript
   // must not trigger; an ambient detect-gate version of this typed 258 stray '0's into the session
   // that quoted it), dismiss it, then re-capture for the menu check below. A false match here
-  // self-heals: the C-u below clears the input line before the real text is typed.
+  // self-heals: the identified draft is cleared/stashed before the real text is typed.
   if (CLAUDE_SURVEY_RX.test(stripAnsi(screen || '').split('\n').slice(-12).join('\n'))) {
     await exec(TMUX, ['send-keys', '-t', name, '0'], X);
     await sleep(250);
     try {
-      screen = await tmux('capture-pane', '-p', '-t', name);
+      screen = await readInputScreen();
     } catch {}
   }
   // Story renders native trust choices as buttons. When its exact visible label comes back through
@@ -840,7 +848,8 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   }
   let inputTarget = null;
   if (requireOperatorTarget) {
-    inputTarget = operatorInputPlan(screen, text, { menuAnswer, allowActive, replacePendingDraft });
+    inputTarget = operatorInputPlan(screen, text, { menuAnswer, allowActive, replacePendingDraft,
+      ...(claudeComposer ? { draftMaxLines, strictComposer: true } : {}) });
     if (!inputTarget.ready) return { accepted: false, reason: inputTarget.reason, pendingDraft: inputTarget.draft || '' };
   }
   if (inputTarget?.target === 'existing-draft') {
@@ -848,8 +857,8 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
     const receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: 0,
-      confirmSubmission,
-      readScreen: () => tmux('capture-pane', '-p', '-t', name),
+      confirmSubmission, draftMaxLines,
+      readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
     return { ...receipt, submittedExisting: receipt.accepted };
@@ -858,6 +867,15 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   if (digit) {
     await exec(TMUX, ['send-keys', '-t', name, digit], X);
     await sleep(300);
+  } else if (claudeComposer) {
+    if (inputTarget?.target === 'replace-draft') {
+      const cleared = await stashClaudeComposer({
+        stash: () => exec(TMUX, ['send-keys', '-t', name, 'C-s'], X),
+        readScreen: readInputScreen,
+      });
+      if (!cleared) return { accepted: false, reason: 'draft-clear-unconfirmed', pendingDraft: inputTarget.draft };
+    }
+    // An empty Claude composer needs no clear key. Ctrl-S here would restore an older stash.
   } else {
     // Clear anything already sitting in the agent's input line (e.g. text left over from interactive
     // terminal typing) so this composed message isn't appended to it — that concatenation turned a
@@ -871,11 +889,11 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
     receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
-      confirmSubmission,
-      readScreen: () => tmux('capture-pane', '-p', '-t', name),
+      confirmSubmission, draftMaxLines,
+      readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
-    if (!receipt.accepted) return receipt;
+    if (!receipt.accepted) return { ...receipt, replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '' };
   } else {
     await sleep(SUBMIT_DELAY_MS);
     await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
@@ -3599,10 +3617,16 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
     const delivered = await sendText(s.tmux, text, {
       requireOperatorTarget: true,
       allowActive: s.status === 'working',
+      tool: s.tool,
       claudeTranscript: s.tool === 'claude' ? s.claude_transcript : null,
       replacePendingDraft,
     });
     recordDelivery(delivered);
+    // The old draft was already stashed even if submission of the NEW message later failed.
+    // Preserve it in shared history on that path as well; never mark the new message sent.
+    if (delivered?.accepted === false && delivered.replacedDraft) {
+      try { store.addEvent(sid, 'composer-draft-archived', { text: delivered.replacedDraft, displaced_by: source }); } catch {}
+    }
     if (delivered?.accepted === false) {
       return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }

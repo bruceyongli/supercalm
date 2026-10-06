@@ -1,7 +1,9 @@
 // Deterministic raw-mode agent for the private-tmux delivery regression. No model/network calls.
 import { appendFileSync } from 'node:fs';
 const [trace, mode = 'ignore-first', family = 'codex', nativeFile = '', nativeId = ''] = process.argv.slice(2);
-let input = '';
+const longDraft = Array.from({ length: 33 }, (_, i) => `Old request line ${i}: 保留之前输入，不要拼进新问题。`).join('\n');
+let input = mode.startsWith('claude-long') || mode === 'claude-stash-blocked' ? longDraft : '';
+let stashed = '';
 let attempts = 0;
 let last = '';
 const marker = family === 'claude' ? '❯' : '›';
@@ -36,11 +38,22 @@ if (mode === 'partial-paste' || mode === 'redraw-paste') {
 } else {
 process.stdin.on('data', data => {
   for (const char of data) {
-    if (char === '\x15') { input = ''; attempts = 0; }
+    if (char === '\x13' && family === 'claude') {
+      appendFileSync(trace, JSON.stringify({ event: 'stash', text: input }) + '\n');
+      if (mode === 'claude-stash-blocked') continue;
+      if (input) { stashed = input; input = ''; }
+      else { input = stashed; stashed = ''; }
+    }
+    else if (char === '\x15') {
+      // Current Claude Ctrl-U is a logical-line edit, NOT a whole-buffer reset.
+      if (family === 'claude') input = input.slice(0, Math.max(0, input.lastIndexOf('\n')));
+      else input = '';
+      attempts = 0;
+    }
     else if (char === '\r' || char === '\n') {
       attempts++;
       appendFileSync(trace, JSON.stringify({ event: 'enter', attempts, input }) + '\n');
-      if (mode === 'ignore-all' || (mode === 'ignore-first' && attempts === 1)) continue;
+      if (mode === 'ignore-all' || mode === 'claude-long-fail' || (mode === 'ignore-first' && attempts === 1)) continue;
       if (input) {
         appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
         if (mode === 'claude-queued' && nativeFile) {
@@ -55,4 +68,5 @@ process.stdin.on('data', data => {
   render();
 });
 }
+appendFileSync(trace, JSON.stringify({ event: 'ready', input }) + '\n');
 render();

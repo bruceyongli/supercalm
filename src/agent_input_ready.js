@@ -111,7 +111,7 @@ export function pendingDraftMatches(pending, requested, wrappedLines = [], { pre
   return visible.endsWith('…') && wanted.startsWith(visible.slice(0, -1).trimEnd());
 }
 
-export function agentInputReady(screen) {
+export function agentInputReady(screen, { completeComposer = false } = {}) {
   const clean = cleanAgentScreen(screen);
   const tail = clean.split('\n').slice(-24);
   for (let index = tail.length - 1; index >= 0; index--) {
@@ -129,6 +129,11 @@ export function agentInputReady(screen) {
       ? /(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(after)
       : /(?:bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i.test(after);
     if (!footer) continue;
+    if (completeComposer) {
+      const rest = tail.slice(index + 1);
+      const footerAt = rest.findIndex(line => /bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents/i.test(line));
+      if (rest.slice(0, footerAt).some(line => line.trim() && !/^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/.test(line))) return false;
+    }
     if (marker === '›' && body && !placeholder) continue; // Codex keeps its existing readiness semantics
     return !body || placeholder; // an older empty prompt cannot outrank the actual nonempty draft
   }
@@ -138,22 +143,22 @@ export function agentInputReady(screen) {
 // Programmatic text must land on a real composer or an explicitly answered choice form. tmux accepting
 // bytes is not delivery proof: startup/compaction screens and Claude's post-resume modal consume keys
 // without creating a user turn. The operator-input path uses this gate before it reports HTTP success.
-export function operatorInputDisposition(screen, { menuAnswer = false, allowActive = false } = {}) {
+export function operatorInputDisposition(screen, { menuAnswer = false, allowActive = false, draftMaxLines = 24, strictComposer = false } = {}) {
   // A live input target at the bottom (empty composer, choice form, or pending draft) outranks
   // transient words such as "Loading session" that may still be visible in scrollback above it.
-  if (agentInputReady(screen)) return { ready: true, target: 'composer' };
+  if (agentInputReady(screen, { completeComposer: strictComposer })) return { ready: true, target: 'composer' };
   if (claudeResumePrompt(screen)) return menuAnswer
     ? { ready: true, target: 'choice-menu' }
     : { ready: false, reason: 'resume-choice' };
   if (askMenuTypeDigit(screen)) return { ready: true, target: 'custom-answer' };
   if (menuAnswer && numberedChoicePrompt(screen)) return { ready: true, target: 'choice-menu' };
-  const pending = pendingComposerDraft(screen, { requireFooter: true });
+  const pending = pendingComposerDraft(screen, { requireFooter: true, maxLines: draftMaxLines });
   if (pending) return { ready: false, reason: 'pending-draft', draft: pending.text };
   const transient = transientInputReason(screen);
   if (transient) return { ready: false, reason: transient };
   // Both coding TUIs accept an operator steering/interruption while a turn is running. Preserve that
   // path, but only when the durable session state says it is working and a real agent footer is visible.
-  if (allowActive && activeAgentScreen(screen)) return { ready: true, target: 'active-agent' };
+  if (allowActive && !strictComposer && activeAgentScreen(screen)) return { ready: true, target: 'active-agent' };
   return { ready: false, reason: 'input-unavailable' };
 }
 
@@ -163,7 +168,7 @@ export function operatorInputDisposition(screen, { menuAnswer = false, allowActi
 export function operatorInputPlan(screen, requested, opts = {}) {
   const disposition = operatorInputDisposition(screen, opts);
   if (disposition.ready || disposition.reason !== 'pending-draft') return disposition;
-  const wrapped = pendingComposerDraft(screen, { requireFooter: true, preserveWraps: true });
+  const wrapped = pendingComposerDraft(screen, { requireFooter: true, preserveWraps: true, maxLines: opts.draftMaxLines || 24 });
   if (pendingDraftMatches(disposition.draft, requested, wrapped?.lines)) {
     return { ready: true, target: 'existing-draft', draft: disposition.draft };
   }
@@ -179,6 +184,8 @@ export function operatorInputBlockMessage(reason) {
       return 'The agent has not confirmed submission. Your message is kept here; it was not marked as sent.';
     case 'input-changed':
       return 'The terminal input changed while sending. Your message is kept here, and the new terminal draft was left untouched.';
+    case 'draft-clear-unconfirmed':
+      return 'Claude did not confirm clearing the previous draft. Your new message was kept and was not mixed into it.';
     case 'resume-choice':
       return 'Session is on its recovery screen. Your draft was kept; choose a recovery option or send again when the composer is ready.';
     case 'pending-draft':

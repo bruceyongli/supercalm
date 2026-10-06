@@ -67,6 +67,32 @@ We did not rewrite CLI plugins, remote-control/cloud behavior, provider auth fil
 configuration, or unrelated native UI features. Transcript parsing/Story rendering remain shared,
 but the new lifecycle and receipt semantics apply only to Claude.
 
+### Tall native composer incident (2026-10-06)
+
+Morph's live composer held a 33-line unsent request. Readiness inspected only 24 lines, missed its
+prompt, and treated the permissions footer as permission to paste into an active input. Current
+Claude Ctrl-U deletes to the start of the logical line rather than clearing the full buffer. New
+questions consequently mixed into the retained request. Four later failed deliveries recorded zero
+Enter attempts; the screenshot's older Anthropic 429 was a separate upstream response failure.
+
+Claude operator sends now inspect a bounded 512-line scrollback plus the current pane, with up to
+768 lines of composer verification. Unknown composer layouts cannot fall through to active-agent
+pasting. A blank first logical line is not proof of an empty multiline input. Retrying the same
+complete draft uses Enter only; a different explicit Story request uses the existing replacement
+handshake. Ctrl-S stashes the full previous draft exactly once and the sender waits for a confirmed
+empty composer before pasting. It never interrupts background work, restores an old stash into an
+empty input, or mixes a new request into a draft whose clear could not be confirmed. Displaced text
+is also kept in durable composer history if submission of the new request subsequently fails.
+[Native editing and stash contract](https://code.claude.com/docs/en/interactive-mode#keyboard-shortcuts).
+
+`claude_composer` pins the pure readiness/clear behavior. The private-tmux `/input` driven test
+reproduces a 33-line composer cropped by a 30-row phone viewport and proves: initial pending-draft
+409 without keys; one full stash; replacement 200 delivering ONLY the new question; a duplicate
+HTTP retry delivers nothing again; the next send does not restore the stash. It also checks
+same-long-draft Enter-only retry, an ignored/remapped stash (no paste or Enter), failed-submit
+history preservation, and the existing native queue receipt. Codex keeps its original capture,
+Ctrl-U, readiness and submit timing/retry behavior. No live project request is resent by the test.
+
 ## Captured checks and repeatable verification
 
 `test/claude_hooks.test.js` runs the actual hook script into the real HTTP handler with a private DB
