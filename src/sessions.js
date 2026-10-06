@@ -130,6 +130,12 @@ All disposable files, QA screenshots, downloads, and test output must go under $
 Anything the operator needs to open after the session belongs under $AIOS_SESSION_ARTIFACTS instead.
 Never create ad-hoc files or folders directly in $HOME. AIOS provides these dedicated locations and
 sweeps them when a session ends; create permanent projects through AIOS rather than under home yourself.
+Reuse an existing repository through an isolated git worktree instead of cloning the same repo for
+every test. For read-only inspection without history requirements, prefer a shallow clone; fetch full
+history when the task actually needs it. Disposable clones belong in $AIOS_SESSION_TMPDIR, and you
+must remove your own disposable clones/build copies after their last use rather than accumulating
+them until this long-running session ends. Check available disk space before large downloads/builds;
+if space is low, stop new bulk writes and report it. Never delete another session's files to make room.
 </aios_session_hygiene>`;
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }

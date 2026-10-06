@@ -24,6 +24,12 @@ try {
   const { featureReady } = await import('../src/server.js'); await featureReady;
   store = await import('../src/store.js');
   const { sessionStoragePaths, prepareSessionStorage } = await import('../src/session_storage.js');
+  const capacityResponse = await fetch(base + '/api/product/storage/capacity');
+  assert.equal(capacityResponse.status, 200);
+  const capacitySnapshot = await capacityResponse.json();
+  assert.ok(Number.isFinite(capacitySnapshot.capacity.available_bytes));
+  assert.ok(Number.isFinite(capacitySnapshot.database.reusable_bytes));
+  assert.equal(capacitySnapshot.sessions, undefined, 'cheap capacity endpoint never downloads the session inventory');
   await mkdir(project); await writeFile(join(project, 'keep-code'), 'important code');
   store.createProject({ id: 'p_disk', name: 'Disk fixture', path: project });
   async function fixture(id, reason = 'operator-kill') {
@@ -47,12 +53,18 @@ try {
   assert.equal(await exists(kept.tmp), true, 'preview/unconfirmed cleanup is read-only');
   r = await post('/api/product/storage/cleanup', { plan_id: plan.id, confirm: true });
   assert.equal(r.body.ok, true); assert.equal(await exists(kept.root), false);
+  assert.equal(typeof r.body.capacity_before.available_bytes, 'number');
+  assert.equal(typeof r.body.capacity_after.available_bytes, 'number');
+  assert.equal(r.body.net_available_change_bytes, r.body.capacity_after.available_bytes - r.body.capacity_before.available_bytes,
+    'filesystem delta is measured separately, not equated with estimated removed files');
+  const receipt = r.body;
   assert.equal(await readFile(join(kept.artifacts, 'result.txt'), 'utf8'), 'durable output');
   assert.equal(await readFile(join(process.env.AIOS_DATA, 'supervisor', 's_disk_kept', 'review.png'), 'utf8'), 'saved review evidence');
   assert.equal(await exists(join(process.env.AIOS_DATA, 'supervisor', 's_disk_kept', 'profile')), false);
   assert(store.getSession('s_disk_kept')); assert.equal(store.messagesFor('s_disk_kept', 10).length, 1);
   await prepareSessionStorage('s_disk_kept'); await writeFile(join(kept.tmp, 'later.txt'), 'new files must survive retries');
-  assert.equal((await post('/api/product/storage/cleanup', { plan_id: plan.id, confirm: true })).body.ok, true, 'a retry replays the acknowledged receipt');
+  assert.deepEqual((await post('/api/product/storage/cleanup', { plan_id: plan.id, confirm: true })).body, receipt,
+    'a retry replays the exact receipt, including the original measured disk delta');
   assert.equal(await exists(join(kept.tmp, 'later.txt')), true, 'single-use authority cannot delete later files');
   const deleted = await fixture('s_disk_deleted');
   r = await post('/api/product/storage/plan', { sessions: ['s_disk_deleted'], mode: 'delete' });

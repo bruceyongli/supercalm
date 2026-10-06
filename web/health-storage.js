@@ -10,7 +10,7 @@ export function formatDiskBytes(bytes) {
 }
 
 export function mountHealthStorage(host) {
-  let stopped = false, timer = null, busy = false, data = null, renderedAt = null, mode = 'disposable', project = '', shown = 30;
+  let stopped = false, timer = null, capacityTimer = null, capacityBusy = false, busy = false, data = null, renderedAt = null, mode = 'disposable', project = '', shown = 30;
   const selected = new Set();
   const post = (path, body) => api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   host.innerHTML = `<section class="health-section storage-section">
@@ -24,6 +24,7 @@ export function mountHealthStorage(host) {
       <label>Action <select data-storage-mode><option value="disposable">Clean temp files & terminal logs</option>
         <option value="outputs">Also clean outputs, uploads & safe worktrees</option><option value="delete">Delete killed sessions & their AIOS files</option></select></label>
       <button data-storage-select>Select eligible (up to 100)</button><button data-storage-clean disabled>Clean selected (0)</button></div>
+    <p data-storage-selection class="health-meta"></p>
     <div data-storage-list>Scanning session storage in the background…</div>
     <button data-storage-more hidden>Show more sessions</button>
     <p data-storage-result role="status"></p>
@@ -34,13 +35,19 @@ export function mountHealthStorage(host) {
   const result = host.querySelector('[data-storage-result]'), filter = host.querySelector('[data-storage-project]');
   const more = host.querySelector('[data-storage-more]');
   function allowed(s) { return s.cleanable && (mode !== 'delete' || s.deletable); }
-  function updateButton() { clean.disabled = busy || !selected.size; clean.textContent = `Clean selected (${selected.size})`; }
+  function updateButton() {
+    clean.disabled = busy || !selected.size; clean.textContent = `Clean selected (${selected.size})`;
+    const selectedRows = (data?.sessions || []).filter(s => selected.has(s.id));
+    host.querySelector('[data-storage-selection]').textContent = !selectedRows.length ? '' : mode === 'disposable'
+      ? `Selected temp/logs only: approximately ${formatDiskBytes(selectedRows.reduce((n, s) => n + s.disposable_bytes, 0))}. Total occupied is not the cleanup amount; outputs, worktrees and conversation records stay.`
+      : 'Exact cleanup files and estimate are shown in the preview. Native CLI history and dirty/unmerged worktrees are retained.';
+  }
   function renderList() {
     if (!data) return;
     const sessions = (data.sessions || []).filter(s => s.cleanable && (!project || s.project_id === project)
       && (mode === 'delete' || (mode === 'disposable' ? s.disposable_bytes : s.bytes) > 0));
     for (const id of selected) if (!(data.sessions || []).some(s => s.id === id && allowed(s))) selected.delete(id);
-    list.innerHTML = sessions.length ? `<table class="health-table storage-table"><thead><tr><th>Select</th><th>Session</th><th>Occupied</th><th>Temp/logs</th><th>Outputs</th></tr></thead><tbody>${sessions.slice(0, shown).map(s => `<tr>
+    list.innerHTML = sessions.length ? `<table class="health-table storage-table"><thead><tr><th>Select</th><th>Session</th><th>Total occupied</th><th>Temp/logs only</th><th>Saved outputs</th></tr></thead><tbody>${sessions.slice(0, shown).map(s => `<tr>
       <td><input type="checkbox" data-storage-session="${esc(s.id)}" aria-label="Select ${esc(s.title)}" ${selected.has(s.id) ? 'checked' : ''} ${allowed(s) ? '' : 'disabled'}></td>
       <td><a href="session?id=${encodeURIComponent(s.id)}">${esc(s.title)}</a><div class="health-meta">${esc(s.project)} · ${esc(s.reason)}${mode === 'delete' && !s.deletable ? ' · not deletable' : ''}</div>
         <details><summary class="health-meta">Storage details</summary>${(s.components || []).filter(c => c.exclusive_bytes || c.error).map(c => `<div class="storage-path"><b>${esc(c.label)} · ${formatDiskBytes(c.exclusive_bytes)}</b><div>${esc(c.path)}</div>${c.error ? `<span class="health-warn">${esc(c.error)}</span>` : ''}</div>`).join('')}</details></td>
@@ -53,11 +60,27 @@ export function mountHealthStorage(host) {
   }
   function renderOverview() {
     const disk = data.capacity || {};
+    const hasInventory = Number.isFinite(data.scanned_at);
+    const db = data.database;
     overview.innerHTML = `<div class="storage-capacity"><b class="${disk.level === 'critical' ? 'health-warn' : disk.level === 'warning' ? 'health-info' : 'health-ok'}">${formatDiskBytes(disk.available_bytes)} available</b>
       <span>of ${formatDiskBytes(disk.total_bytes)} · ${esc(disk.level || 'unknown')}</span></div>
-      <div class="health-meta">${data.state === 'scanning' ? `Scanning ${data.progress?.scanned || 0}/${data.progress?.total || 0} storage scopes…` : `Last measured ${data.scanned_at ? new Date(data.scanned_at).toLocaleString() : 'not yet'}`} · stopped-session temp/logs ${formatDiskBytes(data.disposable_bytes || 0)}</div>
+      <div class="health-meta">${data.state === 'scanning' ? `Scanning ${data.progress?.scanned || 0}/${data.progress?.total || 0} storage scopes…` : `Last measured ${data.scanned_at ? new Date(data.scanned_at).toLocaleString() : 'not yet'}`} · stopped-session temp/logs ${hasInventory ? formatDiskBytes(data.disposable_bytes) : 'measuring…'}${hasInventory && data.state === 'scanning' ? ' (previous scan)' : ''}</div>
+      ${db && !db.error ? `<div class="health-meta">SQLite file ${formatDiskBytes(db.file_bytes)} · ${formatDiskBytes(db.reusable_bytes)} reusable inside the database, not free disk space${db.wal_bytes ? ` · WAL ${formatDiskBytes(db.wal_bytes)}` : ''}.</div>` : ''}
       ${disk.level === 'critical' ? '<p class="health-warn">New and resumed agents are blocked to preserve disk headroom. Existing agents are not killed.</p>' : ''}
       ${data.errors?.length ? `<p class="health-info">${data.errors.length} locations could not be measured; totals are incomplete.</p>` : ''}${data.error ? `<p class="health-warn">${esc(data.error)}</p>` : ''}`;
+  }
+  async function refreshCapacity() {
+    if (stopped || capacityBusy) return;
+    clearTimeout(capacityTimer); capacityBusy = true;
+    try {
+      if (busy || !data || document.hidden) return;
+      const next = await api('api/product/storage/capacity');
+      if (stopped || !data) return;
+      if ((next.capacity?.checked_at || 0) >= (data.capacity?.checked_at || 0)) {
+        data = { ...data, ...next }; renderOverview();
+      }
+    } catch { /* Inventory polling retains its explicit error/retry path. */ }
+    finally { capacityBusy = false; if (!stopped) capacityTimer = setTimeout(refreshCapacity, 10_000); }
   }
   function render() {
     renderedAt = data.scanned_at;
@@ -76,7 +99,7 @@ export function mountHealthStorage(host) {
       const next = await api(`api/product/storage${force ? '?fresh=1' : ''}`);
       if (stopped) return;
       const changed = next.scanned_at !== renderedAt || !data;
-      data = next;
+      data = data?.capacity?.checked_at > next.capacity?.checked_at ? { ...next, capacity: data.capacity, database: data.database } : next;
       renderOverview();
       // Progress updates never replace the selectable list and erase focus/expanded details.
       if (changed && (!renderedAt || !isInteracting(host))) render();
@@ -121,11 +144,20 @@ export function mountHealthStorage(host) {
       const outcome = await post('api/product/storage/cleanup', { plan_id: plan.id, confirm: true });
       if (stopped) return;
       const failed = outcome.results.filter(r => !r.ok);
-      result.textContent = `${outcome.results.length - failed.length} cleaned · approximately ${formatDiskBytes(outcome.estimated_bytes)}. ${failed.map(r => `${r.id}: ${r.error}${r.partial ? ` (already removed: ${r.removed_paths.join(', ')})` : ''}`).join(' ')} ${outcome.note || ''}`;
+      const change = outcome.net_available_change_bytes;
+      const net = Number.isFinite(change) ? `Disk net change during cleanup: ${change >= 0 ? '+' : '−'}${formatDiskBytes(Math.abs(change))}; ${formatDiskBytes(outcome.capacity_after?.available_bytes)} available afterward. ` : '';
+      result.textContent = `${outcome.results.length - failed.length} cleaned · estimated removed file blocks ${formatDiskBytes(outcome.estimated_bytes)}. ${net}${failed.map(r => `${r.id}: ${r.error}${r.partial ? ` (already removed: ${r.removed_paths.join(', ')})` : ''}`).join(' ')} ${outcome.note || ''}`;
       selected.clear(); data = null; renderedAt = null;
     } catch (error) { if (!stopped) result.textContent = `Cleanup not completed: ${error.message}`; }
     finally { dialog?.remove(); busy = false; if (!stopped) { updateButton(); load(); } }
   });
+  const onVisible = () => { if (!document.hidden) refreshCapacity(); };
+  window.addEventListener('focus', onVisible); document.addEventListener('visibilitychange', onVisible);
+  capacityTimer = setTimeout(refreshCapacity, 10_000);
   load();
-  return () => { stopped = true; clearTimeout(timer); document.querySelectorAll('.storage-confirm').forEach(dialog => { dialog.close(); dialog.remove(); }); };
+  return () => {
+    stopped = true; clearTimeout(timer); clearTimeout(capacityTimer);
+    window.removeEventListener('focus', onVisible); document.removeEventListener('visibilitychange', onVisible);
+    document.querySelectorAll('.storage-confirm').forEach(dialog => { dialog.close(); dialog.remove(); });
+  };
 }

@@ -11,6 +11,7 @@ import { isSafeToRemove, removeWorktree, worktreeExists } from './worktrees.js';
 import { gitOut } from './git.js';
 import { withSessionCleanup } from './session_cleanup_lock.js';
 import { bus } from './bus.js';
+import { currentDiskCapacity } from './disk_pressure.js';
 
 const exec = promisify(execFile), plans = new Map(), receipts = new Map(), flights = new Map();
 const MODES = new Set(['disposable', 'outputs', 'delete']);
@@ -124,6 +125,7 @@ async function executeCleanupOnce(planId, confirmed) {
   const plan = plans.get(planId);
   if (!confirmed || !plan || plan.expires_at < Date.now()) fail('Preview cleanup again and explicitly confirm', 'cleanup-confirmation-required', 400);
   plans.delete(planId); // single-use; retries cannot reuse authority to delete newer files
+  const capacityBefore = currentDiskCapacity();
   const results = [];
   for (const row of plan.sessions) {
     const removedPaths = []; let removedBytes = 0;
@@ -158,8 +160,12 @@ async function executeCleanupOnce(planId, confirmed) {
   }
   storageInventory.invalidate();
   bus.emit('changed');
+  const capacityAfter = currentDiskCapacity();
+  const netChange = Number.isFinite(capacityBefore.available_bytes) && Number.isFinite(capacityAfter.available_bytes)
+    ? capacityAfter.available_bytes - capacityBefore.available_bytes : null;
   return { ok: results.every(r => r.ok), results, estimated_bytes: results.reduce((n, r) => n + (r.estimated_bytes || 0), 0),
-    note: 'Files removed cannot be recovered by AIOS. SQLite pages are reusable; database file size is not automatically compacted.' };
+    capacity_before: capacityBefore, capacity_after: capacityAfter, net_available_change_bytes: netChange,
+    note: 'Removed file sizes are estimates, not guaranteed freed disk space. Net change includes concurrent disk writes. Files removed cannot be recovered by AIOS. SQLite pages are reusable; database file size is not automatically compacted.' };
 }
 
 // A lost response or duplicate click replays the same receipt; it never applies old authority to

@@ -12,7 +12,13 @@ try {
   assert.equal(diskCapacity(info, { reserveBytes: 100_000 }).level, 'critical');
   assert.equal(diskCapacity({ ...info, bavail: 700 }, { reserveBytes: 10_000, warningBytes: 20_000 }).level, 'healthy');
   const store = await import('../src/store.js');
-  const { exclusiveStorageRows, measureStoragePath, createStorageInventory, cleanupEligibility } = await import('../src/disk_storage.js');
+  const { exclusiveStorageRows, measureStoragePath, createStorageInventory, cleanupEligibility, databaseStorage } = await import('../src/disk_storage.js');
+  store.db.exec('CREATE TABLE disk_free_fixture(payload BLOB); INSERT INTO disk_free_fixture VALUES(zeroblob(262144)); DELETE FROM disk_free_fixture;');
+  const dbStats = databaseStorage();
+  assert.ok(dbStats.reusable_bytes > 0, 'deleted records leave reusable pages, not returned disk space');
+  assert.equal(dbStats.reusable_bytes + dbStats.occupied_page_bytes,
+    store.db.prepare('PRAGMA page_count').get().page_count * store.db.prepare('PRAGMA page_size').get().page_size);
+  assert.ok(Number.isFinite(dbStats.file_bytes)); assert.ok(Number.isFinite(dbStats.allocated_bytes));
   const rows = exclusiveStorageRows([{ path: '/p', bytes: 1000 }, { path: '/p/data', bytes: 400 },
     { path: '/p/data/s', bytes: 100 }, { path: '/other', bytes: 200 }]);
   assert.deepEqual(rows.map(r => r.exclusive_bytes), [600, 300, 100, 200]);

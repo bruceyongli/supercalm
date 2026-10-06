@@ -63,6 +63,18 @@ failures report paths already removed. Cleanup is irreversible; nothing is auto-
 Project task/evidence/decision/usage/integration audit records and native CLI histories are retained.
 Deleting SQLite records makes pages reusable but does not immediately shrink the database file;
 there is no automatic live VACUUM or checkpoint of the operator's database.
+The dashboard shows SQLite's internal reusable pages separately from free filesystem space.
+Cleanup receipts separate estimated removed file blocks from the measured filesystem capacity
+before/after deletion. The net change includes concurrent writes by other sessions/apps; it is not
+a promise of physically reclaimed blocks. A pending inventory is shown as measuring, not zero.
+In temp/logs mode, a session's total occupied size is explicitly not the selected cleanup amount.
+While Health is visible, live capacity refreshes every ten seconds and on focus via the metadata-only
+`GET /api/product/storage/capacity`; this does not rerun `du` or download the full session inventory.
+
+Launch hygiene asks agents to reuse isolated Git worktrees for the same repository, use shallow
+clones only when full history is unnecessary, and remove their own disposable clones/build copies
+after last use. Full clones remain available when required. Clones must use managed scratch
+storage; this is guidance, not a transparent rewrite of arbitrary Git commands or a disk quota.
 
 A lightweight capacity monitor runs every minute and alerts devices on warning/escalation (rate
 limited). Warning: less than 10% available or 20 GiB. Critical: less than 5 GiB; new/resumed agents

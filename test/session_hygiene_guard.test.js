@@ -45,6 +45,8 @@ assert.match(sessions, /lifecycle: parent \? 'temporary' : 'persistent'/,
   'fallback generic session launches from agent curl cannot create permanent list clutter');
 assert.match(sessions, /AIOS_SESSION_TMPDIR[\s\S]*AIOS_SESSION_ARTIFACTS/,
   'every agent receives separate disposable and durable session storage instructions');
+assert.match(sessions, /isolated git worktree[\s\S]*shallow clone[\s\S]*fetch full[\s\S]*after their last use/,
+  'agents avoid duplicate clones, allow needed full history, and clean their own scratch copies promptly');
 assert.match(sessions, /const nativeArgv = TOOLS\[tool\]\.argv\(/,
   'launch begins with the unwrapped native tool argv');
 assert.match(sessions, /const argv = tool === 'claude' \? adaptClaudeLaunch\(nativeArgv, argvOpts\) : nativeArgv/,

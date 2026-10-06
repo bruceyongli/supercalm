@@ -1,11 +1,12 @@
 // On-demand, single-flight inventory. Native du runs off the HTTP/event loop, with bounded
 // concurrency/timeouts; polling Health never rescans the filesystem every 30 seconds.
 import { lstat, realpath } from 'node:fs/promises';
+import { statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
-import { DATA_DIR, LOG_DIR, ROOT } from './config.js';
+import { DATA_DIR, LOG_DIR, ROOT, DB_PATH } from './config.js';
 import { worktreeRoot } from './worktrees.js';
 import { sessionStoragePaths } from './session_storage.js';
 import { currentDiskCapacity } from './disk_pressure.js';
@@ -14,6 +15,20 @@ import * as store from './store.js';
 const exec = promisify(execFile);
 export const isInside = (path, root) => path === root || path.startsWith(root + sep);
 const SID = /^s_[a-zA-Z0-9_-]+$/;
+
+// Header metadata only: never scan records, compact, checkpoint, or promise these pages as savings.
+export function databaseStorage() {
+  try {
+    const value = name => Number(Object.values(store.db.prepare(`PRAGMA ${name}`).get())[0]);
+    const pageSize = value('page_size'), pages = value('page_count'), free = value('freelist_count');
+    const file = statSync(DB_PATH);
+    let wal = null;
+    try { wal = statSync(`${DB_PATH}-wal`); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    return { file_bytes: file.size, wal_bytes: wal?.size || 0,
+      allocated_bytes: (file.blocks + (wal?.blocks || 0)) * 512,
+      reusable_bytes: free * pageSize, occupied_page_bytes: (pages - free) * pageSize };
+  } catch (error) { return { error: String(error.message || error) }; }
+}
 export function storageComponents(session, project) {
   if (!SID.test(session.id)) return [];
   const paths = sessionStoragePaths(session.id);
@@ -127,7 +142,7 @@ export function createStorageInventory({ projects = store.listProjects, sessions
           .catch(e => { error = String(e.message || e); }).finally(() => { flight = null; });
       }
       return { state: flight ? 'scanning' : error ? 'error' : 'ready', progress: { scanned, total }, error,
-        ...(cache || { projects: [], sessions: [], shared: [] }), capacity: currentDiskCapacity() };
+        ...(cache || { projects: [], sessions: [], shared: [] }), capacity: currentDiskCapacity(), database: databaseStorage() };
     },
     invalidate() { generation++; cache = null; },
     async settled() { await flight; return this.get(); },

@@ -7,7 +7,7 @@ import { listProjects, listSessions } from './store.js';
 import { authStatus } from './authmode.js';
 import { listProviders, status as providerStatus } from './auth/index.js';
 import { projectGraphSummary } from './project_graph_core.js';
-import { storageInventory } from './disk_storage.js';
+import { storageInventory, databaseStorage } from './disk_storage.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import { planStorageCleanup, executeStorageCleanup } from './disk_cleanup.js';
 import { bus } from './bus.js';
@@ -141,6 +141,10 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
 
 route('GET', '/api/product/storage', (req, res, _params, url) => {
   json(res, 200, storageInventory.get({ refresh: url.searchParams.get('fresh') === '1' }));
+});
+// Cheap live capacity polling does not serialize the inventory or start a directory scan.
+route('GET', '/api/product/storage/capacity', (req, res) => {
+  json(res, 200, { capacity: currentDiskCapacity(), database: databaseStorage() });
 });
 route('POST', '/api/product/storage/plan', async (req, res) => {
   try { const body = await readJson(req); json(res, 200, await planStorageCleanup(body.sessions, body.mode)); }

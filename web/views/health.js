@@ -17,14 +17,14 @@ const HEALTH_CSS = `
       .health-num { font-size: 30px; font-weight: 800; color: #e2e8f1; line-height: 1; }
       .health-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid #202a35; }
       .health-row:first-child { border-top: 0; }
-      .health-meta { color: #8a95a5; font-size: 12px; }
+      .health-meta { color: #8a95a5; font-size: 12px; overflow-wrap:anywhere; }
       .health-ok { color: #4ecb6c; }
       .health-warn { color: #f2554d; }
       .health-info { color: #e2b23e; }
       .health-table { width: 100%; border-collapse: collapse; font-size: 12px; }
       .health-table th, .health-table td { border-top: 1px solid #202a35; text-align: left; padding: 8px 6px; vertical-align: top; }
       .health-table th { color: #8a95a5; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
-      .health-section { border: 1px solid #232c38; border-radius: 8px; background: #10151d; padding: 13px; margin: 10px 0; }
+      .health-section { border: 1px solid #232c38; border-radius: 8px; background: #10151d; padding: 13px; margin: 10px 0; overflow-x:auto; }
       .health-section h2 { margin: 0 0 8px; font-size: 14px; }
       /* design's notice bar (replaces the "Issues" section): a subtle bordered callout with an area
          chip + message + optional re-index action, shown only when there are live issues. */
@@ -56,7 +56,6 @@ const HEALTH_CSS = `
         .health-grid { grid-template-columns: 1fr; }
         /* phones: wide tables scroll inside their section; the notice's re-index action wraps under
            the message instead of running off-screen */
-        .health-section { overflow-x: auto; }
         .health-notice { flex-wrap: wrap; }
         .health-row { flex-wrap: wrap; }
       }
