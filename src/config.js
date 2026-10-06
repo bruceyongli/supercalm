@@ -165,13 +165,14 @@ export const TOOLS = {
     defaultOrchestration: 'off',
     // live (no-restart) setters; anything not here is applied by relaunch-continuing-conversation
     live: { effort: (v) => `/effort ${v}` },
-    argv: (task, { effort, autonomy, model, resume, orchestration, settingsPath, appendPrompt, mcpConfigPath } = {}) => {
+    argv: (task, { effort, autonomy, model, resume, resumeId, orchestration, settingsPath, appendPrompt, mcpConfigPath, refreshSystemPrompt } = {}) => {
       const a = ['claude'];
-      if (resume) a.push('--continue');
+      if (resume) a.push(...(resumeId ? ['--resume', resumeId] : ['--continue']));
       if (model) a.push('--model', model);
       if (effort && (!model || isNativeModel('claude', model))) a.push('--effort', effort);
       if (autonomy === 'full') a.push('--dangerously-skip-permissions');
       else if (autonomy === 'auto') a.push('--permission-mode', 'acceptEdits');
+      else if (autonomy === 'ask') a.push('--permission-mode', 'default'); // CLI now defaults to auto; AIOS ask must remain manual
       // Supercalm-managed hooks (lifecycle + optional git-guardrails), scoped to this launch only. Caller
       // passes a path only when the flag + preconditions are satisfied (else launch is unchanged).
       if (settingsPath) a.push('--settings', settingsPath);
@@ -179,6 +180,9 @@ export const TOOLS = {
       // multiple-flag ambiguity). appendPrompt is the data-wrapped CONTEXT block, gated by contextInject.
       const sys = [orchestration && ORCH_PROMPT[orchestration], appendPrompt].filter(Boolean).join('\n\n');
       if (sys) a.push('--append-system-prompt', sys);
+      // New native prompt snapshots otherwise ignore a rebuilt append prompt on resume. The caller
+      // capability-checks this option; old Claude builds and all Codex launches are unchanged.
+      if (sys && resume && refreshSystemPrompt) a.push('--system-prompt-snapshot', 'off');
       // seed the literal keyword on a fresh launch (the harness's recognized trigger; resume has no task)
       if (task && !resume && orchestration === 'ultracode') task = 'ultracode\n\n' + task;
       if (task) a.push(task);

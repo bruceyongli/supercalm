@@ -6,9 +6,12 @@ export function cleanAgentScreen(screen) {
 }
 
 export function askMenuTypeDigit(screen) {
-  const clean = cleanAgentScreen(screen);
-  if (!/Enter to select|to navigate/.test(clean)) return null;
-  const match = clean.match(/(\d+)\.\s*Type something/i);
+  const lines = cleanAgentScreen(screen).split('\n').slice(-32);
+  const footer = lines.findLastIndex(line => /Enter to select|to navigate/.test(line));
+  if (footer < 0 || lines.slice(footer + 1).some(line => line.trim())) return null;
+  const menu = lines.slice(Math.max(0, footer - 16), footer).join('\n');
+  if ((menu.match(/^\s*[❯›]?\s*\d+\.\s+\S/gm) || []).length < 2) return null;
+  const match = menu.match(/^\s*[❯›]?\s*(\d+)\.\s*(?:Type something|Type your own answer)\b/im);
   return match ? match[1] : null;
 }
 
@@ -17,7 +20,7 @@ export function claudeResumePrompt(screen) {
   return /Resuming the full session will consume a substantial portion of your usage limits/i.test(tail)
     && /1\.\s*Resume from summary/i.test(tail)
     && /2\.\s*Resume full session as-is/i.test(tail)
-    && /Enter to confirm/i.test(tail);
+    && /Enter to confirm[^\n]*(?:\n\s*)*$/i.test(tail);
 }
 
 // Codex renders rotating grey suggestions in the otherwise-ready composer. tmux's plain capture loses
@@ -45,12 +48,12 @@ function transientInputReason(screen) {
 
 function activeAgentScreen(screen) {
   const tail = cleanAgentScreen(screen).split('\n').slice(-24).join('\n');
-  return /(?:esc|ctrl-c) to interrupt|bypass permissions|accept edits|(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(tail);
+  return /(?:esc|ctrl-c) to interrupt|bypass permissions|accept edits|⏸|← for agents|(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(tail);
 }
 
 export function pendingComposerDraft(screen, { requireFooter = false, maxLines = 24, includePlaceholders = false, preserveWraps = false, expectedText = '' } = {}) {
   const tail = cleanAgentScreen(screen).split('\n').map((line) => line.trimEnd()).slice(-maxLines);
-  const footerRx = /(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab)/i;
+  const footerRx = /(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i;
   const ruleRx = /^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/;
   let nearest = null;
   for (let i = tail.length - 1; i >= 0; i--) {
@@ -111,21 +114,25 @@ export function pendingDraftMatches(pending, requested, wrappedLines = [], { pre
 export function agentInputReady(screen) {
   const clean = cleanAgentScreen(screen);
   const tail = clean.split('\n').slice(-24);
-  return tail.some((line, index) => {
+  for (let index = tail.length - 1; index >= 0; index--) {
+    const line = tail[index];
     const match = line.match(/^\s*([›❯])\s*(.*?)\s*$/);
-    if (!match) return false;
+    if (!match) continue;
     const [, marker, body] = match;
     // A prompt glyph in transcript text is not sufficient. Require either an empty composer or a
     // known idle placeholder, adjacent to the tool's status/footer region near the pane bottom.
     const placeholder = marker === '›'
       ? codexComposerPlaceholder(body)
       : /^(?:Ask Claude|Try ["“])/.test(body);
-    if (body && !placeholder) return false;
     const after = tail.slice(index + 1, index + 7).join('\n');
-    return marker === '›'
+    const footer = marker === '›'
       ? /(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(after)
-      : /(?:bypass permissions|accept edits|plan mode|shift\+tab)/i.test(after);
-  });
+      : /(?:bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i.test(after);
+    if (!footer) continue;
+    if (marker === '›' && body && !placeholder) continue; // Codex keeps its existing readiness semantics
+    return !body || placeholder; // an older empty prompt cannot outrank the actual nonempty draft
+  }
+  return false;
 }
 
 // Programmatic text must land on a real composer or an explicitly answered choice form. tmux accepting

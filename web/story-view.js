@@ -135,7 +135,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // v7: flush missing native assistant messages and commentary falsely promoted to reports.
 // v8: native async questions replace the CLI's plain-text question/report mirror.
 // v9: Claude native identities/stop reasons, specific tool descriptions and inspectable errors.
-export const STORY_CACHE_KEY = (id) => `aios_story9_${id}`;
+// v10: Claude mid-turn human messages and live background shell status.
+export const STORY_CACHE_KEY = (id) => `aios_story10_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }

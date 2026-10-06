@@ -350,7 +350,7 @@ export function prefetchStory(id) {
     const storySource = r.meta?.source || 'transcript';
     const payload = JSON.stringify({ events: r.events, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
       storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story9_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v9)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story10_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v10)
   }).catch(() => _prefetched.delete(id));
 }
 

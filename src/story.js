@@ -35,6 +35,7 @@
 // kinds: you | sys | work | plan | note | sub | edit | fail | check | ship | web | report | ask | stop | gap
 
 import { codexQuestionCall, questionMirror } from './codex_question.js';
+import { claudeQueuedUser, claudeSystemInput } from './claude_lifecycle.js';
 
 const CLUSTER_WINDOW_MS = 90_000;   // same-class calls within 90s merge into one work block
 const GAP_MIN_MS = 10 * 60_000;     // idle > 10 min renders a gap divider
@@ -341,6 +342,7 @@ function atomsFromClaude(lines) {
   const taskLists = new Map(); // a helper's task #1 is not the main agent's task #1
   const assistantBlocks = new Map();
   const askIds = new Set(); // AskUserQuestion tool_use ids — their tool_result IS the answer
+  const userIds = new Set();
   // The tool_result ("Your questions have been answered: \"q\"=\"a\", …") is the DURABLE answer
   // record: menu selections leave NO operator text turn in the transcript, so the old you-after-ask
   // rule never marked them answered — the option buttons resurrected whenever the client's local
@@ -390,7 +392,19 @@ function atomsFromClaude(lines) {
     let j; try { j = JSON.parse(l); } catch { continue; }
     const ts = Date.parse(j.timestamp) || 0;
     const indent = !!j.isSidechain;
+    const queued = claudeQueuedUser(j);
+    if (queued) {
+      if (queued.id && userIds.has(queued.id)) continue;
+      if (queued.id) userIds.add(queued.id);
+      const text = cleanUserText(queued.text);
+      if (text) atoms.push({ ts: Date.parse(queued.timestamp) || ts, kind: 'you', text,
+        messageId: queued.id, images: extractAttachmentImages(queued.text) });
+      continue;
+    }
     if (j.type === 'user' && j.message) {
+      if (claudeSystemInput(j)) continue;
+      if (j.uuid && userIds.has(j.uuid)) continue;
+      if (j.uuid) userIds.add(j.uuid);
       const c = j.message.content;
       if (typeof c === 'string') {
         if (/\[Request interrupted/.test(c)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
@@ -436,6 +450,11 @@ function atomsFromClaude(lines) {
       const content = typeof j.message.content === 'string' ? [{ type: 'text', text: j.message.content }]
         : (Array.isArray(j.message.content) ? j.message.content : []);
       const reason = j.message.stop_reason;
+      if (j.isApiErrorMessage) {
+        atoms.push({ ts, kind: 'fail', title: 'Claude could not complete its response',
+          text: claudeFailureSummary(textOf(content)), indent, messageId: j.message.id });
+        continue;
+      }
       const messageId = j.message.id ? `${j.message.id}|${indent}` : null;
       const previousMessage = messageId && assistantBlocks.get(messageId);
       if (previousMessage && reason) Object.assign(previousMessage.atom, {
@@ -471,6 +490,11 @@ function atomsFromClaude(lines) {
           const call = { name: part.name, input: part.input, chain: indent ? (j.agentId || j.sessionId || 'sidechain') : 'main',
             description: part.input?.description, command: part.input?.command };
           calls.set(part.id, call);
+          if (part.name === 'SubagentHandback' && part.input?.message) {
+            atoms.push({ ts, kind: 'note', title: 'Helper report', text: part.input.message,
+              indent: true, toolId: part.id, reportCandidate: false });
+            continue;
+          }
           if (/^Task(?:Create|Update|Get|List)$/.test(part.name)) {
             call.planAtom = { ts, kind: 'plan', indent, toolId: part.id,
               title: part.input?.subject || 'Updating the plan',
@@ -517,7 +541,7 @@ function atomsFromClaude(lines) {
         }
       }
     }
-    // hidden: attachment, file-history-snapshot, mode, permission-mode, last-prompt (no story value)
+    // Non-human attachments, file-history snapshots, mode and last-prompt remain hidden.
   }
   return atoms;
 }

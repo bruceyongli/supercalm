@@ -48,6 +48,21 @@ assert.equal(parse([row(0, 'assistant', { content: 'String report.', stop_reason
 const user = parse([row(0, 'user', { content: [{ type: 'text', text: 'Fix the parser.' }, { type: 'text', text: 'Keep my reports.' }] })]);
 assert.equal(user.length, 1, 'one native operator message with multiple blocks is one bubble');
 assert.equal(user[0].body, 'Fix the parser.\n\nKeep my reports.');
+const queuedUser = row(3, 'attachment', undefined, { uuid: 'attachment-copy', attachment: {
+  type: 'queued_command', prompt: 'Report when acceptance is done.', origin: { kind: 'human' },
+  commandMode: 'prompt', humanTurn: true, source_uuid: 'operator-message', delivery_id: 'delivery-1',
+  timestamp: new Date(Date.UTC(2026, 9, 6, 8, 0, 2)).toISOString(),
+} });
+const queuedEvents = parse([queuedUser, queuedUser, row(4, 'user', { content: 'Report when acceptance is done.' }, { uuid: 'operator-message' }),
+  row(5, 'attachment', undefined, { attachment: { type: 'queued_command', prompt: 'Background task completed.', origin: { kind: 'task-notification' } } }),
+  row(6, 'user', { content: 'A background task completed.' }, { promptSource: 'system', origin: { kind: 'task-notification' } })]);
+assert.equal(queuedEvents.length, 1, 'consumed human mid-turn input appears once; automated notifications are not operator input');
+assert.equal(queuedEvents[0].body, 'Report when acceptance is done.');
+assert.equal(queuedEvents[0].ts, Date.UTC(2026, 9, 6, 8, 0, 2), 'the original enqueue timestamp survives delivery');
+assert.equal(parse([row(0, 'assistant', { id: 'api-error', content: 'API Error: billing required', stop_reason: 'end_turn' },
+  { isApiErrorMessage: true })])[0].kind, 'fail', 'an API failure is not a completed report');
+assert.equal(parse([call(0, 'handback', 'SubagentHandback', { message: 'The parser loses queued human messages.' })])[0].body,
+  'The parser loses queued human messages.', 'native helper handback content remains inspectable');
 
 const failureOutput = 'Exit code 1\nok\nimport ok\nTraceback (most recent call last):\n  File "sample.py", line 29\nTypeError: argument of type NoneType is not iterable';
 const operations = parse([
@@ -128,5 +143,11 @@ try {
   assert.equal(page.events.filter(e => e.kind === 'report').length, 1);
   assert.equal(page.events.at(-1).kind, 'note', 'actual reader-worker paging does not promote a live commentary tail');
   assert.equal(page.events[0].body, 'Previous request.', 'previous completed exchange remains loaded while a new request is in flight');
+  await writeFile(file, [row(0, 'user', { content: 'Previous request.' }), text(1, 'Previous report.', 'end_turn'), queuedUser,
+    text(4, 'Latest report.', 'end_turn')].join('\n') + '\n');
+  const queuedPage = await readStoryPage({ file, rounds: 1 });
+  assert.equal(queuedPage.events[0].body, 'Report when acceptance is done.', 'pagination recognizes the queued human conversation boundary');
+  const older = await readStoryPage({ file, cursor: queuedPage.meta.cursor, rounds: 1 });
+  assert.equal(older.events[0].body, 'Previous request.', 'older pagination neither repeats nor skips the queued round');
 } finally { await rm(dir, { recursive: true, force: true }); }
 console.log('claude_story_adapter: native 2.1.291 reports/blocks/tools/tasks/questions/errors and worker paging passed');

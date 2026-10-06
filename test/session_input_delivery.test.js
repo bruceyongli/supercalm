@@ -63,12 +63,12 @@ try {
     clock: () => time, runGit: async () => { time = 1200; return { text: 'true', error: '' }; },
   }), null, 'expired optional bookkeeping is skipped before the prompt is sent');
   const fixture = fileURLToPath(new URL('./fixtures/submit_agent_tui.mjs', import.meta.url));
-  async function start(name, mode, family) {
+  async function start(name, mode, family, nativeFile = '', nativeId = '') {
     const trace = join(scratch, `${name}.ndjson`);
     // Ignore stdio so starting this private daemon cannot keep an execFile pipe open forever.
     await new Promise((resolve, reject) => {
       const child = spawn(wrapper, ['new-session', '-d', '-s', name, '-x', '100', '-y', '30',
-        process.execPath, fixture, trace, mode, family], { stdio: 'ignore' });
+        process.execPath, fixture, trace, mode, family, nativeFile, nativeId], { stdio: 'ignore' });
       child.on('error', reject); child.on('close', code => code === 0 ? resolve() : reject(new Error(`tmux exit ${code}`)));
     });
     for (let i = 0; i < 40; i++) {
@@ -180,6 +180,22 @@ try {
     assert.equal(idleStory.pendingQuestion, null, 'an idle/interrupted composer is not a Story question despite a stored waiting summary');
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
+  const queuedId = 's_claude_queued';
+  const claudeUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const queuedFile = join(scratch, `${claudeUuid}.jsonl`);
+  writeFileSync(queuedFile, '');
+  const queuedTrace = await start(queuedId, 'claude-queued', 'claude', queuedFile, claudeUuid);
+  store.updateSession(queuedId, { status: 'working', claude_transcript: queuedFile });
+  const queuedMessage = 'Report the acceptance outcome while keeping the current work running.';
+  const queuedResponse = await send(queuedId, queuedMessage, { client_message_id: 'claude-queued-proof' });
+  assert.equal(queuedResponse.status, 200, JSON.stringify(queuedResponse.body));
+  assert.equal(queuedResponse.body.queued, true, 'accepted native queue clears the web composer before the model reads it');
+  assert.equal(queuedTrace().filter(r => r.event === 'enter').length, 1);
+  assert.equal(queuedTrace().filter(r => r.event === 'accepted').length, 1);
+  assert.equal((await send(queuedId, queuedMessage, { client_message_id: 'claude-queued-proof' })).body.duplicate, true);
+  assert.equal(queuedTrace().filter(r => r.event === 'accepted').length, 1, 'queued receipt retry never pastes again');
+  console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', native: 'queue-operation/enqueue',
+    http: queuedResponse.status, queued: queuedResponse.body.queued, enters: 1, accepted: 1, receipt: 'claude-native-queue' }));
   const partialId = 's_partial_delivery';
   const partialTrace = await start(partialId, 'partial-paste', 'codex');
   const multiline = 'where is the map html for each codebase, I want to inspect visually,\n\nDo you think better model will result a better reconstruction? Should we try gpt6-sol and deepseek-flash-next in parallel to do a side by side comparison of the 4 models?';

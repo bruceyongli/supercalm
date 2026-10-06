@@ -167,15 +167,18 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
   configuration. Before changing transports, consult Omni's current integration guide and test policy.
 
 ## Detection model (`detect.js`)
-State per session: `starting → working ↔ waiting → exited`. The classifier runs in the sessions poll
-loop, in order: (1) hook overrides win (TTL); (2) **known one-time gates** (trust prompt / claude
-bypass warning) — for `auto`/`full` sessions it returns `{confirm: keys}` and the poll loop
-auto-accepts them (hands-off); otherwise `waiting`; (3) `PROMPT_RX` approvals → `waiting`;
-(4) `WORKING_RX` (spinners / "esc to interrupt" / "(12s") → `working`; (5) idle threshold → `waiting`.
+State per session: `starting → working ↔ waiting → exited`. Codex/agy retain hook-first (TTL),
+gate, prompt, active-output, bounded background-hold and idle detection. Claude uses a typed
+lifecycle adapter (`claude_lifecycle.js`): real questions/permissions beat background work; native
+shell/agent counts and hook task snapshots distinguish a foreground Stop from overall completion.
+Quiet finite Claude jobs do NOT expire after ten minutes; recognized standalone dev servers do not
+hide a completed report. A missing count is not zero. Informational notifications and helper stops
+are not parent completion. Claude auto-confirm parses the actual highlighted selector, preserves
+context, and never upgrades `auto` to bypass. See [Claude compatibility audit](docs/wiki/claude-cli-compatibility.md).
 Gate/prompt checks come BEFORE the working-words on purpose: the trust screen's prose ("**Working**
 with untrusted contents…") would otherwise false-match. `waiting` is debounced (2 consecutive polls)
 to avoid push-spam on animated TUIs. Hook *endpoints* (`/api/hook/*`) are now actually installed into
-launched sessions (instant "waiting"), gated by feature flags — see "Launch feature flags" below; idle+
+launched sessions (instant lifecycle updates), gated by feature flags — see "Launch feature flags" below; idle+
 pattern remains the fallback when a flag is off.
 
 ## Launch-path features: built-in flags (#1) + per-project helpers (#2–4)
@@ -193,8 +196,11 @@ Two layers, both default-OFF (so the launch line is byte-identical until enabled
   per-project (NOT the global flags) for context/preflight/wiki.
 
 `startPane()` only modifies argv when enabled AND preconditions hold (`hookcfg.js`), else launches unchanged (fail-safe).
-- **claudeHooks**: `claude --settings <data/claude/aios-hooks*.settings.json>` adds Stop/Notification/
-  UserPromptSubmit hooks → `scripts/aios-claude-hook.sh` → `/api/hook/claude` (instant working/waiting).
+- **claudeHooks**: `claude --settings <data/claude/aios-hooks*.settings.json>` installs lifecycle hooks
+  (Stop/StopFailure, typed Notification, submit, permission/elicitation, subagent, compaction, session)
+  → `scripts/aios-claude-hook.sh` → `/api/hook/claude`. Preserve bounded task snapshots, native UUID,
+  final assistant text and error types in durable events. Out-of-order events cannot rebind a resume.
+  No per-tool forks; hooks fail open. Boot refreshes AIOS-owned settings only, without restarting agents.
   Scoped to Supercalm launches only; **merges** with the user's `~/.claude/settings.json` (does not replace it).
 - **codexNotify**: `codex -c notify=[...]` → `scripts/aios-codex-notify.sh` → `/api/hook/codex` on
   agent-turn-complete.
@@ -298,18 +304,30 @@ serves codex sessions + proxy; antigravity login serves the antigravity PROXY (t
 checks `agy` session readiness by running `agy models`; the CLI owns its own native keyring/SSH token store, so
 `~/.gemini/oauth_creds.json` is not treated as proof of Antigravity CLI login. One legacy `detect.js` consequence of the old dummy `ANTHROPIC_API_KEY`
 path is still tolerated: a one-time **"Detected a
-custom API key … use it? 1.Yes"** prompt is auto-confirmed (CONFIRM_RULE `['up','enter']`). A recovered session's
+custom API key … use it? 1.Yes"** prompt is auto-confirmed using its actual highlighted selector. A recovered session's
 `--continue` reprints OLD 401 lines → `HEALTHY_RX` (a more-recent `⏺`/`⎿` line ⇒ auth fine) + a post-resume
 **grace window** (`AUTH_GRACE_MS`) stop the auth scan re-flagging it. codex/agy use their own CLI credential files + `/api/reauth`.
 
 ## Resume (`sessions.resume`)
-A stopped session relaunches in a fresh pane continuing the conversation: claude/agy `--continue`,
+A stopped session relaunches in a fresh pane continuing the conversation: Claude `--resume <uuid>`
+from its bound native transcript (legacy `--continue` only without a usable UUID), agy `--continue`,
 codex `resume <uuid>` where the uuid is found by matching the project cwd against
 `~/.codex/sessions/**/rollout-*.jsonl` (so it continues THIS project, not the global most-recent;
 falls back to `--last`). `/input` to a dead pane returns HTTP 409 `{stopped:true}` so the UI offers
 Resume instead of erroring. NEVER blanket `tmux kill-session aios-*` — it kills the user's live work.
+On Claude resume, capability-check `--system-prompt-snapshot off` when rebuilding AIOS's append prompt;
+otherwise the CLI can ignore updated project/hygiene instructions in favor of its original snapshot.
+Fresh Claude launches retain the native cache default, and older builds receive no unsupported flag.
 
 ## Session input (`web/session.js`)
+Claude native `queue-operation/enqueue` or consumed human input in the exact bound transcript can
+confirm delivery despite TUI repaint. Observe only newly appended complete records (bounded 256KiB),
+same native UUID and complete matching text; never old history, automation or a different session.
+Confirmed queue admission returns HTTP 200 and clears the web composer immediately, without forcing
+consumption/interruption or resending. Actual unconfirmed drafts stay. Human `queued_command`
+attachments render once in Story/graph using original source identity/time; machine notifications do
+not become operator requests. Codex submission and notify protocols are unchanged.
+
 The terminal is **interactive on desktop**. xterm runs with `disableStdin:true` and its helper
 `<textarea>` is forced **read-only** — that is the ONLY reliable way to stop macOS **iCloud Passwords /
 browser autofill** from popping up over the focused terminal (`autocomplete=off` is ignored by

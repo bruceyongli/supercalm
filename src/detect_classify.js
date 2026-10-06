@@ -1,10 +1,11 @@
 import { stripAnsi } from './util.js';
+import { claudeTerminalFrame, claudeBackgroundWork, getClaudeLifecycle } from './claude_lifecycle.js';
 
 // PURE terminal-pattern classifier — no store/sessions/server imports, so it is unit-testable without
 // booting the service. The poll-loop wiring (setClassifier) lives in detect.js, which re-exports this.
 //
 // Two-layer "waiting for input" detection:
-//   1) authoritative hook overrides (claude Notification/Stop, codex notify) — set by hooks.js
+//   1) typed Claude lifecycle / existing Codex notify overrides — set by hooks.js
 //   2) idle + terminal-pattern heuristics (universal; the only signal for agy)
 // classify() returns { status, question }.
 
@@ -13,8 +14,8 @@ const HOOK_TTL_MS = Number(process.env.AIOS_HOOK_TTL || 9000);
 
 // hook overrides set by hooks.js: sessionId -> { status, question, ts }
 const hookState = new Map();
-export function setHookState(id, status, question = null) {
-  hookState.set(id, { status, question, ts: Date.now() });
+export function setHookState(id, status, question = null, extra = {}) {
+  hookState.set(id, { status, question, ts: Date.now(), ...extra });
 }
 export function clearHookState(id) {
   hookState.delete(id);
@@ -230,10 +231,15 @@ export function terminalQuestionPrompt(text) {
   return null;
 }
 
-function questionFrom(text) {
+function questionFrom(text, claude = false) {
   const terminal = terminalQuestionPrompt(text);
   if (terminal) return [terminal.question, ...terminal.options.map((option) => option.label)].join('\n').slice(0, 2000);
-  const tail = meaningfulTail(text, 5);
+  // The composer is UNSENT operator text, never an agent question. Its footer and turn-end timer
+  // also have no attention value. Claude's new footer can otherwise become the entire Needs You card.
+  const frame = claude ? claudeTerminalFrame(text) : null;
+  const tail = claude ? meaningfulTail(frame?.body ?? text, 8)
+    .filter(line => !/^[✻✢✽✶✳✼*─━]*\s*[A-Z][a-z]+ for \d/.test(line)).slice(-5)
+    : meaningfulTail(text, 5);
   const q = tail.join('\n').slice(0, 500).trim();
   return q || 'Waiting for your input';
 }
@@ -258,7 +264,7 @@ export function askSubmitStepPending(screen) {
   return /Enter to select/.test(tail) && /Submit/.test(tail) && /[☒✔]/.test(tail) && !/☐/.test(tail);
 }
 
-// Known one-time gates that an autonomous (auto/full) session may auto-accept.
+// Legacy rules retained for other CLIs: this update changes only Claude's gate handling.
 // Keys are tmux key names; the bypass warning defaults to "No" so it needs Down first.
 const CONFIRM_RULES = [
   // claude ExitPlanMode: "Claude has written up a plan and is ready to execute. Would you like to proceed?
@@ -272,26 +278,42 @@ const CONFIRM_RULES = [
   // API key? 1. Yes  ❯2. No". Pick "1. Yes" (Up + Enter).
   { rx: /detected a custom api key|do you want to use this api key/i, keys: ['up', 'enter'] },
 ];
-function autoConfirmKeys(text) {
+function autoConfirmKeys(text, autonomy, claude) {
   const trust = trustConfirmKeys(text);
   if (trust) return trust;
-  for (const r of CONFIRM_RULES) if (r.rx.test(text)) return r.keys;
+  if (!claude) {
+    for (const r of CONFIRM_RULES) if (r.rx.test(text)) return r.keys;
+    return null;
+  }
+  const prompt = terminalQuestionPrompt(text);
+  if (!prompt) return null; // never act on a gate quoted in a report above the live composer
+  const body = prompt.question;
+  if (/written up a plan and is ready to execute/i.test(body)) {
+    // Preserve conversation context and the launch permission tier; never silently upgrade auto to
+    // bypass permissions, or choose the newer "clear context" option because it happens to be first.
+    return prompt.options.find(option => /^yes\b/i.test(option.label) && !/clear context/i.test(option.label)
+      && (autonomy === 'full' ? /bypass permissions/i.test(option.label) : !/bypass permissions/i.test(option.label)))?.keys || null;
+  }
+  if (/bypass permissions mode|detected a custom api key|do you want to use this api key/i.test(body)) {
+    return prompt.options.find(option => /^yes\b/i.test(option.label))?.keys || null;
+  }
   return null;
 }
 
 export function classify({ session, snap, idleMs, authGraceUntil }) {
   const hs = hookState.get(session.id);
-  if (hs && Date.now() - hs.ts < HOOK_TTL_MS) return { status: hs.status, question: hs.question };
-
+  // Preserve Codex/other CLI hook precedence; Claude has separate foreground/background semantics.
+  if (session.tool !== 'claude' && hs && Date.now() - hs.ts < HOOK_TTL_MS) return { status: hs.status, question: hs.question };
   const text = stripAnsi(snap || '');
-  const tailLines = meaningfulTail(text, 16);
+  const frame = session.tool === 'claude' ? claudeTerminalFrame(text) : null;
+  const tailLines = meaningfulTail(frame?.body ?? text, 16);
   const tailStr = tailLines.join('\n');
   const autonomous = session.autonomy === 'auto' || session.autonomy === 'full';
 
   // 1) known one-time gates (trust / bypass warning) — checked first, before the fuzzy
   //    "working" words, since these screens contain prose like "Working with untrusted…".
-  const gate = autoConfirmKeys(text);
-  if (gate) return autonomous ? { status: 'working', question: null, confirm: gate } : { status: 'waiting', question: questionFrom(text) };
+  const gate = autoConfirmKeys(text, session.autonomy, session.tool === 'claude');
+  if (gate) return autonomous ? { status: 'working', question: null, confirm: gate } : { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
 
   // 2) auth state — scan bottom-up for the MOST RECENT auth signal so a stale "Login successful"
   //    higher in the scrollback can't mask a fresh 401 below it (and vice-versa). Newest line wins.
@@ -312,10 +334,33 @@ export function classify({ session, snap, idleMs, authGraceUntil }) {
   }
 
   // 2) explicit approval / menu prompts -> waiting
-  if (PROMPT_RX.some((rx) => rx.test(tailStr))) return { status: 'waiting', question: questionFrom(text) };
+  const terminal = session.tool === 'claude' ? terminalQuestionPrompt(text) : null;
+  if (terminal) return { status: 'waiting', question: questionFrom(text, true) };
+  const recentHook = hs && Date.now() - hs.ts < HOOK_TTL_MS;
+  if (recentHook && (hs.attention || hs.error)) return { status: hs.status, question: hs.question, authNeeded: hs.authNeeded };
+  if (PROMPT_RX.some((rx) => rx.test(tailStr))) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
 
   // 3) active-processing indicators -> working
-  if (WORKING_RX.some((rx) => rx.test(tailStr))) return { status: 'working', question: null };
+  if ((frame && /esc(?:ape)? to interrupt/i.test(frame.footer)) || WORKING_RX.some((rx) => rx.test(tailStr))) {
+    return { status: 'working', question: null };
+  }
+
+  const lifecycle = session.tool === 'claude' ? getClaudeLifecycle(session.id) : null;
+  if ((lifecycle?.attention || lifecycle?.failure) && session.status === 'waiting') return {
+    status: 'waiting', question: session.question || lifecycle.message || lifecycle.last_assistant_message || null,
+    ...(lifecycle.failure ? { authNeeded: /^(?:authentication_failed|cloud_credential_error)$/.test(lifecycle.failure) } : {}),
+  };
+  const bg = claudeBackgroundWork(lifecycle);
+  // A live native task count has no ten-minute inactivity limit: quiet acceptance runs can take
+  // hours. Known standalone dev servers are not unfinished work. A footer showing zero retires an
+  // old task snapshot rather than letting an old Stop hook pin the session indefinitely.
+  if (frame?.count > 0 && !(bg.servicesOnly && frame.count <= bg.count)) return { status: 'working', question: null };
+  // An absent footer count is not an explicit zero. Structured task evidence stays valid until a
+  // newer registry snapshot (or an actual native zero) retires it, including folded/older TUIs.
+  if (bg.work > 0 && !frame?.countKnown) return { status: 'working', question: null };
+  if (bg.wakeups > 0) return { status: 'working', question: null };
+  if (recentHook && !(frame?.done && frame.count === 0 && bg.work > 0)) return { status: hs.status, question: hs.question };
+  if (!frame && bg.work > 0 && recentHook) return { status: 'working', question: null };
 
   // 3b) background work still running -> working (checked AFTER PROMPT_RX so a genuine approval
   //     prompt shown alongside a bg terminal still surfaces as waiting, but BEFORE the idle fall-through
@@ -324,6 +369,6 @@ export function classify({ session, snap, idleMs, authGraceUntil }) {
   if (BACKGROUND_RX.test(tailStr) && !(idleMs > BG_HOLD_MS)) return { status: 'working', question: null };
 
   // 4) quiet for a while -> waiting
-  if (idleMs > IDLE_WAIT_MS) return { status: 'waiting', question: questionFrom(text) };
+  if (idleMs > IDLE_WAIT_MS) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
   return { status: 'working', question: null };
 }

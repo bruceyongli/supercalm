@@ -16,10 +16,15 @@
 //   If everything is claimed by other sessions → null, and the story falls back to the messages-table
 //   spine, which is honestly attributed — better an sparser story than someone else's.
 import { readdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 
 export function claudeSlug(cwd) { return String(cwd || '').replace(/[/.]/g, '-'); }
+
+export function claudeResumeId(transcript) {
+  const id = basename(String(transcript || ''), '.jsonl');
+  return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) ? id : null;
+}
 
 const BIRTH_EARLY_MS = 120e3; // transcript may predate the session row by a hair (launch ordering)
 const BIRTH_LATE_MS = 600e3;  // first prompt lands well within 10min of launch

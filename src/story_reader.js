@@ -4,6 +4,7 @@ import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { parseSessionLog, completedRoundStarts } from './story.js';
+import { claudeQueuedUser } from './claude_lifecycle.js';
 
 const START_BYTES = 256 * 1024;
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -79,9 +80,10 @@ function roundOffset(text, ts) {
   for (const line of text.split('\n')) {
     try {
       const j = JSON.parse(line);
-      const user = j.type === 'user' || (j.type === 'event_msg' && j.payload?.type === 'user_message')
+      const queued = claudeQueuedUser(j);
+      const user = queued || j.type === 'user' || (j.type === 'event_msg' && j.payload?.type === 'user_message')
         || (j.type === 'response_item' && j.payload?.type === 'message' && j.payload?.role === 'user');
-      if (user && (Date.parse(j.timestamp) || 0) === ts) return offset;
+      if (user && (Date.parse(queued?.timestamp || j.timestamp) || 0) === ts) return offset;
     } catch {}
     offset += Buffer.byteLength(line) + 1;
   }

@@ -17,15 +17,16 @@ function xok(f) { try { accessSync(f, constants.X_OK); return true; } catch { re
 
 // `claude --settings` support is cached (one --help probe). If claude is missing or too old, we never
 // add the flag.
-let _settingsSupported = null;
-export function claudeSupportsSettings() {
-  if (_settingsSupported !== null) return _settingsSupported;
+let _claudeHelp = null;
+function claudeHelp() {
+  if (_claudeHelp !== null) return _claudeHelp;
   try {
-    const out = execFileSync('claude', ['--help'], { encoding: 'utf8', timeout: 8000 });
-    _settingsSupported = /--settings\b/.test(out);
-  } catch { _settingsSupported = false; }
-  return _settingsSupported;
+    _claudeHelp = execFileSync('claude', ['--help'], { encoding: 'utf8', timeout: 8000 });
+  } catch { _claudeHelp = ''; }
+  return _claudeHelp;
 }
+export function claudeSupportsSettings() { return /--settings\b/.test(claudeHelp()); }
+export function claudeSupportsPromptSnapshot() { return /--system-prompt-snapshot\b/.test(claudeHelp()); }
 
 function lifecycleGroup() {
   return [{ hooks: [{ type: 'command', command: CLAUDE_HOOK_SCRIPT }] }];
@@ -49,7 +50,11 @@ export function claudeSettingsPath({ guardrails = false } = {}) {
   if (guardrails && !xok(GIT_GUARDRAIL_SCRIPT)) return null;
   if (!claudeSupportsSettings()) return null;
   const g = lifecycleGroup();
-  const hooks = { UserPromptSubmit: g, Stop: g, Notification: g };
+  const hooks = Object.fromEntries([
+    'SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Stop', 'StopFailure', 'Notification',
+    'PermissionRequest', 'Elicitation', 'ElicitationResult', 'SubagentStart', 'SubagentStop',
+    'PreCompact', 'PostCompact',
+  ].map(event => [event, g]));
   if (guardrails) {
     hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: GIT_GUARDRAIL_SCRIPT }] }];
   }

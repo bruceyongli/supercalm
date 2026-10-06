@@ -2,7 +2,8 @@
 import { basename } from 'node:path';
 import { now } from './util.js';
 import { priceUsage } from './usage_pricing.js';
-export const SPACE_VERSION = 4; // cache schema: bounded reads carry absolute transcript byte offsets
+import { claudeQueuedUser, claudeSystemInput } from './claude_lifecycle.js';
+export const SPACE_VERSION = 5; // native mid-turn operator messages and modern background tools
 const MAX_NODES = Number(process.env.AIOS_SPACE_MAX_NODES || 320); // cap emitted turn nodes (roll-ups keep full totals)
 const ERROR_RX = /\b(error|fatal|traceback|exception|command not found|no such file|permission denied|failed|cannot|panic)\b|exit code [1-9]|\bENOENT\b|\bE[A-Z]{3,}\b/i;
 
@@ -12,7 +13,8 @@ const CAT_BY_TOOL = {
   WebFetch: 'research', WebSearch: 'research',
   Edit: 'edit', MultiEdit: 'edit', Write: 'edit', NotebookEdit: 'edit',
   Bash: 'exec', BashOutput: 'exec', KillBash: 'exec', KillShell: 'exec',
-  Task: 'subagent', Agent: 'subagent',
+  Task: 'subagent', Agent: 'subagent', Monitor: 'subagent', Workflow: 'subagent', SubagentHandback: 'subagent',
+  TaskStop: 'exec', TaskOutput: 'exec',
   AskUserQuestion: 'decision', ExitPlanMode: 'decision', EnterPlanMode: 'decision',
   TaskCreate: 'plan', TaskUpdate: 'plan', TaskList: 'plan', TaskGet: 'plan', TodoWrite: 'plan',
 };
@@ -40,7 +42,8 @@ function toolLabel(name, input = {}) {
     case 'Bash': return 'Bash: ' + String(input.description || input.command || '').replace(/\s+/g, ' ').slice(0, 52);
     case 'Grep': return 'Grep ' + String(input.pattern || '').slice(0, 36);
     case 'Glob': return 'Glob ' + String(input.pattern || '').slice(0, 36);
-    case 'Agent': case 'Task': return 'Subagent: ' + String(input.description || input.subagent_type || 'task').slice(0, 44);
+    case 'Agent': case 'Task': case 'Workflow': return 'Subagent: ' + String(input.description || input.subagent_type || 'task').slice(0, 44);
+    case 'Monitor': return 'Monitor: ' + String(input.description || input.command || 'background work').slice(0, 44);
     case 'WebSearch': return 'Search ' + String(input.query || '').slice(0, 36);
     case 'WebFetch': { try { return 'Fetch ' + new URL(input.url).hostname; } catch { return 'Fetch'; } }
     case 'AskUserQuestion': return 'Asked: ' + String(input.questions?.[0]?.header || input.questions?.[0]?.question || 'question').slice(0, 44);
@@ -150,14 +153,19 @@ function buildClaudeSpace(text, session) {
   const events = [];
   let curT = null;
   const seenMsg = new Set();
+  const seenUser = new Set();
   const flushT = () => { if (curT) { events.push(curT); curT = null; } };
   for (const rec of recs) {
     const o = rec.o;
-    if (o.type === 'user' && !o.isSidechain && !hasToolResult(o.message)) {
-      const txt = contentText(o.message);
+    const queued = claudeQueuedUser(o);
+    if (queued || (o.type === 'user' && !o.isSidechain && !hasToolResult(o.message) && !claudeSystemInput(o))) {
+      const userId = queued?.id || o.uuid;
+      if (userId && seenUser.has(userId)) continue;
+      if (userId) seenUser.add(userId);
+      const txt = queued?.text || contentText(o.message);
       if (txt && !/^\[Request interrupted/i.test(txt)) {
         flushT();
-        events.push({ kind: 'prompt', o, rec });
+        events.push({ kind: 'prompt', o: queued ? { ...o, timestamp: queued.timestamp, message: { content: txt } } : o, rec });
         continue;
       }
     }

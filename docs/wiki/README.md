@@ -24,6 +24,7 @@ extension (e.g. the link to [[auth-architecture]] points at `auth-architecture.m
 
 | Article | What it covers |
 |---|---|
+| [[claude-cli-compatibility]] | Claude Code 2.1.291 compatibility audit: foreground versus background state, native queue receipts, Story attribution, current permissions/questions, exact-session resume, and Codex isolation tests. |
 | [[auth-architecture]] | Why claude sessions kept hitting `401 · Please run /login`, the pivotal "route through the proxy = one login" fix, the 5-mode auto-detect resolver, the standalone `src/auth/` package, and the recovered-session false-flag fix. **Start here for auth.** |
 | [[auth-providers]] | The three OAuth flows Supercalm can drive (claude / codex / antigravity): exact endpoints, scopes, PKCE vs client-secret, on-disk credential shapes, proxy-shared paths, and **why claude is the special one** (Keychain + rotating refresh tokens). |
 | [[proxy-fleet]] | The 6-proxy local model gateway on host (`~/proxy`, **off-limits to edit**): ports, credentials, routing guidance (antigravity-first), per-provider capability limits, the Anthropic-vs-OpenAI API-surface split, and the request ledger + dashboard. |

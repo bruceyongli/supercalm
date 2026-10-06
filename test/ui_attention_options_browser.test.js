@@ -107,6 +107,7 @@ const server = createServer(async (req, res) => {
   if (input && req.method === 'POST') {
     const body = JSON.parse(await readBody(req));
     inputBodies.push({ sid: input[1], ...body });
+    if (body.text === 'Queued Claude reply.') return sendJson(res, { ok: true, queued: true });
     if (body.text === 'Send this Story request.' && body.replace_pending !== true) {
       return sendJson(res, {
         error: 'Terminal has a different unfinished draft. Your Story message was kept.',
@@ -444,6 +445,12 @@ try {
   await phone.locator('#reply').press('ArrowDown');
   assert.equal(await phone.locator('#reply').inputValue(), '',
     'ArrowDown past the newest history item restores the empty live composer');
+  const beforeQueued = inputBodies.length;
+  await phone.locator('#reply').fill('Queued Claude reply.');
+  await phone.locator('#send').click();
+  await phone.waitForFunction(() => document.querySelector('#reply')?.value === '');
+  assert.equal(inputBodies.length, beforeQueued + 1, 'native Claude queued acknowledgement clears the composer without a second send');
+  assert.equal(inputBodies.at(-1).sid, 's_done');
   await phone.locator('.brand a').click();
   await phone.waitForFunction(() => location.pathname === '/aios/phone' && location.hash === '#home');
   assert.equal(new URL(phone.url()).pathname, '/aios/phone', 'the canonical session Back returns to phone home');

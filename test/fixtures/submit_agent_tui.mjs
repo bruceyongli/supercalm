@@ -1,6 +1,6 @@
 // Deterministic raw-mode agent for the private-tmux delivery regression. No model/network calls.
 import { appendFileSync } from 'node:fs';
-const [trace, mode = 'ignore-first', family = 'codex'] = process.argv.slice(2);
+const [trace, mode = 'ignore-first', family = 'codex', nativeFile = '', nativeId = ''] = process.argv.slice(2);
 let input = '';
 let attempts = 0;
 let last = '';
@@ -43,6 +43,11 @@ process.stdin.on('data', data => {
       if (mode === 'ignore-all' || (mode === 'ignore-first' && attempts === 1)) continue;
       if (input) {
         appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
+        if (mode === 'claude-queued' && nativeFile) {
+          appendFileSync(nativeFile, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: nativeId, content: input }) + '\n');
+          last = input; input = 'busy redraw, not a new operator draft';
+          render(); return;
+        }
         last = input; input = '';
       }
     } else input += char;

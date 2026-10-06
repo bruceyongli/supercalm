@@ -14,6 +14,7 @@ import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
 import { terminalQuestionPrompt } from './detect_classify.js';
 import { refreshCodexQuestions, overlayCodexQuestions } from './codex_questions.js';
+import { claudeTerminalFrame } from './claude_lifecycle.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -27,8 +28,9 @@ function cleanDetail(d) {
     .slice(0, 60);
 }
 export function extractLiveStatus(snap) {
+  const frame = claudeTerminalFrame(snap);
   const lines = stripAnsi(String(snap || '')).split('\n').map((l) => l.trim()).filter(Boolean).slice(-16);
-  let verb = null, detail = null, bg = null;
+  let verb = null, detail = null, bg = frame?.count > 0 ? frame.background : null;
   for (const l of lines.reverse()) {
     if (!verb) {
       // claude: a Capitalized gerund + a parenthetical carrying an elapsed timer and/or a token count

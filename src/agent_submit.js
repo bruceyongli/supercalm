@@ -18,6 +18,7 @@ export async function serializeAgentInput(pane, operation) {
 // a second paste. Unknown or changed inputs are left alone; callers must retain the unsent message.
 export async function submitAgentComposer({
   text, before = '', readScreen, pressEnter,
+  confirmSubmission = null,
   pause = sleep, clock = Date.now,
   initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3,
 }) {
@@ -33,6 +34,10 @@ export async function submitAgentComposer({
   let pending = '';
   await pause(Math.max(0, initialDelayMs));
   do {
+    if (attempts > 0 && confirmSubmission) {
+      const native = await confirmSubmission().catch(() => null);
+      if (native) return { accepted: true, verified: true, attempts, ...native };
+    }
     const screen = await readScreen();
     const draft = pendingComposerDraft(screen, draftOptions);
     if (!draft) { changedDraft = ''; changedCount = 0; }
@@ -70,7 +75,9 @@ export async function submitAgentComposer({
         if (changedDraft !== draft.text) { changedDraft = draft.text; changedAt = clock(); changedCount = 1; }
         else changedCount++;
         stableCount = 0;
-        if (changedCount >= 2 && clock() - changedAt >= 480) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
+        if (changedCount >= 2 && clock() - changedAt >= 480 && (!confirmSubmission || clock() >= deadline)) {
+          return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
+        }
       } else { changedDraft = ''; changedCount = 0; }
     } else if (observed && attempts > 0) {
       const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true });

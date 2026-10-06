@@ -16,7 +16,8 @@ import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
-import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt } from './detect_classify.js';
+import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt, clearHookState } from './detect_classify.js';
+import { getClaudeLifecycle, clearClaudeAttention, clearClaudeLifecycle } from './claude_lifecycle.js';
 import { summarize } from './summarize.js';
 import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
@@ -30,14 +31,15 @@ import { subscriptionStatus } from './usage_collect.js';
 import { clearSessionLimit, getSessionLimit, markSessionLimitTriggered, setSessionLimit, usageForSession } from './usage_store.js';
 import { buildAgentTimelinePayload } from './agui_session.js';
 import { flagOn } from './flags.js';
-import { claudeSettingsPath, codexNotifyArg } from './hookcfg.js';
+import { claudeSettingsPath, claudeSupportsPromptSnapshot, codexNotifyArg } from './hookcfg.js';
 import { getContext, setContext, generateContext, contextBlock } from './context_doc.js';
 import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js';
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
-import { findClaudeLog } from './claude_transcripts.js';
+import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
+import { createClaudeInputReceipt } from './claude_input_receipt.js';
 import { originalTaskSeed } from './resume_seed.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
@@ -790,7 +792,9 @@ export async function sendText(name, text, options = {}) {
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
 
-async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false } = {}) {
+async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false, claudeTranscript = null } = {}) {
+  // Claude-only evidence. Codex keeps its established TUI submit/retry protocol unchanged.
+  const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text) : null;
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -833,6 +837,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
     const receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: 0,
+      confirmSubmission,
       readScreen: () => tmux('capture-pane', '-p', '-t', name),
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
@@ -855,6 +860,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
     receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
+      confirmSubmission,
       readScreen: () => tmux('capture-pane', '-p', '-t', name),
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
@@ -1034,6 +1040,9 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // outer profile and bricked every isolated codex session. Escape risk is handled by supervision
   // + the AIOS_NO_DEPLOY interlock below.
   const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, appendPrompt: CHILD_SESSION_HYGIENE };
+  // Restore the existing AIOS contract: rebuild current project/hygiene instructions on Claude
+  // resume, rather than silently sending the native CLI's original system-prompt snapshot again.
+  if (tool === 'claude' && resume && claudeSupportsPromptSnapshot()) argvOpts.refreshSystemPrompt = true;
   // Launch-path features — ALL flag-gated (default OFF) + precondition-checked. When a flag is off or a
   // precondition fails, the corresponding opt stays undefined and the launch line is byte-identical to
   // before. This is the "default-inert" boundary that keeps the live fleet safe.
@@ -1386,7 +1395,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   }
   // codex resume is global-most-recent by default; pin it to THIS project's conversation — prefer the
   // UUID captured at launch (cwd-independent), then fall back to the cwd-match lookup (worktree-aware).
-  const resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(cwd || project?.path || process.env.HOME).catch(() => null))) : null;
+  let resumeId = s.tool === 'codex' ? (s.codex_uuid || (await findCodexSession(cwd || project?.path || process.env.HOME).catch(() => null))) : null;
   if (s.tool === 'codex' && resumeId && !s.codex_uuid) store.updateSession(sid, { codex_uuid: resumeId }); // backfill so the story/next resume match by UUID
   let continueConversation = true;
   let resumeTask = null;
@@ -1398,6 +1407,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     const nativeConversation = await findClaudeLog(cwd || project?.path || process.env.HOME, s, {
       claimed: store.otherClaudeTranscripts(sid),
     }).catch(() => null);
+    resumeId = claudeResumeId(nativeConversation);
     resumeTask = originalTaskSeed(store.messagesFor(sid, 20), { hasNativeConversation: !!nativeConversation });
     if (resumeTask) {
       continueConversation = false;
@@ -1504,6 +1514,7 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
   }
   entry.tailRetired = true;
   reg.delete(entry.id);
+  clearClaudeLifecycle(entry.id);
   stopTerminalTail(entry);
   return true;
 }
@@ -1816,6 +1827,7 @@ async function pollOnce() {
       entry.tailRetired = true;
       stopTerminalTail(entry);
       reg.delete(entry.id);
+      clearClaudeLifecycle(entry.id);
       continue;
     }
     if (entry.relaunching) continue;
@@ -2075,6 +2087,7 @@ export function paneSig(sid) {
 // streak so the poll loop doesn't instantly re-flag it as waiting. Shared by the
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
+  if (store.getSession(sid)?.tool === 'claude') { clearHookState(sid); clearClaudeAttention(sid); }
   resolveCodexQuestion(sid);
   const before = store.getSession(sid);
   const updated = store.updateSession(sid, { status: 'working', status_reason: 'reply', question: null, summary: null, category: null, stage: null, parked: 0, degraded: 0, last_activity: now() });
@@ -2104,7 +2117,8 @@ async function runSummary(sid, report = null) {
   const structured = storedQuestion(cur);
   if (structured?.mode === 'async' && !structured.answered) return; // authoritative question beats screen summaries
   const summary = (result?.summary || cur.question || cur.title || 'Waiting for your input').replace(/\s+/g, ' ').slice(0, 220);
-  const category = result?.category || 'review';
+  const claudeState = cur.tool === 'claude' ? getClaudeLifecycle(sid) : null;
+  const category = claudeState?.failure ? 'action' : claudeState?.attention ? 'decision' : result?.category || 'review';
   const stage = result?.stage || null; // semantic lifecycle stage for the Supervisor's stand-down gate
   // Persist the curated ask at the transition. List endpoints can now remain DB-only instead of
   // reparsing a growing transcript every time a browser wants a status row.
@@ -3453,12 +3467,14 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
       store.addEvent(sid, 'input-delivery', {
         source, accepted: receipt?.accepted === true, verified: receipt?.verified === true,
         attempts: receipt?.attempts ?? null, reason: receipt?.reason || null,
+        ...(s.tool === 'claude' ? { receipt: receipt?.receipt || null, queued: !!receipt?.queued } : {}),
         elapsed_ms: now() - deliveryStarted,
       });
     } catch {}
   };
   const sends = Array.isArray(segments) ? segments.map((part) => String(part || '').trim()).filter(Boolean) : [];
   let replacedDraft = '';
+  let queued = false;
   if (sends.length) {
     // A multi-question AskUserQuestion advances its TUI after each answer and exposes Submit only after
     // the last one. Feed every selected answer in order, but perform bookkeeping/noteReply once after
@@ -3472,6 +3488,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
     const delivered = await sendText(s.tmux, text, {
       requireOperatorTarget: true,
       allowActive: s.status === 'working',
+      claudeTranscript: s.tool === 'claude' ? s.claude_transcript : null,
       replacePendingDraft,
     });
     recordDelivery(delivered);
@@ -3479,6 +3496,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
       return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }
     replacedDraft = String(delivered?.replacedDraft || '').trim();
+    queued = !!delivered?.queued;
   }
   // Story, phone, and confirmed voice sends are all explicit operator instructions. When one replaces
   // a different native Terminal draft, keep the displaced text in durable composer history instead of
@@ -3493,7 +3511,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
   try { store.addEvent(sid, 'input', { source, len: text.length, attachments }); } catch {}
   try { bus.emit('event', { type: 'input', session: sid, source }); } catch {} // doctrine distiller listens (fire-and-forget)
   try { noteReply(sid); } catch {} // -> working, clear question/summary, reset idle timer, broadcast
-  return { ok: true, replacedDraft: !!replacedDraft, message };
+  return { ok: true, replacedDraft: !!replacedDraft, message, queued };
 }
 
 route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
@@ -3521,7 +3539,7 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
     pendingDraft: r.reason === 'pending-draft' ? r.pendingDraft : undefined,
   });
   if (r.missing) return json(res, 404, { error: 'no such session' });
-  json(res, 200, { ok: true, message: r.message, duplicate: !!r.duplicate });
+  json(res, 200, { ok: true, message: r.message, duplicate: !!r.duplicate, ...(r.queued ? { queued: true } : {}) });
 });
 
 route('POST', '/api/session/:id/answers', async (req, res, { id: sid }) => {
