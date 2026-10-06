@@ -40,6 +40,41 @@ is **additive**: `tailscale serve --bg --https=443 --set-path=/aios http://127.0
   (gitignored).
 - **Health:** `curl 127.0.0.1:8793/healthz` and `/api/state`.
 
+### Disk health and operator-controlled cleanup
+
+Health → **Disk usage** shows filesystem headroom, project source and session storage separately,
+plus the largest sessions (including protected running sessions). An on-demand, cached background
+inventory uses allocated disk blocks, at most two bounded `du` processes, and counts nested scopes
+once. Unmeasurable paths are explicit errors, not silently accurate zeros. APFS clones/hardlinks can
+share physical blocks, so inventory and reclaimable sizes are estimates.
+
+Stopped sessions can be selected by project, then cleaned in one confirmed batch:
+
+- **Temp/logs** retains conversation records, saved outputs, uploads and native CLI history.
+- **Outputs** additionally removes explicitly selected saved outputs/uploads and safe worktrees.
+- **Delete killed sessions** removes AIOS conversation records and managed files only after an
+  explicit operator Kill. A Stop remains resumable and cannot be mistaken for Kill.
+
+The server previews exact targets and revalidates durable intent, actual tmux absence, paths,
+symlinks, session/resume races and clean/merged Git state before deletion. It never force-removes a
+dirty/unmerged worktree, deletes project source folders, touches the proxy fleet, or substitutes a
+different session. Retry receipts cannot delete files created after the original cleanup. Partial
+failures report paths already removed. Cleanup is irreversible; nothing is auto-selected/deleted.
+Project task/evidence/decision/usage/integration audit records and native CLI histories are retained.
+Deleting SQLite records makes pages reusable but does not immediately shrink the database file;
+there is no automatic live VACUUM or checkpoint of the operator's database.
+
+A lightweight capacity monitor runs every minute and alerts devices on warning/escalation (rate
+limited). Warning: less than 10% available or 20 GiB. Critical: less than 5 GiB; new/resumed agents
+are refused **before** reserving a new session or killing a pane. Existing agents are not killed and
+files are not silently purged. This is early warning/admission control, not a filesystem quota:
+already-running agents or other applications can still consume space. Operator overrides:
+`AIOS_DISK_WARNING_BYTES`, `AIOS_DISK_RESERVE_BYTES`.
+
+API: `GET /api/product/storage` (nonblocking cached scan/status), `?fresh=1` (coalesced rescan),
+`POST /api/product/storage/plan`, then `POST /api/product/storage/cleanup` with the returned plan id
+and explicit `confirm:true`. Product Health also includes current capacity without a full scan.
+
 ## Reachability fix idea (proposed)
 Because Supercalm is loopback-only, a Tailscale hiccup makes it unreachable even when host + Supercalm are fine. A
 🔵 proposed hardening: optionally bind Supercalm to `0.0.0.0` so it stays reachable on the home LAN as a

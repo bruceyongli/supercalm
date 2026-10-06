@@ -1,10 +1,16 @@
-import { route, json } from './server.js';
-import { VERSION } from './config.js';
+import { route, json, readJson } from './server.js';
+import { VERSION, DATA_DIR } from './config.js';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { now } from './util.js';
 import { listProjects, listSessions } from './store.js';
 import { authStatus } from './authmode.js';
 import { listProviders, status as providerStatus } from './auth/index.js';
 import { projectGraphSummary } from './project_graph_core.js';
+import { storageInventory } from './disk_storage.js';
+import { currentDiskCapacity } from './disk_pressure.js';
+import { planStorageCleanup, executeStorageCleanup } from './disk_cleanup.js';
+import { bus } from './bus.js';
 
 function withTimeout(label, promise, ms) {
   return Promise.race([
@@ -115,6 +121,9 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
   ]);
   const auth = authResult?.error ? null : authResult;
   const issues = issueList({ auth, graphs });
+  const disk = currentDiskCapacity();
+  if (disk.level === 'warning' || disk.level === 'critical') issues.push({ severity: disk.level === 'critical' ? 'warn' : 'info',
+    area: 'disk', message: `${(disk.available_bytes / 1024 ** 3).toFixed(1)} GiB available${disk.level === 'critical' ? ' — new agents are blocked until space is freed' : ' — review stopped-session cleanup'}` });
   json(res, 200, {
     ok: issues.every((i) => i.severity !== 'warn'),
     version: VERSION,
@@ -125,8 +134,48 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
     auth,
     auth_error: authResult?.error || null,
     graphs,
+    disk,
     issues,
   });
 });
+
+route('GET', '/api/product/storage', (req, res, _params, url) => {
+  json(res, 200, storageInventory.get({ refresh: url.searchParams.get('fresh') === '1' }));
+});
+route('POST', '/api/product/storage/plan', async (req, res) => {
+  try { const body = await readJson(req); json(res, 200, await planStorageCleanup(body.sessions, body.mode)); }
+  catch (error) { json(res, error.status || 400, { error: String(error.message || error), code: error.code }); }
+});
+route('POST', '/api/product/storage/cleanup', async (req, res) => {
+  try { const body = await readJson(req); json(res, 200, await executeStorageCleanup(body.plan_id, body.confirm === true)); }
+  catch (error) { json(res, error.status || 400, { error: String(error.message || error), code: error.code }); }
+});
+
+let pressureLevel = 'healthy', lastPressureNotify = 0;
+const pressureStatePath = join(DATA_DIR, 'disk-pressure-alert.json');
+try {
+  const saved = JSON.parse(readFileSync(pressureStatePath, 'utf8'));
+  if (['warning', 'critical'].includes(saved.level) && Number.isFinite(saved.at) && saved.at <= Date.now()) {
+    pressureLevel = saved.level; lastPressureNotify = saved.at;
+  }
+} catch {}
+function monitorDisk() {
+  const disk = currentDiskCapacity();
+  if (disk.level === 'healthy') return;
+  if (disk.level === 'unknown') return;
+  if ((disk.level === 'critical' && pressureLevel !== 'critical') || Date.now() - lastPressureNotify > 6 * 60 * 60_000) {
+    pressureLevel = disk.level; lastPressureNotify = Date.now();
+    try { writeFileSync(pressureStatePath, JSON.stringify({ level: pressureLevel, at: lastPressureNotify }) + '\n', { mode: 0o600 }); } catch {}
+    bus.emit('notify', { title: disk.level === 'critical' ? 'Supercalm: disk critically low' : 'Supercalm: disk space warning',
+      body: `${(disk.available_bytes / 1024 ** 3).toFixed(1)} GiB available. Open Health to review and clean stopped sessions.`,
+      url: 'health', tag: 'disk-pressure' });
+    bus.emit('event', { type: 'disk-pressure', disk });
+  }
+}
+const diskMonitorTimer = setInterval(monitorDisk, 60_000);
+diskMonitorTimer.unref();
+// Allow the ordinary push module to subscribe before the first low-space alert.
+const firstDiskCheck = setTimeout(monitorDisk, 5000);
+firstDiskCheck.unref();
 
 console.log('[aios] product health api active');

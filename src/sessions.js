@@ -44,6 +44,8 @@ import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
 import { originalTaskSeed } from './resume_seed.js';
+import { assertDiskHeadroom } from './disk_pressure.js';
+import { assertSessionNotCleaning } from './session_cleanup_lock.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { deployContract } from './release_monitor.js';
@@ -1131,6 +1133,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
 
 function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null }) {
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
+  assertDiskHeadroom(project?.path);
   const activeFastMode = tool === 'codex' && modelSupportsFast(model || TOOLS[tool].model) && !!fastMode;
   const sid = id('s');
   const ticket = { sid, cancelled: false, startedAt: now() };
@@ -1344,6 +1347,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // alone means "pane exists", NOT "agent running". Only short-circuit when the agent is genuinely live
   // (status not exited); an exited session must relaunch even though its pane lingers.
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
+  assertDiskHeadroom(store.getProject(s.project_id)?.path);
   // Missing native history is not permission to --continue somebody else's latest conversation, nor
   // to kill a still-live agent and discover the loss afterwards. First look for this EXACT UUID.
   if (s.tool === 'claude' && s.claude_transcript && !(await findClaudeLog(null, s))) {
@@ -1483,6 +1487,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
 }
 
 export function resume(sid, options = {}) {
+  try { assertSessionNotCleaning(sid); } catch (error) { return Promise.reject(error); }
   const inflight = pendingResumes.get(sid);
   if (inflight) return inflight;
 
@@ -1497,6 +1502,10 @@ export function resume(sid, options = {}) {
   });
   pendingResumes.set(sid, attempt);
   return attempt;
+}
+
+export function sessionBusyForCleanup(sid) {
+  return pendingLaunches.has(sid) || pendingResumes.has(sid);
 }
 
 function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
@@ -3066,7 +3075,7 @@ route('POST', '/api/session', async (req, res) => {
     json(res, 202, decorate(s));
   } catch (e) {
     if (createdTemporaryProject) await cleanupTemporaryProject(createdTemporaryProject.id).catch(() => {});
-    json(res, 400, { error: String(e.message || e) });
+    json(res, e.code === 'disk-space-critical' ? 507 : 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
   }
 });
 
@@ -3997,7 +4006,7 @@ route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
   try {
     json(res, 200, decorate(await resume(sid)));
   } catch (e) {
-    json(res, 400, { error: String(e.message || e), ...(e.code === 'claude-transcript-missing' ? { code: e.code } : {}) });
+    json(res, e.status || 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
   }
 });
 

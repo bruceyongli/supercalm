@@ -4,12 +4,13 @@
 // captured in a module var and cleared in teardown() so leaving the view leaks no timer.
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml } from '../common.js';
+import { mountHealthStorage } from '../health-storage.js';
 
 const HEALTH_CSS = `
       /* width:100% — the generic \`main { margin: 0 auto }\` disables flex-stretch sizing inside the SPA
          #view (auto cross-axis margins), so without it the wrap sizes to its widest table's max-content
          and the whole page clips at a phone's right edge. */
-      .health-wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 14px; }
+      .health-wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding: 14px; box-sizing:border-box; }
       .health-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
       .health-card { border: 1px solid #232c38; border-radius: 8px; padding: 13px; background: #10151d; min-height: 92px; }
       .health-card h2 { margin: 0 0 10px; font-size: 12px; color: #8a95a5; text-transform: uppercase; letter-spacing: 0.08em; }
@@ -35,6 +36,22 @@ const HEALTH_CSS = `
       .health-notice button { background: #10151d; border: 1px solid #232c38; color: #e2e8f1; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
       .health-notice button:hover { border-color: #58a6ff; }
       .health-notice button:disabled { opacity: 0.6; cursor: default; }
+      .storage-heading, .storage-capacity, .storage-controls { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+      .storage-heading h2 { flex:1; }
+      .storage-section button, .storage-section select, .storage-confirm button { font:inherit; padding:8px; border:1px solid #364152; border-radius:6px; background:#151c27; color:#e2e8f1; }
+      .storage-section button:disabled, .storage-confirm button:disabled { opacity:.5; }
+      .storage-controls label { display:flex; gap:6px; align-items:center; min-width:0; }
+      .storage-controls select { max-width:100%; min-width:0; }
+      .storage-section details { margin:10px 0; }
+      .storage-section summary { cursor:pointer; }
+      .storage-path { overflow-wrap:anywhere; font-size:12px; margin:6px 0; }
+      .storage-confirm { color:#e2e8f1; background:#10151d; border:1px solid #364152; border-radius:10px; width:min(620px,calc(100vw - 32px)); max-height:85dvh; padding:18px; overflow:auto; box-sizing:border-box; }
+      .storage-confirm::backdrop { background:#000a; }
+      .storage-confirm-paths { max-height:35dvh; overflow:auto; margin:12px 0; }
+      .storage-confirm-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:16px; }
+      .storage-table td:nth-child(n+3) { white-space:nowrap; }
+      .storage-table input { width:20px; height:20px; }
+      .storage-section .health-row a { min-width:0; overflow-wrap:anywhere; }
       @media (max-width: 800px) {
         .health-grid { grid-template-columns: 1fr; }
         /* phones: wide tables scroll inside their section; the notice's re-index action wraps under
@@ -49,6 +66,7 @@ let host = null;
 let root = null;
 let pill = null;
 let timer = null;
+let stopStorage = null;
 
 const esc = (s) => escapeHtml(String(s ?? ''));
 
@@ -160,14 +178,16 @@ export function init(el) {
     </header>
     <main class="health-wrap" id="health-root">
       <div class="empty">Loading health…</div>
-    </main>`;
+    </main><div class="health-wrap" id="health-storage"></div>`;
   root = host.querySelector('#health-root');
   pill = host.querySelector('#health-pill');
   load();
+  stopStorage = mountHealthStorage(host.querySelector('#health-storage'));
   timer = setInterval(load, 30000);
 }
 
 export function teardown() {
+  stopStorage?.(); stopStorage = null;
   if (timer) clearInterval(timer);
   timer = null;
   host = null;
