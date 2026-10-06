@@ -7,6 +7,7 @@ import * as store from './store.js';
 import { rememberClaudeHook, normalizeClaudeHook } from './claude_lifecycle.js';
 import { claudeSettingsPath } from './hookcfg.js';
 import { flagOn } from './flags.js';
+import { claudeResumeId } from './claude_transcripts.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
@@ -55,7 +56,13 @@ function handle(tool, b, res) {
   if (sid && event) {
     const s = store.getSession(sid);
     if (s && s.status !== 'exited') {
+      if (s.tool !== tool) { json(res, 200, { ok: true, ignored: 'wrong-tool' }); return; }
       const payload = tool === 'claude' ? { ...normalizeClaudeHook({ ...b, event }), tool } : null;
+      const bound = tool === 'claude' ? claudeResumeId(s.claude_transcript) : null;
+      if (bound && payload.native_session_id && payload.native_session_id !== bound
+          && !(event === 'SessionStart' && payload.source === 'clear')) {
+        json(res, 200, { ok: true, ignored: 'wrong-native-session' }); return;
+      }
       const r = payload ? rememberClaudeHook(sid, payload) : null;
       // Delayed asynchronous hooks must not rebind a newly resumed session to its older transcript.
       if (r?.ignored) { json(res, 200, { ok: true, ignored: 'older-lifecycle-event' }); return; }
@@ -70,10 +77,14 @@ function handle(tool, b, res) {
       }
       if (tool === 'claude') {
         store.addEvent(sid, 'hook', payload);
-        if (r.status) {
+        if (r.status && !(r.activity === false && s.status === 'waiting')) {
           setHookState(sid, r.status, r.question, { attention: !!r.attention, error: payload.error, authNeeded: !!r.authNeeded });
           if (event === 'StopFailure') store.updateSession(sid, { degraded: r.degraded ? 1 : 0 });
-          noteAgentStatus(sid, r.status, r.question, { source: 'hook', extra: { tool, event, notification_type: payload.notification_type } });
+          else if (event === 'UserPromptSubmit' || event === 'Stop') store.updateSession(sid, { degraded: 0 });
+          noteAgentStatus(sid, r.status, r.question, { source: 'hook', activityBump: r.activity !== false,
+            forceAttention: (event === 'Stop' && !!payload.last_assistant_message) || event === 'StopFailure' || !!r.attention,
+            promptId: r.state.attention_id || payload.tool_use_id || payload.elicitation_id,
+            extra: { tool, event, notification_type: payload.notification_type } });
         }
       } else if (WAITING_EVENT.test(event)) {
         const question = b.message || b.question || null;
@@ -94,14 +105,16 @@ function handle(tool, b, res) {
 // snapshot, and a newer empty snapshot replaces it. Scope by native transcript identity on resume.
 const latestClaudeBackground = store.db.prepare(`SELECT ts, payload FROM events WHERE session_id = ? AND type = 'hook'
   AND json_valid(payload) AND json_type(payload, '$.background_tasks') = 'array' ORDER BY id DESC LIMIT 1`);
+const recentClaudeHooks = store.db.prepare("SELECT ts, payload FROM events WHERE session_id=? AND type='hook' ORDER BY id DESC LIMIT 32");
 for (const s of store.db.prepare("SELECT id, claude_transcript FROM sessions WHERE tool='claude' AND status != 'exited'").all()) {
   const saved = latestClaudeBackground.get(s.id);
-  if (!saved) continue;
-  try {
-    const b = JSON.parse(saved.payload);
-    if (s.claude_transcript && b.native_session_id && !s.claude_transcript.endsWith(`/${b.native_session_id}.jsonl`)) continue;
-    rememberClaudeHook(s.id, { ...b, sent_at: b.sent_at || saved.ts });
-  } catch {}
+  for (const row of [...(saved ? [saved] : []), ...recentClaudeHooks.all(s.id).reverse()]) {
+    try {
+      const b = JSON.parse(row.payload);
+      if (b.tool !== 'claude' || (s.claude_transcript && b.native_session_id && !s.claude_transcript.endsWith(`/${b.native_session_id}.jsonl`))) continue;
+      rememberClaudeHook(s.id, { ...b, sent_at: b.sent_at || row.ts });
+    } catch {}
+  }
 }
 
 // Refresh only Supercalm-owned settings on boot. Newly launched/resumed panes load these subscriptions;

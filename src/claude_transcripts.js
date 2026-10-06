@@ -28,6 +28,29 @@ export function claudeResumeId(transcript) {
 
 const BIRTH_EARLY_MS = 120e3; // transcript may predate the session row by a hair (launch ordering)
 const BIRTH_LATE_MS = 600e3;  // first prompt lands well within 10min of launch
+const relocated = new Map();
+
+// Claude may relocate a transcript after cwd/worktree changes. Recover only its exact UUID, never
+// whichever same-project file happens to be largest/latest. Cache directory searches, including misses.
+export async function findRelocatedClaudeLog(bound, { root = join(homedir(), '.claude', 'projects') } = {}) {
+  const uuid = claudeResumeId(bound);
+  if (!uuid) return null;
+  const key = `${root}:${uuid}`;
+  const cached = relocated.get(key);
+  if (cached && Date.now() - cached.at < 30_000) return cached.path;
+  let path = null;
+  try {
+    const dirs = await readdir(root, { withFileTypes: true });
+    for (const dir of dirs.slice(0, 2048)) {
+      if (!dir.isDirectory()) continue;
+      const candidate = join(root, dir.name, `${uuid}.jsonl`);
+      try { if ((await stat(candidate)).isFile()) { path = candidate; break; } } catch {}
+    }
+  } catch {}
+  relocated.set(key, { at: Date.now(), path });
+  if (relocated.size > 512) relocated.delete(relocated.keys().next().value);
+  return path;
+}
 
 // Pure ranking over stat'd candidates [{p,size,mtimeMs,birthtimeMs}]. birthtimeMs may be 0 on
 // filesystems without creation time — such files simply never qualify for the fresh tier.
@@ -45,7 +68,10 @@ export function pickClaudeTranscript(cands, s, { claimed } = {}) {
 export async function findClaudeLog(cwd, s, { claimed } = {}) {
   const bound = s?.claude_transcript;
   if (bound) {
-    try { if ((await stat(bound)).isFile()) return bound; } catch {} // stale binding → heuristic
+    try { if ((await stat(bound)).isFile()) return bound; } catch {}
+    // An exact native binding never authorizes reading another same-directory conversation when its
+    // file disappears. Retain the identity for recovery; Story can use the session's own message spine.
+    return findRelocatedClaudeLog(bound);
   }
   const dir = join(homedir(), '.claude', 'projects', claudeSlug(cwd));
   let ents;

@@ -2,6 +2,9 @@
 export const SESSION_RECENCY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export function sessionRecencyTimestamp(session) {
+  // Claude's work clock is grounded in native events. Legacy detect-report timestamps can be much
+  // newer than the unchanged source they re-extracted; they must not keep old projects recent.
+  if (session?.tool === 'claude' && Number(session.last_activity) > 0) return Number(session.last_activity);
   const times = [session?.last_activity, session?.last_key?.ts]
     .map(Number).filter(value => Number.isFinite(value) && value > 0);
   if (times.length) return Math.max(...times);

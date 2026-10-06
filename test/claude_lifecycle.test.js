@@ -43,13 +43,15 @@ clearHookState(session.id);
 assert.equal(decide('Allow this command?\n❯ 1. Yes\n  2. No\nEnter to confirm').status, 'waiting');
 assert.equal(hook('Notification', { notification_type: 'elicitation_url_dialog' }).status, 'waiting');
 assert.equal(hook('Notification', { notification_type: 'agent_needs_input' }).status, 'waiting');
+hook('Elicitation', { message: 'Authenticate this source.', elicitation_id: 'auth-1' });
+assert.equal(hook('Notification', { notification_type: 'elicitation_complete' }).status, 'working', 'URL-mode completion retires MCP attention');
 assert.equal(hook('Notification', { notification_type: 'quota_auto_resume_fired' }).status, 'working');
 assert.equal(hook('Notification', { notification_type: 'quota_auto_resume_stale' }).status, 'waiting');
 assert.equal(hook('StopFailure', { error: 'authentication_failed', last_assistant_message: 'API Error: 401' }).authNeeded, true);
 assert.equal(hook('StopFailure', { error: 'overloaded' }).degraded, true);
 assert.equal(classify({ session: { ...session, status: 'waiting' }, snap: pane(4), idleMs: 20 * 3600_000 }).status, 'waiting',
   'persisted API failure cannot be hidden by shells remaining in the background');
-assert.equal(hook('StopFailure', { error: 'billing_error' }).degraded, false);
+assert.equal(hook('StopFailure', { error: 'billing_error' }).degraded, true, 'a billing error is an unhealthy response, not a healthy idle session');
 
 r = hook('Stop', { background_tasks: [], session_crons: [], last_assistant_message: 'Acceptance finished.' });
 assert.equal(r.status, 'waiting');
@@ -70,6 +72,7 @@ assert.equal(decide(pane(0)).status, 'waiting', 'session lifecycle cleanup remov
 hook('Stop', { sent_at: 200, native_session_id: 'old', background_tasks: tasks });
 assert.equal(hook('Stop', { sent_at: 100, background_tasks: [] }).ignored, true, 'late HTTP delivery cannot reverse newer lifecycle state');
 assert.equal(hook('SessionStart', { sent_at: 300, native_session_id: 'new' }).state.background_tasks, undefined, 'native identity change resets task snapshots');
+assert.equal(hook('SessionStart', { sent_at: 301, source: 'clear' }).status, null, '/clear does not start work on its own');
 assert.equal(normalizeClaudeHook({ background_tasks: Array.from({ length: 100 }, () => ({ command: 'x'.repeat(2000) })) }).background_tasks.length, 64);
 clearClaudeLifecycle(session.id);
 

@@ -103,3 +103,82 @@ Additional regression coverage:
 Run `npm test` before integration; the standard pipeline tests the merged candidate again and releases
 only through `bin/deploy`. Confirm public version/health, GitHub main/tag, and the incident session's
 native footer against its API status after release. Never edit the canonical main worktree to deploy.
+
+## Follow-up audit: false activity and attention (2026-10-06)
+
+Friends `s_2276bb116c` last received a real request and report on September 18. On October 6, the
+poller instead recorded waiting → working → waiting about every 30 minutes, with roughly ten seconds
+in each false working interval. Re-extracted old reports contained `Auto-updating…`. Adding only that
+maintenance line reproduced the old snapshot-hash transition. The deployed version was 0.3.339; the
+flaps already existed before it. This was a remaining detection path, not evidence of a merge rollback.
+
+Claude monitoring now separates the viewport signature (still useful to input-delivery diagnostics)
+from native conversation activity. It reads at most 256KiB of complete newly appended JSONL records,
+retains a bounded identity/signature cache, and ignores file mtime, metadata, replays, sidechains and
+foreign UUIDs. A real request/tool/result/assistant record or changed live selector advances activity.
+First hydration is observation, not fresh work. Native unfinished turns remain working even when a
+stale previous completion timer is still visible. CLI maintenance, resizing, prompt suggestions,
+remote-control chrome and unsent drafts do not refresh activity.
+
+For a proven idle, completed legacy session, its initial native snapshot reconciles the activity clock
+against durable operator inputs and meaningful lifecycle events. This repairs the false recency without
+deleting messages, changing read/dismissal decisions, or resending anything. Claude home/voice recency
+uses that real work clock, so recent timestamps on legacy re-extracted reports cannot revive old work.
+
+### Coverage matrix
+
+| Aspect | Audit result and protection | Evidence / regression coverage |
+|---|---|---|
+| Activity and ordering | Fixed viewport changes and file-mtime updates being mistaken for work. Old idle clocks reconcile conservatively from native + durable intent. | `claude_activity`, `claude_activity_monitor`; read-only Friends native/pane/DB comparison |
+| Foreground state | Quoted spinner/approval/task-count wording above an idle composer no longer changes state. Native unfinished turns outrank a stale previous done line, even during a partial JSONL write. Blank padded rows do not hide the footer. | `claude_activity`, `claude_lifecycle`, `detect_background` |
+| Background work | Retained real shells/subagents/monitors/workflows/teammates and pending one-shot wakeups. Known standalone services/recurring schedules alone do not hide final reports. Quiet real work is not parked merely for being quiet. An explicit current zero outranks an older count. | `claude_lifecycle`; Morph still has two native shells and stays working |
+| Passive notifications | Fixed `idle_prompt` and repeated completion refreshing age. Delayed permission/elicitation reminder notifications cannot create a second episode for the same gate. Informational/future notifications are not completions. | Real hook-script → HTTP-handler trace in `claude_hooks` |
+| Source/report identity | Durable source keys include the bound conversation and request/turn/gate boundary. Cropping, raw-versus-curated wording, replay and hook-versus-terminal projection cannot reopen the same report. A genuinely new report can appear without an observed working interval. | `claude_activity`, `claude_activity_monitor`, `claude_hooks` |
+| Dismissal and concurrency | Fixed late summary formatting undoing Dismiss. A formatter for an older report cannot overwrite a newer episode. Existing reports/read/dismissal records are retained. | `claude_hooks` holds an actual summary HTTP response until after dismissal |
+| Permissions | Preserve actual tool name and bounded command/file context, not an empty question or the entire possibly sensitive tool input. Same `tool_use_id` identifies hook and terminal projections. Existing autonomy levels are not escalated. | `claude_hooks`, `claude_lifecycle`, `feedback_survey_gate` |
+| AskUserQuestion | Verified single/multi-question options, multi-select, custom text, final Submit, updatedInput/native answers, cancellation, and stale/quoted-menu safety through existing shared input/Story controls. Unknown layouts do not receive speculative keys. | `claude_story_adapter`, `agent_submit`, `story_terminal_question_browser`, `claude_story_adapter_browser` |
+| MCP elicitation | URL-mode requests retain their actionable URL and native `elicitation_id`; accept/decline/cancel return control to the agent, rather than leaving an unanswered ghost question. Complex forms still use the actual terminal; no invented automatic answer API. | `claude_hooks`, `claude_lifecycle`; official hook schema |
+| Input and native queue | Verified queue admission clears the composer without waiting for model consumption. Fresh complete exact-UUID receipts only; now rejects automation enqueues with matching text as receipts. No send-now/interrupt is added. | `claude_input_receipt`, `session_input_delivery`, `ui_attention_options_browser` |
+| Story reports/tools/plans | Verified explicit `end_turn`, API-block replay, intermediate `tool_use`/`pause_turn`, correlated failures, task checklists, helper handback, operator queue attribution and conversation paging. Live status extraction is now restricted to the actual Claude status line/footer, not prose or drafts. | `claude_story_adapter`, `story_paging`, `story_rich`, `claude_story_adapter_browser` |
+| Native binding and late hooks | Fixed a fresh timestamp from a different native UUID being able to rebind a session. Reject wrong-tool hooks; retain legitimate `/clear` rebinding. Boot replays bounded recent lifecycle state as well as the latest background snapshot, without assigning boot time to old events. | `claude_hooks`, `claude_transcripts`, `claude_lifecycle` |
+| Start/resume/isolation | Verified exact UUID resume, context-preserving gates, supported prompt-snapshot capability, deliberate permission tier, launch grace and preserved worktree. Missing history now fails before killing a live pane or using another conversation; relocation searches only the exact UUID. | `claude_hooks`, `claude_transcripts`, `claude_input_receipt`, `external_recovery`, `resume_seed` |
+| API/auth/quota failures | All native StopFailure errors mark an unhealthy response; subsequent real submit/Stop or newer successful native progress clears that marker. Existing authentication recovery and quota-fallback routing remain unchanged and never mutate the proxy fleet. | `claude_hooks`, `claude_lifecycle`, `session_errors_anchor`, `launch_autonomy_profile`, auth/usage suites |
+| Model/effort/provider config | Installed 2.1.291 `--help` supports low/medium/high/xhigh/max and explicit permission/settings/resume options. Existing inventory discovery and route ownership remain intact; no model/provider/permission config rewritten. | Installed binary probe; model/auth/usage suites in the full run |
+| Mobile/desktop UI | Verified native questions reach the input handler; final report/error/answer projection and stable DOM at desktop, tablet and phone widths. Recency behavior changes only for Claude. | `claude_story_adapter_browser`, `ui_attention_options_browser`, `session_recency`, voice recency tests |
+| Codex boundary | Its launch/provider configuration, hook precedence, paste/Enter behavior, background hold and recency remain unchanged. Claude-only branches guard shared entry points. | Codex fixtures in lifecycle/hooks/input suites plus full regression run |
+
+### Captured driven test
+
+`claude_activity_monitor` uses a real private tmux server, native JSONL fixture, private SQLite DB,
+production session poll/classifier/attention store, and `/api/phone/home`. No live coding session is
+sent input. The fake terminal continually changes maintenance chrome and even crops the old report.
+The trace proves zero false status transitions, the repaired old work clock, a retained dismissal,
+then a real new quiet request and exactly one fresh source-grounded unread report:
+
+```json
+{"handler":"real session poll → classify → attention store → GET /api/phone/home","maintenanceRepaints":">20","falseStatusTransitions":0,"legacyClock":"repaired from native record","dismissal":"retained across repaints","newRequest":"working including quiet phase","newReport":"one source-grounded unread","realReport":"The NEW endpoint now works; no further action is required.","noLiveSessionsTouched":true}
+```
+
+### Honest limits / remaining findings
+
+The read-only live audit found eight non-exited Claude rows: three still had their bound native files,
+and five did not. Searching the native store by those five exact UUIDs found no replacements. Their
+AIOS operator messages remain, but the unavailable full native histories cannot be honestly recreated
+by selecting a sibling session or silently treating the launch prompt as the entire conversation.
+
+Claude's documented default transcript retention is 30 days, with a silent background deletion sweep.
+That is a plausible explanation for old missing files, not a proven deletion audit for these five.
+We did not rewrite the machine's retention policy or claim deleted files were recovered. A proper
+AIOS-owned live-session archive/backup policy is separate work; extending one CLI's settings alone
+does not guarantee another CLI invocation cannot sweep the same native store.
+See [native data retention](https://code.claude.com/docs/en/claude-directory#cleaned-up-automatically)
+and [cleanupPeriodDays](https://code.claude.com/docs/en/settings-reference#cleanupperioddays).
+
+Native monitoring deliberately bounds reads. A single oversized JSON record, unsupported content
+envelope, or missing transcript falls back to typed hooks/live native UI evidence; it is not reported
+as newly completed merely because its file changed. Unknown menus remain operator-driven.
+
+Cloud/background-session daemon administration, Claude apps gateway, plugins/mods, native rewind and
+remote-control management are not AIOS-owned workflows. They were checked for accidental coupling,
+not enabled or reimplemented. No coding session was killed/resumed, no original prompt resent, no
+global Claude authentication/settings edited, and no files removed by this audit.

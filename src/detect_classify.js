@@ -300,7 +300,7 @@ function autoConfirmKeys(text, autonomy, claude) {
   return null;
 }
 
-export function classify({ session, snap, idleMs, authGraceUntil }) {
+export function classify({ session, snap, idleMs, authGraceUntil, claudeActivity }) {
   const hs = hookState.get(session.id);
   // Preserve Codex/other CLI hook precedence; Claude has separate foreground/background semantics.
   if (session.tool !== 'claude' && hs && Date.now() - hs.ts < HOOK_TTL_MS) return { status: hs.status, question: hs.question };
@@ -338,10 +338,12 @@ export function classify({ session, snap, idleMs, authGraceUntil }) {
   if (terminal) return { status: 'waiting', question: questionFrom(text, true) };
   const recentHook = hs && Date.now() - hs.ts < HOOK_TTL_MS;
   if (recentHook && (hs.attention || hs.error)) return { status: hs.status, question: hs.question, authNeeded: hs.authNeeded };
-  if (PROMPT_RX.some((rx) => rx.test(tailStr))) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
+  // A completed Claude response can quote approval prompts or spinner glyphs. The live menu/footer
+  // and typed hooks are authoritative; prose ABOVE an idle composer is not an actionable selector.
+  if (!frame && PROMPT_RX.some((rx) => rx.test(tailStr))) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
 
   // 3) active-processing indicators -> working
-  if ((frame && /esc(?:ape)? to interrupt/i.test(frame.footer)) || WORKING_RX.some((rx) => rx.test(tailStr))) {
+  if (frame ? frame.processing : WORKING_RX.some((rx) => rx.test(tailStr))) {
     return { status: 'working', question: null };
   }
 
@@ -361,14 +363,18 @@ export function classify({ session, snap, idleMs, authGraceUntil }) {
   if (bg.wakeups > 0) return { status: 'working', question: null };
   if (recentHook && !(frame?.done && frame.count === 0 && bg.work > 0)) return { status: hs.status, question: hs.question };
   if (!frame && bg.work > 0 && recentHook) return { status: 'working', question: null };
+  if (session.tool === 'claude' && claudeActivity?.phase === 'working'
+      && (!lifecycle || claudeActivity.lastAt > lifecycle.sent_at)) return { status: 'working', question: null };
 
   // 3b) background work still running -> working (checked AFTER PROMPT_RX so a genuine approval
   //     prompt shown alongside a bg terminal still surfaces as waiting, but BEFORE the idle fall-through
   //     so a quiet composer with live background terminals is not miscounted as needs-you). Bounded:
   //     past BG_HOLD_MS of stillness the footer is servers-left-running, not work — fall through.
-  if (BACKGROUND_RX.test(tailStr) && !(idleMs > BG_HOLD_MS)) return { status: 'working', question: null };
+  if (!frame && BACKGROUND_RX.test(tailStr) && !(idleMs > BG_HOLD_MS)) return { status: 'working', question: null };
 
   // 4) quiet for a while -> waiting
-  if (idleMs > IDLE_WAIT_MS) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
+  if (idleMs > IDLE_WAIT_MS) return { status: 'waiting', question:
+    (claudeActivity?.phase === 'waiting' && claudeActivity?.report?.ts === claudeActivity?.lastAt ? claudeActivity.report.text : '')
+    || questionFrom(text, session.tool === 'claude') };
   return { status: 'working', question: null };
 }

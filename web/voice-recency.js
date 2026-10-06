@@ -2,6 +2,7 @@
 const DAY = 24 * 60 * 60 * 1000;
 const OPERATOR = new Set(['', 'task', 'text', 'text+attachments', 'voice', 'operator', 'operator-correction', 'phone', 'phone+attachments']);
 export function voiceActivityTimestamp(session, messages = null) {
+  if (session?.tool === 'claude' && Number(session.last_activity) > 0) return Number(session.last_activity);
   const times = messages
     ? messages.filter(row => row.direction === 'out' || (row.direction === 'in' && OPERATOR.has(row.source || ''))).map(row => Number(row.ts))
     : [session?.voice_activity_at, session?.last_key?.ts, session?.report_at].map(Number);

@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { pickClaudeTranscript, findClaudeLog, claudeSlug } from '../src/claude_transcripts.js';
+import { pickClaudeTranscript, findClaudeLog, findRelocatedClaudeLog, claudeSlug } from '../src/claude_transcripts.js';
+import { mkdirSync, rmSync } from 'node:fs';
 
 const MIN = 60e3;
 const T0 = 1_783_923_141_097; // s_2587ee0851's real launch ms — the incident scenario
@@ -70,8 +71,16 @@ assert.equal(
 assert.equal(
   await findClaudeLog('/nonexistent/cwd', { claude_transcript: join(dir, 'gone.jsonl'), started_at: T0 }),
   null,
-  'stale binding falls through to the heuristic (here: no slug dir → null)',
+  'missing binding never falls through to an unrelated conversation',
 );
+const uuid = '12345678-1234-1234-1234-123456789abc';
+mkdirSync(join(dir, 'moved-project'));
+const moved = join(dir, 'moved-project', `${uuid}.jsonl`);
+writeFileSync(moved, '{}\n');
+assert.equal(await findRelocatedClaudeLog(`/missing/${uuid}.jsonl`, { root: dir }), moved,
+  'a moved transcript can be recovered by exact UUID only');
+assert.equal(await findRelocatedClaudeLog('/missing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl', { root: dir }), null);
+rmSync(dir, { recursive: true, force: true });
 assert.equal(claudeSlug('/Users/bb1/aios'), '-Users-bb1-aios');
 
 // ---- source-locks: the wiring that makes the module matter ----

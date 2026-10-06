@@ -6,7 +6,9 @@ import { claudeResumeId } from './claude_transcripts.js';
 
 const norm = value => String(value || '').replace(/\s+/g, ' ').trim();
 export function claudeInputRecordReceipt(row, { text, nativeId }) {
-  if (!row || row.isSidechain || (nativeId && (row.sessionId || row.session_id) !== nativeId)) return null;
+  if (!row || row.isSidechain || claudeSystemInput(row)
+      || (row.origin?.kind && row.origin.kind !== 'human')
+      || (nativeId && (row.sessionId || row.session_id) !== nativeId)) return null;
   if (row.type === 'queue-operation' && row.operation === 'enqueue' && typeof row.content === 'string'
       && norm(row.content) === norm(text)) return { queued: true, receipt: 'claude-native-queue' };
   const queued = claudeQueuedUser(row);

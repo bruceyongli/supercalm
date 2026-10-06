@@ -13,7 +13,9 @@ payload="$(printf '%s' "$input" | jq -c --arg session "$AIOS_SESSION_ID" '
   {session:$session, event:.hook_event_name, native_session_id:.session_id,
    transcript:.transcript_path, message:(.message // ""),
    notification_type, last_assistant_message, background_tasks, session_crons,
-   error, error_details, agent_id, sent_at:(now * 1000 | floor)} |
+   error, error_details, agent_id, source, tool_name, tool_use_id, elicitation_id, url, action,
+   tool_input:(if .tool_input then {description:.tool_input.description,command:.tool_input.command,file_path:.tool_input.file_path} else null end),
+   sent_at:(now * 1000 | floor)} |
   with_entries(select(.value != null))
 ' 2>/dev/null || true)"
 [ -n "$payload" ] || exit 0

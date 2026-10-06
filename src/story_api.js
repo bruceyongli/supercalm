@@ -29,7 +29,8 @@ function cleanDetail(d) {
 }
 export function extractLiveStatus(snap) {
   const frame = claudeTerminalFrame(snap);
-  const lines = stripAnsi(String(snap || '')).split('\n').map((l) => l.trim()).filter(Boolean).slice(-16);
+  const lines = stripAnsi(frame ? `${frame.processing ? frame.recent : ''}\n${frame.footer}` : String(snap || ''))
+    .split('\n').map((l) => l.trim()).filter(Boolean).slice(-16);
   let verb = null, detail = null, bg = frame?.count > 0 ? frame.background : null;
   for (const l of lines.reverse()) {
     if (!verb) {
@@ -143,7 +144,7 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cur
   const s = getSession(sid);
   if (!s) return { error: 'no such session' };
   const project = s.project_id ? getProject(s.project_id) : null;
-  const cwd = project?.path || null;
+  const cwd = s.tool === 'claude' ? s.worktree_path || project?.path || null : project?.path || null;
   const file = s.tool === 'codex'
     ? await findCodexLog(cwd, s)
     : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid) });

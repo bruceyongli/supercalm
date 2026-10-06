@@ -22,6 +22,8 @@ try {
   assert.deepEqual(await readReceipt(), { queued: true, receipt: 'claude-native-queue' });
   assert.equal(claudeInputRecordReceipt({ ...queued, sessionId: 'another' }, { text, nativeId }), null);
   assert.equal(claudeInputRecordReceipt({ ...queued, operation: 'remove' }, { text, nativeId }), null);
+  assert.equal(claudeInputRecordReceipt({ ...queued, origin: { kind: 'task-notification' } }, { text, nativeId }), null,
+    'an automation enqueue with identical wording is not the operator receipt');
   assert.equal(claudeInputRecordReceipt({ type: 'user', sessionId: nativeId, isSidechain: true, message: { content: text } }, { text, nativeId }), null);
   assert.equal(claudeInputRecordReceipt({ type: 'user', sessionId: nativeId, promptSource: 'system', message: { content: text } }, { text, nativeId }), null);
   assert.equal(claudeInputRecordReceipt({ type: 'user', sessionId: nativeId, message: { content: [{ type: 'text', text }] } }, { text, nativeId }).queued, false);

@@ -17,7 +17,7 @@ import { id, slug, now, shquote, stripAnsi } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
 import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt, clearHookState } from './detect_classify.js';
-import { getClaudeLifecycle, clearClaudeAttention, clearClaudeLifecycle } from './claude_lifecycle.js';
+import { getClaudeLifecycle, clearClaudeAttention, clearClaudeLifecycle, claudeTerminalFrame, claudeBackgroundWork } from './claude_lifecycle.js';
 import { summarize } from './summarize.js';
 import { resolveClaudeEnv } from './authmode.js';
 import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
@@ -41,6 +41,8 @@ import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './cod
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
+import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
+import { claudeDurableActivityAt } from './claude_activity_store.js';
 import { originalTaskSeed } from './resume_seed.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
@@ -934,6 +936,7 @@ function register(s) {
     lastChange: initialMonitorLastChange(s),
     startedAt: now(), // (re)launch time — the SHELLS-exit check is graced for LAUNCH_GRACE_MS after this
     lastRuntimeHeartbeat: Number(s.runtime_heartbeat_at) || 0,
+    tool: s.tool,
   };
   try {
     entry.offset = existsSync(entry.logFile) ? statSync(entry.logFile).size : 0;
@@ -1341,6 +1344,14 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // alone means "pane exists", NOT "agent running". Only short-circuit when the agent is genuinely live
   // (status not exited); an exited session must relaunch even though its pane lingers.
   if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
+  // Missing native history is not permission to --continue somebody else's latest conversation, nor
+  // to kill a still-live agent and discover the loss afterwards. First look for this EXACT UUID.
+  if (s.tool === 'claude' && s.claude_transcript && !(await findClaudeLog(null, s))) {
+    const error = new Error('Cannot resume Claude: this session’s native transcript is missing. The original AIOS messages are preserved; no other conversation was resumed.');
+    error.code = 'claude-transcript-missing';
+    store.addEvent(sid, 'resume-refused', { reason: error.code, native: claudeResumeId(s.claude_transcript) });
+    throw error;
+  }
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
   let durableStatus = ['working', 'waiting'].includes(preserveStatus)
     ? preserveStatus
@@ -1410,7 +1421,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
       claimed: store.otherClaudeTranscripts(sid),
     }).catch(() => null);
     resumeId = claudeResumeId(nativeConversation);
-    resumeTask = originalTaskSeed(store.messagesFor(sid, 20), { hasNativeConversation: !!nativeConversation });
+    resumeTask = originalTaskSeed(store.messagesFor(sid, 20), { hasNativeConversation: !!nativeConversation || !!s.claude_transcript });
     if (resumeTask) {
       continueConversation = false;
       durableStatus = 'working';
@@ -1901,13 +1912,60 @@ async function pollOnce() {
       }
     }
     const h = hash(stableSnap(snap));
-    const changed = observeMonitorSnapshot(entry, h, s.status);
+    let changed, claudeActivity = null;
+    const claudeQuestion = s.tool === 'claude' ? terminalQuestionPrompt(snap) : null;
+    let newClaudeQuestion = false;
+    if (s.tool === 'claude') {
+      // Keep the pane signature for delivery diagnostics, but never use its viewport hash as Claude's
+      // work clock. Resize, auto-update, remote-control status, suggestions and drafts are all chrome.
+      entry.lastHash = h;
+      if (entry.claudeBoundPath !== s.claude_transcript) {
+        entry.claudeBoundPath = s.claude_transcript;
+        entry.claudeResolvedPath = null;
+      }
+      claudeActivity = await observeClaudeActivity(entry, entry.claudeResolvedPath || s.claude_transcript).catch(() => ({ available: false, changed: false }));
+      if (!claudeActivity.available && s.claude_transcript && now() - (entry.lastClaudeLocate || 0) > 30_000) {
+        entry.lastClaudeLocate = now();
+        entry.claudeResolvedPath = await findClaudeLog(null, s).catch(() => null);
+        if (entry.claudeResolvedPath) claudeActivity = await observeClaudeActivity(entry, entry.claudeResolvedPath).catch(() => claudeActivity);
+      }
+      changed = !!claudeActivity.changed;
+      const lifecycle = getClaudeLifecycle(s.id);
+      if ((claudeActivity.changed || claudeActivity.initial) && !claudeActivity.failure
+          && claudeActivity.lastAt > lifecycle?.sent_at && (lifecycle.attention || lifecycle.failure)) {
+        clearClaudeAttention(s.id);
+        clearHookState(s.id);
+        if (s.degraded) store.updateSession(s.id, { degraded: 0 });
+      }
+      const questionKey = claudeQuestion ? hash(JSON.stringify([claudeQuestion.question, claudeQuestion.options.map(option => option.label)])) : null;
+      newClaudeQuestion = !!questionKey && questionKey !== entry.claudeQuestionKey
+        && !(entry.claudeQuestionKey === undefined && s.status === 'waiting');
+      entry.claudeQuestionKey = questionKey;
+      if (newClaudeQuestion) changed = true;
+      if (changed) entry.lastChange = now();
+      const frame = claudeTerminalFrame(snap);
+      if (claudeActivity.initial && claudeActivity.lastAt > 0 && s.status === 'waiting'
+          && frame?.done && !frame.processing && frame.count === 0 && claudeActivity.phase === 'waiting') {
+        const realAt = claudeDurableActivityAt(s.id, claudeActivity.lastAt);
+        entry.lastChange = Math.min(now(), realAt);
+        if (realAt < Number(s.last_activity) - 60_000) {
+          const repaired = store.updateSession(s.id, { last_activity: realAt });
+          store.addEvent(s.id, 'claude-activity-clock-repaired', { previous: s.last_activity, actual: realAt, native: claudeResumeId(s.claude_transcript) });
+          emitSessionStatus(repaired, { previousStatus: s.status, source: 'claude-activity-clock-repaired' });
+          bus.emit('changed');
+        }
+      }
+    } else changed = observeMonitorSnapshot(entry, h, s.status);
     const idleMs = now() - entry.lastChange;
 
     // PARKED lifecycle (park.js, traceability A3): byte-still beyond the threshold -> flag + one
     // notification + queue demotion (UIs read s.parked); ANY movement or reply un-parks instantly.
     {
-      const v = parkVerdict({ status: s.status, parked: !!s.parked, idleMs });
+      const frame = s.tool === 'claude' ? claudeTerminalFrame(snap) : null;
+      const bg = claudeBackgroundWork(s.tool === 'claude' ? getClaudeLifecycle(s.id) : null);
+      const liveClaudeWork = frame?.processing || bg.work > 0 || bg.wakeups > 0
+        || (frame?.count > 0 && !bg.servicesOnly) || claudeActivity?.phase === 'working';
+      const v = parkVerdict({ status: liveClaudeWork ? 'starting' : s.status, parked: !!s.parked, idleMs });
       if (v.park) {
         const updated = store.updateSession(s.id, { parked: 1 });
         store.addEvent(s.id, 'parked', { idleMs });
@@ -1941,7 +1999,7 @@ async function pollOnce() {
     let status = 'working';
     let question = null;
     if (classifier) {
-      const r = classifier({ session: s, tool: s.tool, paneCmd: cmd, snap, idleMs, changed, authGraceUntil: entry.authGraceUntil });
+      const r = classifier({ session: s, tool: s.tool, paneCmd: cmd, snap, idleMs, changed, claudeActivity, authGraceUntil: entry.authGraceUntil });
       if (r) {
         // a login just completed in this pane -> auto-refresh this provider's stuck sessions
         if (r.loginOk) recoverAuth(s.tool, 'login-detected');
@@ -1982,10 +2040,35 @@ async function pollOnce() {
     } else {
       entry.waitStreak = 0;
     }
-    applyStatus(s, status, question, changed);
+    // A genuine end_turn may arrive between polls without an observed working interval. Conversely,
+    // repeatedly cropping the SAME report is never a new attention episode.
+    if (s.tool === 'claude' && status === 'waiting' && s.status === 'waiting'
+        && !changed && (!claudeQuestion || getClaudeLifecycle(s.id)?.attention)) question = s.question;
+    applyStatus(s, status, question, changed, {
+      forceAttention: (!!claudeActivity?.newReport || newClaudeQuestion) && status === 'waiting',
+      promptId: s.tool === 'claude' ? getClaudeLifecycle(s.id)?.attention_id || (claudeQuestion ? entry.claudeQuestionKey : '') : '',
+      claudeSource: !claudeQuestion && claudeActivity?.phase === 'waiting' && claudeActivity?.report?.ts === claudeActivity?.lastAt
+        ? claudeActivity.report.text : undefined,
+    });
   }
 }
-function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false } = {}) {
+const _claudeAttentionSource = store.db.prepare("SELECT payload FROM events WHERE session_id=? AND type='claude-attention-source' ORDER BY id DESC LIMIT 1");
+const _claudeLastInput = store.db.prepare("SELECT COALESCE(MAX(id),0) id FROM messages WHERE session_id=? AND direction='in'");
+const _claudeNativeSubmit = store.db.prepare(`SELECT id FROM events WHERE session_id=? AND type='hook'
+  AND json_valid(payload) AND json_extract(payload,'$.event')='UserPromptSubmit'
+  AND (json_extract(payload,'$.native_session_id')=? OR COALESCE(json_extract(payload,'$.native_session_id'),'')='') ORDER BY id DESC LIMIT 1`);
+function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false, claudeSource, promptId = '' } = {}) {
+  let claudeKey = null, duplicateSource = false;
+  if (s.tool === 'claude' && status === 'waiting') {
+    const turnKey = _claudeNativeSubmit.get(s.id, claudeResumeId(s.claude_transcript) || '')?.id
+      || reg.get(s.id)?.claudeActivity?.turnKey || '';
+    claudeKey = claudeAttentionKey(s, claudeSource || question || s.summary || '', _claudeLastInput.get(s.id).id, promptId, turnKey);
+    try { duplicateSource = JSON.parse(_claudeAttentionSource.get(s.id)?.payload || '{}').key === claudeKey; } catch {}
+    if (duplicateSource && s.status === 'waiting') {
+      question = s.question; // keep the curated wording, not another raw-screen/summary round trip
+      if (source === 'hook') activityBump = false;
+    }
+  }
   const patch = {};
   if (status && status !== s.status) {
     patch.status = status;
@@ -2020,16 +2103,19 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
     store.addEvent(s.id, 'status', { from: s.status, to: patch.status });
   }
   let report = null;
-  if (freshAttention) {
+  if (freshAttention && !duplicateSource) {
     report = createAttentionReport(s.id, attentionSeed);
     if (report.created) clearAttentionDismissal(s.id);
-  } else if (nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal(s.id)) {
+  } else if (nowWaiting && wasWaiting && questionChanged && question && getAttentionDismissal(s.id) && !duplicateSource) {
     // Some TUIs replace one prompt with another without an observable Working interval. A changed,
     // persisted ask is still a new attention episode; an exact detector/summary wording round-trip is
     // rejected by createAttentionReport and leaves the dismissal intact.
     report = createAttentionReport(s.id, question);
     if (report.created) clearAttentionDismissal(s.id);
   }
+  if (claudeKey && report?.message && !duplicateSource) store.addEvent(s.id, 'claude-attention-source', {
+    key: claudeKey, report_id: report.message.id,
+  });
   const dismissal = getAttentionDismissal(s.id);
   // Every persisted summary-field change is a compact row patch. Include the attention boundary in the
   // SAME event as the waiting transition; clients no longer need a broad refresh or a successful LLM
@@ -2049,7 +2135,7 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
       } : {}),
     },
   });
-  if (report?.created) runSummary(s.id, report); // async refinement; the visible fallback is already durable
+  if (report?.created) runSummary(s.id, s.tool === 'claude' ? { ...report, sourceText: claudeSource || question } : report); // async refinement; the visible fallback is already durable
   bus.emit('changed');
   return { updated, report };
 }
@@ -2057,11 +2143,15 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
 // Lifecycle hooks and terminal polling must enter the exact same attention transition. The old hook
 // path wrote status='waiting' directly, so polling saw no transition and never created the unread
 // report that powers Needs You.
-export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {} } = {}) {
+export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {}, activityBump = true, forceAttention = false, promptId = '' } = {}) {
   const session = store.getSession(sid);
   if (!session || session.status === 'exited') return session;
   const nextQuestion = status === 'waiting' && question == null ? session.question : question;
-  applyStatus(session, status, nextQuestion, true, { source, extra });
+  const result = applyStatus(session, status, nextQuestion, activityBump, { source, extra, forceAttention, claudeSource: question, promptId });
+  if (session.tool === 'claude' && result?.updated?.last_activity > session.last_activity) {
+    const entry = reg.get(sid);
+    if (entry) entry.lastChange = now();
+  }
   return store.getSession(sid);
 }
 
@@ -2106,7 +2196,8 @@ export function noteReply(sid) {
 async function runSummary(sid, report = null) {
   let snap = '';
   try {
-    snap = await snapshot(sid);
+    const session = store.getSession(sid);
+    snap = session?.tool === 'claude' && report?.sourceText ? report.sourceText : await snapshot(sid);
   } catch {}
   let result = null;
   try {
@@ -2116,6 +2207,7 @@ async function runSummary(sid, report = null) {
   }
   const cur = store.getSession(sid);
   if (!cur || cur.status !== 'waiting') return; // moved on while summarizing
+  if (cur.tool === 'claude' && report?.message?.id && getLatestAttentionReport(sid)?.id !== report.message.id) return;
   const structured = storedQuestion(cur);
   if (structured?.mode === 'async' && !structured.answered) return; // authoritative question beats screen summaries
   const summary = (result?.summary || cur.question || cur.title || 'Waiting for your input').replace(/\s+/g, ' ').slice(0, 220);
@@ -2126,7 +2218,9 @@ async function runSummary(sid, report = null) {
   // reparsing a growing transcript every time a browser wants a status row.
   const curatedQuestion = String(result?.ask || cur.question || summary).replace(/\s+/g, ' ').trim().slice(0, 2000);
   const updated = store.updateSession(sid, { summary, category, stage, question: curatedQuestion || null });
-  const isNewAttention = category !== 'working' && !!report?.created;
+  // A user can dismiss while the LLM is still formatting the report. Refinement must not undo that
+  // durable choice or notify again; only a new source episode is allowed to clear it synchronously.
+  const isNewAttention = category !== 'working' && !!report?.created && !(cur.tool === 'claude' && getAttentionDismissal(sid));
   if (isNewAttention) clearAttentionDismissal(sid);
   if (category === 'working' && report?.created && report?.message?.id) {
     markAttentionReportRead(report.message.id);
@@ -3903,7 +3997,7 @@ route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
   try {
     json(res, 200, decorate(await resume(sid)));
   } catch (e) {
-    json(res, 400, { error: String(e.message || e) });
+    json(res, 400, { error: String(e.message || e), ...(e.code === 'claude-transcript-missing' ? { code: e.code } : {}) });
   }
 });
 
