@@ -93,6 +93,19 @@ same-long-draft Enter-only retry, an ignored/remapped stash (no paste or Enter),
 history preservation, and the existing native queue receipt. Codex keeps its original capture,
 Ctrl-U, readiness and submit timing/retry behavior. No live project request is resent by the test.
 
+The first live follow-up exposed an omitted state: stashing really cleared the draft, but Claude
+displayed an arbitrary DIM suggested prompt and left dozens of blank rows below its footer. The
+plain capture treated the suggestion as typed text; the short readiness window missed the composer
+above the padding. Retrying then toggled the old stash back into the prompt. Claude captures now
+retain ANSI style evidence (`capture-pane -e`), normalize only dim spans inside the live composer,
+and trim blank terminal padding before any input/clear verification. Identical non-dim operator
+text remains a draft; dim report text outside the composer and RGB color payloads remain intact.
+The private-tmux regression now combines the tall old draft, arbitrary dim suggestion, top-positioned
+short input and bottom padding, plus a second clean send without restoring the old stash. An empty
+ghost composer must receive no stash key. On the operator's explicit resend request, the real Morph
+`/input` handler acknowledged one complete question via `claude-native-input`, with one Enter and
+one matching native user record; the old unsent text was not submitted with it.
+
 ## Captured checks and repeatable verification
 
 `test/claude_hooks.test.js` runs the actual hook script into the real HTTP handler with a private DB

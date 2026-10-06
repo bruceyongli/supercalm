@@ -7,11 +7,13 @@ let stashed = '';
 let attempts = 0;
 let last = '';
 const marker = family === 'claude' ? '❯' : '›';
-const hint = family === 'claude' ? '' : 'Ask Codex to do anything';
+const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
+  ? '\x1b[2mkeep iterating, report iteration 15 when it\'s done\x1b[0m'
+  : family === 'claude' ? '' : 'Ask Codex to do anything';
 const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to cycle)' : 'GPT-6-Astra xhigh · /tmp/delivery-test';
 const render = (display = input) => process.stdout.write(mode === 'question'
   ? '\x1b[2J\x1b[1;1HChoose a recovery path:\r\n❯ 1. Resume from summary\r\n  2. Resume full session as-is\r\nEnter to confirm\r\n'
-  : `\x1b[2J\x1b[${Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
+  : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
 let partialTimer;

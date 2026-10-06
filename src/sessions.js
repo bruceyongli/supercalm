@@ -40,7 +40,7 @@ import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
 import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
-import { stashClaudeComposer } from './claude_composer.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
@@ -811,8 +811,8 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   const draftMaxLines = claudeComposer ? 768 : 120;
   // A phone-sized viewport can crop the start of a tall draft. Include a bounded scrollback
   // window for Claude input only; verification still requires the live bottom composer/footer.
-  const readInputScreen = () => claudeComposer
-    ? tmux('capture-pane', '-p', '-t', name, '-S', '-512')
+  const readInputScreen = async () => claudeComposer
+    ? normalizeClaudeInputScreen(await tmux('capture-pane', '-p', '-e', '-t', name, '-S', '-512'))
     : tmux('capture-pane', '-p', '-t', name);
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).

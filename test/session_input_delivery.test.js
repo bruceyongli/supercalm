@@ -198,7 +198,7 @@ try {
     http: queuedResponse.status, queued: queuedResponse.body.queued, enters: 1, accepted: 1, receipt: 'claude-native-queue' }));
   const oldLongDraft = Array.from({ length: 33 }, (_, i) => `Old request line ${i}: 保留之前输入，不要拼进新问题。`).join('\n');
   const longId = 's_claude_long';
-  const longTrace = await start(longId, 'claude-long-old', 'claude');
+  const longTrace = await start(longId, 'claude-long-ghost', 'claude');
   store.updateSession(longId, { status: 'working' });
   const newShortMessage = "So, iteration 23, that's the one that we could claim we achieved our goal?";
   const longBlocked = await send(longId, newShortMessage, { client_message_id: 'claude-long-proof' });
@@ -216,6 +216,12 @@ try {
   assert.equal((await send(longId, nextShortMessage, { client_message_id: 'claude-next-proof' })).status, 200);
   assert.deepEqual(longTrace().filter(r => r.event === 'accepted').map(r => r.text), [newShortMessage, nextShortMessage], 'next send does not restore the old stash');
   assert.equal(longTrace().filter(r => r.event === 'stash').length, 1);
+  const ghostId = 's_claude_ghost';
+  const ghostTrace = await start(ghostId, 'claude-ghost', 'claude');
+  const ghostAccepted = await send(ghostId, newShortMessage);
+  assert.equal(ghostAccepted.status, 200, JSON.stringify(ghostAccepted.body));
+  assert.deepEqual(ghostTrace().filter(r => r.event === 'accepted').map(r => r.text), [newShortMessage]);
+  assert.equal(ghostTrace().filter(r => r.event === 'stash').length, 0, 'empty composer ghost must not toggle restore');
   console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', scenario: '33-line draft cropped by phone viewport',
     firstHTTP: 409, replacementHTTP: 200, stashes: 1, delivered: newShortMessage, oldTextMixedIn: false, retryDuplicates: 0, nextSend: 'clean' }));
   const sameLongId = 's_claude_same_long';
