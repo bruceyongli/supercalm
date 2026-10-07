@@ -1472,6 +1472,9 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 }
 .jump-latest:hover { background: #2ea043; }
 .jump-latest[hidden] { display: none; }
+@media (pointer: coarse) {
+  .jump-latest { min-width: 44px; min-height: 44px; }
+}
 /* "live terminal" cue — shown top-right only while the terminal is focused, so it's clear Enter (not
    the message box's ↑) submits typed input to the agent. */
 .term-hint {
@@ -1894,7 +1897,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   .timeline-time { margin-left: 0; }
   .timeline-attachment { grid-template-columns: 1fr; }
   .timeline-attachment img { width: 100%; height: auto; max-width: 100%; max-height: 220px; }
-  .jump-latest { right: 10px; bottom: 10px; min-height: 30px; padding: 4px 10px; }
+  .jump-latest { right: 10px; bottom: 10px; min-height: 44px; padding: 4px 10px; }
   /* No width:100% here — the box is a grid item with side margins; forcing 100% pushed it 16px past
      the viewport and clipped the send button at the right edge on phones. Stretch deducts margins. */
   .message-box { box-sizing: border-box; gap: 5px; padding: 6px; border-radius: 8px; overflow: hidden; }

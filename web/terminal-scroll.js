@@ -8,7 +8,21 @@ export function terminalScrollMode(term, tool) {
   return 'local';
 }
 
-export function installTerminalScrolling({ element, term, getTool, send, cellAt, onLocalScroll, signal }) {
+// Both supported full-screen CLIs expose Ctrl+End as jump-to-latest + resume-follow. Their
+// history position is NOT xterm's viewportY: alternate buffers always report zero scrollback.
+export function terminalHasNativeLatest(term, tool) {
+  return (tool === 'codex' || tool === 'claude') && term.buffer?.active?.type === 'alternate';
+}
+
+export function terminalLatestVisible(term, tool) {
+  // Keep the escape hatch available in an owned CLI screen, including when another browser/device
+  // scrolled it. No reliable browser-side bottom coordinate exists for native history.
+  if (terminalHasNativeLatest(term, tool)) return true;
+  const buffer = term.buffer?.active;
+  return Number(buffer?.baseY || 0) - Number(buffer?.viewportY || 0) > 2;
+}
+
+export function installTerminalScrolling({ element, term, getTool, send, cellAt, onLocalScroll, onNativeScroll = () => {}, signal }) {
   let wheelDelta = 0, wheelTimer = null, touch = null, touchScrolled = false;
   const mode = () => terminalScrollMode(term, getTool());
   const cancelWheel = () => { clearTimeout(wheelTimer); wheelTimer = null; wheelDelta = 0; };
@@ -31,7 +45,10 @@ export function installTerminalScrolling({ element, term, getTool, send, cellAt,
       const count = Math.floor(Math.abs(wheelDelta) / step);
       const direction = Math.sign(wheelDelta);
       wheelDelta %= step;
-      if (count) send(`\x1b[<${direction < 0 ? 64 : 65};${col};${row}M`.repeat(count));
+      if (count) {
+        onNativeScroll();
+        send(`\x1b[<${direction < 0 ? 64 : 65};${col};${row}M`.repeat(count));
+      }
     }, 50);
     return true;
   }
@@ -47,6 +64,8 @@ export function installTerminalScrolling({ element, term, getTool, send, cellAt,
   element.addEventListener('touchstart', (event) => {
     cancelWheel();
     touchScrolled = false;
+    touch = null;
+    if (event.target.closest?.('button')) return; // tapping Latest is navigation, not a reading gesture
     const point = event.touches.length === 1 ? event.touches[0] : null;
     touch = point ? { x: point.clientX, y: point.clientY } : null;
     onLocalScroll();
@@ -65,5 +84,13 @@ export function installTerminalScrolling({ element, term, getTool, send, cellAt,
   }, { capture: true, passive: false, signal });
   element.addEventListener('touchend', () => { touch = null; }, { passive: true, signal });
   element.addEventListener('touchcancel', () => { touch = null; touchScrolled = true; cancelWheel(); }, { passive: true, signal });
-  return { isTouchScrolling: () => touchScrolled };
+  return {
+    isTouchScrolling: () => touchScrolled,
+    jumpToLatest() {
+      cancelWheel(); // a pending upward gesture must not undo the explicit jump
+      if (signal?.aborted) return;
+      if (terminalHasNativeLatest(term, getTool())) send('\x1b[1;5F');
+      term.scrollToBottom();
+    },
+  };
 }

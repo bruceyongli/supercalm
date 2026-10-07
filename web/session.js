@@ -8,7 +8,7 @@ import { createSessionRequestScope, isSessionAbort } from './session-request-sco
 import { cleanFileReference, localFilePath, isFileReference } from './file-reference.js';
 import { terminalFileReferences, installTerminalLinkTaps } from './terminal-file-links.js';
 import { fitTerminalGrid } from './terminal-layout.js';
-import { installTerminalScrolling, terminalScrollMode } from './terminal-scroll.js';
+import { installTerminalScrolling, terminalScrollMode, terminalHasNativeLatest, terminalLatestVisible } from './terminal-scroll.js';
 import { mountFilePreview } from './file-preview.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
@@ -572,6 +572,8 @@ const jumpLatest = document.createElement('button');
 jumpLatest.type = 'button';
 jumpLatest.className = 'jump-latest';
 jumpLatest.textContent = 'Latest';
+jumpLatest.title = 'Jump to latest terminal output';
+jumpLatest.setAttribute('aria-label', 'Jump to latest terminal output');
 jumpLatest.hidden = true;
 termEl.appendChild(jumpLatest);
 // Cue (top-right, shown only while the terminal is focused) so it's clear this is the live input and
@@ -909,8 +911,7 @@ function isTerminalAtBottom(toleranceRows = 2) {
 }
 
 function updateJumpLatest() {
-  const threshold = Math.max(8, Math.ceil((term.rows || 1) * 1.5));
-  jumpLatest.hidden = terminalBottomDistance() <= threshold;
+  jumpLatest.hidden = !terminalLatestVisible(term, latestSessionInfo?.tool);
 }
 
 function terminalShouldFollow() {
@@ -925,7 +926,7 @@ function scrollTerminalToLatest() {
 }
 
 function pauseTerminalFollow() {
-  if (isTerminalAtBottom()) return;
+  if (!terminalHasNativeLatest(term, latestSessionInfo?.tool) && isTerminalAtBottom()) return;
   userPausedTail = true;
   followTail = false;
   updateJumpLatest();
@@ -1067,7 +1068,10 @@ function noteTrustedResizeActivity(e) {
 addEventListener('pointerdown', noteTrustedResizeActivity, { capture: true, passive: true, signal: _sig });
 addEventListener('touchstart', noteTrustedResizeActivity, { capture: true, passive: true, signal: _sig });
 addEventListener('keydown', noteTrustedResizeActivity, { capture: true, signal: _sig });
-jumpLatest.onclick = scrollTerminalToLatest;
+jumpLatest.onclick = () => {
+  terminalScrolling.jumpToLatest(); // explicit native navigation; automatic output writes stay local
+  scrollTerminalToLatest();
+};
 let lastUserTermScroll = 0;
 const markUserTermScroll = () => {
   lastUserTermScroll = Date.now();
@@ -1084,15 +1088,21 @@ function wheelPaneCell(e) {
 }
 const terminalScrolling = installTerminalScrolling({
   element: termEl, term, getTool: () => latestSessionInfo?.tool,
-  send: sendToPane, cellAt: wheelPaneCell, onLocalScroll: markUserTermScroll, signal: _sig,
+  send: sendToPane, cellAt: wheelPaneCell, onLocalScroll: markUserTermScroll,
+  onNativeScroll: () => { userPausedTail = true; followTail = false; updateJumpLatest(); }, signal: _sig,
 });
 termEl.addEventListener('pointerdown', (e) => {
   if (!jumpLatest.contains(e.target)) markUserTermScroll();
 });
 termEl.addEventListener('keydown', (e) => {
+  if (jumpLatest.contains(e.target)) return;
   if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(e.key)) markUserTermScroll();
 });
-term.onScroll(() => {
+function onTerminalScroll() {
+  if (terminalHasNativeLatest(term, latestSessionInfo?.tool)) {
+    updateJumpLatest(); // native repaints do not prove that the user returned to the latest output
+    return;
+  }
   if (isTerminalAtBottom()) {
     userPausedTail = false;
     followTail = true;
@@ -1100,7 +1110,11 @@ term.onScroll(() => {
     pauseTerminalFollow();
   }
   updateJumpLatest();
-});
+}
+term.onScroll(onTerminalScroll);
+// xterm suppresses its public onScroll event for browser viewport scrolls. Listen to the actual
+// viewport as well, otherwise a local-history reader waits for the next output/layout tick.
+termEl.querySelector('.xterm-viewport')?.addEventListener('scroll', onTerminalScroll, { passive: true, signal: _sig });
 addEventListener('resize', () => {
   scheduleSyncSize(150);
 }, { signal: _sig });
@@ -1148,7 +1162,7 @@ window.__aiosScrollTop = () => {
   pauseTerminalFollow();
   updateJumpLatest();
 };
-window.__aiosScrollLatest = scrollTerminalToLatest;
+window.__aiosScrollLatest = () => jumpLatest.click();
 
 // ---- live stream ------------------------------------------------------------
 function b64bytes(b64) {
@@ -1162,7 +1176,7 @@ function writeTerminal(data) {
   const shouldFollow = terminalShouldFollow();
   term.write(data, () => {
     if (sessionDestroyed || _sig.aborted) return;
-    if (shouldFollow) scrollTerminalToLatest();
+    if (shouldFollow && terminalShouldFollow()) scrollTerminalToLatest(); // respect a scroll made while this write was queued
     else updateJumpLatest();
   });
 }
@@ -1872,6 +1886,7 @@ function applySessionInfo(s) {
   }
   const merged = mergeSessionPatch(latestSessionInfo, patch);
   latestSessionInfo = merged;
+  updateJumpLatest();
   if (merged.toolColor && merged.toolLabel) {
     $('#s-badge').innerHTML = `<span class="badge" style="border-color:${merged.toolColor}99;color:${merged.toolColor}">${merged.toolLabel}</span>`;
   }
@@ -3755,7 +3770,8 @@ if (finePointer.matches) {
 } else {
   // touch: keep the terminal display-only (a read-only textarea won't pop the soft keyboard anyway);
   // send taps to the composer.
-  termEl.addEventListener('pointerup', () => {
+  termEl.addEventListener('pointerup', (e) => {
+    if (e.target.closest('.jump-latest')) return; // navigation must not open the phone keyboard
     if (terminalScrolling.isTouchScrolling()) return; // a swipe must not open the keyboard
     try { termTextarea?.blur(); } catch {}
     if (document.activeElement !== reply) reply.focus();
