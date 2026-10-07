@@ -10,6 +10,7 @@ import { findClaudeLog } from './claude_transcripts.js';
 import { readStoryPage } from './story_reader.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
+import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
 import { terminalQuestionPrompt } from './detect_classify.js';
@@ -118,12 +119,21 @@ async function findCodexLog(cwd, s) {
     let hit = pickRolloutByUuid(files, s.codex_uuid);
     if (!hit) { files = await rolloutFiles(true); hit = pickRolloutByUuid(files, s.codex_uuid); }
     if (hit) { rolloutPaths.set(s.codex_uuid, hit); return hit; }
+    return null; // an authoritative but missing UUID must never fall through to a sibling
   }
   // A fresh queued launch has no safe cwd fallback: another Codex session in the same project can be
   // newer and would disclose/merge that conversation before this launch captures its UUID. Show the
   // session's own AIOS message spine until the authoritative rollout identity arrives. Pre-queue legacy
   // rows retain cwd lookup for backward compatibility.
-  if (s?.id && _freshQueuedLaunch.get(s.id)) return null;
+  if (s?.id && _freshQueuedLaunch.get(s.id)) {
+    let recovered = await bindCodexLaunchTranscript(s.id, { files });
+    // A file can appear just after the previous Story request. Refresh the shared inventory at
+    // most once per second for unresolved launches, rather than hiding it behind a 30s cache miss.
+    if (!recovered && Date.now() - inventoryAt >= 1000) {
+      recovered = await bindCodexLaunchTranscript(s.id, { files: await rolloutFiles(true) });
+    }
+    return recovered;
+  }
   // 2) cwd match (legacy path — sessions without a captured UUID, or whose workspace path lines up).
   for (const f of files.slice(0, 120)) {
     try {

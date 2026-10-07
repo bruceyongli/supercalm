@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from '../src/codex_rollouts.js';
+import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles, findCodexLaunchRollout } from '../src/codex_rollouts.js';
 
 const UUID_A = '019f4690-1056-7250-9141-b64f4274e776'; // "captured at launch" — the session's own rollout
 const UUID_B = '01a2b3c4-d5e6-7f80-9a1b-c2d3e4f50617'; // a different codex conversation
@@ -58,6 +58,40 @@ assert.ok(chosen && chosen.endsWith(nameA), 'UUID capture locates the sandbox-cw
 // empty base dir → no files, no throw (fail-open walk)
 assert.deepEqual(await codexRolloutFiles(join(base, 'does-not-exist')), []);
 
+// Delayed CLI startup: identity is recoverable after the six-second launch observer expired.
+const launchAt = Date.parse('2026-07-11T11:07:00Z');
+const request = '补齐释义，自动发布，不要影响其他 agent。';
+const recovery = join(base, nameB);
+const writeRecovery = (file, uuid, { cwd = '/own/worktree', offset = 8000, task = request,
+  source = 'cli', thread_source = 'user', originator = 'codex-tui' } = {}) => writeFileSync(file, [
+  { type: 'session_meta', timestamp: new Date(launchAt + offset).toISOString(), payload: {
+    id: uuid, cwd, timestamp: new Date(launchAt + offset).toISOString(), source, thread_source, originator,
+    base_instructions: { text: 'Large instructions '.repeat(2000) },
+  } },
+  { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text',
+    text: '<project_context>Operator data</project_context>\n\n' + task }] } },
+].map(row => JSON.stringify(row)).join('\n') + '\n');
+const evidence = { cwd: '/own/worktree', startedAt: launchAt, task: request };
+writeRecovery(recovery, UUID_B);
+assert.equal(await findCodexLaunchRollout([recovery], evidence), recovery, '8-second delayed start with large metadata recovers by exact launch evidence');
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, task: 'Another request' }), null);
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, cwd: '/sibling/worktree' }), null);
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, task: '' }), null);
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, task: '', allowEmptyTask: true }), recovery, 'a launch inventory diff can still bind a blank-task launch');
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, claimed: new Set([UUID_B]) }), null);
+for (const extra of [{ offset: -6000 }, { offset: 601000 }, { source: { subagent: 'parent' } },
+  { thread_source: 'subagent' }, { originator: 'codex_exec' }]) {
+  writeRecovery(recovery, UUID_B, extra);
+  assert.equal(await findCodexLaunchRollout([recovery], evidence), null, `reject unrelated rollout ${JSON.stringify(extra)}`);
+}
+writeRecovery(recovery, UUID_B);
+const duplicate = join(base, `rollout-2026-07-11T11-07-03-${UUID_A}.jsonl`);
+writeRecovery(duplicate, UUID_A);
+assert.equal(await findCodexLaunchRollout([recovery, duplicate], evidence), null, 'ambiguous launch evidence never guesses');
+assert.equal(await findCodexLaunchRollout([recovery, duplicate], { ...evidence, claimed: new Set([UUID_A]) }), recovery);
+writeRecovery(duplicate, UUID_B);
+assert.equal(await findCodexLaunchRollout([duplicate], evidence), null, 'metadata identity must agree with the filename UUID');
+
 // ---- source locks: the wiring the pure module can't observe (importing these boots their loops) ----
 const storyApi = readFileSync(new URL('../src/story_api.js', import.meta.url), 'utf8');
 // findCodexLog must consult the captured UUID BEFORE the cwd match.
@@ -68,9 +102,13 @@ assert.ok(iCwd > 0 && iPick < iCwd, 'UUID match runs before the cwd match (UUID 
 
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
 assert.ok(/const codexBefore = tool === 'codex' \? new Set\(await codexRolloutFiles\(\)/.test(sessions), 'launch snapshots the rollout set for codex');
-assert.ok(/if \(codexBefore\) captureCodexUuid\(sid, codexBefore, task\)/.test(sessions), 'launch fires captureCodexUuid with task disambiguation (fire-and-forget)');
-assert.ok(sessions.includes('store.updateSession(sid, { codex_uuid: uuid })'), 'captureCodexUuid persists the UUID');
-assert.ok(sessions.includes("source: 'transcript'"), 'UUID capture publishes a scoped transcript-ready event');
+assert.ok(/if \(codexBefore\) captureCodexUuid\(sid, codexBefore\)/.test(sessions), 'launch fires evidence-checked captureCodexUuid (fire-and-forget)');
+const binding = readFileSync(new URL('../src/codex_transcript_binding.js', import.meta.url), 'utf8');
+assert.ok(sessions.includes('bindCodexLaunchTranscript(sid,'), 'launch uses the shared evidence-checked binder');
+assert.ok(binding.includes('store.updateSession(sid, { codex_uuid: uuid })'), 'shared binder persists the UUID');
+assert.ok(binding.includes("source: 'transcript'"), 'UUID capture publishes a scoped transcript-ready event');
+assert.ok(storyApi.includes('bindCodexLaunchTranscript(s.id,'), 'Story self-heals a missed binding using the same launch evidence');
+assert.ok(sessions.includes('attempt < 60'), 'non-blocking launch capture allows a cold CLI to start');
 assert.ok(/s\.codex_uuid \|\| \(await findCodexSession/.test(sessions), 'resume prefers the captured UUID, then cwd-match');
 
 const store = readFileSync(new URL('../src/store.js', import.meta.url), 'utf8');

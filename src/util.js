@@ -31,3 +31,12 @@ export function stripAnsi(s) {
 export function clamp(n, lo, hi) {
   return Math.max(lo, Math.min(hi, n));
 }
+
+// Node rejects non-Latin-1 response headers. Keep an ASCII fallback plus the RFC 5987 UTF-8
+// filename so Chinese/emoji names work for inline previews, media streams and downloads alike.
+export function fileDisposition(name, { download = false } = {}) {
+  const filename = String(name || 'file').replace(/[\r\n\x00]/g, '');
+  const fallback = filename.replace(/[^\x20-\x7e]|["\\]/g, '_') || 'file';
+  const encoded = encodeURIComponent(filename).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `${download ? 'attachment' : 'inline'}; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}

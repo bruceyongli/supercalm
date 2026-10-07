@@ -706,11 +706,11 @@ $('#scrollback-latest')?.addEventListener('click', () => {
 });
 
 function workspacePreviewable(path) {
-  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|pdf|mp4|m4v|mov|webm|ogv|wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(String(path || ''));
+  return /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|md|markdown|html?|svg|pdf|csv|tsv|txt|json|mp4|m4v|mov|webm|ogv|wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(String(path || ''));
 }
 
 function workspaceStatusLabel(status) {
-  return status === 'new' ? 'new' : status === 'modified' ? 'changed' : 'file';
+  return status === 'new' ? 'new' : status === 'modified' ? 'changed' : status === 'artifact' ? 'report' : 'file';
 }
 
 async function renderWorkspaceDocument(file, target) {
@@ -753,7 +753,7 @@ function renderWorkspaceBrowser(view) {
         ${files.length ? files.map((file) => `<button type="button" class="workspace-file${file.path === selected?.path ? ' selected' : ''}" data-workspace-file="${escapeHtml(file.path)}" data-workspace-search="${escapeHtml(file.path.toLowerCase())}">
           <span class="workspace-file-status ${escapeHtml(file.status || '')}">${workspaceStatusLabel(file.status)}</span>
           <code>${escapeHtml(file.path)}</code><small>${escapeHtml(formatBytes(file.bytes))}</small>
-        </button>`).join('') : `<div class="workspace-empty">${view === 'preview' ? 'No images, markdown, or HTML files yet.' : 'No changed or recent project files yet.'}</div>`}
+        </button>`).join('') : `<div class="workspace-empty">${view === 'preview' ? 'No previewable files yet.' : 'No changed or recent project files yet.'}</div>`}
       </nav>
       <article class="workspace-detail" data-workspace-detail>${selected ? '' : '<div class="workspace-empty">Select a file to open it.</div>'}</article>
     </div>`;

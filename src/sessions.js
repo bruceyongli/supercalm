@@ -13,7 +13,7 @@ import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, 
 import { effortsForModel, defaultEffortForModel } from './model_efforts.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
-import { id, slug, now, shquote, stripAnsi } from './util.js';
+import { id, slug, now, shquote, stripAnsi, fileDisposition } from './util.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
 import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt, clearHookState } from './detect_classify.js';
@@ -37,7 +37,8 @@ import { preflightSpec, composeTask, getPreflight } from './agents/preflight.js'
 import { retrieveLessons, formatLessons, noteLessonReuse } from './lessons.js';
 import { formatProjectStandards, noteStandardsUsed } from './agents/supervisor/project_memory.js';
 import { listWiki, readWiki, searchWiki, rebuildWiki } from './wiki.js';
-import { rolloutUuidFromName, pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
+import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
+import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
 import { stashClaudeComposer, normalizeClaudeInputScreen } from './claude_composer.js';
@@ -985,42 +986,22 @@ async function readHead(path, max = 16384) {
   }
 }
 
-// Capture the codex conversation UUID for a FRESH launch by DIFFING the rollout set: the one new file that
-// appears after codex starts is this session's rollout, so we record its UUID (store.codex_uuid). This lets
+// Capture the codex conversation UUID for a FRESH launch by diffing the rollout set and validating
+// its persisted launch evidence (cwd, timestamp and request). This lets
 // the story + resume find the real transcript by UUID even when the rollout's cwd differs from the AIOS
 // project path (a sandboxed workspace) — the failure the operator hit. Fully fail-open + async: it never
-// blocks or breaks the launch. Concurrent launches are disambiguated by their original task when possible;
+// blocks or breaks the launch. Concurrent launches are disambiguated by their original task;
 // an ambiguous result stays unbound (and story_api deliberately shows the private AIOS fallback, never a
 // cwd-matched sibling transcript).
-const _claimedCodexUuids = store.db.prepare('SELECT codex_uuid FROM sessions WHERE codex_uuid IS NOT NULL');
-async function captureCodexUuid(sid, beforeSet, task = '') {
+async function captureCodexUuid(sid, beforeSet) {
   try {
-    const taskNeedle = JSON.stringify(String(task || '').trim().slice(0, 240)).slice(1, -1);
-    for (let attempt = 0; attempt < 24; attempt++) {
-      await new Promise((r) => setTimeout(r, 250));
-      const claimed = new Set(_claimedCodexUuids.all().map((r) => r.codex_uuid));
-      const fresh = (await codexRolloutFiles())
-        .filter((f) => !beforeSet.has(f))
-        .filter((f) => !claimed.has(rolloutUuidFromName(f)));
-      let chosen = fresh.length === 1 ? fresh[0] : null;
-      if (!chosen && fresh.length > 1 && taskNeedle) {
-        const matches = [];
-        for (const file of fresh) {
-          const head = await readHead(file, 512 * 1024).catch(() => '');
-          if (head.includes(taskNeedle)) matches.push(file);
-        }
-        if (matches.length === 1) chosen = matches[0];
-      }
-      if (chosen) {
-        const uuid = rolloutUuidFromName(chosen);
-        if (uuid) {
-          const before = store.getSession(sid);
-          const updated = store.updateSession(sid, { codex_uuid: uuid });
-          store.addEvent(sid, 'codex-uuid', { uuid });
-          emitSessionStatus(updated, { previousStatus: before?.status || null, source: 'transcript' });
-          return;
-        }
-      }
+    // Cold CLI startup can take longer than the old six-second capture window. Keep the launch
+    // non-blocking, retry for one minute, and let Story recover from durable launch evidence later.
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await sleep(1000);
+      const current = store.getSession(sid);
+      if (!current || current.codex_uuid) return;
+      if (await bindCodexLaunchTranscript(sid, { files: await codexRolloutFiles(), beforeSet })) return;
     }
   } catch {}
 }
@@ -1303,7 +1284,7 @@ async function completeLaunch(spec) {
   timings.total = now() - ticket.startedAt;
   try { store.addEvent(sid, 'launch', { tool, dir: wt?.path || project?.path, task: task || null, autonomy, effort, model, fastMode: activeFastMode, orchestration, worktree: wt?.path || null, branch: wt?.branch || null, timings }); }
   catch (e) { console.error('[aios] launch event write failed (fail-open):', e?.message || e); }
-  if (codexBefore) captureCodexUuid(sid, codexBefore, task); // fire-and-forget; async + fail-open, never blocks launch
+  if (codexBefore) captureCodexUuid(sid, codexBefore); // fire-and-forget; async + fail-open, never blocks launch
   try {
     emitSessionStatus(s, { previousStatus: 'starting', source: 'launch' });
     bus.emit('changed');
@@ -3283,7 +3264,7 @@ route('GET', '/api/session/:id/attachment/:file', async (req, res, { id: sid, fi
     res.writeHead(200, {
       'content-type': type,
       'cache-control': 'private, max-age=3600',
-      'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${name.replace(/"/g, '')}"`,
+      'content-disposition': fileDisposition(name, { download: !inline }),
     });
     res.end(data);
   } catch {
@@ -3304,7 +3285,7 @@ route('GET', '/api/project/:id/assets', async (req, res, { id: pid }) => {
 // docs, and a single-file reader (JSON metadata, or ?raw=1 for the bytes) feeding the click-to-open viewer
 // and the Knowledge "Files" list. Path traversal is blocked by resolveInRoot(); size is capped.
 
-async function walkRecentFiles(root, { cap = 400, maxDepth = 6 } = {}) {
+async function walkRecentFiles(root, { cap = 400, maxDepth = 6, includeMedia = false } = {}) {
   const out = [];
   async function walk(dir, depth) {
     if (depth > maxDepth || out.length >= cap) return;
@@ -3318,7 +3299,8 @@ async function walkRecentFiles(root, { cap = 400, maxDepth = 6 } = {}) {
         await walk(join(dir, e.name), depth + 1);
       } else if (e.isFile()) {
         const abs = join(dir, e.name);
-        if (!FILE_TEXT_EXTS.has(extname(e.name).toLowerCase())) continue;
+        const ext = extname(e.name).toLowerCase();
+        if (!FILE_TEXT_EXTS.has(ext) && !(includeMedia && (FILE_IMAGE_RX.test(ext) || FILE_VIDEO_RX.test(ext) || FILE_AUDIO_RX.test(ext) || ext === '.pdf'))) continue;
         try { const st = await stat(abs); out.push({ path: relative(root, abs), status: 'tracked', bytes: st.size, mtime: st.mtimeMs }); } catch {}
       }
     }
@@ -3408,7 +3390,7 @@ function streamMediaFile(req, res, target, st, type, { download = false } = {}) 
     'content-length': st.size ? end - start + 1 : 0,
     'accept-ranges': 'bytes',
     'cache-control': 'private, max-age=15',
-    'content-disposition': `${download ? 'attachment' : 'inline'}; filename="${basename(target).replace(/"/g, '')}"`,
+    'content-disposition': fileDisposition(basename(target), { download }),
   };
   if (partial) headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
   res.writeHead(partial ? 206 : 200, headers);
@@ -3422,7 +3404,16 @@ route('GET', '/api/session/:id/files', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   try {
-    json(res, 200, await listProjectFiles(projectFileRoot(s)));
+    const listing = await listProjectFiles(projectFileRoot(s));
+    const artifactRoot = sessionStoragePaths(sid).artifacts;
+    // Durable report outputs live outside the disposable worktree. Enumerate only THIS session's
+    // dedicated artifact root (bounded, no symlink traversal), and keep the file reader's existing
+    // exact-evidence authorization. Never crawl a shared artifact parent or another session's root.
+    const artifacts = await walkRecentFiles(artifactRoot, { cap: FILE_LIST_MAX + 1, includeMedia: true }).catch(() => []);
+    const own = artifacts.map(file => ({ ...file, path: join(artifactRoot, file.path), status: 'artifact' }))
+      .sort((a, b) => b.mtime - a.mtime);
+    const files = [...own, ...listing.files.filter(file => !own.some(a => a.path === join(listing.root, file.path)))];
+    json(res, 200, { ...listing, files: files.slice(0, FILE_LIST_MAX), truncated: listing.truncated || files.length > FILE_LIST_MAX });
   } catch (e) {
     json(res, 200, { root: projectFileRoot(s), gitRepo: false, files: [], truncated: false, error: String(e.message || e) });
   }
@@ -3488,7 +3479,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     const headers = {
       'content-type': type,
       'cache-control': 'private, max-age=15',
-      'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${basename(target).replace(/"/g, '')}"`,
+      'content-disposition': fileDisposition(basename(target), { download: !inline }),
     };
     if (truncated) headers['x-aios-truncated'] = '1';
     res.writeHead(200, headers);
@@ -3794,7 +3785,7 @@ route('GET', '/api/project/:id/wiki/raw', (req, res, { id: pid }) => {
   res.writeHead(200, {
     'content-type': 'text/markdown; charset=utf-8',
     'cache-control': 'private, max-age=300',
-    'content-disposition': `${download ? 'attachment' : 'inline'}; filename="${file}"`,
+    'content-disposition': fileDisposition(file, { download }),
   });
   res.end(String(pg.content || ''));
 });

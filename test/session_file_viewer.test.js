@@ -195,6 +195,11 @@ const managedStorage = await prepareSessionStorage('s_files');
 const managedArtifact = join(managedStorage.artifacts, 'durable-report.md');
 await writeFile(managedArtifact, '# Durable session report\n');
 store.addMessage('s_files', 'out', 'reply', `Durable report: ${managedArtifact}`);
+const managedCsv = join(managedStorage.artifacts, 'g5a-practice-hints', '字词提示全量核对.csv');
+const csvText = '类型,字词,释义\n单字,兰,一种花卉\n词组,权利,依法享有的资格\n';
+await mkdir(join(managedStorage.artifacts, 'g5a-practice-hints'));
+await writeFile(managedCsv, csvText);
+store.addMessage('s_files', 'out', 'reply', `[全量核对表](${managedCsv})`);
 const { featureReady } = await import('../src/server.js');
 await featureReady;
 
@@ -218,6 +223,36 @@ async function waitForRoutes() {
   const meta = await response.json();
   assert.equal(meta.path, 'report.md');
   assert.equal(meta.contentKind, 'text');
+}
+
+// Chinese filenames used to return JSON metadata 200, then a false 404 when Node rejected the raw
+// Content-Disposition header. Cover raw preview and full downloads through real HTTP routes.
+{
+  const metaResponse = await fileRequest(managedCsv);
+  assert.equal(metaResponse.status, 200);
+  const meta = await metaResponse.json();
+  for (const path of [meta.viewUrl, meta.downloadUrl]) {
+    const response = await fetch(`${base}/${path}`);
+    assert.equal(response.status, 200, 'Unicode CSV preview/download must not turn a header error into file-not-found');
+    assert.equal(await response.text(), csvText);
+    assert.ok(response.headers.get('content-disposition').includes(`filename*=UTF-8''${encodeURIComponent('字词提示全量核对.csv')}`));
+  }
+  const unicodeAudio = '语音说明🎧.wav';
+  await writeFile(join(projectRoot, unicodeAudio), audioBytes);
+  const audioMeta = await (await fileRequest(unicodeAudio)).json();
+  const range = await fetch(`${base}/${audioMeta.viewUrl}`, { headers: { range: 'bytes=0-43' } });
+  assert.equal(range.status, 206, 'Unicode media names retain working range streaming');
+  assert.equal((await range.arrayBuffer()).byteLength, 44);
+  assert.ok(range.headers.get('content-disposition').includes(`filename*=UTF-8''${encodeURIComponent(unicodeAudio)}`));
+  const listing = await (await fetch(`${base}/api/session/s_files/files`)).json();
+  assert.ok(listing.files.some(file => file.path === managedCsv && file.status === 'artifact'), 'Preview lists session outputs outside the project/worktree');
+  const otherStorage = await prepareSessionStorage('s_other_files');
+  const otherCsv = join(otherStorage.artifacts, 'other-session.csv');
+  await writeFile(otherCsv, 'private');
+  assert.ok(!(await (await fetch(`${base}/api/session/s_files/files`)).json()).files.some(file => file.path === otherCsv), 'other sessions’ artifacts never enter this list');
+  assert.equal((await fileRequest(otherCsv)).status, 403);
+  const src = readFileSync(new URL('../web/session.js', import.meta.url), 'utf8');
+  assert.match(src.slice(src.indexOf('function workspacePreviewable'), src.indexOf('function workspaceStatusLabel')), /csv\|tsv\|txt\|json/);
 }
 
 // Rendered URLs work directly and under /aios, preserve relative resources, stream
@@ -256,6 +291,9 @@ async function waitForRoutes() {
     await page.route('**/__file-preview-test', route => route.fulfill({ contentType: 'text/html', body: fixture }));
     await page.goto(`${base}/aios/__file-preview-test`);
     await page.waitForFunction(() => window.mountPreview);
+    const csvMeta = await (await fileRequest(managedCsv)).json();
+    await page.evaluate(meta => window.mountPreview(meta), csvMeta);
+    assert.equal(await page.locator('[data-file-body] pre').textContent(), csvText, 'the real CSV source is visible in the shared browser preview');
     for (const width of [1440, 820, 390]) {
       await page.setViewportSize({ width, height: 844 });
       await page.evaluate(meta => window.mountPreview(meta), meta);
