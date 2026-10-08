@@ -65,7 +65,7 @@ const server = createServer(async (req, res) => {
   }
   const path = resolve(join(web, url.pathname.replace(/^\/aios\//, '')));
   if (!path.startsWith(web)) { res.writeHead(403); res.end(); return; }
-  try { res.writeHead(200, { 'content-type': extname(path) === '.js' ? 'text/javascript' : extname(path) === '.css' ? 'text/css' : 'text/plain' }); res.end(readFileSync(path)); }
+  try { res.writeHead(200, { 'content-type': ['.js', '.mjs'].includes(extname(path)) ? 'text/javascript' : extname(path) === '.css' ? 'text/css' : 'text/plain' }); res.end(readFileSync(path)); }
   catch { res.writeHead(404); res.end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -73,6 +73,7 @@ const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
   await page.addInitScript(() => {
+    window.__NativeAudioContext = window.AudioContext;
     localStorage.setItem('aios_tts', 'browser');
     localStorage.setItem('aios_tts_rate', '1.75');
     window.__ended = []; window.__spoken = [];
@@ -110,16 +111,22 @@ try {
   for (let i = 0; i < tone.length / 2; i++) tone.writeInt16LE(Math.round(Math.sin(i * 2 * Math.PI * 440 / 24000) * 16000), i * 2);
   const pitch = await page.evaluate(async frame => {
     const { createPcmQueue } = await import('./voice-stream.js');
-    const context = new OfflineAudioContext(1, 24000 * 2, 24000);
-    const queue = createPcmQueue(context, { rate: 1.75 });
+    const context = new window.__NativeAudioContext({ sampleRate: 24000 });
+    await context.resume();
+    const analyser = context.createAnalyser(); analyser.fftSize = 2048; analyser.connect(context.destination);
+    const observed = { get state() { return context.state; }, get currentTime() { return context.currentTime; },
+      destination: analyser, createBuffer: context.createBuffer.bind(context), createBufferSource: context.createBufferSource.bind(context) };
+    const queue = createPcmQueue(observed, { rate: 1.75 });
     queue.push(frame); queue.setRate(1.75); queue.seal();
-    const rendered = await context.startRendering(); queue.stop();
-    const samples = rendered.getChannelData(0);
+    await new Promise(resolve => setTimeout(resolve, 800));
+    const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
     let crossings = 0;
-    for (let i = 24000 * .62; i < 24000 * .8; i++) if (samples[i] <= 0 && samples[i + 1] > 0) crossings++;
-    return crossings / .18;
+    for (let i = 0; i < samples.length - 1; i++) if (samples[i] <= 0 && samples[i + 1] > 0) crossings++;
+    queue.stop(); analyser.disconnect(); await context.close();
+    return crossings * context.sampleRate / samples.length;
   }, { index: 0, audio: wavFromPcm(tone).toString('base64'), model: NATIVE_TTS_MODEL, engine: 'qwen', backend: 'faster-ggml',
-    precision: 'BF16', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3' });
+    precision: 'BF16', streaming: 'native-pcm-frames', voice: 'Ryan', prosody_profile: 'steady-v3',
+    phrase_index: 0, frame_index: 0, native_startup_one_frames: 2 });
   assert.ok(Math.abs(pitch - 440) < 10, `real WebAudio must retain 440Hz, not the sped-up 770Hz voice (${pitch})`);
   await page.evaluate(() => { window.__running = window.__voice.startVoiceMode(); });
   await page.waitForFunction(() => document.querySelector('.vm-state')?.textContent === 'Connection paused');

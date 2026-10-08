@@ -52,11 +52,13 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 3. **SSE resilience.** SSE responses MUST have an `'error'` handler; an abrupt client disconnect
    emits an async EPIPE/ECONNRESET that otherwise crashes the process. There are also global
    `uncaughtException`/`unhandledRejection` guards — an "OS" daemon must not die from one stray error.
-4. **Spark needs WAV.** Spark's libsndfile rejects webm/opus. `spark.js` transcodes browser audio
-   to 16kHz mono WAV via ffmpeg before forwarding.
-5. **MagicDNS doesn't resolve on host.** Reach Spark by **IP with SNI + Host = spark.your-tailnet.ts.net**
-   (`https.request({ host: SPARK.ip, servername: SPARK.host, headers:{Host} })`). Default tailnet IP
-   <spark-tailnet-ip>; LAN <spark-lan-ip> also works.
+4. **Standalone dictation needs WAV.** `spark.js` transcodes unsupported browser containers
+   to 16kHz mono WAV via ffmpeg. Live voice instead uses Omni's incremental raw PCM protocol;
+   never insert WAV headers into microphone chunks.
+5. **Keep default voice on the private local proxy.** `omni_client.js` uses the existing authenticated
+   `http://127.0.0.1:8792/v1` transport; the browser uses same-origin application endpoints only.
+   MagicDNS/IP+SNI is not the default voice transport. Legacy explicitly selected Spark engines may
+   still require IP+SNI; do not change the shared proxy/tunnel configuration to work around them.
 6. **`~/proxy` is OFF-LIMITS.** It's the shared model-proxy fleet. Supercalm only consumes it; never edit it.
 7. **AskUserQuestion is a menu, not a text field.** Claude's question prompt is an arrow/number
    menu whose options include "Type something" (custom answer) + "Chat about this". `sendText()`
@@ -102,8 +104,8 @@ rotating placeholder hint, and the tool footer) so idle sessions settle to `wait
 Story's **Explain**, phone reports and the needs-you voice queue open the SAME conversation UI and
 server session (`voice.js`, `web/voicemode.js`). Do not rebuild a phone-only assistant or restore the
 Guided/Quick/Read-all script players. `/api/voice/{start,turn,converse,continue,stop}` owns the pointer.
-The realtime explanation path (`voice_gateway.js`) streams text AND audio directly from Omni's
-public `/voice/api/turn`. Context is the selected server-side Story report, its preceding request,
+The realtime explanation path (`voice_gateway.js`) streams text AND audio from Omni through the
+authenticated local proxy `/v1/voice/turns`. Context is the selected server-side Story report, its preceding request,
 recent Story conversation and approved linked documents; follow-up questions refresh this evidence.
 Historical reports must resolve by their Story timestamp, never silently switch to the newest report.
 `voice_gateway_context.js` retrieves relevant excerpts inside Omni's byte budget. Treat all source
@@ -130,7 +132,7 @@ mixed requests/questions still require reasoning. Defer advances this pass witho
 dismissing Needs You, or stopping a session. A staged draft's bare approval still confirms that draft.
 Once a next/send control was acknowledged, failure to speak its receipt must not block continuation.
 Exact assistant speaker changes are local controls (`web/voice-controls.js`): never ask the coding agent
-or a model to change the caller's voice. Only an explicit operator choice may change Ryan/Vivian between
+or a model to change the caller's voice. Only an explicit operator choice may change speakers between
 turns. **Dismiss report** uses `/api/voice/dismiss` and the same durable attention action as Needs You;
 bind the click to its displayed session/report id. Cancel/fence an in-flight old turn before advancing,
 clear its unconfirmed draft, and never let late feedback land on the next project. Newer reports survive.
@@ -140,18 +142,40 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
     timeline, shared with microphone capture. Sentence buffering belongs to Omni, not AIOS. Never
     concatenate WAV headers, create an Audio element per frame, or replay after partial playback.
     Play native PCM at 1x: WebAudio playbackRate changes pitch. Saved browser/file speed settings
-    must never accelerate native speech. Buffer once at startup, not at each sentence boundary;
+    must never accelerate native speech. Use Omni's canonical cadence, not app-owned buffer tuning;
     valid queued frames may drain after a partial failure, but do not claim successful completion.
   - **`browser`**: on-device `speechSynthesis` — instant, no server round-trip, lower quality. Speaks
     sentence-by-sentence (iOS truncates long single utterances); resolves on onend + an idle-poll + an absolute
     cap, and only after it has STARTED, so the loop never wedges and never ends mid-speech.
-- **Server TTS** (`tts.js`): prepared speech uses Omni `tts_only:true`; live answers do not. Native
-  identity is `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, BF16, faster-ggml, `steady-v3`. Choose Ryan or
-  Vivian at conversation start and keep that speaker for BOTH English and Chinese (`auto` means Ryan),
+- **Server TTS** (`tts.js`): prepared speech uses Omni `tts_only:true`, `sentence_speech:false` with
+  complete text; live answers do not. Native identity is `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`, BF16,
+  faster-ggml, `steady-v3`. Choose from the actual profile's supported/available voices: Ryan, Vivian,
+  Serena, Sohee, Uncle_Fu. Keep that speaker for BOTH English and Chinese (`auto` means Ryan),
   unless the operator explicitly asks to change it between turns.
   Busy/503/connection failures keep the operator's question and show an explicit retry; never silently
   swap models, speakers or playback engines. Cloud/device speech remains an explicit user choice.
-- **STT** (`spark.js`): `openai/whisper-large-v3-turbo`, Spark `/v1/audio/transcriptions` via `/api/transcribe` (ffmpeg→16k mono wav;
+- **Live microphone** (`omni_input.js`, `web/omni-input.js`): same-origin `/api/voice/input/sessions`
+  forwards the proxy's `/v1/voice/sessions` protocol. Reuse Omni's AudioWorklet, VAD, resampling,
+  `VoiceStreamCapture` and `VoiceStreamClient`, not batch dictation for this flow. Upload serial
+  250ms raw 16kHz mono PCM16 chunks; provisional transcripts replace drafts. Only the final transcript
+  can enter reasoning. Same-session recovery is capability-gated, bounded to 45s, preserves immutable
+  creation context and PCM sequences, relays SSE `id`/`after`, and never regenerates heard answers.
+  Ordinary information questions can use Omni's answer directly. Instructions, local controls and
+  questions requiring linked-document retrieval deliberately cancel the read-only upstream answer
+  and hand the FINAL text to the existing `/turn`/`converse` harness. This is not an ASR-only mic API
+  (Omni does not support that option). Fetch relevant source excerpts AFTER hearing a document question.
+  Preserve final text even if a commit acknowledgement is lost. No final text: retain PCM in the current
+  tab only for deliberate retry; never replay a partial answer. Stop/dismiss/hidden page cancels capture,
+  player and connection. Resume after visibility loss requires a user action, never background recording.
+- **Shared implementation**: `web/vendor/omni/` is an unmodified, paired upstream snapshot from
+  `~/omni/app/static/voice/`, integration `2026-10-08b`; SHA256-pinned in `omni_contract.test.js`.
+  Replace the package together when upstream changes; do not patch a private cadence/decoder/VAD fork.
+  Serve `.mjs` as JavaScript and the paired package with `no-store` to avoid stale PWA combinations.
+  `omni_client.js` also supports the existing private native `18002` gateway for future application-owned
+  incremental text/tool speech sessions. The proxy does NOT expose `/v1/voice/speech/sessions`.
+  Our current action harness produces complete spoken text (scenario A), not incremental tool speech.
+- **Standalone STT** (`spark.js`): `openai/whisper-large-v3-turbo`, authenticated local proxy
+  `/v1/audio/transcriptions` via `/api/transcribe` (ffmpeg→16k mono wav;
   sends compressed `MediaRecorder` audio through directly when Spark accepts the container, with WAV transcode
   fallback). `polish=false` by default; opt into grammar cleanup with `/api/transcribe?polish=true` or
   `AIOS_STT_POLISH=true`. **Grounded + guarded (`stt_guard.js`, 2026-08-12)**: clients send
@@ -162,9 +186,14 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
   clients treat as no-speech, never insert, never let it become a task/title, and never let it poison the
   on-device recognizer language). `session=`/`project=` params build a Whisper biasing prompt from the real
   task/project rows so dictation reads the context. Fail-open: no `langs` → no script rejection.
-- TTS/STT go directly to Spark over IP+SNI; the reserved voice LLM is `qwen38-flash-next-nvfp4` on
-  the existing :8792 proxy with `X-Spark-Workload: voice`. Do not alter the proxy fleet or Spark service
-  configuration. Before changing transports, consult Omni's current integration guide and test policy.
+- Direct Omni conversations use the `omni-voice` alias; log actual returned `llm_actual_model`/`text.model`,
+  never claim that a route alias proves model identity. Keep the structured JSON/action harness on
+  reserved `voice/qwen38-flash-next-nvfp4` with `X-Spark-Workload: voice`: the conversational alias is not
+  a JSON/tool endpoint. Read-only profile checks use a separate connection pool (10s success / 1s failure
+  cache); connection failures mean `unknown`, not proven model downtime, and do not cancel accepted turns.
+  Retry/capacity events are terminal, not `done`; honor retry delays without silent engine/model fallback.
+  Do not alter the proxy fleet or Spark service configuration. Before changing transports, consult
+  `~/omni/docs/voice-integration.md`, `~/omni/docs/spark-testing-policy.md` and proxy routing guidance.
 
 ## Detection model (`detect.js`)
 State per session: `starting → working ↔ waiting → exited`. Codex/agy retain hook-first (TTL),

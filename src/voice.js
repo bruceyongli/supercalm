@@ -1,4 +1,4 @@
-import { route, json, readJson } from './server.js';
+import { route, json, readJson, readBody } from './server.js';
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -41,6 +41,9 @@ import { createVoiceControlReplay } from './voice_control_replay.js';
 import { voiceSpeakerControl } from '../web/voice-controls.js';
 import { dismissAttentionReport } from './attention_actions.js';
 import { createVoiceStreamJob } from './voice_stream_job.js';
+import { createOmniInput } from './omni_input.js';
+import { omniProfile } from './omni_client.js';
+import { guardTranscript } from './stt_guard.js';
 
 // Hands-free voice concierge: walk the needs-you queue oldest-first, converse about
 // each item, confirm, and send the user's instruction to the CLI agent. The brain is
@@ -97,9 +100,67 @@ const CONVERSATION_CHAIN = String(process.env.AIOS_VOICE_CONVERSATION_CHAIN
 const trim = (h) => { while (h.length > 16) h.shift(); };
 const touch = (vs) => { vs.lastTouch = now(); };
 function removeVoiceSession(id) {
+  microphoneInput.cancelOwner(id);
   for (const job of voiceSessions.get(id)?.streamJobs?.values() || []) job.dispose();
   voiceSessions.delete(id);
 }
+
+const microphoneInput = createOmniInput({
+  async prepare(voiceId) {
+    gcVoiceSessions();
+    const vs = voiceSessions.get(voiceId), item = vs?.items[vs.pointer];
+    if (!vs || !item) throw Object.assign(new Error('No voice report is open'), { status: 404 });
+    if (vs.inflight) throw Object.assign(new Error('turn already in flight'), { status: 409 });
+    if (!vs.sessionOnly && !stillNeedsAttention(item.sessionId)) throw Object.assign(new Error('This report was handled'), { status: 409 });
+    const epoch = vs.actionEpoch || 0;
+    vs.inflight = true; touch(vs);
+    try {
+      const evidence = await voiceEvidenceFor(item, { refresh: true });
+      const owner = { voiceId, vs, item, epoch, evidence,
+        alive: () => voiceSessions.has(vs.id) && (vs.actionEpoch || 0) === epoch && vs.items[vs.pointer] === item,
+        payload: gatewayConversation({ item, evidence, history: vs.history, microphone: true, voice: vs.voice }) };
+      if (!owner.alive()) throw new Error('Voice report changed');
+      return owner;
+    } catch (error) { if ((vs.actionEpoch || 0) === epoch) vs.inflight = false; throw error; }
+  },
+  classify(owner, transcript) {
+    touch(owner.vs);
+    const guarded = guardTranscript(transcript, { langs: ['en', 'zh'] });
+    const disposition = voiceTranscriptDisposition(guarded.text, { spoken: owner.vs.lastSpoken || '' });
+    if (!guarded.ok || !disposition.accepted) return { question: false, reason: guarded.rejected || disposition.reason };
+    const text = normalizeVoiceAddress(disposition.text);
+    // A microphone session freezes its context BEFORE the question exists. If
+    // documents are linked, hand the final question to /turn → /converse so
+    // retrieval can select the relevant sections after hearing it. Do not answer
+    // a detailed plan question from a truncated pre-recording source overview.
+    const needsRetrieval = (owner.evidence.sourcePack?.sources?.length || 0) > 0;
+    return { question: owner.vs.realtime && !needsRetrieval && !voiceSpeakerControl(text) && isVoiceInformationQuestion(text) };
+  },
+  answered({ vs, item, evidence }, question, output, upstream) {
+    vs.lastSpoken = output.text;
+    vs.history.push({ role: 'user', content: question }, { role: 'assistant', content: output.text }); trim(vs.history); touch(vs);
+    store.addEvent(item.sessionId, 'voice-grounded-answer', { mode: 'streaming-microphone', action: 'explain',
+      source: item._storySource, sourceNames: voiceSourceSummary(evidence.sourcePack).names,
+      question, answer: output.text, voice: vs.voice, model: output.actualModel,
+      frames: output.frames, upstreamTimings: Object.fromEntries(Object.entries(upstream).filter(([key, value]) => key.endsWith('_ms') && Number.isFinite(value))) });
+  },
+  released(owner) { if (owner.alive()) { owner.vs.inflight = false; touch(owner.vs); } },
+});
+
+route('POST', '/api/voice/input/sessions', async (req, res) => {
+  try { json(res, 200, await microphoneInput.start(JSON.parse((await readBody(req, 64000)).toString('utf8') || '{}'))); }
+  catch (error) { json(res, error.status || 503, { error: error.message, noFallback: true }); }
+});
+for (const [method, action] of [['POST', 'audio'], ['POST', 'commit'], ['DELETE', '']]) {
+  route(method, '/api/voice/input/sessions/:id' + (action ? '/' + action : ''), async (req, res, { id }) => {
+    try { json(res, 200, await microphoneInput.control(id, method, action, JSON.parse((await readBody(req, 64000)).toString('utf8') || '{}'))); }
+    catch (error) { json(res, error.status || 503, { error: error.message, noFallback: true }); }
+  });
+}
+route('GET', '/api/voice/input/sessions/:id/events', async (req, res, { id }) => {
+  try { await microphoneInput.events(id, new URL(req.url, 'http://aios.local').searchParams.get('after') || '0', res); }
+  catch (error) { if (!res.headersSent) json(res, error.status || 503, { error: error.message }); else res.destroy(); }
+});
 // Lazy expiry keyed on LAST TOUCH, run on every voice endpoint — a createdAt-based sweep would kill
 // a live long pass mid-conversation, and a timer-only sweep left abandoned sessions until the next /start.
 function gcVoiceSessions() {
@@ -504,7 +565,8 @@ route('POST', '/api/voice/prepare', async (req, res) => {
     const entry = await prepareVoiceUpdate(String(b.focusSessionId || '').slice(0, 80), b.reportId);
     json(res, 200, { preparationId: entry.id, say: entry.say, expiresAt: entry.expiresAt,
       summary: entry.item._brief?.quick || entry.item._brief?.standard || '',
-      audioUrl: `api/voice/prepared/${entry.id}/audio`, ttsSource: entry.headers['x-aios-tts-source'], segments: entry.segments || [] });
+      audioUrl: `api/voice/prepared/${entry.id}/audio`, ttsSource: entry.headers['x-aios-tts-source'],
+      nativeSpeech: entry.headers['x-tts-precision'] === 'BF16', voice: entry.headers['x-tts-speaker'], segments: entry.segments || [] });
   } catch (e) { json(res, e.status || 502, { error: e.message }); }
 });
 route('GET', '/api/voice/prepared/:id/audio', (req, res, { id: preparationId }) => {
@@ -697,8 +759,16 @@ route('POST', '/api/voice/start', async (req, res) => {
       reportTs: Number(b.reportTs) || null, presentedAt: now() }];
   }
   if (!items.length) return json(res, 200, { voiceId: null, say: 'You have nothing waiting right now. All caught up.', done: true, listen: false });
+  const config = voiceConfig();
+  const native = config.ttsEngine === 'qwen3-tts-bf16';
   const vs = { id: id('v'), items, pointer: 0, history: [], dialogue: createVoiceDialogueState(), onTheGo, sessionOnly,
-    realtime: b.realtime === true && getVoiceConfig().tts.primary === 'spark', voice: nativeVoice(voiceConfig().ttsVoice), createdAt: now(), lastTouch: now() };
+    realtime: b.realtime === true && native && config.backend === 'spark' && !config.sparkDisabled
+      && getVoiceConfig().tts.primary === 'spark',
+    voice: native ? nativeVoice(config.ttsVoice) : 'Ryan', createdAt: now(), lastTouch: now() };
+  const profile = vs.realtime ? await omniProfile() : null;
+  const streamInput = !!(profile?.extensions?.streaming_input?.protocol === 'omni-voice-stream-v1'
+    && profile.asr?.ready && profile.llm?.ready && profile.tts?.ready);
+  vs.streamInput = streamInput;
   voiceSessions.set(vs.id, vs);
   if (prepared && onTheGo) {
     items[0] = prepared.item;
@@ -707,12 +777,12 @@ route('POST', '/api/voice/start', async (req, res) => {
     vs.history.push({ role: 'assistant', content: prepared.say });
     prefetchBriefs(vs);
     return json(res, 200, { voiceId: vs.id, say: prepared.say, done: false, listen: true,
-      count: items.length, current: cur(vs), preparationId: prepared.id, voice: vs.voice });
+      count: items.length, current: cur(vs), preparationId: prepared.id, voice: vs.voice, streamInput });
   }
   if (vs.realtime) {
     items[0].presentedAt = now();
     return json(res, 200, { voiceId: vs.id, say: '', done: false, listen: true, count: items.length,
-      current: cur(vs), voice: vs.voice, realtimeOpening: true });
+      current: cur(vs), voice: vs.voice, realtimeOpening: true, streamInput });
   }
   prefetchBriefs(vs);
   const p = await presentNext(vs, true);
@@ -721,7 +791,7 @@ route('POST', '/api/voice/start', async (req, res) => {
     return json(res, 200, { voiceId: null, say: 'Everything that was waiting just got handled. All caught up.', done: true, listen: false });
   }
   vs.lastSpoken = p.say;
-  json(res, 200, { voiceId: vs.id, say: p.say, done: false, listen: true, count: items.length, current: cur(vs) });
+  json(res, 200, { voiceId: vs.id, say: p.say, done: false, listen: true, count: items.length, current: cur(vs), streamInput });
 });
 
 route('POST', '/api/voice/turn', async (req, res) => {
@@ -776,6 +846,11 @@ route('POST', '/api/voice/turn', async (req, res) => {
     const userText = normalizeVoiceAddress(disposition.text);
     const speaker = voiceSpeakerControl(userText);
     if (speaker) {
+      const profile = await omniProfile();
+      if (!profile.tts?.ready || !profile.tts.supported_voices?.includes(speaker.voice)) {
+        return json(res, 200, { say: 'That voice is not available right now. I kept the current voice.',
+          voice: vs.voice, acceptedText: userText, done: false, listen: true, current: cur(vs), assistantControl: 'speaker-unavailable' });
+      }
       vs.voice = speaker.voice; vs.lastSpoken = speaker.say;
       const item = vs.items[vs.pointer];
       try { if (item) store.addEvent(item.sessionId, 'voice-control', { control: 'speaker', voice: vs.voice, transcript: userText }); } catch {}
@@ -1009,7 +1084,7 @@ route('POST', '/api/voice/converse', async (req, res) => {
     vs.history.push({ role: 'assistant', content: out.text }); trim(vs.history); touch(vs);
     const evidenceTrace = { mode: 'realtime', action: 'explain', source: item._storySource,
       sourceNames: voiceSourceSummary(evidence.sourcePack).names, question: question.slice(0, 8000), answer: out.text,
-      voice: vs.voice, model: 'qwen38-flash-next-nvfp4', frames: out.frames };
+      voice: vs.voice, model: out.actualModel, frames: out.frames };
     store.addEvent(item.sessionId, 'voice-grounded-answer', evidenceTrace);
     res.write(`event: done\ndata: ${JSON.stringify({ text: out.text, grounded: true, sourceCount: evidence.sourcePack.sources.length,
       current: cur(vs), voice: vs.voice })}\n\n`); res.end();
@@ -1021,7 +1096,7 @@ route('POST', '/api/voice/converse', async (req, res) => {
     if (!res.destroyed) {
       const detail = error.message;
       if (!res.headersSent) json(res, error.status || 503, { error: detail, preservedText: question });
-      else { res.write(`event: error\ndata: ${JSON.stringify({ detail, partial: !!partial, preservedText: question })}\n\n`); res.end(); }
+      else { res.write(`event: ${error.retry ? 'retry' : 'error'}\ndata: ${JSON.stringify({ ...error.retry, detail, partial: !!partial, preservedText: question })}\n\n`); res.end(); }
     }
   } finally {
     clearTimeout(deadline); res.off('close', stop); res.off('error', stop);
@@ -1053,7 +1128,7 @@ async function runResumableConversation(vs, item, question, body, job, epoch) {
     vs.history.push({ role: 'assistant', content: out.text }); trim(vs.history); touch(vs);
     store.addEvent(item.sessionId, 'voice-grounded-answer', { mode: 'realtime', action: 'explain', source: item._storySource,
       sourceNames: voiceSourceSummary(evidence.sourcePack).names, question: question.slice(0, 8000), answer: out.text,
-      voice: vs.voice, model: 'qwen38-flash-next-nvfp4', frames: out.frames, requestId: job.requestId,
+      voice: vs.voice, model: out.actualModel, frames: out.frames, requestId: job.requestId,
       firstTextMs, firstAudioMs, generationMs: now() - started, upstreamTimings: job.timings });
     job.append('done', { text: out.text, grounded: true, sourceCount: evidence.sourcePack.sources.length,
       current: cur(vs), voice: vs.voice });
@@ -1061,7 +1136,7 @@ async function runResumableConversation(vs, item, question, body, job, epoch) {
     try { store.addEvent(item.sessionId, 'voice-conversation-failed', { voiceId: vs.id, requestId: job.requestId,
       opening: !!body.opening, error: error.message, cancelled: ctrl.signal.aborted, partialChars: job.text.length,
       firstTextMs, firstAudioMs, generationMs: now() - started, upstreamTimings: job.timings, question: question.slice(0, 8000) }); } catch {}
-    job.append('error', { detail: error.message, partial: !!job.text, preservedText: question });
+    job.append(error.retry ? 'retry' : 'error', { ...error.retry, detail: error.message, partial: !!job.text, preservedText: question });
   } finally {
     clearTimeout(deadline);
     if ((vs.actionEpoch || 0) === epoch) vs.inflight = false;
@@ -1095,6 +1170,7 @@ route('POST', '/api/voice/dismiss', async (req, res) => {
   // A click can arrive during generation or speech. Invalidate that exact turn before advancing;
   // its eventual result cannot stage/send feedback, overwrite history, or unlock a newer turn.
   vs.actionEpoch = (vs.actionEpoch || 0) + 1;
+  microphoneInput.cancelOwner(vs.id);
   vs.streamAbort?.abort(); vs.turnAbort?.abort(); vs.inflight = false;
   vs.dialogue = createVoiceDialogueState(); vs.history = []; vs.lastSpoken = '';
   vs.pointer++; touch(vs);

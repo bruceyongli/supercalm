@@ -18,6 +18,12 @@ let active = false,
   ui = null;
 let recoveryResume = null;
 let pendingDismiss = null, controlAbort = null, captureAbort = null;
+let visibilityPaused = false;
+globalThis.document?.addEventListener('visibilitychange', () => {
+  if (!document.hidden || !active) return;
+  visibilityPaused = true; captureAbort?.abort();
+  try { handle?.stop(); stopAllPlayback(); } catch {}
+});
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const TTS_RATE_KEY = 'aios_tts_rate';
@@ -74,6 +80,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
   active = true;
   stopFlag = false;
   pendingDismiss = null;
+  visibilityPaused = false;
   unlockAudio(); // MUST run synchronously in the tap gesture, before any await, to unlock iOS audio
   const onTheGo = String(source).startsWith('on-the-go');
   if (!onTheGo) ui = buildOverlay({ onTheGo: true });
@@ -82,11 +89,15 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
     let state = await post('api/voice/start', { focusSessionId, source, reportTs, realtime: ttsMode() !== 'browser', preparationId: preparedUpdate?.preparationId });
     voiceId = state.voiceId;
     selectedVoice = state.voice || 'Ryan';
+    const streamInputEnabled = state.streamInput === true;
     if (stopFlag) return;
     if (onTheGo) ui = buildOverlay({ onTheGo, initialText: state.say });
     let lastSpoken = '';
     while (!stopFlag) {
       try {
+        if (visibilityPaused) {
+          if (!await waitVoiceRetry('Voice paused while the app was hidden. Your report and response are kept.', { label: 'Resume' })) break;
+        }
         if (pendingDismiss) {
           try { await post('api/voice/dismiss', { voiceId, ...pendingDismiss }); }
           catch (error) { if (error.code !== 'voice_report_changed') throw error; }
@@ -113,16 +124,18 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
           lastSpoken = state.say || lastSpoken;
           const preparedAudio = preparedUpdate?.say === state.say ? preparedUpdate.audioBlob : null;
           const preparedSegments = preparedAudio ? preparedUpdate.segments || [] : [];
+          const preparedNative = !!(preparedAudio && preparedUpdate?.nativeSpeech);
           preparedUpdate = null; // this exact opening is played once; never reuse it for later replies
-          interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments,
+          interruption = await speak(state.say, { allowInterruption: !state.done && !!state.current, preparedAudio, preparedSegments, preparedNative,
             realtime: state.realtimeOpening || state.realtimeQuestion ? { opening: !!state.realtimeOpening, userText: state.realtimeQuestion || '' } : null });
           lastSpoken = ui?.spokenText || state.say || lastSpoken;
         }
         if (state.done || stopFlag) break;
+        if (visibilityPaused) continue;
         if (pendingDismiss) continue;
         const completedControl = state.listen === false && ['sent', 'skipped'].includes(state.delivery?.status);
         if (interruption?.failed && !completedControl) {
-          const resume = await waitVoiceRetry('This report was interrupted. Your report and words are kept. Ask a follow-up to continue the conversation, or dismiss this report.', { label: 'Ask a follow-up' });
+          const resume = await waitVoiceRetry('This report was interrupted. Your report and words are kept. Ask a follow-up to continue the conversation, or dismiss this report.', { label: 'Ask a follow-up', retryAfterMs: interruption.error?.retryAfterMs || interruption.error?.retry?.retry_after_ms });
           if (pendingDismiss) continue;
           if (!resume) break;
           state = { ...state, say: '', listen: true, ignored: true, realtimeOpening: false, realtimeQuestion: '' };
@@ -143,6 +156,70 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
           setState('listening');
           let text = '';
           let live = null;
+          if (streamInputEnabled && ttsMode() !== 'browser') {
+            let recording = null, result;
+            for (;;) {
+              const ctrl = new AbortController(); captureAbort = ctrl;
+              let started = false, interrupted = false, barge = null, bargeText = '';
+              try {
+                const { listenOmni } = await import('./omni-input.js');
+                result = await listenOmni({ context: voiceAudioContext(), voiceId, voice: selectedVoice,
+                  signal: ctrl.signal, recording,
+                  onPartial: value => { if (value) { setHeard(value); if (ui?.heardLabel) ui.heardLabel.textContent = 'YOUR RESPONSE · TRANSCRIBING'; } },
+                  onFinal: setHeard,
+                  onText: appendSpokenText, onSegment: focusSpokenSegment,
+                  onLevel: rms => { if (ui?.orb) ui.orb.style.transform = `scale(${(1 + Math.min(rms * 4, 1)).toFixed(2)})`; },
+                  onConnection: status => {
+                    if (status.state === 'reconnecting') showTtsNotice('Reconnecting to the same recording. Your words are kept; nothing is being resent as a new request.', { kind: 'reconnecting' });
+                    else if (status.state === 'connected') clearTtsNotice();
+                  },
+                  installCommit: commit => {
+                    requestInterrupt = commit;
+                    if (ui?.interrupt) { ui.interrupt.hidden = !commit; ui.interrupt.textContent = commit ? 'Send now' : 'Speak now'; }
+                  },
+                  onSpeaking: () => {
+                    if (started) return; started = true;
+                    setState('speaking', ''); clearTtsNotice();
+                    if (ui) { ui.nativeSpeech = true; renderVoiceControls(); }
+                    requestInterrupt = () => { interrupted = true; ctrl.abort(); };
+                    if (ui?.interrupt) { ui.interrupt.hidden = false; ui.interrupt.textContent = 'Speak now'; }
+                    barge = createLiveSpeechRecognizer({ onUpdate: heard => {
+                      if (!isClearVoiceInterruption(heard, ui?.spokenText || '')) return;
+                      bargeText = extractVoiceInterruption(heard, ui?.spokenText || '') || heard;
+                      interrupted = true; ctrl.abort();
+                    } });
+                    barge.start();
+                  },
+                });
+                break;
+              } catch (error) {
+                if (stopFlag || pendingDismiss) break;
+                if (interrupted) { result = { text: bargeText }; break; }
+                const message = error.partial
+                  ? 'The reply was interrupted. Your response is kept; ask a follow-up to continue. Nothing was sent.'
+                  : 'Voice connection paused. Your words are kept. Retry when ready; nothing was sent.';
+                if (!await waitVoiceRetry(message, { label: error.partial ? 'Ask a follow-up' : 'Retry', retryAfterMs: error.retry?.retry_after_ms || error.retryAfterMs })) break;
+                if (pendingDismiss || stopFlag) break;
+                if (error.finalText && !error.partial) { result = { text: error.finalText }; break; }
+                recording = error.partial ? null : error.recording;
+                setState('listening');
+              } finally {
+                barge?.abort();
+                if (captureAbort === ctrl) captureAbort = null;
+                requestInterrupt = null;
+                if (ui?.interrupt) ui.interrupt.hidden = true;
+                if (ui?.orb) ui.orb.style.transform = 'scale(1)';
+              }
+            }
+            if (stopFlag) break;
+            if (pendingDismiss) continue;
+            if (result?.answered) {
+              lastSpoken = ui?.spokenText || lastSpoken;
+              state = { ...state, say: '', ignored: true, listen: true, realtimeOpening: false, realtimeQuestion: '' };
+              continue; // the native answer was already heard; never generate it twice
+            }
+            text = result?.ignoredReason ? '' : result?.text || '';
+          } else {
           try {
             live = createLiveSpeechRecognizer({
               onUpdate: (heard) => {
@@ -172,6 +249,7 @@ export async function startVoiceMode({ focusSessionId = null, source = 'manual',
             }
           } finally {
             live?.abort();
+          }
           }
           const disposition = voiceTranscriptDisposition(text, { spoken: lastSpoken });
           if (!disposition.accepted) {
@@ -243,14 +321,20 @@ async function post(path, body, ms = 30000) {
   }
 }
 
-function waitVoiceRetry(message, { retry = true, label = 'Retry' } = {}) {
+function waitVoiceRetry(message, { retry = true, label = 'Retry', retryAfterMs = 0 } = {}) {
   if (stopFlag || !ui) return Promise.resolve(false);
   setState('paused');
   showTtsNotice(message, { offerDevice: false });
+  const readyAt = Date.now() + Math.min(30000, Math.max(0, Number(retryAfterMs) || 0));
   return new Promise(resolve => {
     recoveryResume = resolve;
     if (!retry) { requestInterrupt = null; ui.interrupt.hidden = true; return; }
     requestInterrupt = () => {
+      if (Date.now() < readyAt || document.hidden) {
+        showTtsNotice(document.hidden ? message : `Voice is busy. Retry in ${Math.ceil((readyAt - Date.now()) / 1000)} seconds. Your words are kept.`, { offerDevice: false });
+        return;
+      }
+      visibilityPaused = false;
       recoveryResume = null; requestInterrupt = null;
       if (ui?.interrupt) { ui.interrupt.hidden = true; ui.interrupt.textContent = 'Speak now'; }
       clearTtsNotice(); resolve(true);
@@ -323,7 +407,7 @@ function renderVoiceControls() {
 }
 // Speak one line through the SHARED tts-player stack (stream → single → device voice), honoring the
 // user's engine pref (aios_tts). The concierge-specific overlay notices ride on tts-player's callbacks.
-async function speak(text, { allowInterruption = false, preparedAudio = null, preparedSegments = [], realtime = null } = {}) {
+async function speak(text, { allowInterruption = false, preparedAudio = null, preparedSegments = [], preparedNative = false, realtime = null } = {}) {
   if ((!text && !realtime) || stopFlag) return;
   if (ttsMode() === 'browser') showTtsNotice('Using your device voice. Switch back to Spark Qwen when the network is better.', { offerDevice: true });
   else clearTtsNotice();
@@ -374,6 +458,7 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
     continuous: true,
     preparedAudio,
     preparedSegments,
+    preparedNative,
     onNative: () => { if (ui) { ui.nativeSpeech = true; renderVoiceControls(); } },
     ttsExtra: { voice: selectedVoice },
     onSlow: () => showTtsNotice('Spark voice is taking longer than usual. You can switch this conversation to your device voice.', { offerDevice: true, kind: 'slow' }),
@@ -401,7 +486,7 @@ async function speak(text, { allowInterruption = false, preparedAudio = null, pr
   // Let the stopped audio promise unwind, but never hold the conversation hostage to a browser that
   // missed its pause event.
   if (accepted) await Promise.race([playback, sleep(250)]);
-  return accepted || (partialFailure ? { failed: true } : result);
+  return accepted || (partialFailure ? { failed: true, error: partialFailure } : result);
 }
 
 // ---- on-device voice selection ----
@@ -487,8 +572,6 @@ export function openVoicePicker() {
   render();
   try { speechSynthesis.onvoiceschanged = render; } catch {} // voices can load a beat late
 }
-
-// Sentence-ish chunks, merging tiny fragments so each chunk is worth a TTS round-trip.
 
 // ---- STT ----
 // agentHint (the current queue item's agent) matches dictation to that session's STT source server-side;

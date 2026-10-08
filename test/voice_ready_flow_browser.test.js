@@ -28,6 +28,8 @@ const sttTakes = [{ text: '为什么之前中文输入不工作', language: 'aut
 let streamBehavior = null;
 let conversationBehavior = null;
 let heldDialogue = null;
+const microphoneId = 'a9'.repeat(16);
+let microphoneReader, microphoneSequence = 0;
 const model = httpServer(async (req, res) => {
   const body = await readBody(req);
   if (body.messages[0].content.includes('hands-free project lead')) {
@@ -58,7 +60,35 @@ const model = httpServer(async (req, res) => {
     quick: 'No wait after answering.', standard: 'The delay came from generating the briefing after Accept. It is prepared before ringing now.',
     spoken: 'The briefing and audio are prepared before the call appears, so answering no longer leaves you waiting.', needs: '', options: [] }) } }] }));
 });
-const spark = httpsServer({ cert: readFileSync(cert), key: readFileSync(key) }, async (req, res) => {
+const spark = httpServer(async (req, res) => {
+  assert.equal(req.headers.authorization, 'Bearer private-fixture', 'voice transport retains server-side proxy authentication');
+  if (req.url === '/v1/voice/profile') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ asr: { ready: true }, llm: { ready: true }, tts: { ready: true, supported_voices: ['Ryan', 'Vivian'] }, extensions: {} })); return;
+  }
+  if (req.url.startsWith('/v1/voice/sessions')) {
+    if (req.method === 'GET') {
+      microphoneReader = res;
+      res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
+      res.write('id: 1\nevent: session_ready\ndata: {}\n\n'); return;
+    }
+    const body = await readBody(req);
+    const reply = value => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
+    if (req.method === 'DELETE') {
+      trace.push({ event: 'microphone-cancel' }); microphoneReader?.end();
+      // Do not block the final transcript's /turn handoff behind a slow stop ACK.
+      await new Promise(resolve => setTimeout(resolve, 400));
+      return reply({ stopped: true });
+    }
+    if (req.url.endsWith('/audio')) return reply({ next_sequence: ++microphoneSequence });
+    if (req.url.endsWith('/commit')) {
+      reply({ committed: true });
+      microphoneReader.end('id: 2\nevent: transcript_final\ndata: {"text":"What changed in the plan?"}\n\n'); return;
+    }
+    trace.push({ event: 'microphone-start', sourceResolved: body.history[0].content.includes('Plan'), system: body.system });
+    return reply({ session_id: microphoneId, protocol: 'omni-voice-stream-v1',
+      reconnect: { event_ids: true, idempotent_audio: true, idempotent_commit: true, max_ms: 45000 } });
+  }
   if (req.url === '/v1/audio/transcriptions') {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const body = Buffer.concat(chunks);
@@ -123,6 +153,7 @@ const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 Object.assign(process.env, { AIOS_DATA: join(scratch, 'data'), AIOS_ENV_FILE: join(scratch, 'missing.env'), AIOS_TMUX: wrapper,
   AIOS_PROXY_KEY: 'private-fixture', AIOS_PORT: String(port), AIOS_HOST: '127.0.0.1',
+  AIOS_OMNI_PROXY_BASE: `http://127.0.0.1:${spark.address().port}/v1`,
   AIOS_VOICE_BRIEF_CHAIN: `${model.address().port}:voice/qwen38-flash-next-nvfp4`,
   AIOS_VOICE_CONVERSATION_CHAIN: `${model.address().port}:voice/qwen38-flash-next-nvfp4`,
   AIOS_CODEX_SESSIONS_DIR: join(scratch, 'codex'), SPARK_IP: '127.0.0.1', SPARK_HOST: 'localhost', SPARK_PORT: String(spark.address().port) });
@@ -222,7 +253,7 @@ try {
   assert.equal(trace[0].workload, 'voice');
   assert.equal(trace[0].style, 'original');
   const speech = trace.find(item => item.event === 'tts');
-  assert.equal(speech.path, '/voice/api/turn'); assert.equal(speech.ttsOnly, true); assert.equal(speech.explicit, '1');
+  assert.equal(speech.path, '/v1/voice/turns'); assert.equal(speech.ttsOnly, true); assert.equal(speech.explicit, '1');
   assert.equal(speech.history, undefined, 'TTS-only never sends conversation history');
   assert.equal(speech.voice, 'Ryan', 'the speaker is explicit and fixed, not selected by language');
 
@@ -297,6 +328,37 @@ try {
   assert.ok(trace.filter(item => item.event === 'live-conversation').every(item => item.sourceResolved && item.voice === 'Ryan'));
   assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, inboundBefore,
     'Chinese and English questions were not delivered as coding-agent instructions');
+
+  const microphoneGrounding = await page.evaluate(async voiceId => {
+    const post = (path, body) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const start = await post('api/voice/input/sessions', { voiceId, client_session_id: crypto.randomUUID().replaceAll('-', '') });
+    const descriptor = await start.json();
+    const path = 'api/voice/input/sessions/' + descriptor.session_id;
+    const events = await fetch(path + '/events');
+    await post(path + '/audio', { sequence: 0, audio: btoa('\0'.repeat(8000)) });
+    await post(path + '/commit', {});
+    const wire = await events.text();
+    const final = JSON.parse(wire.split('\n\n').find(block => block.includes('event: transcript_final')).match(/data: (.*)/)[1]);
+    // Same route the real mic adapter takes: final transcript → action harness →
+    // query-aware source retrieval. Never answer from a pre-recording excerpt.
+    await new Promise(resolve => setTimeout(resolve, 30));
+    const turnResponse = await post('api/voice/turn', { voiceId, userText: final.text });
+    const turn = await turnResponse.json();
+    const answerResponse = await post('api/voice/converse', { voiceId, userText: turn.realtimeQuestion });
+    const answer = await answerResponse.text();
+    return { startStatus: start.status, final, turnStatus: turnResponse.status, turn, answerStatus: answerResponse.status, answer };
+  }, startedVoice.voiceId);
+  assert.equal(microphoneGrounding.startStatus, 200); assert.equal(microphoneGrounding.final.aios_handoff, true);
+  assert.equal(microphoneGrounding.turnStatus, 200); assert.equal(microphoneGrounding.answerStatus, 200);
+  assert.equal(microphoneGrounding.turn.realtimeQuestion, 'What changed in the plan?');
+  assert.match(microphoneGrounding.answer, /briefing is prepared before Accept/);
+  assert.ok(trace.some(row => row.event === 'microphone-start' && row.sourceResolved));
+  assert.ok(trace.some(row => row.event === 'microphone-cancel'));
+  assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, inboundBefore,
+    'a microphone document question reaches retrieval, never the coding agent');
+  console.log('microphone_source_grounding trace', JSON.stringify({ pass: true, handler: '/api/voice/input/sessions',
+    nextHandler: '/api/voice/turn → /api/voice/converse', question: microphoneGrounding.final.text,
+    sourceResolved: true, instructionDeliveries: 0, queryAwareRetrieval: true }));
 
   // Drive the real native streaming handler and shared browser player. Keep the gateway unfinished
   // until the browser has actually started its first audio phrase, then prove completion waits for

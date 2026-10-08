@@ -26,4 +26,10 @@ assert.ok(Buffer.byteLength(bounded.text) + Buffer.byteLength(bounded.history[0]
 assert.ok(!bounded.history[0].content.includes('\uFFFD'), 'UTF-8 truncation cannot split Han characters');
 assert.throws(() => gatewayConversation({ item, evidence, question: '中文'.repeat(2500) }), /too long/, 'a long question is never silently truncated');
 assert.match(gatewayConversation({ item, evidence, opening: true }).text, /^请讲解/);
+const microphone = gatewayConversation({ item, evidence: huge, microphone: true, voice: 'Sohee' });
+assert.equal(microphone.text, undefined, 'stream creation cannot invent the unheard question');
+assert.equal(microphone.voice, 'Sohee');
+assert.match(microphone.history[0].content, /Approved documents:/, 'long reports cannot crowd linked sources out of microphone context');
+assert.ok(Buffer.byteLength(microphone.history[0].content) + Buffer.byteLength(microphone.system) + 3000 < 6000,
+  'microphone context reserves the full final-transcript byte budget');
 console.log('voice_gateway_context.test ok');

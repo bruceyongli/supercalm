@@ -10,10 +10,10 @@ assert.throws(() => nativePcmSamples(Buffer.from('not a WAV').toString('base64')
 const sources = [], segments = [];
 const context = {
   state: 'running', currentTime: 10, destination: {},
-  createBuffer(_channels, length, rate) { return { duration: length / rate, copyToChannel() {} }; },
+  createBuffer(_channels, length, rate) { return { duration: length / rate, getChannelData: () => new Float32Array(length) }; },
   createBufferSource() {
     const node = { playbackRate: { value: 1 }, connect() {}, disconnect() {},
-      start(when, offset) { this.when = when; this.offset = offset; }, stop() { this.stopped = true; } };
+      start(when) { this.when = when; }, stop() { this.stopped = true; } };
     sources.push(node); return node;
   },
 };
@@ -30,8 +30,8 @@ assert.equal(sources[0].when, 10.6, 'the initial reserve matches Omni native BF1
 assert.ok(Math.abs(sources[1].when - 10.7) < 1e-8);
 assert.ok(Math.abs(sources[2].when - 10.8) < 1e-8, 'a phrase boundary adds no pause to already queued audio');
 assert.throws(() => queue.push(frame(4)), /order/);
-assert.throws(() => queue.push({ ...frame(3), voice: 'Vivian' }), /identity/);
-assert.throws(() => queue.push({ ...frame(3), prosody_profile: 'legacy' }), /identity/);
+assert.throws(() => queue.push({ ...frame(3), voice: 'Vivian' }), /identity/i);
+assert.throws(() => queue.push({ ...frame(3), prosody_profile: 'legacy' }), /identity/i);
 context.currentTime = 10.65;
 queue.setRate(2);
 assert.equal(sources.length, 3, 'a saved fast rate cannot resample or restart native speech');
@@ -39,6 +39,7 @@ assert.ok(sources.every(source => source.playbackRate.value === 1 && !source.sto
 queue.seal(); assert.equal(ended, 0, 'network completion does not mean playback completion');
 context.currentTime = 11;
 for (const node of sources) node.onended();
+await Promise.resolve();
 assert.equal(ended, 1);
 assert.deepEqual(segments.map(segment => segment.text), ['First phrase.', 'Second phrase.']);
 queue.stop();
@@ -50,7 +51,7 @@ const late = createPcmQueue(context);
 late.push(frame(0, 'First sentence.'));
 context.currentTime += 2; // next model sentence arrives after the previous buffer ran out
 late.push({ ...frame(1, 'Next sentence.'), phrase_index: 1, frame_index: 0 });
-assert.ok(Math.abs(sources.at(-1).when - context.currentTime - .005) < 1e-8,
-  'a late new sentence does not restart the 600ms startup buffer');
+assert.ok(Math.abs(sources.at(-1).when - context.currentTime - .45) < 1e-8,
+  'late phrase cadence is Omni’s shared policy, not an AIOS-specific sound fix');
 late.stop();
 console.log('voice_pcm_queue.test ok');

@@ -7,6 +7,9 @@ for (const text of ['okay can you change to your female voice instead of male vo
 for (const text of ['Use Ryan', 'Switch to your male voice', 'Please change your voice to Ryan', '换成男声', '请用男声']) {
   assert.equal(voiceSpeakerControl(text)?.voice, 'Ryan', text);
 }
+for (const [text, voice] of [['Use Serena', 'Serena'], ['请换成 Sohee', 'Sohee'], ['Switch to Uncle Fu', 'Uncle_Fu']]) {
+  assert.equal(voiceSpeakerControl(text)?.voice, voice, text);
+}
 for (const text of ['Fix the female voice in the app', 'Change to a female voice and deploy the project',
   'Can you explain the female voice bug?', 'This project uses a female voice', 'Yes, send it', 'next', '']) {
   assert.equal(voiceSpeakerControl(text), null, 'mixed/project speech is not an assistant-only control: ' + text);

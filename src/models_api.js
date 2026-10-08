@@ -14,6 +14,8 @@ import { DATA_DIR, SPARK } from './config.js';
 import { voiceConfig } from './tts.js';
 import { effectiveSpark, sparkEnabled } from './spark.js';
 import { db } from './store.js';
+import { nativeVoice } from './tts_native.js';
+import { omniProfile, omniConfigured } from './omni_client.js';
 
 function readBody(req) {
   return new Promise((resolve) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => resolve(b)); req.on('error', () => resolve('')); });
@@ -22,7 +24,7 @@ async function bodyJson(req) {
   try { return JSON.parse(await readBody(req) || '{}'); } catch { return {}; }
 }
 
-route('GET', '/api/models/providers', (req, res) => {
+route('GET', '/api/models/providers', async (req, res) => {
   // builtin = the local proxy fleet presented as provider rows (operator: one section, one mental
   // model — subscription auth up top, every model ENDPOINT lives here). Live-derived, key auto.
   const byProxy = {};
@@ -30,7 +32,7 @@ route('GET', '/api/models/providers', (req, res) => {
   json(res, 200, {
     ok: true, kinds: PROVIDER_KINDS, providers: listProviders(),
     builtin: listBuiltinProviders(currentProviders(), byProxy),
-    speech: getSpeech(), spark_configured: !!SPARK.ip,
+    speech: getSpeech(), spark_configured: await omniConfigured(),
     spark: (() => {
       const eff = effectiveSpark(); const vc = voiceConfig(); const overridden = Object.keys(getVoiceOverride()?.spark || {});
       // Editor prefills the EFFECTIVE config (env or override) so "the info is there" (operator) — the
@@ -40,7 +42,7 @@ route('GET', '/api/models/providers', (req, res) => {
         ip: eff.ip, port: eff.port,
         sttModel: getSpeech()?.stt_model || 'whisper-1', ttsEngine: vc.ttsEngine, ttsVoice: vc.ttsVoice, ttsInstruct: vc.ttsInstruct,
         localTtsPort: vc.localTtsPort, localVoice: vc.localVoice, backend: vc.backend,
-        source: overridden.length ? 'override' : 'env', overridden };
+        transport: 'authenticated-loopback-proxy', source: overridden.length ? 'override' : 'env', overridden };
     })(),
     pricing: { ...pricingStatus(), suggested_url: SUPERCALM_PRICES_URL },
   });
@@ -118,6 +120,15 @@ route('DELETE', '/api/models/speech', (req, res) => {
 route('POST', '/api/models/voice', async (req, res) => {
   const b = await bodyJson(req);
   try {
+    const engine = b.ttsEngine || voiceConfig().ttsEngine;
+    if (['qwen3-tts-bf16', 'qwen3-tts', 'native'].includes(engine) && b.ttsVoice) {
+      const voice = nativeVoice(b.ttsVoice);
+      const profile = await omniProfile();
+      if (!profile.tts?.ready || !profile.tts.supported_voices?.includes(voice)
+        || profile.tts.voice_catalog?.some(row => row.id === voice && row.available === false)) {
+        throw new Error('This voice is not currently available from Omni. Your settings were kept.');
+      }
+    }
     const ov = setVoiceOverride(b);
     bus.emit('changed');
     return json(res, 200, { ok: true, voice: ov });

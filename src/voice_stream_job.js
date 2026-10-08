@@ -14,16 +14,16 @@ export function createVoiceStreamJob({ requestId, controller, orphanMs = 10000, 
       const sequence = events.length + 1;
       const wire = `id: ${sequence}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
       const size = Buffer.byteLength(wire);
-      if (event !== 'error' && bytes + size > maxBytes) throw new Error('Voice replay buffer exceeds limit');
+      if (event !== 'error' && event !== 'retry' && bytes + size > maxBytes) throw new Error('Voice replay buffer exceeds limit');
       bytes += size; events.push({ sequence, wire });
       if (event === 'text') job.text += String(data.delta || '');
       if (event === 'stage') job.stage = String(data.stage || job.stage);
       for (const key of ['llm_queue_wait_ms', 'llm_first_token_ms', 'llm_complete_ms', 'first_audio_ms', 'total_ms']) {
         if (Number.isFinite(data[key])) job.timings[key] = data[key];
       }
-      if (event === 'done' || event === 'error') {
+      if (event === 'done' || event === 'error' || event === 'retry') {
         closed = true; job.stage = event === 'done' ? 'complete' : 'failed';
-        if (event === 'error') job.error = data.detail || data.message || 'Voice unavailable';
+        if (event !== 'done') job.error = data.detail || data.message || 'Voice unavailable';
         clearTimeout(orphan);
       }
       for (const wake of [...waiters]) wake();

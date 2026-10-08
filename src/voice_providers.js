@@ -1,6 +1,6 @@
-import { SPARK } from './config.js';
 import { getVoiceOverride, getSpeech } from './model_providers.js';
 import { codexSttAvailable } from './stt_codex.js';
+import { omniConfigured } from './omni_client.js';
 
 // The voice PROVIDER REGISTRY: every speech source as a provider with capabilities + live status.
 // Kept free of spark.js/tts.js imports (they import US, via the resolver) — availability is computed
@@ -13,7 +13,7 @@ export const VOICE_PROVIDER_IDS = ['spark', 'codex', 'claude', 'cloud', 'macos',
 // Async because codex availability reads ~/.codex/auth.json. Returns the full registry (for the UI).
 export async function voiceProviders() {
   const ov = getVoiceOverride();
-  const sparkIp = ov?.spark?.ip || SPARK.ip;
+  const omniOn = await omniConfigured();
   const sparkMuted = !!ov?.sparkDisabled;
   const speech = getSpeech({ redact: false });
   const cloudOn = !!(speech?.enabled && speech.base_url);
@@ -21,10 +21,10 @@ export async function voiceProviders() {
 
   return [
     {
-      id: 'spark', label: 'Local voice (Spark)', caps: { tts: true, stt: true }, location: 'tailnet',
-      configured: !!sparkIp, available: !!sparkIp && !sparkMuted,
-      status: !sparkIp ? 'not-configured' : sparkMuted ? 'unavailable' : 'ok',
-      detail: !sparkIp ? 'set SPARK_IP / SPARK_HOST' : sparkMuted ? 'muted' : 'Whisper large-v3-turbo · Qwen3.8 voice · Qwen3-TTS BF16 steady-v3',
+      id: 'spark', label: 'Omni voice (Spark)', caps: { tts: true, stt: true }, location: 'server',
+      configured: omniOn, available: omniOn && !sparkMuted,
+      status: !omniOn ? 'not-configured' : sparkMuted ? 'unavailable' : 'ok',
+      detail: !omniOn ? 'configure the existing local proxy credential' : sparkMuted ? 'muted' : 'Authenticated local proxy · Whisper · Omni voice · Qwen3-TTS BF16',
     },
     {
       id: 'codex', label: 'Codex — your ChatGPT login', caps: { tts: false, stt: true }, location: 'cloud',

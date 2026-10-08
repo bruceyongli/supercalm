@@ -2,19 +2,18 @@ import http from 'node:http';
 import https from 'node:https';
 import { route, json, readJson } from './server.js';
 import { sparkRequest, sparkEnabled, effectiveSpark } from './spark.js';
+import { omniRequest, omniProfile, omniHttpError } from './omni_client.js';
 import { getSpeech, getVoiceOverride, getVoiceConfig } from './model_providers.js';
 import { resolveChain } from './voice_chain.js';
 import { voiceProviders, availabilityMap } from './voice_providers.js';
 import { createNativeSpeechDecoder, nativeSpeechFromSse, nativeTextParts, nativeVoice, pcmFromWav, wavFromPcm, textForPreparedSpeech } from './tts_native.js';
 
 // TTS for the voice concierge. Two backends:
-//   'spark' (default) — Omni's promoted native Qwen3-TTS 1.7B BF16 at /voice/api/turn,
-//                       explicitly tts_only (no ASR/LLM), reached via tailnet IP+SNI.
-//                       Automatic Ryan/Vivian voices; joined PCM frames play continuously.
+//   'spark' (default) — authenticated loopback proxy → Omni, explicitly tts_only.
+//                       Five fixed voices; joined PCM samples for prepared calls only.
 //                       Legacy engines remain explicit overrides, not quality downgrades.
 //   'local'           — the macOS `say` + ffmpeg service on host (fast, robotic).
-// Spark is primary; on ANY Spark failure we fall back to local say, and the browser has
-// speechSynthesis as a final fallback so the voice loop does not die from one outage.
+// Native failures retain the report for manual retry, never silently change its voice.
 // Flip the default instantly with AIOS_TTS_BACKEND=local (no redeploy needed).
 const TTS_PORT = Number(process.env.AIOS_TTS_PORT || 17071);
 const ENV_TTS_VOICE = process.env.AIOS_TTS_VOICE || '';
@@ -98,15 +97,15 @@ function proxyTtsHeaders(upstreamHeaders = {}, source = 'spark', format = 'mp3')
 async function speakSpark(text, voice, engine, format, instruct = '') {
   if (engine === 'qwen3-tts-bf16') {
     voice = nativeVoice(voice);
-    // Use the promoted public gateway, not its retired port-7081 API or private model ports.
+    // Use the authorized proxy → Omni gateway, never retired APIs or bare model ports.
     // tts_only explicitly bypasses ASR and the demo LLM; our grounded answer is spoken verbatim.
     const pcm = [], segments = []; let headers, offset = 0;
     const signal = AbortSignal.timeout(45000);
     for (const phrase of nativeTextParts(text)) {
-      const payload = Buffer.from(JSON.stringify({ text: phrase, tts_only: true, engine: 'qwen', voice, language: 'auto' }));
-      const r = await sparkRequest('POST', '/voice/api/turn', { body: payload, contentType: 'application/json',
-        headers: { 'X-Voice-Demo': '1' }, signal, maxBytes: 18000000, timeout: 45000 });
-      if (r.status !== 200) throw Object.assign(new Error(r.status === 429 ? 'Voice is busy. Please retry later.' : 'Native voice is unavailable. Please retry later.'), { status: r.status === 429 ? 429 : 503, noFallback: true });
+      const r = await omniRequest('POST', '/voice/turns', { body: { model: 'omni-voice', app_id: 'supercalm',
+        text: phrase, tts_only: true, sentence_speech: false, engine: 'qwen', voice, language: 'auto' },
+      signal, maxBytes: 18000000, timeout: 45000 });
+      if (r.status !== 200) throw omniHttpError(r);
       const spoken = nativeSpeechFromSse(r.body, phrase.trim(), { voice });
       pcm.push(pcmFromWav(spoken.audio)); headers = spoken.headers;
       for (const segment of spoken.segments) segments.push({ ...segment, index: segments.length, start: offset + segment.start, end: offset + segment.end });
@@ -184,6 +183,9 @@ export async function synthesizeSpeech(b) {
   const voice = b.voice || ((b.engine || b.model) ? defaultVoiceForEngine(engine) : vc.ttsVoice);
 
   const chain = await ttsServerChain(b);
+  if (!b.backend && engine === 'qwen3-tts-bf16' && getVoiceConfig().tts.primary === 'spark' && chain[0] !== 'spark') {
+    throw Object.assign(new Error('The selected Omni voice proxy is not configured. Your report is kept; no voice fallback.'), { status: 503, noFallback: true });
+  }
   let audio = null, responseHeaders = null, lastErr = '', segments = [];
   for (const name of chain) {
     try {
@@ -220,7 +222,7 @@ route('POST', '/api/tts', async (req, res) => {
   try {
     const { audio, headers } = await synthesizeSpeech(b);
     res.writeHead(200, headers); res.end(audio);
-  } catch (e) { json(res, e.status || 502, { error: e.message, noFallback: !!e.noFallback }); }
+  } catch (e) { json(res, e.status || 502, { error: e.message, noFallback: !!e.noFallback, retryAfterMs: e.retryAfterMs }); }
 });
 
 // Streaming TTS: the promoted Qwen model supplies native PCM `audio` frames and phrase metadata.
@@ -281,9 +283,9 @@ async function streamNativeSpeech(text, res, voice) {
     for (const part of nativeTextParts(text)) {
       const decoder = createNativeSpeechDecoder(part.trim(), { voice });
       const offset = bytes / 48000;
-      const payload = Buffer.from(JSON.stringify({ text: part, tts_only: true, engine: 'qwen', voice, language: 'auto' }));
-      const response = await sparkRequest('POST', '/voice/api/turn', { body: payload, contentType: 'application/json',
-        headers: { 'X-Voice-Demo': '1' }, signal: ctrl.signal, maxBytes: 18000000, timeout: 60000,
+      const response = await omniRequest('POST', '/voice/turns', { body: { model: 'omni-voice', app_id: 'supercalm',
+        text: part, tts_only: true, sentence_speech: false, engine: 'qwen', voice, language: 'auto' },
+        signal: ctrl.signal, maxBytes: 18000000, timeout: 60000,
         onChunk(chunk, upstream) {
           if (!String(upstream.headers['content-type']).startsWith('text/event-stream')) throw new Error('Expected native speech stream');
           let writable = true;
@@ -303,14 +305,14 @@ async function streamNativeSpeech(text, res, voice) {
           }
         },
       });
-      if (response.status !== 200) throw Object.assign(new Error(response.status === 429 ? 'Voice is busy. Please retry later.' : 'Native voice is unavailable. Please retry later.'), { status: response.status === 429 ? 429 : 503 });
+      if (response.status !== 200) throw omniHttpError(response);
       const result = decoder.finish(); segmentBase += result.segments.length;
     }
     send('done', { text, frames }); res.end();
   } catch (error) {
     if (!res.destroyed) {
-      if (!res.headersSent) json(res, error.status || 503, { error: error.message, noFallback: true });
-      else { send('error', { detail: error.message, partial: frames > 0 }); res.end(); }
+      if (!res.headersSent) json(res, error.status || 503, { error: error.message, noFallback: true, retryAfterMs: error.retryAfterMs });
+      else { send(error.retry ? 'retry' : 'error', { ...error.retry, detail: error.message, partial: frames > 0 }); res.end(); }
     }
   } finally {
     clearTimeout(timeout); res.off('close', disconnect); res.off('error', disconnect);
@@ -334,11 +336,15 @@ route('GET', '/api/tts/health', async (req, res) => {
   const vc = voiceConfig(); // effective config, not raw env — health must describe what /api/tts actually does
   if (vc.backend === 'spark' && sparkEnabled()) {
     try {
-      const r = await sparkRequest('GET', vc.ttsEngine === 'qwen3-tts-bf16' ? '/voice/api/status' : '/api/health', { timeout: 8000 });
+      if (vc.ttsEngine === 'qwen3-tts-bf16') {
+        const h = await omniProfile();
+        return json(res, 200, { ok: h.tts?.ready === true, backend: 'spark', engine: vc.ttsEngine,
+          voice: nativeVoice(vc.ttsVoice), tts_available: h.tts?.ready === true,
+          model: h.tts?.model, precision: h.tts?.precision, streaming: h.tts?.streaming, health: h.tts?.health,
+          supported_voices: h.tts?.supported_voices || [], voice_catalog: h.tts?.voice_catalog || [], extensions: h.extensions });
+      }
+      const r = await sparkRequest('GET', '/api/health', { timeout: 8000 });
       const h = JSON.parse(r.body.toString('utf8'));
-      if (vc.ttsEngine === 'qwen3-tts-bf16') return json(res, 200, { ok: r.status === 200 && h.tts?.ready === true,
-        backend: 'spark', engine: vc.ttsEngine, voice: 'auto', tts_available: h.tts?.ready === true,
-        model: h.tts?.model, precision: h.tts?.precision, streaming: h.tts?.streaming });
       return json(res, 200, { ok: true, backend: 'spark', engine: vc.ttsEngine, voice: vc.ttsVoice, tts_available: !!h.tts_available, tts_base_url: h.tts_base_url });
     } catch (e) {
       return json(res, 502, { ok: false, backend: 'spark', error: e.message });

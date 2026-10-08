@@ -95,7 +95,7 @@ const server = createServer(async (req, res) => {
   }
   const path = resolve(web, url.pathname.replace(/^\/aios\//, ''));
   if (!path.startsWith(web)) { res.writeHead(403); res.end(); return; }
-  try { res.writeHead(200, { 'content-type': extname(path) === '.js' ? 'text/javascript' : extname(path) === '.css' ? 'text/css' : 'text/plain' }); res.end(readFileSync(path)); }
+  try { res.writeHead(200, { 'content-type': ['.js', '.mjs'].includes(extname(path)) ? 'text/javascript' : extname(path) === '.css' ? 'text/css' : 'text/plain' }); res.end(readFileSync(path)); }
   catch { res.writeHead(404); res.end(); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

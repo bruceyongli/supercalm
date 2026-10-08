@@ -14,6 +14,7 @@
 const SILENT_MP3 = 'data:audio/mpeg;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjYyLjEyLjEwMAAAAAAAAAAAAAAA//OEwAAAAAAAAAAAAEluZm8AAAAPAAAABQAAAqAAbW1tbW1tbW1tbW1tbW1tbW1tbZKSkpKSkpKSkpKSkpKSkpKSkpKStra2tra2tra2tra2tra2tra2trbb29vb29vb29vb29vb29vb29vb2///////////////////////////AAAAAExhdmM2Mi4yOAAAAAAAAAAAAAAAACQEUAAAAAAAAAKgvT/qZwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA//NExAAAAANIAAAAAExBTUUzLjEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExFMAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVTEFNRTMu//NExKYAAANIAAAAADEwMFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV//NExKwAAANIAAAAAFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
 
 let player = null; // the one persistent, gesture-unlocked <audio> (never in the DOM — survives re-renders)
+let playerNative = false; // prepared Omni files retain the same fixed 1x voice as live PCM
 let streamContext = null;
 function getStreamContext() {
   const Context = globalThis.AudioContext || globalThis.webkitAudioContext;
@@ -40,7 +41,7 @@ export function cycleRate() {
 }
 function applyRate(a) {
   if (!a) return;
-  try { a.playbackRate = ttsRate(); } catch {}
+  try { a.playbackRate = playerNative ? 1 : ttsRate(); } catch {}
   try { a.preservesPitch = true; } catch {}
   try { a.webkitPreservesPitch = true; } catch {}
 }
@@ -96,6 +97,9 @@ export function stopAllPlayback() {
   try { if (player) player.pause(); } catch {}
   try { speechSynthesis.cancel(); } catch {}
 }
+globalThis.document?.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopAllPlayback();
+});
 
 export function preferredTtsFormat() {
   try {
@@ -163,11 +167,13 @@ function parseSseBlock(block) {
 }
 
 async function* legacySpeechEvents(text, extra, signal) {
-  const r = await fetch('api/tts/stream', { method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(ttsPayload(text, extra)), signal });
+  let r;
+  try { r = await fetch('api/tts/stream', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(ttsPayload(text, extra)), signal }); }
+  catch (error) { throw Object.assign(error, { noFallback: true }); }
   if (!r.ok || !r.body?.getReader) {
     const error = await r.json().catch(() => ({}));
-    throw Object.assign(new Error(error.error || 'tts stream ' + r.status), { noFallback: !!error.noFallback });
+    throw Object.assign(new Error(error.error || 'tts stream ' + r.status), { noFallback: !!error.noFallback, retryAfterMs: error.retryAfterMs });
   }
   if (!String(r.headers.get('content-type')).startsWith('text/event-stream')) throw new Error('invalid tts stream');
   const reader = r.body.getReader(), decoder = new TextDecoder(); let buffer = '';
@@ -199,6 +205,7 @@ function playUrl(url, h) {
     };
     const arm = (ms) => { if (stall) clearTimeout(stall); stall = setTimeout(fin, ms); };
     cap = setTimeout(fin, 60000);
+    playerNative = false;
     const a = getPlayer();
     a.onended = a.onerror = fin;
     a.onpause = () => { if (h.stopped) fin(); };
@@ -313,8 +320,9 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {
             live.onDone?.(data);
             readingDone = true;
             if (pcmQueue) pcmQueue.seal(); else pump();
-          } else if (event === 'error') {
-            throw new Error(data.detail || 'tts stream error');
+          } else if (event === 'error' || event === 'retry') {
+            throw Object.assign(new Error(data.detail || data.message || 'Voice is busy; retry when ready'),
+              { noFallback: true, retry: event === 'retry' ? data : null, retryAfterMs: data.retry_after_ms });
           }
         }
         if (native && !nativeDone) throw new Error('native speech ended before completion');
@@ -337,7 +345,7 @@ function speakStream(text, h, extra = {}, onSlow, onSegment, onPartial, live = {
 // Single-shot /api/tts (server falls back Spark → provider → macOS-say internally).
 // Same anti-replay rule as the stream: the cap scales with the text and never REJECTS after audio
 // has started — rejecting mid-play would cascade into speechSynthesis re-reading the whole part.
-function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = null, preparedSegments = []) {
+function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = null, preparedSegments = [], preparedNative = false) {
   return new Promise((resolve, reject) => {
     if (!text || h.stopped) return resolve();
     let done = false, cap = null, stall = null, playedSome = false, shownSegment = -1, audioUrl = null;
@@ -369,13 +377,15 @@ function speakSingle(text, h, extra = {}, onSlow, onSegment, preparedAudio = nul
     (async () => {
       try {
         let blob = preparedAudio;
+        playerNative = preparedNative;
         if (!blob) {
           const r = await fetch('api/tts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ttsPayload(text, extra)), signal: ctrl.signal });
           if (!r.ok) {
             const error = await r.json().catch(() => ({}));
-            throw Object.assign(new Error(error.error || 'tts ' + r.status), { noFallback: !!error.noFallback });
+            throw Object.assign(new Error(error.error || 'tts ' + r.status), { noFallback: !!error.noFallback, retryAfterMs: error.retryAfterMs });
           }
           blob = await r.blob();
+          playerNative = r.headers.get('x-tts-precision') === 'BF16';
         }
         if (done || h.stopped) return finish();
         const url = URL.createObjectURL(blob);
@@ -456,13 +466,16 @@ let streamUnavailable = false;
 //   onSlow()     — the neural path has produced no audio after ~4.5s (e.g. "Spark is slow").
 //   onFallback() — neural failed and we're speaking with the on-device voice instead.
 //   onSegment()  — a sentence/audio segment has started, for a current-reading indicator.
-export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onPartial, onSegment, onNative, onStarted, continuous = false, preparedAudio = null, preparedSegments = [] } = {}) {
+export async function speakSmart(text, h, { ttsExtra = {}, onSlow, onFallback, onPartial, onSegment, onNative, onStarted, continuous = false, preparedAudio = null, preparedSegments = [], preparedNative = false } = {}) {
   if (!text || h.stopped) return;
   let mode = 'neural';
   try { mode = localStorage.getItem('aios_tts') || 'neural'; } catch {}
   if (mode === 'browser') return speakBrowser(text, h, onSegment, continuous);
   try {
-    if (preparedAudio) return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio, preparedSegments);
+    if (preparedAudio) {
+      if (preparedNative) onNative?.();
+      return await speakSingle(text, h, ttsExtra, onSlow, onSegment, preparedAudio, preparedSegments, preparedNative);
+    }
     if (!streamUnavailable) {
       return await speakStream(text, h, ttsExtra, onSlow, onSegment, onPartial, { onNative, onStarted }).catch((e) => {
         if (e.noFallback) throw e;

@@ -71,7 +71,7 @@ export async function* voiceStreamEvents(live, signal) {
                 receivedText += String(data.delta || '');
                 data.delta = showText(receivedText);
               }
-              if (event === 'error' || event === 'done') terminal = true;
+              if (event === 'error' || event === 'retry' || event === 'done') terminal = true;
               live.onConnected?.();
               yield { event, data };
             }

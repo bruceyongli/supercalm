@@ -7,6 +7,11 @@ import { nativeSpeechFromSse, wavFromPcm, NATIVE_TTS_MODEL } from '../src/tts_na
 const tiny = createVoiceStreamJob({ controller: new AbortController(), maxBytes: 300 });
 assert.throws(() => tiny.append('text', { delta: 'x'.repeat(500) }), /exceeds limit/);
 tiny.cancel(); assert.equal(tiny.closed, true); assert.equal(tiny.release(), true);
+const retry = createVoiceStreamJob({ controller: new AbortController(), maxBytes: 1 });
+retry.append('retry', { code: 'llm_unavailable', message: 'Reply service is busy', retry_after_ms: 15000 });
+assert.equal(retry.closed, true); assert.equal(retry.stage, 'failed');
+assert.equal(retry.error, 'Reply service is busy');
+assert.equal(retry.release(), true, 'retry is a terminal result even when the replay buffer is full');
 const ctrl = new AbortController(), job = createVoiceStreamJob({ controller: ctrl });
 const text = 'The exact voice samples must survive compression.';
 const pcm = Buffer.alloc(48000);

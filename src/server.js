@@ -367,6 +367,7 @@ route('DELETE', '/api/projects/:id', async (req, res, { id: pid }) => {
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
@@ -420,11 +421,12 @@ async function serveStatic(req, res, url) {
     // deploy reaches phones on the next reload — without this, no cache headers were
     // sent and Safari heuristically cached stale JS (e.g. an old voicemode.js). Vendored
     // libs + icons/fonts are immutable enough to cache for a day.
-    const appCode = !p.startsWith('/vendor/') && /\.(html|js|css|webmanifest)$/.test(file);
+    const appCode = p.startsWith('/vendor/omni/') || !p.startsWith('/vendor/') && /\.(html|mjs|js|css|webmanifest)$/.test(file);
     // App code: no-store so a deploy always reaches the client on the next load. (no-cache only
     // means "revalidate", which iOS Safari / a Home-Screen PWA don't reliably honor on a soft
-    // refresh → stale JS.) Vendored libs + icons stay cacheable.
-    const textLike = /\.(html|js|css|webmanifest|svg|json|map)$/.test(file);
+    // refresh → stale JS.) Omni's paired release package is also no-store;
+    // unrelated vendored libs + icons stay cacheable.
+    const textLike = /\.(html|mjs|js|css|webmanifest|svg|json|map)$/.test(file);
     (textLike ? sendCompressed : send)(res, 200, data, {
       'content-type': TYPES[ext] || 'application/octet-stream',
       'cache-control': appCode ? 'no-store' : 'max-age=86400',

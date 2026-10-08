@@ -12,6 +12,7 @@ import { resolveChain, normalizeAgentHint } from './voice_chain.js';
 import { voiceProviders, availabilityMap } from './voice_providers.js';
 import { guardTranscript, sttContextPrompt, normalizeLangs } from './stt_guard.js';
 import { getSession, getProject } from './store.js';
+import { omniRequest, omniProfile } from './omni_client.js';
 
 // Effective Spark connection = UI override (data/model_providers.json) merged over env (SPARK_IP/HOST),
 // read at REQUEST time so edits hot-reload without a restart. sparkEnabled() also honors the "use" mute.
@@ -20,7 +21,9 @@ export function effectiveSpark() {
   return { ip: o.ip || SPARK.ip, host: o.host || SPARK.host, port: SPARK.port };
 }
 export function sparkEnabled() {
-  return !!effectiveSpark().ip && !getVoiceOverride()?.sparkDisabled;
+  // Availability is resolved by the credential-aware provider registry. IP/SNI
+  // settings apply only to explicitly selected legacy engines, not Omni.
+  return !getVoiceOverride()?.sparkDisabled;
 }
 
 // Reuse TLS connections to Spark across requests (STT + TTS) so we don't pay a fresh
@@ -132,7 +135,7 @@ async function transcribeWithSpark({ audio, contentType, language, polish, promp
     `speech.${ext}`,
     baseContentType(contentType) || 'application/octet-stream'
   );
-  return sparkRequest('POST', '/v1/audio/transcriptions', { body, contentType: multipartType });
+  return omniRequest('POST', '/audio/transcriptions', { body, contentType: multipartType });
 }
 
 // OpenAI-compatible speech provider (Settings → Voice): the no-Spark STT path. Same multipart
@@ -310,13 +313,11 @@ route('GET', '/api/voice/state', async (req, res) => {
 
 // Diagnostics: confirm Supercalm -> Spark reachability.
 route('GET', '/api/spark/health', async (req, res) => {
-  const spark = effectiveSpark();
-  try {
-    const r = await sparkRequest('GET', '/api/health', { timeout: 8000 });
-    json(res, r.status < 400 ? 200 : 502, { status: r.status, body: r.body.toString('utf8').slice(0, 300), via: `${spark.ip} (sni ${spark.host})` });
-  } catch (e) {
-    json(res, 502, { error: e.message, via: `${spark.ip}` });
-  }
+  const profile = await omniProfile();
+  json(res, 200, { status: profile.tts?.health?.state === 'unknown' ? 503 : 200,
+    via: 'authenticated loopback proxy', profile });
 });
+
+route('GET', '/api/voice/profile', async (_req, res) => json(res, 200, await omniProfile()));
 
 console.log('[aios] spark transcription proxy ready');

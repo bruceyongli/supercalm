@@ -395,17 +395,26 @@ function cloudForm(sp) {
 }
 function providerConfig(p, spk, sp) {
   if (p.id === 'spark') {
-    if (!p.configured) return '<p class="ob-fine">Set SPARK_IP / SPARK_HOST in data/aios.env to add your local voice device (Whisper + Kokoro).</p>';
+    if (!p.configured) return '<p class="ob-fine">Configure the existing local proxy credential to use Omni voice. Credentials stay on the server.</p>';
     const badge = (k) => (spk.overridden?.includes(k) ? '<span class="vc-badge ov">override</span>' : '<span class="vc-badge env">env</span>');
     const reset = (k) => (spk.overridden?.includes(k) ? `<button class="vc-reset" data-vc-reset="${k}" title="reset to the data/aios.env value">↺</button>` : '');
     const f = (id, label, val, key, ph) => `<div class="vc-field"><label>${label} ${badge(key)}${reset(key)}</label><input class="st-inp" id="${id}" value="${esc(val || '')}" placeholder="${esc(ph)}" data-vc-init="${esc(val || '')}" autocomplete="off" spellcheck="false" /></div>`;
+    const native = spk.ttsEngine === 'qwen3-tts-bf16';
+    const choices = (spk.supported_voices || []).filter(voice => voice !== 'auto'
+      && !(spk.voice_catalog || []).some(row => row.id === voice && row.available === false));
+    const voiceField = native ? `<div class="vc-field"><label>Voice ${badge('ttsVoice')}${reset('ttsVoice')}</label>
+      <select class="st-inp" id="st-spark-voice" data-vc-init="${esc(spk.ttsVoice || 'auto')}">
+      <option value="auto"${!spk.ttsVoice || spk.ttsVoice === 'auto' ? ' selected' : ''}>Default · Ryan</option>
+      ${choices.map(voice => `<option value="${esc(voice)}"${spk.ttsVoice === voice ? ' selected' : ''}>${esc(voice)}</option>`).join('')}
+      ${spk.ttsVoice && spk.ttsVoice !== 'auto' && !choices.includes(spk.ttsVoice) ? `<option selected value="${esc(spk.ttsVoice)}">${esc(spk.ttsVoice)} · unavailable</option>` : ''}
+      </select><p class="ob-fine">Fixed across English and Chinese · natural speed. Voice choices come from Omni.</p></div>`
+      : f('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'Legacy engine voice');
     return `
       <div class="vc-field-grid">
-        ${f('st-spark-host', 'Server host / SNI', spk.host, 'host', 'spark.your-tailnet.ts.net')}
-        ${f('st-spark-ip', 'Server IP', spk.ip, 'ip', 'tailnet IP')}
+        ${native ? '<p class="ob-fine">Omni through bb1’s authenticated local proxy. No extra Tailscale hop or per-app sound tuning.</p>' : f('st-spark-host', 'Legacy server host / SNI', spk.host, 'host', 'spark.your-tailnet.ts.net') + f('st-spark-ip', 'Legacy server IP', spk.ip, 'ip', 'tailnet IP')}
         ${f('st-spark-engine', 'TTS engine', spk.ttsEngine, 'ttsEngine', 'qwen3-tts-bf16')}
-        ${f('st-spark-voice', 'TTS voice', spk.ttsVoice, 'ttsVoice', 'Ryan / Vivian · fixed for the conversation')}
-        ${f('st-spark-instr', 'Speaking style (optional)', spk.ttsInstruct, 'ttsInstruct', 'e.g. calm colleague giving a status report')}
+        ${voiceField}
+        ${native ? '' : f('st-spark-instr', 'Legacy speaking style (optional)', spk.ttsInstruct, 'ttsInstruct', 'Legacy engine only')}
       </div>
       <div class="vc-detail-actions">
         <button class="dk-reply-btn" id="st-spark-sample">▶ Play</button>
@@ -443,10 +452,10 @@ async function loadVoice() {
   const host = $('#st-voicecard');
   if (!host) return;
   try {
-    const [state, r] = await Promise.all([api('api/voice/state'), api('api/models/providers')]);
+    const [state, r, profile] = await Promise.all([api('api/voice/state'), api('api/models/providers'), api('api/voice/profile')]);
     if (!$('#st-voicecard')) return; // torn down mid-fetch
     const { providers, config: cfg, resolved } = state;
-    const spk = r.spark || {};
+    const spk = { ...r.spark, supported_voices: profile.tts?.supported_voices || [], voice_catalog: profile.tts?.voice_catalog || [] };
     const sp = r.speech;
     const ttsP = providers.filter((p) => p.caps.tts);
     const sttP = providers.filter((p) => p.caps.stt);
