@@ -82,15 +82,24 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 // Story-view session-switch race: refreshStory() reads the module-level `sid` before AND after an
 // await; a fast session switch mid-fetch would apply session A's story to session B's feed + cache
 // (operator report 2026-07-13: a share/bb2 story rendered under the aios session's header). The fix
-// captures sid and bails if it changed after the await. This tripwire fails if that guard is removed.
+// captures the session AND view lifetime and bails if either changed after the await (including
+// A → B → A and hidden-view cancellation). This tripwire fails if that guard is removed.
 {
   const sv = read('story-view.js');
   const rs = sv.indexOf('export async function refreshStory');
   assert.ok(rs > 0, 'refreshStory exists');
-  const body = sv.slice(rs, rs + 3600);
-  assert.ok(/const mySid\s*=\s*sid/.test(body), 'refreshStory captures the session id (mySid) before the await');
+  const lifetime = sv.slice(rs, sv.indexOf('async function catchUpStory', rs));
+  assert.match(lifetime, /const flight = \{ sid, generation: storyGeneration, signal: storyAbort\.signal/,
+    'refreshStory captures the session, generation and cancellation signal before the await');
+  assert.match(lifetime, /flight\.sid === sid && flight\.generation === storyGeneration && !flight\.signal\.aborted/,
+    'currentFlight rejects a switched, replaced or cancelled view lifetime');
+  const body = sv.slice(sv.indexOf('async function refreshStoryNow'), sv.indexOf('function pauseStoryRequests'));
+  assert.ok(/const mySid\s*=\s*flight\.sid/.test(body), 'refreshStoryNow uses the captured session id (mySid) before the await');
   assert.ok(/api\(`api\/session\/\$\{mySid\}\/story/.test(body), 'refreshStory fetches with the captured mySid, not the live sid');
-  assert.ok(/if\s*\(\s*sid\s*!==\s*mySid\s*\)\s*return/.test(body), 'refreshStory discards a response once a switch has re-pointed sid (no cross-session leak)');
+  assert.match(body, /if \(!currentFlight\(flight\)\) return/,
+    'refreshStory discards responses outside the captured lifetime (no cross-session leak)');
+  assert.ok(body.indexOf('if (!currentFlight(flight)) return') < body.indexOf('const incoming'),
+    'the lifetime fence runs before any fetched event can reach the feed or cache');
   assert.ok(/writeStoryCache\(mySid/.test(body), 'refreshStory writes the cache under the captured session id');
 }
 
