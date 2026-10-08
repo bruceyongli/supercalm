@@ -5,24 +5,13 @@ import { extname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { chromium } from 'playwright';
 import { createOmniInput } from '../src/omni_input.js';
-import { gatewayConversation } from '../src/voice_gateway_context.js';
-import { isVoiceInformationQuestion } from '../src/voice_turn.js';
-import { NATIVE_TTS_MODEL, wavFromPcm } from '../src/tts_native.js';
 
 // Real browser mic/AudioWorklet, shared SDK, real application adapter and HTTP
 // handlers. Only Omni inference is a deterministic CPU fixture, never production.
 const upstream = new Map(), trace = [], answers = [], owners = [], pending = new Set();
 let transcript = 'How was the voice input fixed?', busy = false, dropCreate = true, dropAudio = true,
   dropCommit = true, dropEvents = true, rejectCommit = false, answerDelay = 0;
-const item = { projectIdentity: 'aios/supercalm', module: 'Voice assistant', originalRequest: 'Make voice input reliable in Chinese and English.' };
-const evidence = { requestContext: item.originalRequest, reportContext: 'Microphone uploads stream incrementally; final transcripts alone enter the action harness.',
-  sourcePack: { sources: [{ name: 'Voice integration plan', fileName: 'voice-integration.md',
-    sections: [{ heading: 'Microphone', text: 'Uploads are mono PCM16 at 16 kHz. Reconnection uses the same session and audio sequence; no instructions execute without confirmation.' }] }] } };
 const result = data => ({ status: 200, headers: {}, body: Buffer.from(JSON.stringify(data)) });
-const frame = voice => ({ index: 0, voice, model: NATIVE_TTS_MODEL, engine: 'qwen', precision: 'BF16',
-  backend: 'faster-ggml', streaming: 'native-pcm-frames', prosody_profile: 'steady-v3',
-  phrase_index: 0, frame_index: 0, native_startup_one_frames: 2,
-  audio: wavFromPcm(Buffer.alloc(24000)).toString('base64') });
 const emit = (session, name, data) => {
   const id = session.events.length + 1;
   const wire = `id: ${id}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -33,23 +22,22 @@ const emit = (session, name, data) => {
 const bridge = createOmniInput({
   prepare: async voiceId => {
     assert.equal(busy, false, 'previous microphone owner must release'); busy = true;
-    const owner = { voiceId, alive: () => true, payload: gatewayConversation({ item, evidence, microphone: true, voice: 'Serena' }) };
+    const owner = { voiceId, alive: () => true };
     owners.push(owner); return owner;
   },
-  classify: (_owner, text) => ({ question: isVoiceInformationQuestion(text) }),
-  answered: (owner, question, output) => answers.push({ question, answer: output.text, grounded: owner.payload.history[0].content.includes('voice sequence') || owner.payload.history[0].content.includes('same session'), actualModel: output.actualModel }),
   released: () => { busy = false; },
   request: async (method, path, options = {}) => {
     trace.push({ method, path, sequence: options.body?.sequence });
     if (path === '/voice/sessions') {
       const body = options.body;
-      assert.equal(body.voice, 'Serena'); assert.equal(body.model, 'omni-voice');
-      assert.equal(body.app_id, 'supercalm'); assert.match(body.system, /never claim|Never claim/);
-      assert.match(body.history[0].content, /Voice integration plan/);
+      assert.equal(body.model, 'omni-voice'); assert.equal(body.asr_only, true); assert.equal(body.continuous, false);
+      assert.equal(body.app_id, 'supercalm'); assert.equal(body.system, undefined);
+      assert.equal(body.history, undefined); assert.equal(body.voice, undefined);
       const id = randomBytes(16).toString('hex');
       const session = { id, events: [], readers: new Set(), chunks: new Map(), transcript, next: 0 };
-      upstream.set(id, session); emit(session, 'session_ready', { protocol: 'omni-voice-stream-v1' });
-      return result({ session_id: id, protocol: 'omni-voice-stream-v1', reconnect: { event_ids: true,
+      upstream.set(id, session); emit(session, 'session_ready', { protocol: 'omni-voice-stream-v1', asr_only: true });
+      return result({ session_id: id, protocol: 'omni-voice-stream-v1', asr_only: true,
+        continuous: false, input_mode: 'asr-only', max_audio_seconds: 30, reconnect: { event_ids: true,
         idempotent_audio: true, idempotent_commit: true, max_ms: 45000 } });
     }
     const id = path.split('/')[3], session = upstream.get(id); assert.ok(session);
@@ -64,20 +52,18 @@ const bridge = createOmniInput({
       assert.notEqual(pcm.toString('ascii', 0, 4), 'RIFF', 'uploads contain raw PCM, not WAV headers');
       if (sequence < session.next) assert.equal(session.chunks.get(sequence), audio, 'retry preserves the exact sequence and bytes');
       else { assert.equal(sequence, session.next++); session.chunks.set(sequence, audio);
-        if (sequence < 2) emit(session, 'transcript_partial', { text: sequence ? session.transcript : 'Temporary words', revision: sequence + 1 }); }
+        if (sequence < 2) emit(session, 'transcript_partial', { text: sequence ? session.transcript : 'Temporary words',
+          segment_id: 0, asr_only: true, revision: sequence + 1 }); }
       return result({ next_sequence: sequence + 1 });
     }
     if (path.endsWith('/commit')) {
       if (!session.committed) {
         session.committed = true;
-        emit(session, 'transcript_final', { text: session.transcript });
-        // The application must suppress ALL generated speech on an action
-        // handoff, even if already present in an upstream/socket tail.
+        emit(session, 'transcript_final', { text: session.transcript, segment_id: 0, asr_only: true });
+        // Recognition completion cannot run an LLM, play speech or decide to
+        // send an instruction. Typed and spoken replies share the next handler.
         const answer = () => { if (!session.stopped) {
-          const text = /\p{Script=Han}/u.test(session.transcript) ? '现在只用最终转写判断你的问题，录音会边说边上传。' : 'Microphone audio uploads incrementally, and only the final transcript can enter the confirmation flow.';
-          emit(session, 'text', { delta: text, model: 'fixture-actual-voice-model' });
-          emit(session, 'audio', { ...frame('Serena'), text });
-          emit(session, 'done', { text, llm_actual_model: 'fixture-actual-voice-model' });
+          emit(session, 'done', { text: session.transcript, asr_only: true, llm_calls: 0, tts_calls: 0, audio_frames: 0 });
         } };
         if (answerDelay) session.answerTimer = setTimeout(answer, answerDelay);
         else answer();
@@ -135,7 +121,7 @@ const server = createServer(async (req, res) => {
       if (action === 'commit' && dropCommit) { dropCommit = false; res.destroy(); return; }
       if (action === 'commit' && rejectCommit) {
         rejectCommit = false;
-        // Final SSE (and an answer) arrived, but the commit HTTP control fails.
+        // Final SSE and done arrived, but the commit HTTP control fails.
         // The application must not lose the final words or redo ASR on retry.
         await new Promise(resolve => setTimeout(resolve, 100));
         res.writeHead(400, { 'content-type': 'application/json' }); res.end('{"error":"Commit control failed"}'); return;
@@ -175,32 +161,31 @@ try {
   await page.waitForFunction(() => window.__result || window.__error, { timeout: 15000 });
   assert.equal(await page.evaluate(() => window.__error), null);
   let out = await page.evaluate(() => ({ result: window.__result, partials: window.__partials, text: window.__text, reconnects: window.__connections }));
-  assert.equal(out.result.answered, true); assert.equal(out.result.text, transcript);
+  assert.equal(out.result.answered, false); assert.equal(out.result.text, transcript);
   assert.ok(out.reconnects.includes('reconnecting'));
   assert.equal(upstream.size, 1, 'lost creation/audio/commit ACKs reuse exactly one upstream voice session');
-  assert.equal(answers.length, 1, 'resumed SSE cannot record or generate the answer twice');
-  assert.equal(answers[0].grounded, true); assert.equal(answers[0].actualModel, 'fixture-actual-voice-model');
+  assert.equal(answers.length, 0, 'recognition never starts an answer or executes a delivery');
   assert.ok(trace.some(row => /events\?after=[1-9]/.test(row.path)), 'the actual handler receives the last SSE cursor');
   assert.ok(out.partials.every(text => text === 'Temporary words' || text === transcript), 'provisional transcripts replace, never concatenate');
   transcript = '中文语音输入是怎么修好的？';
   await page.locator('#listen').click(); await page.waitForFunction(() => window.__result || window.__error);
   assert.equal(await page.evaluate(() => window.__error), null);
-  assert.match(await page.locator('#answer').textContent(), /最终转写/);
-  assert.equal(answers.length, 2); assert.equal(answers.at(-1).question, transcript);
+  assert.equal(await page.locator('#answer').textContent(), '');
+  assert.equal(await page.evaluate(() => window.__result.text), transcript);
+  assert.equal(answers.length, 0);
   transcript = 'Please fix the mobile microphone.';
   await page.locator('#listen').click(); await page.waitForFunction(() => window.__result || window.__error);
   out = await page.evaluate(() => ({ result: window.__result, text: window.__text, error: window.__error }));
   assert.equal(out.error, null); assert.equal(out.result.answered, false); assert.equal(out.result.text, transcript);
   assert.equal(out.text, '', 'an instruction never hears an unconfirmed Omni action claim');
-  assert.equal(answers.length, 2, 'instructions are handed to the existing action harness, not recorded as questions');
+  assert.equal(answers.length, 0, 'instructions are handed to the existing action harness, not recorded as questions');
   assert.equal(busy, false, 'handoff releases voice capacity before confirmation processing');
   transcript = 'What else changed?'; rejectCommit = true;
   await page.locator('#listen').click(); await page.waitForFunction(() => window.__result || window.__error);
-  const failedCommit = await page.evaluate(() => ({ failure: window.__failure, finals: window.__finals }));
+  const failedCommit = await page.evaluate(() => ({ failure: window.__failure, finals: window.__finals, result: window.__result }));
   assert.deepEqual(failedCommit.finals, [transcript], 'a final transcript is visible once, even before the commit ACK');
-  assert.equal(failedCommit.failure.finalText, transcript);
-  assert.equal(failedCommit.failure.partial, true, 'received answer events forbid regenerating the whole answer');
-  assert.equal(failedCommit.failure.recording, false, 'known final text never becomes a new ASR recording');
+  assert.equal(failedCommit.failure, null, 'native done proves success despite a missing HTTP commit ACK');
+  assert.equal(failedCommit.result.text, transcript);
   transcript = 'Can you explain the latest update?'; answerDelay = 6900;
   await page.locator('#listen').click(); await page.waitForFunction(() => window.__result || window.__error, { timeout: 15000 });
   assert.equal(await page.evaluate(() => window.__error), null);

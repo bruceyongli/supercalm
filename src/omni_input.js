@@ -1,15 +1,15 @@
-// SAME-ORIGIN microphone session adapter. It never executes a tool or delivers an
-// instruction. Only explicit information questions may use Omni's streamed answer;
-// other final transcripts hand back to Supercalm's confirmation/action harness.
+// SAME-ORIGIN recognition adapter. Omni owns incremental ASR/reconnection; ALL
+// final transcripts go to Supercalm's context/confirmation harness. No speculative
+// LLM answer is started while deciding whether the operator asked for an action.
 import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { omniRequest, omniHttpError } from './omni_client.js';
 import { SSEParser } from '../web/vendor/omni/voice-core.mjs';
-import { createNativeSpeechDecoder } from './tts_native.js';
+import { OmniASR } from '../web/vendor/omni/omni-asr.mjs';
 
 const validId = value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value);
 const fail = (message, status = 400) => Object.assign(new Error(message), { status, noFallback: true });
-export function createOmniInput({ prepare, classify, answered, released, request = omniRequest }) {
+export function createOmniInput({ prepare, released, request = omniRequest }) {
   const starts = new Map(), sessions = new Map(), releasedOwners = new WeakSet();
   const call = async (method, path, options) => {
     const response = await request(method, '/voice/sessions' + path, options);
@@ -56,9 +56,12 @@ export function createOmniInput({ prepare, classify, answered, released, request
       prune();
       if (!validId(body.client_session_id) || typeof body.voiceId !== 'string') throw fail('Invalid voice input identity');
       if (body.model !== undefined && body.model !== 'omni-voice') throw fail('Invalid voice input model');
-      // Context/voice come from the server. A browser cannot replace them, supply
+      if (body.asr_only !== true || body.continuous !== false) throw fail('Reload the voice assistant to use recognition-only input', 409);
+      if ((body.language !== undefined && body.language !== 'auto')
+        || (body.app_id !== undefined && body.app_id !== 'supercalm')) throw fail('Invalid recognition options');
+      // Business owner comes from the server. A browser cannot replace it, supply
       // arbitrary prompts, select another upstream, or inject a tool call.
-      if (Object.keys(body).some(key => !['model', 'voiceId', 'client_session_id'].includes(key))) throw fail('Voice input options are server-owned');
+      if (Object.keys(body).some(key => !['model', 'voiceId', 'client_session_id', 'asr_only', 'continuous', 'language', 'app_id'].includes(key))) throw fail('Voice input options are server-owned');
       const key = body.client_session_id, fingerprint = createHash('sha256')
         .update(JSON.stringify([body.voiceId, body.model, key])).digest('hex');
       let entry = starts.get(key);
@@ -77,16 +80,23 @@ export function createOmniInput({ prepare, classify, answered, released, request
           const owner = entry.owner ||= await prepare(body.voiceId);
           if (entry.error || !owner.alive()) throw entry.error || fail('Voice report expired', 410);
           // A lost UPSTREAM creation ACK must also recover with the SAME frozen
-          // context. Never prepare/reserve again or cache a rejected promise.
-          entry.payload ||= structuredClone({ model: 'omni-voice', app_id: 'supercalm',
-            ...owner.payload, client_session_id: key });
+          // owner. Never prepare/reserve again or cache a rejected promise. ASR
+          // accepts no voice, history, character, LLM route or source documents.
+          entry.payload ||= { model: 'omni-voice', app_id: 'supercalm', asr_only: true,
+            continuous: false, language: 'auto', client_session_id: key };
           entry.abort = new AbortController();
           const response = await call('POST', '', { body: entry.payload, signal: entry.abort.signal,
             timeout: 10000, maxBytes: 64000 });
           const descriptor = JSON.parse(response.body.toString('utf8'));
-          if (!validId(descriptor.session_id) || descriptor.protocol !== 'omni-voice-stream-v1') throw fail('Invalid upstream voice session', 502);
+          if (!validId(descriptor.session_id) || descriptor.protocol !== 'omni-voice-stream-v1'
+            || descriptor.asr_only !== true || descriptor.input_mode !== 'asr-only'
+            || descriptor.continuous !== false || descriptor.max_audio_seconds !== 30) {
+            if (validId(descriptor.session_id)) call('DELETE', '/' + descriptor.session_id,
+              { body: { reason: 'incompatible_recognition' }, timeout: 3000 }).catch(() => {});
+            throw fail('Voice gateway did not confirm recognition-only mode. No audio was uploaded.', 502);
+          }
           const session = { id: descriptor.session_id, owner, cursor: 0,
-            decoder: createNativeSpeechDecoder(null, { voice: owner.payload.voice }), final: '', handoff: false };
+            validator: new OmniASR({ continuous: false }), final: '' };
           entry.session = session; sessions.set(session.id, session);
           // The upstream session's 105s lifetime is not extended by reconnects.
           // Even a vanished browser must eventually release our business owner.
@@ -145,44 +155,25 @@ export function createOmniInput({ prepare, classify, answered, released, request
         const sequence = Number(eventId), fresh = sequence > session.cursor;
         if (fresh) {
           if (sequence !== session.cursor + 1) throw fail('Missing upstream voice event', 502);
-          if (name === 'transcript_final') {
-            session.final = String(data.text || '');
-            session.disposition = classify(session.owner, session.final);
-            session.handoff = !session.disposition.question;
-            // Cancellation is deliberate for a business/control handoff, never
-            // a fake ASR-only endpoint or a replay of a partially heard answer.
-            if (session.handoff) {
-              // The FINAL text may immediately enter /turn. A slow cancellation
-              // ACK must not leave its business owner "already in flight".
-              // Upstream still owns admission/draining of accepted GPU work.
-              release(session); stop(session, 'client_stop').catch(() => {});
-            }
-          }
-          if (name === 'error' || name === 'retry') release(session);
-          else if (!session.handoff && !session.failed) {
-            try { session.decoder.feed(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`); }
+          if (!session.failed) {
+            try { session.validator.event(name, data); }
             catch (error) {
               session.failed = { id: eventId, message: error.message };
               stop(session).catch(() => {});
-              name = 'error'; data = { message: error.message, code: 'speech_protocol', noFallback: true };
+              name = 'error'; data = { message: error.message, code: 'asr_protocol', noFallback: true };
             }
-            if (name === 'done' && !session.failed) {
-              const output = session.decoder.finish();
-              answered(session.owner, session.final, output, data);
-              release(session);
-            }
-            // Validation, including a native retry, happens before any audio is
-            // sent. Do not mutate Omni's index/voice/phrase boundaries.
+            if (name === 'transcript_final' && !session.failed) session.final = session.validator.confirmedText;
+            // A successful ASR done is authoritative even if commit's HTTP ACK
+            // was lost. Release before /turn, not behind a slow DELETE response.
+            if (['done', 'error', 'retry'].includes(name)) release(session);
           }
           session.cursor = sequence;
         }
         if (session.failed) {
           if (session.failed.id !== eventId) return;
-          name = 'error'; data = { message: session.failed.message, code: 'speech_protocol', noFallback: true };
+          name = 'error'; data = { message: session.failed.message, code: 'asr_protocol', noFallback: true };
         }
-        if (name === 'transcript_final' && session.handoff) data = { ...data,
-          aios_handoff: true, ignoredReason: session.disposition.reason || '' };
-        if (session.handoff && !['session_ready', 'transcript_partial', 'transcript_final'].includes(name)) return;
+        if (name === 'transcript_final') data = { ...data, aios_handoff: true };
         res.write(`id: ${eventId}\nevent: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
       });
       try {

@@ -107,7 +107,7 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/aios/harness`);
   await page.waitForFunction(() => window.__ready);
-  const tone = Buffer.alloc(24000); // 0.5 seconds at 440Hz, long enough to measure the played signal
+  const tone = Buffer.alloc(72000); // 1.5 seconds: retain a measurable plateau under parallel browser load
   for (let i = 0; i < tone.length / 2; i++) tone.writeInt16LE(Math.round(Math.sin(i * 2 * Math.PI * 440 / 24000) * 16000), i * 2);
   const pitch = await page.evaluate(async frame => {
     const { createPcmQueue } = await import('./voice-stream.js');
@@ -118,8 +118,15 @@ try {
       destination: analyser, createBuffer: context.createBuffer.bind(context), createBufferSource: context.createBufferSource.bind(context) };
     const queue = createPcmQueue(observed, { rate: 1.75 });
     queue.push(frame); queue.setRate(1.75); queue.seal();
-    await new Promise(resolve => setTimeout(resolve, 800));
-    const samples = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(samples);
+    // Observe actual audio, not one arbitrary wall-clock instant. Concurrent
+    // browser suites can delay the 800ms timer beyond a short tone's ending.
+    // A silent buffer must still FAIL; a sped-up 770Hz signal must still FAIL.
+    const samples = new Float32Array(analyser.fftSize), deadline = performance.now() + 4000;
+    while (performance.now() < deadline) {
+      analyser.getFloatTimeDomainData(samples);
+      if (samples.filter(sample => Math.abs(sample) > .001).length > samples.length * .95) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     let crossings = 0;
     for (let i = 0; i < samples.length - 1; i++) if (samples[i] <= 0 && samples[i + 1] > 0) crossings++;
     queue.stop(); analyser.disconnect(); await context.close();

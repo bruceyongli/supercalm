@@ -114,35 +114,10 @@ const microphoneInput = createOmniInput({
     if (!vs.sessionOnly && !stillNeedsAttention(item.sessionId)) throw Object.assign(new Error('This report was handled'), { status: 409 });
     const epoch = vs.actionEpoch || 0;
     vs.inflight = true; touch(vs);
-    try {
-      const evidence = await voiceEvidenceFor(item, { refresh: true });
-      const owner = { voiceId, vs, item, epoch, evidence,
-        alive: () => voiceSessions.has(vs.id) && (vs.actionEpoch || 0) === epoch && vs.items[vs.pointer] === item,
-        payload: gatewayConversation({ item, evidence, history: vs.history, microphone: true, voice: vs.voice }) };
-      if (!owner.alive()) throw new Error('Voice report changed');
-      return owner;
-    } catch (error) { if ((vs.actionEpoch || 0) === epoch) vs.inflight = false; throw error; }
-  },
-  classify(owner, transcript) {
-    touch(owner.vs);
-    const guarded = guardTranscript(transcript, { langs: ['en', 'zh'] });
-    const disposition = voiceTranscriptDisposition(guarded.text, { spoken: owner.vs.lastSpoken || '' });
-    if (!guarded.ok || !disposition.accepted) return { question: false, reason: guarded.rejected || disposition.reason };
-    const text = normalizeVoiceAddress(disposition.text);
-    // A microphone session freezes its context BEFORE the question exists. If
-    // documents are linked, hand the final question to /turn → /converse so
-    // retrieval can select the relevant sections after hearing it. Do not answer
-    // a detailed plan question from a truncated pre-recording source overview.
-    const needsRetrieval = (owner.evidence.sourcePack?.sources?.length || 0) > 0;
-    return { question: owner.vs.realtime && !needsRetrieval && !voiceSpeakerControl(text) && isVoiceInformationQuestion(text) };
-  },
-  answered({ vs, item, evidence }, question, output, upstream) {
-    vs.lastSpoken = output.text;
-    vs.history.push({ role: 'user', content: question }, { role: 'assistant', content: output.text }); trim(vs.history); touch(vs);
-    store.addEvent(item.sessionId, 'voice-grounded-answer', { mode: 'streaming-microphone', action: 'explain',
-      source: item._storySource, sourceNames: voiceSourceSummary(evidence.sourcePack).names,
-      question, answer: output.text, voice: vs.voice, model: output.actualModel,
-      frames: output.frames, upstreamTimings: Object.fromEntries(Object.entries(upstream).filter(([key, value]) => key.endsWith('_ms') && Number.isFinite(value))) });
+    // ASR has no conversational context or LLM. Retrieve fresh evidence after
+    // the FINAL question, in the same /turn → /converse flow as typed replies.
+    return { voiceId, vs, item, epoch,
+      alive: () => voiceSessions.has(vs.id) && (vs.actionEpoch || 0) === epoch && vs.items[vs.pointer] === item };
   },
   released(owner) { if (owner.alive()) { owner.vs.inflight = false; touch(owner.vs); } },
 });
@@ -767,7 +742,8 @@ route('POST', '/api/voice/start', async (req, res) => {
     voice: native ? nativeVoice(config.ttsVoice) : 'Ryan', createdAt: now(), lastTouch: now() };
   const profile = vs.realtime ? await omniProfile() : null;
   const streamInput = !!(profile?.extensions?.streaming_input?.protocol === 'omni-voice-stream-v1'
-    && profile.asr?.ready && profile.llm?.ready && profile.tts?.ready);
+    && profile.extensions.streaming_input.modes?.asr_only?.asr_only === true
+    && profile.extensions.streaming_input.modes.asr_only.llm_tts === false && profile.asr?.ready);
   vs.streamInput = streamInput;
   voiceSessions.set(vs.id, vs);
   if (prepared && onTheGo) {

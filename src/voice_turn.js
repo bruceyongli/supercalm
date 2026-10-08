@@ -13,6 +13,10 @@ const ZH_INFO = /^(?:(?:请|麻烦)(?:你)?|(?:能否|可否|可以|能不能|�
 const ZH_ACTION = /^(?:(?:你)?(?:能不能|可不可以|可以|能否)|请|麻烦)?(?:你)?(?:帮我|替我)?(?:先)?(?:修复|修一下|修改|更新|增加|添加|移除|删除|实现|调整|改成|改为|改一下|继续(?:做|执行)|测试|运行)/u;
 const ZH_NEXT = /^(?:下一个|下一项|跳过(?:这个|这一项)?|继续下一个)(?:吧)?$/u;
 const ZH_DEFER = /^(?:(?:这个|这一项|这个项目)?(?:先放着|先留着|先不用处理|暂时不用处理)|我(?:会)?(?:稍后|晚点|之后|以后)再(?:看|审查|处理))(?:[，,。\s]+(?:我(?:会)?(?:稍后|晚点|之后|以后)再(?:看|审查|处理)|(?:看|继续)?下一个))?(?:吧)?$/u;
+// A complete bilingual approval is not a clipped coding instruction. Match the
+// WHOLE utterance: a question, correction or extra request must still be reasoned
+// about, and only a server-scoped pending draft can turn this into delivery.
+const NO_PROBLEM_APPROVAL = /^(?:(?:okay|ok|sure|好的?|可以)[\s,.;:!，。；：！-]*)?(?:没(?:有)?问题|no problems?)[\s,.;:!，。；：！-]*$/iu;
 
 function clean(v) {
   return String(v || '').replace(/\s+/g, ' ').trim();
@@ -20,6 +24,7 @@ function clean(v) {
 
 export function confirmationFrom(text) {
   const value = clean(text);
+  if (NO_PROBLEM_APPROVAL.test(value)) return { additional: '' };
   const chinese = value.match(ZH_CONFIRM);
   const strong = chinese || value.match(CONFIRM_PREFIX);
   const soft = strong ? null : value.match(SOFT_CONFIRM_PREFIX);
@@ -82,7 +87,7 @@ const STOP = /^(?:stop(?: now| for now)?|done|that(?:'s| is) (?:all|enough)|end 
 const NEXT = /^(?:skip(?: this| this one)?|pass|later|next|next one|move on|moving on|let(?:'s| us) move on|go (?:to )?(?:the )?next(?: one| item)?)[\s.!]*$/i;
 const DEFER = /\b(?:(?:just\s+)?leave (?:it|this|this one)(?: alone)?|i(?:'ll| will) (?:(?:do|handle) (?:the |a )?review|review (?:it|this)|handle (?:it|this)) (?:myself )?later|i(?:'ll| will) (?:do|review|handle) (?:it|this) (?:myself )?later|nothing else (?:here|for (?:this|that)(?: item)?)|nothing (?:needs?|need) (?:the )?agent to do (?:right )?now|no(?:thing| action) (?:is )?needed (?:from (?:the )?agent )?(?:right )?now)\b/i;
 const CANCEL_PENDING = /^(?:never mind|nevermind|cancel that|forget that|don'?t send (?:that|it)|do not send (?:that|it)|leave that unsent)[\s.!]*$/i;
-const ACK_PREFIX = /^(?:(?:okay|ok|yes|yeah|yep|sure|alright|all right|right|great|very good|excellent|awesome|perfect|nice|thanks|thank you|sounds good|that(?:'s| is) great|got it|understood)\b|好的?|可以|行|是的|没错|对的?|非常棒|太棒了|太好了|很好|不错|明白了?|知道了?|收到|谢谢)[\s,.;:!，。；：！-]*/iu;
+const ACK_PREFIX = /^(?:(?:okay|ok|yes|yeah|yep|sure|alright|all right|right|great|very good|excellent|awesome|perfect|nice|thanks|thank you|sounds good|no problems?|that(?:'s| is) great|got it|understood)\b|好的?|可以|行|是的|没(?:有)?问题|没错|对的?|非常棒|太棒了|太好了|很好|不错|明白了?|知道了?|收到|谢谢)[\s,.;:!，。；：！-]*/iu;
 const DEFER_CLAUSE = new RegExp(`^(?:${DEFER.source})$`, 'i');
 const SELF_REVIEW_EN = /^i(?:'ll| will| can| am going to| plan to)\s+(?:(?:later|afterwards|tomorrow)\s+)?(?:do (?:a |the )?review|run (?:a |the )?test|review|test|verify|check|try)(?:\s+(?:it|this|that|this one|the update|the app|the report|the changes|the new version))?(?:\s+out)?(?:\s+myself)?(?:\s+(?:later|afterwards|tomorrow))?(?:\s+myself)?$/i;
 const REVIEW_TIME_ZH = '(?:待会儿?|等会儿?|一会儿?|过一会儿?|晚点|稍后|回头|之后|以后)';
@@ -342,7 +347,8 @@ export function reduceVoiceDialogue(dialogue, { reply, userText, sessionId }) {
   }
   // Detail questions while confirming do not silently approve or destroy the draft. A later explicit
   // yes can still send it; presenting another session will fail the session-id scope check.
-  if (scopedVoicePending(prior, sessionId) && isVoiceInformationQuestion(userText)) return prior;
+  if (scopedVoicePending(prior, sessionId)
+    && (isVoiceInformationQuestion(userText) || (reply?.action === 'await' && !clean(reply.message)))) return prior;
   return createVoiceDialogueState();
 }
 

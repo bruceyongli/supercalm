@@ -16,6 +16,10 @@ misbehavior you witness = a new scenario for the supervisor lab (`npm run lab`),
 argument. (Your own broken tooling you fix directly — that IS system improvement.)
 
 ## Run & deploy
+- **Operator default:** an explicit request to update or fix includes implementation, verification and
+  release through `bin/deploy`; do not ask for routine release confirmation again. Edit only the session
+  worktree, integrate committed code, and verify the served version. Failed safety gates still require
+  diagnosis and recovery, never silently bypassing them or reporting queued work as deployed.
 - Runs on **host** at `127.0.0.1:8793`. Primary URL **`https://host.your-tailnet.ts.net/aios`** (no port) via
   Tailscale Serve `--set-path=/aios` on 443; `:8793` still works as a fallback. The app is **path-aware**
   (`<base href="/aios/">` in the HTML + relative URLs + a server-side `/aios` prefix-strip in `server.js`),
@@ -160,15 +164,19 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
   250ms raw 16kHz mono PCM16 chunks; provisional transcripts replace drafts. Only the final transcript
   can enter reasoning. Same-session recovery is capability-gated, bounded to 45s, preserves immutable
   creation context and PCM sequences, relays SSE `id`/`after`, and never regenerates heard answers.
-  Ordinary information questions can use Omni's answer directly. Instructions, local controls and
-  questions requiring linked-document retrieval deliberately cancel the read-only upstream answer
-  and hand the FINAL text to the existing `/turn`/`converse` harness. This is not an ASR-only mic API
-  (Omni does not support that option). Fetch relevant source excerpts AFTER hearing a document question.
+  Use Omni **ASR-only** (`asr_only:true, continuous:false`) and its shared `OmniASR` client. It accepts
+  no voice/history/character/LLM route and never starts an answer or takes an LLM lease. Validate
+  `input_mode:asr-only` and zero LLM/TTS/audio counts; reject an incompatible gateway before uploading.
+  ALL final replies enter the existing `/turn`/`converse` harness, just like typed replies. Fetch relevant
+  source excerpts AFTER hearing the question. Do not start speculative conversation then cancel it.
+  Readiness for recognition requires ASR only, not LLM/TTS. Natural bilingual approvals such as
+  "OK，没有问题" acknowledge a report or approve only the current server-scoped draft; mixed questions
+  or corrections never silently send/advance. Failed/unclear reasoning preserves the unsent draft.
   Preserve final text even if a commit acknowledgement is lost. No final text: retain PCM in the current
   tab only for deliberate retry; never replay a partial answer. Stop/dismiss/hidden page cancels capture,
   player and connection. Resume after visibility loss requires a user action, never background recording.
 - **Shared implementation**: `web/vendor/omni/` is an unmodified, paired upstream snapshot from
-  `~/omni/app/static/voice/`, integration `2026-10-08b`; SHA256-pinned in `omni_contract.test.js`.
+  `~/omni/app/static/voice/`, integration `2026-10-08e`; SHA256-pinned in `omni_contract.test.js`.
   Replace the package together when upstream changes; do not patch a private cadence/decoder/VAD fork.
   Serve `.mjs` as JavaScript and the paired package with `no-store` to avoid stale PWA combinations.
   `omni_client.js` also supports the existing private native `18002` gateway for future application-owned

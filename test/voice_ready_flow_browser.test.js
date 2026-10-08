@@ -70,7 +70,7 @@ const spark = httpServer(async (req, res) => {
     if (req.method === 'GET') {
       microphoneReader = res;
       res.writeHead(200, { 'content-type': 'text/event-stream' }); res.flushHeaders();
-      res.write('id: 1\nevent: session_ready\ndata: {}\n\n'); return;
+      res.write('id: 1\nevent: session_ready\ndata: {"asr_only":true}\n\n'); return;
     }
     const body = await readBody(req);
     const reply = value => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
@@ -83,10 +83,12 @@ const spark = httpServer(async (req, res) => {
     if (req.url.endsWith('/audio')) return reply({ next_sequence: ++microphoneSequence });
     if (req.url.endsWith('/commit')) {
       reply({ committed: true });
-      microphoneReader.end('id: 2\nevent: transcript_final\ndata: {"text":"What changed in the plan?"}\n\n'); return;
+      microphoneReader.end('id: 2\nevent: transcript_final\ndata: {"text":"What changed in the plan?","asr_only":true,"segment_id":0}\n\nid: 3\nevent: done\ndata: {"text":"What changed in the plan?","asr_only":true,"llm_calls":0,"tts_calls":0,"audio_frames":0}\n\n'); return;
     }
-    trace.push({ event: 'microphone-start', sourceResolved: body.history[0].content.includes('Plan'), system: body.system });
-    return reply({ session_id: microphoneId, protocol: 'omni-voice-stream-v1',
+    assert.equal(body.asr_only, true); assert.equal(body.history, undefined); assert.equal(body.voice, undefined);
+    trace.push({ event: 'microphone-start', recognitionOnly: body.asr_only });
+    return reply({ session_id: microphoneId, protocol: 'omni-voice-stream-v1', asr_only: true,
+      continuous: false, input_mode: 'asr-only', max_audio_seconds: 30,
       reconnect: { event_ids: true, idempotent_audio: true, idempotent_commit: true, max_ms: 45000 } });
   }
   if (req.url === '/v1/audio/transcriptions') {
@@ -331,7 +333,7 @@ try {
 
   const microphoneGrounding = await page.evaluate(async voiceId => {
     const post = (path, body) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    const start = await post('api/voice/input/sessions', { voiceId, client_session_id: crypto.randomUUID().replaceAll('-', '') });
+    const start = await post('api/voice/input/sessions', { voiceId, asr_only: true, continuous: false, client_session_id: crypto.randomUUID().replaceAll('-', '') });
     const descriptor = await start.json();
     const path = 'api/voice/input/sessions/' + descriptor.session_id;
     const events = await fetch(path + '/events');
@@ -352,8 +354,7 @@ try {
   assert.equal(microphoneGrounding.turnStatus, 200); assert.equal(microphoneGrounding.answerStatus, 200);
   assert.equal(microphoneGrounding.turn.realtimeQuestion, 'What changed in the plan?');
   assert.match(microphoneGrounding.answer, /briefing is prepared before Accept/);
-  assert.ok(trace.some(row => row.event === 'microphone-start' && row.sourceResolved));
-  assert.ok(trace.some(row => row.event === 'microphone-cancel'));
+  assert.ok(trace.some(row => row.event === 'microphone-start' && row.recognitionOnly));
   assert.equal(store.messagesFor('s_voice_fixture').filter(message => message.direction === 'in').length, inboundBefore,
     'a microphone document question reaches retrieval, never the coding agent');
   console.log('microphone_source_grounding trace', JSON.stringify({ pass: true, handler: '/api/voice/input/sessions',

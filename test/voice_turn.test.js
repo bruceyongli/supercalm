@@ -22,6 +22,30 @@ import { deliverVoiceFeedback } from '../src/voice_delivery.js';
 
 const pending = 'Fix the report ordering and keep dismissed sessions hidden.';
 
+// Actual Oct 8 Whisper output: complete Chinese acknowledgment was rejected as
+// a cut-off instruction, and the failed reasoning then erased the pending draft.
+for (const approval of ['OK,没有问题。', 'OK 没有问题。', 'OK没有问题。', '没问题。', '没有问题。', '好的，没问题。', 'No problem.', 'Okay, no problem.']) {
+  const sessionId = 's_acknowledgment';
+  const staged = reduceVoiceDialogue(createVoiceDialogueState(), { sessionId,
+    userText: pending, reply: { action: 'await', say: 'Should I send that?', message: pending } });
+  const brain = async () => { throw Error('Complete acknowledgment must not need model reasoning'); };
+  const heard = await resolveVoiceTurn({ dialogue: createVoiceDialogueState(), sessionId, userText: approval, brain });
+  assert.equal(heard.reply.action, 'next', approval);
+  assert.equal(heard.reply.message, '', 'report acknowledgment never becomes agent input');
+  const confirmed = await resolveVoiceTurn({ dialogue: staged, sessionId, userText: approval, brain });
+  assert.equal(confirmed.reply.action, 'send', approval);
+  assert.equal(confirmed.reply.message, pending, 'approval sends only the exact scoped draft');
+  const other = await resolveVoiceTurn({ dialogue: staged, sessionId: 's_another', userText: approval, brain });
+  assert.equal(other.reply.action, 'next', 'approval cannot send a different project draft');
+  const uncertain = reduceVoiceDialogue(staged, { sessionId, userText: 'Unclear response',
+    reply: { action: 'await', say: 'Please clarify.', message: '' } });
+  assert.equal(scopedVoicePending(uncertain, sessionId), pending, 'failed/unclear reasoning preserves the confirmation draft');
+}
+for (const mixed of ['OK，没有问题？', '没问题，但是先不要发送', 'OK，没有问题，为什么还会出错？', '没问题，请先修复手机输入']) {
+  assert.equal(confirmationFrom(mixed), null, 'qualified statements/questions are not bare approval');
+  assert.equal(voiceControlReply(mixed), null, 'mixed feedback must not silently advance');
+}
+
 // Chinese must follow the same instruction -> clarification -> confirmation -> delivery contract.
 {
   const instruction = '修复 iPhone 语音输入，并保留中英文自动识别。';

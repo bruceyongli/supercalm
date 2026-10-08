@@ -7,14 +7,15 @@ import { OmniSpeechClient, OmniAudioPlayer, consumeSpeech } from '../web/vendor/
 import { SUPPORTED_VOICES } from '../web/vendor/omni/voice-core.mjs';
 import { createOmniInput } from '../src/omni_input.js';
 
-// Omni integration 2026-10-08b. Lock the accepted paired upstream assets; future updates replace the whole
+// Omni integration 2026-10-08e. Lock the accepted paired upstream assets; future updates replace the whole
 // package, never patch a private AIOS sound-fix implementation.
 const hashes = {
-  'voice-core.mjs': 'd1e79ed20d1183e8cb2ad49a8b555cbda5d803f8837dd6dad2815620b01a07aa',
+  'voice-core.mjs': '23f12062bd5b5dbea8713992b63155e7991817a3cdb702603b6846ce38273931',
   'omni-speech.mjs': '0103adede86a95b8eb7c7041db6535fa8a048c9f1d4a9ab985d9be3e2d15fa70',
-  'voice-stream-client.mjs': '6c4b4ce7ea96cec0da5c768eddcb246aa11a7b6897e6d299cfb9c87aa9706ddb',
+  'voice-stream-client.mjs': '0dbc4d347c2eac17b8d3af0a82704dbd7bbb4e1607621b40d6056ead18a333e5',
   'voice-stream-capture.mjs': '4b89a2736710ae82513f9f337e4e26b08d2c9811bfc44fd80dc7472709fadf31',
-  'capture-worklet.js': 'b56fecf539965ad05206ad7e5a4ea0808b06dc3f1b80ba5fecd9ba955abdae19',
+  'capture-worklet.js': '7fe1047ce31a4ca3793fa56f5770e9cb298378e5d1dd1fdb2e95f815f56190a3',
+  'omni-asr.mjs': '0f803fed0a9d8f96c488468341a701b32f1e873abb05bfe0464888893c58dff9',
 };
 for (const [file, hash] of Object.entries(hashes)) assert.equal(createHash('sha256')
   .update(readFileSync(new URL('../web/vendor/omni/' + file, import.meta.url))).digest('hex'), hash);
@@ -26,19 +27,22 @@ assert.throws(() => nativeVoice('Vivian_Sichuan'), /no silent/);
 // The successful native session already exists: freeze its context and reserve
 // its owner exactly once. HTTP capacity errors are terminal, not tight loops.
 let preparations = 0, releases = 0, creations = 0, frozen;
-const descriptor = { session_id: 'ab'.repeat(16), protocol: 'omni-voice-stream-v1' };
+const descriptor = { session_id: 'ab'.repeat(16), protocol: 'omni-voice-stream-v1',
+  asr_only: true, continuous: false, input_mode: 'asr-only', max_audio_seconds: 30 };
 const input = createOmniInput({
   prepare: async voiceId => { preparations++; return { voiceId, alive: () => true, payload: { voice: 'Ryan', history: [{ role: 'user', content: 'Frozen plan' }] } }; },
   classify: () => ({ question: true }), answered() {}, released() { releases++; },
   request: async (method, _path, { body }) => {
     if (method === 'DELETE') return { status: 200, body: Buffer.from('{}') };
     creations++;
+    assert.equal(body.asr_only, true); assert.equal(body.continuous, false);
+    assert.equal(body.history, undefined); assert.equal(body.voice, undefined);
     if (!frozen) { frozen = structuredClone(body); throw new Error('Upstream creation ACK lost'); }
     assert.deepEqual(body, frozen, 'same client identity, speaker and context on recovery');
     return { status: 200, body: Buffer.from(JSON.stringify(descriptor)) };
   },
 });
-const options = { voiceId: 'v_fixture', client_session_id: 'cd'.repeat(16), model: 'omni-voice' };
+const options = { voiceId: 'v_fixture', client_session_id: 'cd'.repeat(16), model: 'omni-voice', asr_only: true, continuous: false };
 await assert.rejects(input.start(options), error => error.status === 503);
 assert.equal(releases, 0, 'short connection recovery preserves the reserved owner');
 assert.deepEqual(await input.start(options), descriptor);
@@ -52,6 +56,19 @@ const denied = createOmniInput({ prepare: async () => ({ alive: () => true }), c
 await assert.rejects(denied.start(options), error => error.status === 429 && error.retryAfterMs === 15000);
 await assert.rejects(denied.start(options), error => error.status === 429);
 assert.equal(deniedRequests, 1); assert.equal(deniedReleases, 1);
+
+// No implicit fallback to conversation, and no PCM upload to an old gateway.
+let incompatibleCalls = [], incompatibleReleases = 0;
+const incompatible = createOmniInput({ prepare: async () => ({ alive: () => true }),
+  released() { incompatibleReleases++; }, request: async (method, path) => {
+    incompatibleCalls.push({ method, path });
+    return { status: 200, body: Buffer.from(JSON.stringify({ ...descriptor, asr_only: false })) };
+  } });
+await assert.rejects(incompatible.start({ ...options, client_session_id: 'ef'.repeat(16) }), error => error.status === 502);
+assert.equal(incompatibleReleases, 1);
+assert.equal(incompatibleCalls.some(call => call.method === 'DELETE'), true, 'incompatible native session is cancelled');
+assert.equal(incompatibleCalls.some(call => call.path.endsWith('/audio')), false);
+await assert.rejects(incompatible.start({ ...options, asr_only: false }), error => error.status === 409);
 
 const calls = [];
 const server = createServer(async (req, res) => {

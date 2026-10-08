@@ -146,7 +146,7 @@ export function playbackStart(currentTime, queuedUntil, data) {
   // This changes scheduling, never PCM, speech rate, gain or source silence.
   const nativeFirst = data.streaming === 'native-pcm-frames' && data.backend === 'faster-ggml' && data.frame_index === 0;
   // The accepted BF16 codec emits a tiny first packet before its larger ramp
-  // packets. A 600 ms first-phrase reserve bridges that ramp without changing
+  // packets. A 600 ms first-phrase reserve bridges the reviewed warm ramp without changing
   // PCM, rate or voice. Later phrases reuse already queued audio, or 450 ms.
   const earlyFirst = nativeFirst && data.phrase_index === 0 && data.precision === 'BF16'
     && data.native_startup_one_frames === 2;

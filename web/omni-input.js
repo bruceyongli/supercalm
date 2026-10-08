@@ -1,45 +1,51 @@
-// Browser/business adapter. Mic capture, encoding, VAD, resumable uploads, SSE,
-// PCM playback and its cadence are Omni's unmodified shared implementations.
+// Browser/business adapter around Omni's unmodified ASR SDK. Recognition never
+// starts a speculative answer. FINAL text enters the same context/confirmation
+// harness as typed input; Omni still owns uploads, resampling and reconnection.
 import { VoiceActivity } from './vendor/omni/voice-core.mjs';
-import { VoiceStreamCapture } from './vendor/omni/voice-stream-capture.mjs';
-import { consumeSpeech } from './vendor/omni/omni-speech.mjs';
-import { createPcmQueue } from './voice-stream.js';
+import { OmniASR } from './vendor/omni/omni-asr.mjs';
 
 const loaded = new WeakSet();
-export async function listenOmni({ context, voiceId, voice, signal, onPartial, onFinal,
-  onText, onSpeaking, onSegment, onConnection, onLevel, installCommit, recording } = {}) {
-  let stream, source, captureNode, gain, capture, final = '', handoff = false,
-    ignoredReason = '', answered = false, answerText = '', sawAnswer = false, finalDelivered = false,
-    recordingTimer, idleTimer, committing = false;
-  const queue = createPcmQueue(context, { voice, onSegment });
+export async function listenOmni({ context, voiceId, signal, onPartial, onFinal,
+  onConnection, onLevel, installCommit, recording } = {}) {
+  let stream, source, captureNode, gain, asr, ready, final = '', finalDelivered = false,
+    recordingTimer, idleTimer, committing = false, queuedSamples = 0;
+  let pushes = Promise.resolve();
+  const retained = [], rate = recording?.sampleRate || context.sampleRate;
   const abort = new AbortController();
-  const stop = () => { abort.abort(); queue.stop(); capture?.stop(); };
+  const stop = () => { abort.abort(); void asr?.stop(); };
   signal?.addEventListener('abort', stop, { once: true });
   const hidden = () => { if (document.hidden) stop(); };
   document.addEventListener('visibilitychange', hidden);
-  const callbacks = { onPartial: data => onPartial?.(String(data.text || '')),
-    onConnection, clientOptions: { base: 'api/voice/input/sessions', headers: {} } };
   let failCapture;
   const failed = new Promise((_, reject) => { failCapture = reject; });
   failed.catch(() => {});
-  callbacks.onError = failCapture;
-  const receiveFinal = data => {
-    final = String(data.text || ''); ignoredReason = data.ignoredReason || '';
-    if (!finalDelivered) { finalDelivered = true; onFinal?.(final); }
-    if (data.aios_handoff) handoff = true;
-  };
-  const observe = value => {
-    // Application/UI hook around the shared client's callback, not a second
-    // protocol or capture implementation. A commit ACK can disappear AFTER the
-    // final SSE arrived; retain that final text even if commit recovery expires.
-    const deliver = value.client.onEvent;
-    value.client.onEvent = (name, data) => {
-      if (name === 'transcript_final') receiveFinal(data);
-      if (name === 'text' || name === 'audio') sawAnswer = true;
-      deliver(name, data);
-      if (handoff) stop();
-    };
+  const recognition = () => {
+    const value = new OmniASR({ base: 'api/voice/input/sessions', headers: {},
+      appId: 'supercalm', language: 'auto', continuous: false, onConnection,
+      onTranscript(data) {
+        onPartial?.(data.text);
+        if (data.confirmedText) {
+          final = data.confirmedText;
+          if (!finalDelivered) { finalDelivered = true; onFinal?.(final); }
+        }
+      }, onError: failCapture });
+    // Only the application owner identity is added. No credentials, sources,
+    // voice selection or second transport implementation enter the shared SDK.
+    const start = value.client.start.bind(value.client);
+    value.client.start = options => start({ ...options, voiceId });
     return value;
+  };
+  const push = samples => {
+    if (queuedSamples + samples.length > rate * 30) throw Error('Maximum 30-second buffered recording reached');
+    // Retain only this bounded short recording for an explicit no-final retry.
+    // The shared SDK owns PCM encoding/stateful resampling and upload sequencing.
+    const frame = samples.slice(); retained.push(frame); queuedSamples += frame.length;
+    pushes = pushes.then(async () => {
+      await ready;
+      if (abort.signal.aborted) throw new DOMException('Stopped', 'AbortError');
+      for (let at = 0; at < frame.length; at += rate) asr.pushFloat(frame.subarray(at, at + rate), rate);
+    });
+    pushes.catch(failCapture);
   };
   const stopMicrophone = () => {
     clearTimeout(recordingTimer); clearTimeout(idleTimer);
@@ -47,81 +53,71 @@ export async function listenOmni({ context, voiceId, voice, signal, onPartial, o
     stream?.getTracks().forEach(track => track.stop());
     try { source?.disconnect(); captureNode?.disconnect(); gain?.disconnect(); } catch {}
   };
+  const finish = async () => {
+    await pushes;
+    const done = await asr.finish();
+    // done proves recognition completed, even when its commit ACK was lost.
+    return { text: done.text, answered: false, ignoredReason: done.text ? '' : 'no-speech' };
+  };
   try {
     if (signal?.aborted) throw new DOMException('Stopped', 'AbortError');
     if (context.state !== 'running') await context.resume();
-    if (context.state !== 'running') throw new Error('Tap to unlock microphone audio');
-    let response;
+    if (context.state !== 'running') throw Error('Tap to unlock microphone audio');
     if (recording) {
-      capture = observe(VoiceStreamCapture.fromRecording(recording, callbacks));
-      response = await capture.response(abort.signal);
-    } else {
-      if (!context.audioWorklet || !globalThis.AudioWorkletNode) throw new Error('Streaming microphone capture is unavailable in this browser');
-      if (!loaded.has(context)) {
-        await context.audioWorklet.addModule(new URL('./vendor/omni/capture-worklet.js', import.meta.url)); loaded.add(context);
-      }
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true,
-        noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 } } });
-      if (abort.signal.aborted) throw new DOMException('Stopped', 'AbortError');
-      const vad = new VoiceActivity(context.sampleRate);
-      const captured = new Promise((resolve, reject) => {
-        const commit = async () => {
-          if (committing) return;
-          committing = true; stopMicrophone();
-          if (!capture) return resolve(null); // silence: no model request
-          try { resolve(await capture.response(abort.signal)); } catch (error) { reject(error); }
-        };
-        const cancelled = () => { stopMicrophone(); reject(new DOMException('Stopped', 'AbortError')); };
-        abort.signal.addEventListener('abort', cancelled, { once: true });
-        installCommit?.(commit);
-        stream.getTracks().forEach(track => track.addEventListener('ended', () => {
-          if (!committing && !abort.signal.aborted) { stop(); reject(new Error('Microphone disconnected. Your words are kept.')); }
-        }, { once: true }));
-        source = context.createMediaStreamSource(stream);
-        captureNode = new AudioWorkletNode(context, 'voice-capture');
-        gain = context.createGain(); gain.gain.value = 0;
-        source.connect(captureNode); captureNode.connect(gain); gain.connect(context.destination);
-        idleTimer = setTimeout(commit, 8000);
-        captureNode.port.onmessage = event => {
-          if (committing || abort.signal.aborted) return;
-          try {
-            const result = vad.push(event.data);
-            onLevel?.(result.rms);
-            if (!capture && (vad.started || result.samples)) {
-              clearTimeout(idleTimer);
-              capture = observe(new VoiceStreamCapture(context.sampleRate, { voiceId }, callbacks));
-              for (const frame of result.samples ? [result.samples] : vad.parts) capture.push(frame);
-              recordingTimer = setTimeout(commit, 26000);
-            } else if (capture) capture.push(event.data);
-            if (result.samples) void commit();
-          } catch (error) { stopMicrophone(); reject(error); }
-        };
-      });
-      response = await Promise.race([captured, failed]);
-      if (!response) return { text: '', answered: false, ignoredReason: 'no-speech' };
+      asr = recognition(); ready = asr.start(); ready.catch(failCapture);
+      for (const frame of recording.frames) push(frame);
+      return await Promise.race([finish(), failed]);
     }
-    await consumeSpeech(response, { player: queue, isCurrent: () => !abort.signal.aborted,
-      onEvent(name, data) {
-        if (name === 'transcript_final') {
-          receiveFinal(data);
-          if (handoff) stop();
-        } else if (name === 'text') { onSpeaking?.(); answerText += String(data.delta || ''); onText?.(String(data.delta || '')); }
-        else if (name === 'done') answered = !data.empty;
-      } });
-    return { text: final, answered, ignoredReason };
+    if (!context.audioWorklet || !globalThis.AudioWorkletNode) throw Error('Streaming microphone capture is unavailable in this browser');
+    if (!loaded.has(context)) {
+      await context.audioWorklet.addModule(new URL('./vendor/omni/capture-worklet.js', import.meta.url)); loaded.add(context);
+    }
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true,
+      noiseSuppression: true, autoGainControl: true, channelCount: { ideal: 1 } } });
+    if (abort.signal.aborted) throw new DOMException('Stopped', 'AbortError');
+    const vad = new VoiceActivity(context.sampleRate);
+    const captured = new Promise((resolve, reject) => {
+      const commit = async () => {
+        if (committing) return;
+        committing = true; stopMicrophone();
+        if (!asr) return resolve({ text: '', answered: false, ignoredReason: 'no-speech' });
+        try { resolve(await finish()); } catch (error) { reject(error); }
+      };
+      const cancelled = () => { stopMicrophone(); reject(new DOMException('Stopped', 'AbortError')); };
+      abort.signal.addEventListener('abort', cancelled, { once: true });
+      installCommit?.(commit);
+      stream.getTracks().forEach(track => track.addEventListener('ended', () => {
+        if (!committing && !abort.signal.aborted) { stop(); reject(Error('Microphone disconnected. Your words are kept.')); }
+      }, { once: true }));
+      source = context.createMediaStreamSource(stream);
+      captureNode = new AudioWorkletNode(context, 'voice-capture');
+      gain = context.createGain(); gain.gain.value = 0;
+      source.connect(captureNode); captureNode.connect(gain); gain.connect(context.destination);
+      idleTimer = setTimeout(commit, 8000);
+      captureNode.port.onmessage = event => {
+        if (committing || abort.signal.aborted) return;
+        try {
+          const result = vad.push(event.data);
+          onLevel?.(result.rms);
+          if (!asr && (vad.started || result.samples)) {
+            clearTimeout(idleTimer);
+            asr = recognition(); ready = asr.start(); ready.catch(failCapture);
+            for (const frame of result.samples ? [result.samples] : vad.parts) push(frame);
+            recordingTimer = setTimeout(commit, 26000);
+          } else if (asr) push(event.data);
+          if (result.samples) void commit();
+        } catch (error) { stopMicrophone(); reject(error); }
+      };
+    });
+    return await Promise.race([captured, failed]);
   } catch (error) {
-    if (handoff) return { text: final, answered: false, ignoredReason };
-    error.finalText = final;
-    error.partial = !!answerText || sawAnswer;
+    error.finalText = final; error.partial = false;
     if (error.status === 429 && !error.retryAfterMs) error.retryAfterMs = 30000;
-    // Only unfinished recognition can retain a recording for a deliberate retry.
-    // Never replay a partial answer or redo ASR after a final transcript exists.
-    if (!final) error.recording = capture?.recording();
+    if (!final && retained.length) error.recording = { frames: retained, sampleRate: rate };
     throw error;
   } finally {
     stopMicrophone(); stop(); installCommit?.(null);
     signal?.removeEventListener('abort', stop); document.removeEventListener('visibilitychange', hidden);
-    // Observe background upload failure even if the user stopped before commit.
     failed.catch(() => {});
   }
 }
