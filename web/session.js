@@ -800,6 +800,7 @@ async function loadWorkspaceFiles({ refresh = false, view = activeMainView } = {
 
 function setMainView(view) {
   activeMainView = MAIN_VIEWS.has(view) ? view : 'terminal';
+  storyClient?.setStoryActive(activeMainView === 'story');
   localStorage.setItem(PREF_MAIN_VIEW, activeMainView);
   shell.classList.toggle('conversation-mode', activeMainView === 'conversation');
   shell.classList.toggle('agent-mode', activeMainView === 'agent');
@@ -875,21 +876,34 @@ if (workspaceAdd && workspaceMenu) {
 }
 let storyInited = false;
 let storyLoadPromise = null;
-function loadStoryView() {
+let storyClient = null;
+let storyFollowUp = false;
+function loadStoryView({ followUp = false } = {}) {
   // setMainView, the shell's replay, and a live semantic event can converge during mount. Share the
   // import + initial network refresh so those triggers never issue parallel Story requests.
+  if (storyLoadPromise && followUp) {
+    if (storyClient && storyInited) return storyClient.refreshStory({ followUp: true });
+    storyFollowUp = true;
+  }
   if (storyLoadPromise) return storyLoadPromise;
   const requestToken = requestScope.capture();
   storyLoadPromise = import('./story-view.js').then((mod) => {
     requestScope.guard(requestToken);
+    storyClient = mod;
     if (!storyInited) {
       storyInited = true;
-      return mod.initStoryView({ sessionId: requestToken.id, panel: document.querySelector('[data-story-panel]') });
+      return mod.initStoryView({ sessionId: requestToken.id, panel: document.querySelector('[data-story-panel]'), live: true, signal: _sig });
     }
-    return mod.refreshStory();
+    return mod.refreshStory({ followUp });
   }).catch((error) => {
     if (!isSessionAbort(error)) throw error;
-  }).finally(() => { storyLoadPromise = null; });
+  }).finally(() => {
+    storyLoadPromise = null;
+    if (storyFollowUp && !_sig.aborted && activeMainView === 'story') {
+      storyFollowUp = false;
+      void loadStoryView({ followUp: true });
+    }
+  });
   return storyLoadPromise;
 }
 // Terminal DATA is lazy (declared before the first setMainView call; the function body below hoists):
@@ -2060,7 +2074,7 @@ const onSessionStatus = (payload) => {
   if (activeMainView === 'conversation') loadTimeline();
   if (activeMainView === 'agent') loadAgentView({ refresh: true });
   if (activeMainView === 'scrollback') loadScrollback({ quiet: true });
-  if (activeMainView === 'story') loadStoryView();
+  if (activeMainView === 'story' && !document.hidden) loadStoryView({ followUp: true });
   if (activeMainView === 'files' || activeMainView === 'preview') {
     workspaceFilesData = null;
     loadWorkspaceFiles({ view: activeMainView });
@@ -3906,6 +3920,7 @@ $('#b-kill').onclick = async () => {
     try { events?.close(); } catch {}
     try { unsubscribeSessionEvents?.(); } catch {}
     unsubscribeSessionEvents = null;
+    try { storyClient?.destroyStoryView(id); } catch {}
     try { agentPanel?.destroy?.(); } catch {}
     try { stopStoryVoice(); } catch {} // leaving the session view stops any playing report narration (module-singleton audio)
     // xterm 4's debounced Viewport refresh can already be queued when teardown begins. Disposing its

@@ -411,8 +411,8 @@ function atomsFromClaude(lines) {
         else {
           const images = extractAttachmentImages(c);
           const text = cleanUserText(c);
-          if (text) atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
-          else attachImagesToYou(atoms, ts, images); // image-stub turn → fold into the adjacent bubble
+          if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
+          else attachImagesToYou(atoms, ts, images, indent); // image-stub turn → fold into the adjacent bubble
         }
       } else if (Array.isArray(c)) {
         const userText = c.filter(part => part?.type === 'text' && part.text).map(part => part.text).join('\n\n');
@@ -687,12 +687,12 @@ function parseSessionLog(jsonlText) {
 // one round"). Supervisor-prefixed messages are machine steering, never boundaries.
 const SUPERVISOR_RX = /^\s*\[supervisor\]/i;
 function isOperatorYou(e) {
-  return e.kind === 'you' && !SUPERVISOR_RX.test(e.body || e.title || '');
+  return e.kind === 'you' && !e.indent && !SUPERVISOR_RX.test(e.body || e.title || '');
 }
 // Operator messages that already have a report somewhere after them (their round completed).
 function completedRoundStarts(events) {
   let lastReport = -1;
-  for (let i = events.length - 1; i >= 0; i--) if (events[i].kind === 'report') { lastReport = i; break; }
+  for (let i = events.length - 1; i >= 0; i--) if (events[i].kind === 'report' && !events[i].indent) { lastReport = i; break; }
   const idx = [];
   for (let i = 0; i < lastReport; i++) if (isOperatorYou(events[i])) idx.push(i);
   return idx;

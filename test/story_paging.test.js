@@ -68,5 +68,19 @@ try {
   assert.equal(c.events.filter(e => e.kind === 'report').length, 1);
   const cp = await readStoryPage({ file: claude, cursor: c.meta.cursor });
   assert.equal(cp.events.find(e => e.kind === 'report')?.body, 'Claude report 1');
+
+  const helpers = join(root, 'claude-helpers.jsonl');
+  const native = (n, type, text, isSidechain = false) => JSON.stringify({ timestamp: ts(n), type, isSidechain,
+    message: { id: `helper-${n}`, content: text, stop_reason: type === 'assistant' ? 'end_turn' : undefined } }) + '\n';
+  await writeFile(helpers, native(0, 'user', 'Previous operator request')
+    + native(1, 'assistant', 'Previous completed report')
+    + native(2, 'user', 'Current operator request')
+    + native(3, 'user', 'Machine instruction to a helper', true)
+    + native(4, 'assistant', 'Helper completed its own work', true));
+  const helperPage = await readStoryPage({ file: helpers });
+  assert.deepEqual(helperPage.events.filter(e=>e.kind==='you'&&!e.indent).map(e=>e.body), ['Previous operator request', 'Current operator request'],
+    'a helper request/completion cannot close the parent round or hide its previous report');
+  assert.equal(helperPage.events.find(e=>e.body==='Machine instruction to a helper')?.indent, true);
+  assert.equal(helperPage.events.find(e=>e.body==='Previous completed report')?.kind, 'report');
 } finally { await rm(root, { recursive: true, force: true }); }
 console.log('story_paging: bounded cursor pages, concurrent append, identity and non-blocking parsing passed');

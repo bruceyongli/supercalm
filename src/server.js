@@ -456,7 +456,7 @@ server = http.createServer(async (req, res) => {
   // Permanent EventSource connections are transport, not request work. Excluding both shared events
   // and per-session terminal bytes keeps active/slow/max latency useful instead of measuring how long
   // a browser tab happened to stay open. Bounded SSE responses are also omitted from latency at settle.
-  const persistentStream = url.pathname === '/api/events' || /^\/api\/session\/[^/]+\/stream$/.test(url.pathname);
+  const persistentStream = url.pathname === '/api/events' || /^\/api\/session\/[^/]+\/(?:stream|story\/updates)$/.test(url.pathname);
   if (!persistentStream) {
     perfState.activeRequests++;
     perfState.totalRequests++;

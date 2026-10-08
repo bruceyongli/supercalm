@@ -21,6 +21,10 @@ let trimmed = false;
 let historyCursor = null;
 let historyLoading = false;
 let refreshFlight = null;
+let storyGeneration = 0;
+let storyAbort = new AbortController();
+let liveUpdates = null;
+let catchup = null;
 let historyError = '';
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
@@ -452,6 +456,11 @@ function calmEvents(source) {
   const out = [];
   for (let i = 0; i < source.length; i++) {
     const original = source[i];
+    // These are parser-created summaries of raw commands, not something the coding agent reported.
+    // Keep real commentary/reports, plans, specific tool descriptions and actionable errors.
+    if (!showFull && !original.body && !original.text
+        && ['work', 'web', 'edit', 'check'].includes(original.kind)
+        && ['Worked in the terminal', 'Looked around the project history', 'Read through the code', 'Checked the database', 'Ran the project tooling', 'Looked things up online', 'Made changes to the code', 'Ran the checks'].includes(original.title)) continue;
     if (!showFull && original.kind === 'fail') {
       const beforeNextOperator = source.slice(i + 1).find((later) => later.kind === 'you');
       const end = beforeNextOperator ? source.indexOf(beforeNextOperator, i + 1) : source.length;
@@ -493,7 +502,7 @@ function render() {
   if (!panelEl) return;
   captureStoryVideoState();
   const feedEvents = feedList();
-  const latestReport = feedEvents.findLast((ev) => ev.kind === 'report');
+  const latestReport = feedEvents.findLast((ev) => ev.kind === 'report' && !ev.indent);
   const latestReportKey = latestReport ? evKey(latestReport) : '';
   let feed = panelEl.querySelector('.story-feed');
   if (!feed) {
@@ -571,11 +580,12 @@ function updateWorkingStatus() {
 export async function loadEarlierStory() {
   if (!trimmed || !historyCursor || historyLoading || !panelEl) return;
   const mySid = sid, cursor = historyCursor, identity = storyIdentity;
+  const generation = storyGeneration, signal = storyAbort.signal;
   historyLoading = true; historyError = '';
   render();
   try {
-    const r = await api(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`);
-    if (sid !== mySid || identity !== storyIdentity) return;
+    const r = await api(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`, { signal: storyRequestSignal(signal) });
+    if (sid !== mySid || generation !== storyGeneration || signal.aborted || identity !== storyIdentity) return;
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
     const feed = panelEl.querySelector('.story-feed');
@@ -587,9 +597,9 @@ export async function loadEarlierStory() {
     trimmed = !!historyCursor;
     rounds++;
   } catch (error) {
-    if (sid === mySid) historyError = 'Retry earlier conversation';
+    if (sid === mySid && generation === storyGeneration && !signal.aborted) historyError = 'Retry earlier conversation';
   } finally {
-    if (sid === mySid) { historyLoading = false; render(); }
+    if (sid === mySid && generation === storyGeneration && !signal.aborted) { historyLoading = false; render(); }
   }
 }
 
@@ -723,33 +733,70 @@ async function sendAsyncChoices(call) {
   } finally { asyncSending.delete(call); if (sid === mySid) render(); }
 }
 
-export async function refreshStory({ quiet = true } = {}) {
-  if (refreshFlight?.sid === sid) return refreshFlight.promise;
-  const mySid = sid;
-  const promise = refreshStoryNow({ quiet }).finally(() => {
-    if (refreshFlight?.promise === promise) refreshFlight = null;
-  });
-  refreshFlight = { sid: mySid, promise };
-  return promise;
+export async function refreshStory({ quiet = true, followUp = false } = {}) {
+  if (!sid || !panelEl) return;
+  if (refreshFlight?.sid === sid && refreshFlight.generation === storyGeneration) {
+    if (followUp) refreshFlight.again = true; // invalidations arriving during a slow mobile fetch are not lost
+    return refreshFlight.promise;
+  }
+  const flight = { sid, generation: storyGeneration, signal: storyAbort.signal, again: false };
+  refreshFlight = flight;
+  flight.promise = (async () => {
+    let result;
+    do {
+      flight.again = false;
+      result = await refreshStoryNow({ quiet, flight });
+      quiet = true;
+    } while (flight.again && flight.sid === sid && flight.generation === storyGeneration && !flight.signal.aborted);
+    return result;
+  })().finally(() => { if (refreshFlight === flight) refreshFlight = null; });
+  return flight.promise;
 }
 
-async function refreshStoryNow({ quiet }) {
-  const mySid = sid; // capture: a session switch DURING this await must not apply session A's story to B
+const currentFlight = flight => flight.sid === sid && flight.generation === storyGeneration && !flight.signal.aborted;
+const storyRequestSignal = signal => AbortSignal.any([signal, AbortSignal.timeout(20000)]);
+async function catchUpStory(flight) {
+  // Reconnects may span several completed exchanges. The ordinary recent window alone would skip
+  // their reports. Walk bounded older pages only until the last displayed event, never the full log.
+  while (catchup && currentFlight(flight)) {
+    const gap = catchup;
+    const r = await api(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: storyRequestSignal(flight.signal) });
+    if (!currentFlight(flight) || catchup !== gap) return;
+    if (`${r.meta?.source || 'transcript'}|${r.meta?.file || ''}` !== storyIdentity) { catchup = null; return; }
+    const older = r.events || [];
+    const byKey = new Map(older.map(e => [evKey(e), e]));
+    for (const e of events) byKey.set(evKey(e), e);
+    events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const next = r.meta?.cursor;
+    const reached = older.some(e => (e.ts || 0) <= gap.until) || !next || next === gap.cursor;
+    if (rounds === 1) { historyCursor = next || null; trimmed = !!historyCursor; }
+    catchup = reached ? null : { ...gap, cursor: next };
+    render();
+  }
+}
+
+async function refreshStoryNow({ quiet, flight }) {
+  const mySid = flight.sid; // capture: session/panel lifetime is fenced even across A → B → A
   try {
     // Live refresh always fetches ONLY the recent window, even after the operator loaded old pages.
-    const r = await api(`api/session/${mySid}/story`);
+    const r = await api(`api/session/${mySid}/story`, { signal: storyRequestSignal(flight.signal) });
     // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
     // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
     // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
     // header, 2026-07-13). Discard it — B's own refreshStory already ran with the correct id.
-    if (sid !== mySid) return;
+    if (!currentFlight(flight)) return;
     const incoming = r.events || [];
     // Source switch (fallback spine → the CLI transcript, once it becomes locatable): the same
     // conversation re-arrives with different timestamps/keys — merging would duplicate every card
     // (E2E finding #3: the launch task showed twice). Replace wholesale instead.
     const src = r.meta?.source || 'transcript';
     const identity = `${src}|${r.meta?.file || ''}`;
-    if (storyIdentity && identity !== storyIdentity) { events = []; lastSig = ''; rounds = 1; historyCursor = null; }
+    const lastSeen = events.reduce((max, e) => Math.max(max, Number(e.ts) || 0), 0);
+    const firstIncoming = incoming.filter(e => e.kind !== 'sys' && e.kind !== 'gap').find(e => e.ts);
+    if (!catchup && lastSeen && firstIncoming?.ts > lastSeen && storyIdentity === identity && r.meta?.cursor) {
+      catchup = { cursor: r.meta.cursor, until: lastSeen };
+    }
+    if (storyIdentity && identity !== storyIdentity) { events = []; catchup = null; lastSig = ''; rounds = 1; historyCursor = null; }
     storySource = src;
     storyIdentity = identity;
     if (!events.length) {
@@ -777,13 +824,31 @@ async function refreshStoryNow({ quiet }) {
     else updateWorkingStatus(); // elapsed timers must not repaint even a single history row
     // Cache only the recent response, never all of the history the user chose to load.
     if (!showFull) writeStoryCache(mySid, { events: incoming, trimmed: !!r.meta?.trimmed, cursor: r.meta?.cursor || null, working, liveStatus, storySource, storyIdentity });
+    await catchUpStory(flight);
+    return true;
   } catch (e) {
-    if (sid === mySid && !quiet && panelEl) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
+    if (currentFlight(flight) && e.code === 'STORY_CURSOR_INVALID') catchup = null;
+    if (currentFlight(flight) && !quiet && panelEl && !events.length) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
+    if (currentFlight(flight)) return false; // live controller retries without discarding existing reports
   }
 }
 
-export function initStoryView({ sessionId, panel }) {
+function pauseStoryRequests() {
+  storyAbort.abort(); storyAbort = new AbortController(); refreshFlight = null; historyLoading = false;
+}
+export function setStoryActive(active) { liveUpdates?.setActive(active); }
+export function destroyStoryView(sessionId) {
+  if (sessionId && sessionId !== sid) return;
+  liveUpdates?.close(); liveUpdates = null; pauseStoryRequests();
+  storyGeneration++; panelEl = null; sid = null; catchup = null;
+  clearTimeout(feedPersistT);
+}
+
+export function initStoryView({ sessionId, panel, live = false, signal }) {
   const switching = sid !== sessionId;
+  if (switching || panel !== panelEl) {
+    liveUpdates?.close(); liveUpdates = null; pauseStoryRequests(); storyGeneration++;
+  }
   if (switching) { asyncChoices.clear(); asyncSending.clear(); asyncErrors.clear(); }
   sid = sessionId;
   panelEl = panel;
@@ -808,7 +873,7 @@ export function initStoryView({ sessionId, panel }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; panelEl.innerHTML = ''; }
+  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
   // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
   // (its last user message), never auto-scrolled to the newest.
   feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
@@ -822,5 +887,14 @@ export function initStoryView({ sessionId, panel }) {
       lastSig = ''; render();
     }
   }
-  return refreshStory({ quiet: false });
+  const initial = refreshStory({ quiet: false });
+  if (live) {
+    const generation = storyGeneration;
+    void import('./story-live.js').then(({ createStoryLive }) => {
+      if (generation !== storyGeneration || signal?.aborted || !panelEl) return;
+      liveUpdates = createStoryLive({ sessionId, refresh: refreshStory, pause: pauseStoryRequests, signal });
+      liveUpdates.setActive(!panelEl.hidden);
+    }).catch(() => {});
+  }
+  return initial;
 }

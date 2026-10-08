@@ -16,6 +16,8 @@ import { stripAnsi } from './util.js';
 import { terminalQuestionPrompt } from './detect_classify.js';
 import { refreshCodexQuestions, overlayCodexQuestions } from './codex_questions.js';
 import { claudeTerminalFrame } from './claude_lifecycle.js';
+import { createStoryUpdates } from './story_updates.js';
+import { bus } from './bus.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -150,14 +152,21 @@ async function findCodexLog(cwd, s) {
 // claude transcript location lives in claude_transcripts.js (hook-bound path first, heuristic after —
 // see that module for the multi-session-per-cwd story-bleed this replaced).
 
-export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null } = {}) {
+async function storySource(sid) {
   const s = getSession(sid);
-  if (!s) return { error: 'no such session' };
+  if (!s) return null;
   const project = s.project_id ? getProject(s.project_id) : null;
   const cwd = s.tool === 'claude' ? s.worktree_path || project?.path || null : project?.path || null;
   const file = s.tool === 'codex'
     ? await findCodexLog(cwd, s)
     : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid) });
+  return { s, file };
+}
+
+export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null } = {}) {
+  const source = await storySource(sid);
+  if (!source) return { error: 'no such session' };
+  const { file } = source;
   if (!file) {
     const events = fallbackStory(sid);
     return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
@@ -165,19 +174,35 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cur
   const st = await stat(file);
   const key = `${sid}|${full ? 'full' : 'r' + rounds}|${cursor || ''}`;
   const hit = cache.get(key);
-  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs) return { events: hit.events, meta: hit.meta };
-  const flightKey = `${key}|${file}|${st.mtimeMs}`;
+  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.size === st.size && hit.ino === st.ino) return { events: hit.events, meta: hit.meta };
+  const flightKey = `${key}|${file}|${st.ino}|${st.size}|${st.mtimeMs}`;
   if (inFlight.has(flightKey)) return inFlight.get(flightKey);
   const flight = readStoryPage({ file, rounds, full, cursor }).then(result => {
     const { events } = result;
     const meta = { ...result.meta, file, mtimeMs: st.mtimeMs, source: 'transcript' };
-    cache.set(key, { file, mtimeMs: st.mtimeMs, events, meta });
+    cache.set(key, { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, events, meta });
     if (cache.size > 120) cache.delete(cache.keys().next().value);
     return { events, meta };
   }).finally(() => { inFlight.delete(flightKey); });
   inFlight.set(flightKey, flight);
   return flight;
 }
+
+const storyUpdates = createStoryUpdates({ bus, resolve: async sid => {
+  const source = await storySource(sid);
+  if (!source) return null;
+  const { s, file } = source;
+  return { file, state: [s.status, s.question, s.summary, file ? null : s.revision] };
+} });
+route('GET', '/api/session/:id/story/updates', (req, res, { id: sid }) => {
+  if (!getSession(sid)) return json(res, 404, { error: 'no such session' });
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive', 'x-accel-buffering': 'no' });
+  res.flushHeaders?.();
+  const done = storyUpdates.subscribe(sid, res);
+  req.on('close', done);
+  res.on('error', done);
+});
 
 route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
   try {

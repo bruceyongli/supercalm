@@ -339,9 +339,9 @@ assert.ok(storyView.includes('storyVideoPreviews(bodyText)')
     && storyView.includes('data-story-video=')
     && storyView.includes('controls playsinline preload="metadata"'),
   'story reports turn local video references into responsive, non-autoplaying inline players');
-assert.ok(storyView.includes("feedEvents.findLast((ev) => ev.kind === 'report')")
+assert.ok(storyView.includes("feedEvents.findLast((ev) => ev.kind === 'report' && !ev.indent)")
     && storyView.includes('eventHtml(ev, sourceIndex, evKey(ev) === latestReportKey)'),
-  'only the newest report auto-loads video previews');
+  'only the newest parent report auto-loads video previews, never a helper completion');
 assert.ok(storyView.includes('<ol class="story-plan-list"') && storyView.includes("ev.kind === 'plan' ? planHtml(ev)"),
   'story plan events render as a semantic ordered list');
 const css = read('web/styles.css');
