@@ -90,7 +90,9 @@ try {
     await page.evaluate(() => { window.firstReport=document.querySelector('[data-kind="report"]'); });
     // An old snapshot held on a slow connection must not consume the only dirty notification.
     holdNext = true;
-    await page.evaluate(() => { void story.refreshStory(); });
+    // The report DOM can become visible before its refresh promise finishes. Explicitly dirty the
+    // reader so an existing flight drains a trailing request instead of just sharing that promise.
+    await page.evaluate(() => { void story.refreshStory({ followUp: true }); });
     await waitHeld();
     await appendFile(file, record(family, 4, 'assistant', 'Fresh update during the held request.'));
     await page.waitForTimeout(700); // notify while the old HTTP result is still in flight
