@@ -9,9 +9,28 @@ for (const [reference, path] of [
   ['docs/My%20report.md', 'docs/My report.md'], ['file:///tmp/My%20report.md', '/tmp/My report.md'],
   ['~/资料/报告.md', '~/资料/报告.md'], ['/tmp/report(final).html', '/tmp/report(final).html'],
   ['https://box.example.test/tmp/report.html', '/tmp/report.html'],
+  ['https://box.example.test/Users/bb1/morph/report.html', '/Users/bb1/morph/report.html'],
+  ['//box.example.test/private/tmp/report.wav', '/private/tmp/report.wav'],
+  ['https://box.example.test/var/folders/ab/temporary/report.md', '/var/folders/ab/temporary/report.md'],
+  ['https://box.example.test/home/operator/report.csv', '/home/operator/report.csv'],
+  ['https://box.example.test/Volumes/Work/report.pdf', '/Volumes/Work/report.pdf'],
 ]) {
   assert.equal(localFilePath(reference, host), path);
   assert.ok(isFileReference(reference, host), reference);
+}
+// Sharing an AIOS hostname does not make a web route a path on disk. In
+// particular, Tailscale can serve other projects alongside /aios. Keep unknown
+// mounts as web links, regardless of file suffix, query, fragment or encoding.
+for (const path of ['/morph-data/it41/report.html', '/docs/report.md', '/files/sample.wav',
+  '/media/preview.mp4', '/reports/chart.svg', '/download/data.csv', '/unknown/report.html',
+  '/tmp-reports/report.html', '/Users-guide/report.md', '/morph-data/报告%20最终.html?view=1#summary']) {
+  for (const scheme of ['https://', 'http://', '//']) {
+    const reference = `${scheme}${host}${path}`;
+    assert.equal(localFilePath(reference, host), '', reference);
+    assert.equal(isFileReference(reference, host), false, reference);
+    assert.equal(fileReferences(`Open: ${reference}`)[0]?.text, reference, 'web URLs still linkify');
+    assert.ok(renderMarkdown(`[Report](${reference})`).includes(`href="${reference}"`), 'preserve the original URL');
+  }
 }
 for (const reference of ['https://box.example.test/aios/api/session/s/render/token/report.html',
   '/aios/api/session/s/file?path=docs/report.md&raw=1', 'api/session/s/render/token/report.html',

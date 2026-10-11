@@ -1,6 +1,9 @@
-// Turn a path or a URL pointing at this AIOS host into the host-local path that the session file
-// viewer expects. Full host URLs appear frequently in agent reports because root paths are useful in
-// terminals, but navigating to them bypasses AIOS's /aios route and produces a 404.
+// Local paths belong in the session file viewer; web routes belong in a new tab.
+// Preserve legacy same-host URLs containing an explicit host filesystem root,
+// but do not guess that /reports/report.html is a local file just from its suffix.
+// Tailscale serves other projects beside /aios, and new mounts must work without
+// adding project-specific exceptions to this shared classifier.
+const HOST_FILE_ROOT_RX = /^\/(?:Users|home|Volumes|tmp|var\/(?:tmp|folders)|private\/(?:tmp|var\/(?:tmp|folders)))(?:\/|$)/;
 export function cleanFileReference(value) {
   let ref = String(value || '').trim()
     .replace(/^[('"`\[<{]+/, '')
@@ -29,7 +32,8 @@ export function localFilePath(value, currentHostname = globalThis.location?.host
     try {
       const url = new URL(ref.startsWith('//') ? `https:${ref}` : ref);
       if (!currentHostname || url.hostname !== currentHostname) return '';
-      return decodedPathname(url);
+      const path = decodedPathname(url);
+      return HOST_FILE_ROOT_RX.test(path) ? path : '';
     } catch {
       return '';
     }

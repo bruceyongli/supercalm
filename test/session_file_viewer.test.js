@@ -259,7 +259,8 @@ async function waitForRoutes() {
 // full dashboards, and cannot expose other folders or hidden/unsupported files.
 {
   await writeFile(join(projectRoot, 'dashboard', 'My report (最终).md'), '# Space and Unicode report\n');
-  await writeFile(join(projectRoot, 'dashboard', 'nested', 'LINKS.md'), `# Links\n\n| Kind | Open |\n|---|---|\n| HTML | [Dashboard](<${join(projectRoot, 'dashboard', 'index.html')}>) |\n| Markdown | [Spaced](../My%20report%20(%E6%9C%80%E7%BB%88).md) |\n| Private | [Denied](<${privateArtifact}>) |`);
+  const hostedReport = `${base}/morph-data/it41/report.html?view=1#summary`;
+  await writeFile(join(projectRoot, 'dashboard', 'nested', 'LINKS.md'), `# Links\n\n| Kind | Open |\n|---|---|\n| HTML | [Dashboard](<${join(projectRoot, 'dashboard', 'index.html')}>) |\n| Markdown | [Spaced](../My%20report%20(%E6%9C%80%E7%BB%88).md) |\n| Private | [Denied](<${privateArtifact}>) |\n| Hosted | [Hosted report](${hostedReport}) |`);
   const meta = await (await fileRequest('dashboard/index.html')).json();
   assert.equal(meta.renderInline, true);
   assert.equal((await (await fileRequest('dashboard/index.html')).json()).renderUrl, meta.renderUrl, 'stable rendered URL');
@@ -350,6 +351,8 @@ async function waitForRoutes() {
     await page.evaluate(meta => window.mountPreview(meta), linked);
     const documentFrame = page.frameLocator('.file-render-frame');
     await documentFrame.getByRole('link', { name: 'Dashboard', exact: true }).waitFor();
+    assert.equal(await documentFrame.getByRole('link', { name: 'Hosted report', exact: true }).getAttribute('href'),
+      hostedReport, 'rendered Markdown also preserves same-host web routes instead of mapping them to disk');
     for (const [name, expectedHeading] of [['Dashboard', 'Rendered dashboard'], ['Spaced', 'Space and Unicode report']]) {
       const popupPromise = page.waitForEvent('popup');
       await documentFrame.getByRole('link', { name, exact: true }).click();

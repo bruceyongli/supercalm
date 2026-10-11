@@ -41,6 +41,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 - UI principle: do not add visible controls/buttons for rare edge cases unless explicitly requested.
   Prefer automatic behavior, existing controls, or progressive fallback; keep the coding/voice UI low
   brain-load.
+- **Links:** use the shared `web/file-reference.js` classification in Story, Terminal and rendered
+  Markdown. A same-host HTTP URL is still a web URL; never infer a disk path from `.html`/`.md`/media
+  suffixes. Tailscale may serve arbitrary project mounts beside `/aios`. Only explicit filesystem-root
+  URLs retain legacy local preview handling, with the existing session authorization unchanged.
 - Feature modules (`sessions/detect/spark/push/hooks`) self-register routes via `route()` and are
   loaded fire-and-forget at the bottom of `server.js` **after** `routes[]` exists (do not convert
   these to top-level `await import` — see gotcha #1).
