@@ -3153,7 +3153,7 @@ function activateTerminalReference(raw, event) {
   if (shouldUseFileViewer(raw, path)) { event.preventDefault(); openFileViewer(raw); }
   else if (isUrlReference(raw)) { event.preventDefault(); openUrlInNewTab(raw); }
 }
-installTerminalLinkTaps({ element: termEl, term, signal: _sig,
+const terminalLinkInput = installTerminalLinkTaps({ element: termEl, term, signal: _sig,
   isScrolling: () => terminalScrolling.isTouchScrolling(),
   activate: (reference, event) => activateTerminalReference(reference.text, event),
 });
@@ -3170,7 +3170,7 @@ if (typeof term.registerLinkProvider === 'function') {
         links.push({
           range: reference.range,
           text: raw,
-          activate: (ev) => activateTerminalReference(raw, ev),
+          activate: (ev) => terminalLinkInput.activate(reference, ev),
         });
       }
       callback(links.length ? links : undefined);

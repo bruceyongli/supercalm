@@ -20,14 +20,12 @@ const fixture = `<!doctype html><link rel="stylesheet" href="/xterm.css">
   import { localFilePath } from '/file-reference.js';
   const term = new Terminal({cols: 100, rows: 18, fontSize: 16, scrollback: 200});
   term.open(document.querySelector('#terminal'));
+  let pointerLinks;
   term.registerLinkProvider({provideLinks(row, callback) {
-    callback(terminalFileReferences(term, row).map(reference => ({...reference, activate: async event => {
-      event.preventDefault();
-      const path = localFilePath(reference.text);
-      document.querySelector('#preview').textContent = await fetch('/api/session/s_wrap/file?path=' + encodeURIComponent(path)).then(r => r.text());
-    }})));
+    callback(terminalFileReferences(term, row).map(reference => ({...reference,
+      activate: event => pointerLinks.activate(reference, event) })));
   }});
-  installTerminalLinkTaps({ element: document.querySelector('#terminal'), term, activate: async reference => {
+  pointerLinks = installTerminalLinkTaps({ element: document.querySelector('#terminal'), term, activate: async reference => {
     document.querySelector('#preview').textContent = await fetch('/api/session/s_wrap/file?path=' + encodeURIComponent(localFilePath(reference.text))).then(r => r.text());
   }});
   window.__links = {
@@ -183,6 +181,27 @@ try {
       assert.ok(links.every(link => link.range.start.y === link.range.end.y), 'column links never create screen-wide hitboxes');
     }
   }
+  // The pointer-release fallback must not interpret selection/scroll gestures
+  // or a control over a link as navigation. Synthetic pointer events here do
+  // not emit native mouseup, so they isolate the shared fallback's decisions.
+  links = await load('Report: ' + first, 100);
+  const pointerPoint = await page.evaluate(range => window.__links.point(range.start.x + 2, range.start.y), links[0].range);
+  const beforeGestures = requests.length;
+  await page.evaluate(point => {
+    const host = document.querySelector('#terminal');
+    const emit = (type, extra = {}, target = host) => target.dispatchEvent(new PointerEvent(type,
+      { bubbles: true, pointerId: 31, pointerType: 'mouse', button: 0, clientX: point.x, clientY: point.y, ...extra }));
+    emit('pointerdown'); emit('pointermove', { clientX: point.x + 20 }); emit('pointerup');
+    emit('pointerdown', { button: 2 }); emit('pointerup', { button: 2 });
+    emit('pointerdown'); emit('pointercancel'); emit('pointerup');
+    emit('pointerdown', { pointerType: 'touch' });
+    emit('pointerdown', { pointerType: 'touch', pointerId: 32 });
+    emit('pointerup', { pointerType: 'touch' }); emit('pointerup', { pointerType: 'touch', pointerId: 32 });
+    const button = document.createElement('button'); host.append(button);
+    emit('pointerdown', {}, button); emit('pointerup', {}, button); button.remove();
+  }, pointerPoint);
+  await page.waitForTimeout(50);
+  assert.equal(requests.length, beforeGestures, 'drag, right click, cancellation, multitouch and overlaid buttons do not activate the pointer fallback');
   const phone = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await phone.goto(`http://127.0.0.1:${server.address().port}/`);
   await phone.waitForFunction(() => window.__links);

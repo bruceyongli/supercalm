@@ -76,7 +76,11 @@ try {
       isMobile: width < 600, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     await page.route('https://fonts.**/*', route => route.abort());
-    await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+    await page.addInitScript(() => {
+      window.EventSource = class { addEventListener() {} close() {} };
+      window.__nativeMouseUps = 0;
+      document.addEventListener('mouseup', () => window.__nativeMouseUps++);
+    });
     await page.goto(base + '/aios/session?id=s_web_links_fixture&debugTerminal&noTerminalHistory&noresize&desktop=1');
     await page.locator('.story-body a').first().waitFor();
     const links = page.locator('.story-body a').filter({ hasNotText: 'Local file' });
@@ -112,10 +116,18 @@ try {
       return { x: rect.left + 12.5 * rect.width / cols, y: rect.top + .5 * rect.height / rows };
     });
     await page.mouse.move(point.x, point.y);
-    await page.waitForTimeout(250); // xterm hover-link resolution, including wrapped phone output
+    const mouseUpsBefore = await page.evaluate(() => __nativeMouseUps);
+    const reportRequestsBefore = webRequests.filter(path => path === '/morph-data/it41/report.html').length;
     const terminalPopup = page.context().waitForEvent('page', { timeout: 10000 });
     if (width < 1000) await page.touchscreen.tap(point.x, point.y);
-    else await page.mouse.click(point.x, point.y);
+    else {
+      await page.mouse.down();
+      // Deliberately invalidate the native hover-link identity mid-click. A
+      // freshly rendered link is not the object cached by xterm on mouse-down.
+      await page.evaluate(url => __aiosTerminalTestWrite('\x1b[HReport: ' + url), report);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await page.mouse.up();
+    }
     const popup = await terminalPopup.catch(async error => {
       console.log(JSON.stringify({ terminalPoint: point, metrics: await page.evaluate(() => __aiosTerminalMetrics()),
         hit: await page.evaluate(p => document.elementFromPoint(p.x, p.y)?.outerHTML.slice(0,500), point),
@@ -125,6 +137,10 @@ try {
     await popup.locator('h1').waitFor();
     assert.equal(popup.url(), report, 'terminal provider opens the whole hosted URL');
     await popup.close();
+    assert.equal(webRequests.filter(path => path === '/morph-data/it41/report.html').length,
+      reportRequestsBefore + 1, 'fallback plus native provider still opens exactly one tab');
+    if (width >= 1000) assert.equal(await page.evaluate(() => __nativeMouseUps), mouseUpsBefore + 1,
+      'native mouseup still reaches document-level selection cleanup');
     assert.deepEqual(fileRequests, ['/tmp/report.md'], 'terminal web links do not open the file viewer');
     assert.deepEqual(mutations, [], 'link navigation sends no input or session mutation');
     assert.deepEqual(errors, []);

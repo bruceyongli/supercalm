@@ -140,25 +140,42 @@ export function terminalFileReferences(term, bufferLineNumber) {
   return links;
 }
 
-// Touch has no prior mouse-hover phase for xterm's asynchronous linkifier. Resolve
-// the cell at tap time; suppress its synthetic click and the composer-focus hook.
-export function installTerminalLinkTaps({ element, term, activate, isScrolling = () => false, signal }) {
-  let tap = null, suppress = null;
+// Resolve the current cell at release: touch has no hover phase, and a native
+// repaint can replace xterm's cached hover link between mouse-down and mouse-up.
+// One pointer owner suppresses xterm's later activation and synthetic clicks;
+// dragging, scrolling, long presses and secondary-button clicks stay untouched.
+export function installTerminalLinkTaps({ element, term, activate: onActivate, isScrolling = () => false, signal }) {
+  let tap = null, suppress = null, allowActivation = true;
   const pointers = new Set();
   const options = { capture: true, passive: false, signal };
+  const suppressed = event => suppress && Date.now() < suppress.until
+    && Math.hypot(event.clientX - suppress.x, event.clientY - suppress.y) < 8;
+  const activate = (link, event, blockMouse = false) => {
+    if (!allowActivation || event.button !== 0 || suppressed(event)) { event.preventDefault(); return false; }
+    suppress = { x: event.clientX, y: event.clientY, until: Date.now() + 800, blockMouse };
+    onActivate(link, event);
+    return true;
+  };
   element.addEventListener('pointerdown', event => {
-    if (event.pointerType !== 'touch') return;
+    suppress = null; allowActivation = false;
+    if (!['touch', 'mouse', 'pen'].includes(event.pointerType) || event.button !== 0
+      || event.target.closest?.('button,a[href]')) { tap = null; return; }
+    allowActivation = true;
     pointers.add(event.pointerId);
-    tap = pointers.size === 1 ? { id: event.pointerId, x: event.clientX, y: event.clientY, at: Date.now(), moved: false } : null;
+    tap = pointers.size === 1 ? { id: event.pointerId, type: event.pointerType,
+      x: event.clientX, y: event.clientY, at: Date.now(), moved: false,
+      tolerance: event.pointerType === 'mouse' ? 3 : 8 } : null;
   }, options);
   element.addEventListener('pointermove', event => {
-    if (tap && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 8) tap.moved = true;
+    if (tap && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > tap.tolerance) tap.moved = true;
   }, options);
-  element.addEventListener('pointercancel', event => { pointers.delete(event.pointerId); tap = null; }, options);
+  element.addEventListener('pointercancel', event => { pointers.delete(event.pointerId); tap = null; allowActivation = false; }, options);
   element.addEventListener('pointerup', event => {
     pointers.delete(event.pointerId);
     const start = tap; tap = null;
-    if (!start || event.pointerId !== start.id || start.moved || pointers.size || isScrolling() || Date.now() - start.at > 600) return;
+    allowActivation = !!start && event.pointerId === start.id && !start.moved && !pointers.size
+      && (start.type === 'mouse' || !isScrolling()) && Date.now() - start.at <= 600;
+    if (!allowActivation) return;
     const rect = element.querySelector('.xterm-screen')?.getBoundingClientRect();
     if (!rect?.width || !rect?.height) return;
     const x = Math.floor((event.clientX - rect.left) * term.cols / rect.width) + 1;
@@ -166,13 +183,15 @@ export function installTerminalLinkTaps({ element, term, activate, isScrolling =
     const link = terminalFileReferences(term, y).find(ref => x >= ref.range.start.x && x <= ref.range.end.x);
     if (!link) return;
     event.preventDefault(); event.stopImmediatePropagation();
-    suppress = { x: event.clientX, y: event.clientY, until: Date.now() + 800 };
-    activate(link, event);
+    activate(link, event, start.type !== 'mouse');
   }, options);
   for (const type of ['mousedown', 'mouseup', 'click']) element.addEventListener(type, event => {
-    if (suppress && Date.now() < suppress.until && Math.hypot(event.clientX - suppress.x, event.clientY - suppress.y) < 8) {
+    if (suppressed(event) && (suppress.blockMouse || type === 'click')) {
       event.preventDefault(); event.stopImmediatePropagation();
       if (type === 'click') suppress = null;
     }
   }, options);
+  // Native mouseup must still bubble to xterm's document-level selection cleanup.
+  // Its provider uses this same gate, so one click cannot open the link twice.
+  return { activate };
 }
