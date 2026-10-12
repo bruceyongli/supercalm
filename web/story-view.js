@@ -2,7 +2,7 @@
 // against the raw terminal. DOM contract + exact tokens from the handoff's spec.tokens.json;
 // verify_story_view.mjs asserts them. Events come from GET api/session/:id/story (src/story.js).
 import { api, renderMarkdown, renderLinkedText } from './common.js';
-import { localFilePath } from './file-reference.js';
+import { localFilePath, isFileReference } from './file-reference.js';
 import { unlockAudio } from './tts-player.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
@@ -140,7 +140,8 @@ function storyToLatest() { // the ONE sanctioned jump-to-newest
 // v8: native async questions replace the CLI's plain-text question/report mirror.
 // v9: Claude native identities/stop reasons, specific tool descriptions and inspectable errors.
 // v10: Claude mid-turn human messages and live background shell status.
-export const STORY_CACHE_KEY = (id) => `aios_story10_${id}`;
+// v11: exact upload paths retained on native and fallback Story events.
+export const STORY_CACHE_KEY = (id) => `aios_story11_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
 function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
@@ -396,9 +397,25 @@ function eventHtml(ev, i, previewVideo = false) {
   const imgsHtml = (ev.images || []).length
     ? `<div class="story-imgs">${ev.images.map((f) => `<img class="story-shot" data-story-shot loading="lazy" src="api/session/${sid}/attachment/${encodeURIComponent(f)}" alt="${esc(f)}" title="${esc(f)}" />`).join('')}</div>`
     : '';
-  const body = (bodyText || imgsHtml) ? (rich
-    ? `<div class="story-body md">${renderMarkdown(bodyText)}${imgsHtml}${videosHtml}</div>`
-    : `<div class="story-body">${renderLinkedText(bodyText)}${imgsHtml}</div>`) : '';
+  const linkedUploads = new Set();
+  const fileHref = path => `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(path)}&open=1`;
+  const linkHref = href => {
+    if (!isFileReference(href)) return href;
+    const path = localFilePath(href);
+    const matches = (ev.attachments || []).filter(a => a.path === path || a.name === path.replace(/^\.\//, ''));
+    const upload = matches.length === 1 ? matches[0] : null;
+    if (upload) linkedUploads.add(upload.path);
+    return fileHref(upload?.path || path);
+  };
+  const linkedBody = rich ? renderMarkdown(bodyText, { linkHref }) : renderLinkedText(bodyText, { linkHref });
+  // Files not already linked in the operator's text remain accessible, including
+  // names with spaces. Images retain their existing inline previews.
+  const uploads = (ev.attachments || []).filter(a => !linkedUploads.has(a.path)
+    && !(ev.images || []).includes(a.path.split('/').pop()));
+  const uploadsHtml = uploads.length ? `<div class="story-chips">${uploads.map(a =>
+    `<a href="${esc(fileHref(a.path))}" target="_blank" rel="noopener noreferrer">${esc(a.name)}</a>`).join(' ')}</div>` : '';
+  const body = (bodyText || imgsHtml || uploadsHtml)
+    ? `<div class="story-body${rich ? ' md' : ''}">${linkedBody}${imgsHtml}${uploadsHtml}${videosHtml}</div>` : '';
   // S3: one baseline row — title · meta · time (time right-aligned); untitled events keep the
   // time in the block's top-right corner instead.
   const head = untitled

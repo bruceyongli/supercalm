@@ -255,6 +255,36 @@ async function waitForRoutes() {
   assert.match(src.slice(src.indexOf('function workspacePreviewable'), src.indexOf('function workspaceStatusLabel')), /csv\|tsv\|txt\|json/);
 }
 
+// An isolated worktree still owns its uploads in the canonical project's upload
+// folder. Resolve exact per-turn paths and unique bare names, never another
+// session, ambiguous repeat uploads, or a symlink outside that upload folder.
+{
+  store.createSession({ id: 's_uploads', project_id: 'p_files', tool: 'claude', tmux: 'tmx_uploads', status: 'exited' });
+  store.updateSession('s_uploads', { worktree_path: linkedRoot });
+  const dir = join(projectRoot, '.aios', 'attachments', 's_uploads');
+  const otherDir = join(projectRoot, '.aios', 'attachments', 's_someone_else');
+  await mkdir(dir, { recursive: true }); await mkdir(otherDir, { recursive: true });
+  const uploaded = join(dir, '123-u_abc-iteration-49-brief.md');
+  const contents = '# Iteration 49 brief\n\nThe original uploaded document.\n';
+  await writeFile(uploaded, contents);
+  await writeFile(join(otherDir, 'private.md'), '# Another session');
+  await symlink(privateArtifact, join(dir, '123-u_abc-escape.md'));
+  const uploadRequest = (path, suffix = '') => fetch(`${base}/aios/api/session/s_uploads/file?path=${encodeURIComponent(path)}${suffix}`);
+  for (const path of [uploaded, 'iteration-49-brief.md']) {
+    const response = await uploadRequest(path, '&open=1');
+    assert.equal(response.status, 200);
+    assert.match(response.url, /\/aios\/api\/session\/s_uploads\/render\//);
+    assert.match(await response.text(), /<h1>Iteration 49 brief<\/h1>/);
+  }
+  assert.equal((await uploadRequest(join(otherDir, 'private.md'))).status, 403);
+  assert.equal((await uploadRequest(join(dir, '123-u_abc-escape.md'))).status, 403);
+  await writeFile(join(dir, '456-u_def-iteration-49-brief.md'), '# Later revision');
+  assert.equal((await uploadRequest('iteration-49-brief.md')).status, 404, 'ambiguous name must not silently pick a different upload');
+  assert.equal(await (await uploadRequest(uploaded, '&raw=1')).text(), contents, 'exact old upload remains stable');
+  await writeFile(join(linkedRoot, 'iteration-49-brief.md'), '# Project file');
+  assert.equal(await (await uploadRequest('iteration-49-brief.md', '&raw=1')).text(), '# Project file', 'ordinary project paths retain precedence');
+}
+
 // Rendered URLs work directly and under /aios, preserve relative resources, stream
 // full dashboards, and cannot expose other folders or hidden/unsupported files.
 {

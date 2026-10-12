@@ -618,6 +618,17 @@ export async function resolveSessionFile(s, rawRequested) {
   const candidate = normalize(isAbsolute(requested) ? requested : join(root, requested));
   let target = '';
   try { target = normalize(await realpath(candidate)); } catch {}
+  // Uploads live under the canonical project even when this session runs in a
+  // worktree. Authorize only this session's upload directory, with realpath
+  // containment so an uploaded-directory symlink cannot expose another file.
+  const uploadRoot = normalize(attachmentDirForSession(s));
+  const realUploadRoot = await realpath(uploadRoot).then(normalize).catch(() => '');
+  if (pathInside(uploadRoot, candidate) || (realUploadRoot && pathInside(realUploadRoot, candidate))) {
+    if (target && realUploadRoot && pathInside(realUploadRoot, target)) {
+      return { target, displayPath: basename(target), scope: 'session-attachment' };
+    }
+    return null;
+  }
   let projectRoot;
   try { projectRoot = normalize(await realpath(root)); } catch { projectRoot = normalize(root); }
   if (target && pathInside(projectRoot, target)) {
@@ -629,6 +640,14 @@ export async function resolveSessionFile(s, rawRequested) {
   }
 
   if (!isAbsolute(requested)) {
+    // Bare names from terminal prose can resolve to a unique session upload.
+    // Repeated names are deliberately ambiguous; Story binds the exact upload
+    // from that turn's manifest instead of silently selecting a newer version.
+    if (!target && basename(requested) === requested) {
+      const names = await readdir(uploadRoot).catch(() => []);
+      const matches = names.filter(name => name.replace(/^\d+-u_[a-f0-9]+-/, '') === requested);
+      if (matches.length === 1) return resolveSessionFile(s, join(uploadRoot, matches[0]));
+    }
     // A report written while operating in a secondary repository may link `research/result.md`
     // instead of its full path. Prefer the assigned project when that file exists; otherwise resolve
     // only an unambiguous exact-evidenced match in a transcript-proven root.

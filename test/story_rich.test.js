@@ -234,6 +234,14 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   assert.equal(yous.length, 1, 'text turn + image-stub turn fold into ONE bubble');
   assert.equal(yous[0].body, 'please fix the sidebar', 'the manifest is stripped from the bubble text');
   assert.deepEqual(yous[0].images, ['1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png'], 'the bubble carries the image preview (deduped across manifest + stub)');
+  assert.deepEqual(yous[0].attachments, [
+    { name: 'Screenshot 2026-07-16 at 19.27.36.png', path: '/Users/x/aios/.aios/attachments/s_1/1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png' },
+    { name: 'notes.txt', path: '/Users/x/aios/.aios/attachments/s_1/1784201262059-u_b-notes.txt' },
+  ], 'keep exact document/image destinations before stripping the manifest');
+  const codexUploads = parseSessionLog(JSON.stringify({ type: 'event_msg', timestamp: '2026-07-16T10:00:00Z',
+    payload: { type: 'user_message', message: manifest } }));
+  assert.deepEqual(codexUploads.find(e => e.kind === 'you').attachments, yous[0].attachments,
+    'Codex and Claude expose the same attachment metadata');
 
   // an image-only send with no nearby bubble keeps a bubble of its own (preview, not vanished)
   const solo = parseSessionLog([
@@ -246,6 +254,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const s = spineFromMessages([{ ts: 1, direction: 'in', source: 'text+attachments', text: manifest }]);
   assert.equal(s[0].text, 'please fix the sidebar', 'spine bubble text drops the manifest');
   assert.deepEqual(s[0].images, ['1784201262058-u_a-Screenshot 2026-07-16 at 19.27.36.png'], 'spine bubble carries the preview');
+  assert.deepEqual(s[0].attachments, yous[0].attachments, 'fallback retains exact upload destinations too');
 
   // client renders previews inside the bubble via the session-scoped attachment route
   const sv = read('web/story-view.js');
@@ -333,7 +342,7 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 
 // ---- source locks: the client render path + cache-key agreement ----
 const storyView = read('web/story-view.js');
-assert.ok(storyView.includes('story-body md') && storyView.includes('renderMarkdown(bodyText)'),
+assert.ok(storyView.includes("rich ? ' md' : ''") && storyView.includes('renderMarkdown(bodyText, { linkHref })'),
   'story view renders report/note bodies through common.js renderMarkdown');
 assert.ok(storyView.includes('storyVideoPreviews(bodyText)')
     && storyView.includes('data-story-video=')

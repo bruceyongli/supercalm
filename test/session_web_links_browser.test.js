@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { parseSessionLog } from '../src/story.js';
+import { messageToEvent } from '../src/story_spine.js';
 
 // Exercise the actual SPA's delegated Story handler and xterm link provider,
 // not a second implementation of their click logic. All API data is isolated.
@@ -14,13 +16,21 @@ const session = { id: 's_web_links_fixture', tool: 'claude', toolLabel: 'Claude'
   project: { name: 'Fixture', path: '/fixture' }, composer_history: [] };
 let base, body;
 const fileRequests = [], webRequests = [], mutations = [];
+const attachment = '/fixture/.aios/attachments/s_web_links_fixture/123-u_abcd-iteration-49-brief.md';
+const laterAttachment = '/fixture/.aios/attachments/s_web_links_fixture/456-u_abcd-iteration-49-brief.md';
+const spacedAttachment = '/fixture/.aios/attachments/s_web_links_fixture/789-u_abcd-计划 (最终).md';
+const manifest = (path, message = 'Read iteration-49-brief.md.') => `${message}\n\nAttached files available locally to this coding CLI:\n1. iteration-49-brief.md (MD, text/markdown): ${path}\n2. 计划 (最终).md (MD, text/markdown): ${spacedAttachment}\n\nOpen these paths directly when you need the uploaded content.`;
+const uploadEvents = [
+  ...parseSessionLog(JSON.stringify({ type: 'user', timestamp: '2023-11-14T22:14:00Z', message: { content: manifest(attachment) } })),
+  messageToEvent({ ts: 1700000100000, direction: 'in', source: 'text+attachments', text: manifest(laterAttachment) }),
+];
 const json = (res, value) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
 const server = createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1'), path = url.pathname;
   if (req.method !== 'GET') mutations.push({ method: req.method, path });
   if (path === '/aios/api/session/s_web_links_fixture') return json(res, session);
   if (path === '/aios/api/session/s_web_links_fixture/story') return json(res,
-    { ok: true, events: [{ kind: 'report', ts: 1700000000000, body }], status: 'waiting', meta: {} });
+    { ok: true, events: [{ kind: 'report', ts: 1700000000000, body }, ...uploadEvents], status: 'waiting', meta: {} });
   if (path === '/aios/api/session/s_web_links_fixture/file') {
     fileRequests.push(url.searchParams.get('path'));
     return json(res, { path: 'report.md', contentKind: 'text', viewUrl: '/aios/fixture-source.txt', downloadUrl: '/aios/fixture-source.txt' });
@@ -83,7 +93,7 @@ try {
     });
     await page.goto(base + '/aios/session?id=s_web_links_fixture&debugTerminal&noTerminalHistory&noresize&desktop=1');
     await page.locator('.story-body a').first().waitFor();
-    const links = page.locator('.story-body a').filter({ hasNotText: 'Local file' });
+    const links = page.locator('[data-kind="report"] .story-body a').filter({ hasNotText: 'Local file' });
     assert.equal(await links.count(), 7, 'all Markdown structures expose a hosted link');
     for (let n = 0; n < await links.count(); n++) {
       const link = links.nth(n), expected = await link.getAttribute('href');
@@ -100,6 +110,25 @@ try {
     await page.getByRole('link', { name: 'Local file', exact: true }).click();
     await page.locator('[data-file-body]').filter({ hasText: 'Local preview still works.' }).waitFor();
     assert.deepEqual(fileRequests, ['/tmp/report.md'], 'legacy local file preview is unchanged');
+    await page.locator('.asset-detail-close').click();
+
+    const uploads = page.locator('[data-kind="you"] a').filter({ hasText: 'iteration-49-brief.md' });
+    assert.equal(await uploads.count(), 2, 'one link per turn, without duplicate file chips');
+    for (const [n, expected] of [attachment, laterAttachment].entries()) {
+      const link = uploads.nth(n);
+      const destination = new URL(await link.getAttribute('href'), base + '/aios/');
+      assert.equal(destination.pathname, '/aios/api/session/s_web_links_fixture/file');
+      assert.equal(destination.searchParams.get('path'), expected, 'same name retains each turn’s own upload');
+      assert.equal(destination.searchParams.get('open'), '1', 'copy/open-in-new-tab has a real endpoint');
+      if (width < 1000) await link.tap(); else await link.click();
+      await page.locator('[data-file-body]').filter({ hasText: 'Local preview still works.' }).waitFor();
+      assert.equal(fileRequests.at(-1), expected, 'in-app preview receives the stored upload path');
+      await page.locator('.asset-detail-close').click();
+    }
+    const spaced = page.getByRole('link', { name: '计划 (最终).md', exact: true }).first();
+    await spaced.click();
+    await page.locator('[data-file-body]').filter({ hasText: 'Local preview still works.' }).waitFor();
+    assert.equal(fileRequests.at(-1), spacedAttachment, 'unmentioned attachment is accessible with Unicode/spaces');
     await page.locator('.asset-detail-close').click();
 
     await page.locator('.workspace-tabs [data-mode="terminal"]').click();
@@ -141,7 +170,7 @@ try {
       reportRequestsBefore + 1, 'fallback plus native provider still opens exactly one tab');
     if (width >= 1000) assert.equal(await page.evaluate(() => __nativeMouseUps), mouseUpsBefore + 1,
       'native mouseup still reaches document-level selection cleanup');
-    assert.deepEqual(fileRequests, ['/tmp/report.md'], 'terminal web links do not open the file viewer');
+    assert.deepEqual(fileRequests, ['/tmp/report.md', attachment, laterAttachment, spacedAttachment], 'terminal web links do not open the file viewer');
     assert.deepEqual(mutations, [], 'link navigation sends no input or session mutation');
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ width, tool, hostedStoryLinks: 7, hostedTerminalLink: true, fileRequests, webRequests: webRequests.length }));

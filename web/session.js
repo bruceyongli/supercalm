@@ -3140,6 +3140,17 @@ shell.addEventListener('click', (e) => {
   const link = e.target.closest?.('.story-body a[href], .review-rendered a[href], .sup-md a[href], .md-view a[href]');
   if (!link) return;
   const href = link.getAttribute('href');
+  // Story anchors have a real session-scoped destination for copy/open-in-tab,
+  // while an ordinary tap still opens the shared in-app rendered preview.
+  const url = new URL(href, document.baseURI);
+  const fileEndpoint = new URL(`api/session/${encodeURIComponent(id)}/file`, document.baseURI);
+  if (url.origin === fileEndpoint.origin && url.pathname === fileEndpoint.pathname && url.searchParams.get('open') === '1') {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    e.stopPropagation();
+    openFileViewer(url.searchParams.get('path'));
+    return;
+  }
   const path = localFilePath(href);
   if (!shouldUseFileViewer(href, path)) return;
   e.preventDefault();

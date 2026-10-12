@@ -118,6 +118,20 @@ export function extractAttachmentImages(raw) {
   return out;
 }
 
+// Keep each upload's original name bound to its exact stored path before hiding
+// the delivery manifest. A basename alone loses the upload id (and can point to
+// an unrelated project file or a later upload with the same name).
+export function extractAttachments(raw) {
+  const out = [];
+  for (const match of String(raw || '').matchAll(/^\d+\. (.+) \([^()\n]*\): (\/[^\n]+)$/gm)) {
+    const path = match[2].trim();
+    if (!/\/\.aios\/attachments\/[^/]+\/[^/]+$/.test(path)) continue;
+    if (!out.some(a => a.path === path)) out.push({ name: match[1], path });
+    if (out.length >= 32) break;
+  }
+  return out;
+}
+
 // ---------- F2: injected-context stripping ----------
 const INJECT_BLOCKS = /<(project_context|relevant_lessons|user_instructions|environment_context|system-reminder|INSTRUCTIONS|collaboration_mode)>[\s\S]*?<\/\1>/g;
 function cleanUserText(raw) {
@@ -179,11 +193,13 @@ function cleanUserText(raw) {
 // "[Image: source: …]" stub) right after the text turn. Fold extracted images into the adjacent
 // operator bubble (≤60s) instead of showing a second bubble; an image-only send with no nearby
 // bubble becomes its own (image-only) bubble rather than vanishing.
-function attachImagesToYou(atoms, ts, images, indent) {
-  if (!images.length) return;
+function attachImagesToYou(atoms, ts, images, indent, attachments = []) {
+  if (!images.length && !attachments.length) return;
   const prev = [...atoms].reverse().find((a) => a.kind === 'you');
-  if (prev && Math.abs(ts - prev.ts) < 60000) prev.images = [...new Set([...(prev.images || []), ...images])];
-  else atoms.push({ ts, kind: 'you', text: '', images, indent });
+  if (prev && Math.abs(ts - prev.ts) < 60000) {
+    prev.images = [...new Set([...(prev.images || []), ...images])];
+    prev.attachments = [...new Map([...(prev.attachments || []), ...attachments].map(a => [a.path, a])).values()];
+  } else atoms.push({ ts, kind: 'you', text: '', images, attachments, indent });
 }
 
 function atomsFromCodex(lines) {
@@ -226,16 +242,17 @@ function atomsFromCodex(lines) {
   let sawTurnCtx = false;
   const pushYou = (ts, raw) => {
     const images = extractAttachmentImages(raw);
+    const attachments = extractAttachments(raw);
     const text = cleanUserText(raw);
-    if (!text) return attachImagesToYou(atoms, ts, images);
+    if (!text) return attachImagesToYou(atoms, ts, images, false, attachments);
     // F9: dedupe against an event_msg/user_message twin
     const dup = atoms.slice(-4).some((a) => a.kind === 'you' && Math.abs(a.ts - ts) < 5000 && a.text.slice(0, 120) === text.slice(0, 120));
     if (!dup) {
-      atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined });
+      atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined, attachments });
       recentAssistant = [];
       asyncMirrors = [];
     }
-    else if (images.length) attachImagesToYou(atoms, ts, images);
+    else attachImagesToYou(atoms, ts, images, false, attachments);
   };
   for (const l of lines) {
     let j; try { j = JSON.parse(l); } catch { continue; }
@@ -398,7 +415,7 @@ function atomsFromClaude(lines) {
       if (queued.id) userIds.add(queued.id);
       const text = cleanUserText(queued.text);
       if (text) atoms.push({ ts: Date.parse(queued.timestamp) || ts, kind: 'you', text,
-        messageId: queued.id, images: extractAttachmentImages(queued.text) });
+        messageId: queued.id, images: extractAttachmentImages(queued.text), attachments: extractAttachments(queued.text) });
       continue;
     }
     if (j.type === 'user' && j.message) {
@@ -410,9 +427,10 @@ function atomsFromClaude(lines) {
         if (/\[Request interrupted/.test(c)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
         else {
           const images = extractAttachmentImages(c);
+          const attachments = extractAttachments(c);
           const text = cleanUserText(c);
-          if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
-          else attachImagesToYou(atoms, ts, images, indent); // image-stub turn → fold into the adjacent bubble
+          if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined, attachments });
+          else attachImagesToYou(atoms, ts, images, indent, attachments); // upload-only turn → fold into the adjacent bubble
         }
       } else if (Array.isArray(c)) {
         const userText = c.filter(part => part?.type === 'text' && part.text).map(part => part.text).join('\n\n');
@@ -420,9 +438,10 @@ function atomsFromClaude(lines) {
           if (/\[Request interrupted/.test(userText)) atoms.push({ ts, kind: 'stop', text: 'You interrupted the agent' });
           else {
             const images = extractAttachmentImages(userText);
+            const attachments = extractAttachments(userText);
             const text = cleanUserText(userText);
-            if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined });
-            else attachImagesToYou(atoms, ts, images, indent);
+            if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined, attachments });
+            else attachImagesToYou(atoms, ts, images, indent, attachments);
           }
         }
         for (const part of c) {
@@ -581,7 +600,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, steps: a.steps, toolId: a.toolId, messageId: a.messageId, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, answered: a.answered, answeredWith: a.answeredWith, cancelled: a.cancelled, requiresResult: a.requiresResult, reportCandidate: a.reportCandidate });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, steps: a.steps, toolId: a.toolId, messageId: a.messageId, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, attachments: a.attachments, answered: a.answered, answeredWith: a.answeredWith, cancelled: a.cancelled, requiresResult: a.requiresResult, reportCandidate: a.reportCandidate });
   }
   flush();
 

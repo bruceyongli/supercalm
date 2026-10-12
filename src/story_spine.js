@@ -16,7 +16,7 @@
 //   out · detect                                                                   → drop (terminal snapshot noise)
 //   out · anything else                                                            → agent reply note
 
-import { extractAttachmentImages } from './story.js';
+import { extractAttachmentImages, extractAttachments } from './story.js';
 
 const OPERATOR_SOURCES = new Set([
   'text', 'text+attachments', 'task', 'voice', 'operator', 'operator-correction', 'phone', 'phone+attachments',
@@ -54,10 +54,12 @@ export function messageToEvent(m) {
     // manifest). The manifest is delivery plumbing: strip it from the bubble, extract the image
     // basenames as previews (rendered inside the bubble), and keep a chip only for non-image files.
     const images = extractAttachmentImages(text);
+    const attachments = extractAttachments(text);
     const bare = text.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
     const ev = { ts, kind: 'you', text: clip(bare || text, 800) };
     if (images.length) ev.images = images;
-    else if (src.endsWith('+attachments')) ev.chips = ['attachments'];
+    if (attachments.length) ev.attachments = attachments;
+    else if (!images.length && src.endsWith('+attachments')) ev.chips = ['attachments'];
     return ev;
   }
   // any other inbound source = an agent/coordination message posted into this session → attribute it,
