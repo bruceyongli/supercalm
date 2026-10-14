@@ -372,6 +372,10 @@ Confirmed queue admission returns HTTP 200 and clears the web composer immediate
 consumption/interruption or resending. Actual unconfirmed drafts stay. Human `queued_command`
 attachments render once in Story/graph using original source identity/time; machine notifications do
 not become operator requests. Codex submission and notify protocols are unchanged.
+Claude text sends use explicit bracketed paste so PTY chunk boundaries never split one request into
+a folded token plus trailing input. While folded, `paste again to expand` replaces the permission
+footer: recognize it as Claude composer evidence before pressing Enter. A newly observed paste token
+is not a delivery receipt; still require the composer to advance or an exact native acknowledgement.
 
 The terminal is **interactive on desktop**. xterm runs with `disableStdin:true` and its helper
 `<textarea>` is forced **read-only** — that is the ONLY reliable way to stop macOS **iCloud Passwords /

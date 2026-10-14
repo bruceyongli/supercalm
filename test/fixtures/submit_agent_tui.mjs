@@ -6,6 +6,7 @@ let input = mode.startsWith('claude-long') || mode === 'claude-stash-blocked' ? 
 let stashed = '';
 let attempts = 0;
 let last = '';
+let pasteNumber = 0;
 const marker = family === 'claude' ? '❯' : '›';
 const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
   ? '\x1b[2mkeep iterating, report iteration 15 when it\'s done\x1b[0m'
@@ -13,12 +14,42 @@ const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
 const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to cycle)' : 'GPT-6-Astra xhigh · /tmp/delivery-test';
 const render = (display = input) => process.stdout.write(mode === 'question'
   ? '\x1b[2J\x1b[1;1HChoose a recovery path:\r\n❯ 1. Resume from summary\r\n  2. Resume full session as-is\r\nEnter to confirm\r\n'
-  : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
+  : mode === 'claude-folded-paste' && input
+    ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ [Pasted text #${pasteNumber} +${input.split('\n').length - 1} lines]\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
+    : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
+// Model the terminal's bracketed-paste protocol across arbitrary PTY chunks.
+// Newlines inside a paste are text, never a premature submission.
+function onInput(receive) {
+  let pending = '', pasted = '', inPaste = false;
+  process.stdin.on('data', data => {
+    pending += data;
+    while (pending) {
+      const marker = inPaste ? '\x1b[201~' : '\x1b[200~';
+      const at = pending.indexOf(marker);
+      if (at >= 0) {
+        const part = pending.slice(0, at);
+        pending = pending.slice(at + marker.length);
+        if (inPaste) {
+          input += pasted + part; pasted = ''; inPaste = false; pasteNumber++;
+          appendFileSync(trace, JSON.stringify({ event: 'paste', text: input }) + '\n');
+          render();
+        } else { if (part) receive(part); inPaste = true; }
+      } else {
+        let keep = 0;
+        for (let n = 1; n < marker.length; n++) if (pending.endsWith(marker.slice(0, n))) keep = n;
+        const part = pending.slice(0, pending.length - keep);
+        pending = pending.slice(pending.length - keep);
+        if (inPaste) pasted += part; else if (part) receive(part);
+        break;
+      }
+    }
+  });
+}
 let partialTimer;
 if (mode === 'partial-paste' || mode === 'redraw-paste') {
-  process.stdin.on('data', data => {
+  onInput(data => {
     if (data === '\x15') { input = ''; render(); return; }
     if (/^[\r\n]+$/.test(data)) {
       appendFileSync(trace, JSON.stringify({ event: 'enter', input }) + '\n');
@@ -38,7 +69,7 @@ if (mode === 'partial-paste' || mode === 'redraw-paste') {
     }
   });
 } else {
-process.stdin.on('data', data => {
+onInput(data => {
   for (const char of data) {
     if (char === '\x13' && family === 'claude') {
       appendFileSync(trace, JSON.stringify({ event: 'stash', text: input }) + '\n');

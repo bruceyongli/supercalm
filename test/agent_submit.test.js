@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { submitAgentComposer, serializeAgentInput } from '../src/agent_submit.js';
 import { agentInputReady, operatorInputPlan, pendingComposerDraft } from '../src/agent_input_ready.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
+import { CLAUDE_COMPOSER_FOOTER, normalizeClaudeInputScreen } from '../src/claude_composer.js';
 
 const idle = '› Ask Codex to do anything\n\nGPT-6-Astra xhigh · /tmp/test';
 const draft = text => `› ${text}\n\nGPT-6-Astra xhigh · /tmp/test`;
@@ -15,11 +16,11 @@ for (const hint of ['Ask Codex to do anything', 'Improve documentation in @filen
 assert.equal(pendingComposerDraft(accepted('fix it')), null, 'submitted transcript text is not a pending draft');
 assert.equal(pendingComposerDraft('❯ prior request\n\n❯\n  bypass permissions on'), null, 'empty Claude composer bounds the search');
 
-async function run({ screen, onEnter = () => {}, text = 'fix it', before = idle, timeoutMs = 2400 }) {
+async function run({ screen, onEnter = () => {}, text = 'fix it', before = idle, timeoutMs = 2400, draftFooterPattern = null }) {
   let t = 0;
   const enters = [];
   const result = await submitAgentComposer({
-    text, before, timeoutMs,
+    text, before, timeoutMs, draftFooterPattern,
     clock: () => t,
     pause: async ms => { t += ms; },
     readScreen: async () => screen({ time: t, enters: enters.length }),
@@ -84,6 +85,22 @@ r = await run({ screen: ({ enters }) => enters ? accepted('long request') : draf
 assert.equal(r.result.accepted, true, 'a new folded paste token is an observable draft');
 r = await run({ before: draft('[Pasted text #1 +32 lines]'), screen: () => draft('[Pasted text #1 +32 lines]'), text: 'another request' });
 assert.equal(r.enters.length, 0, 'an existing folded paste is never blindly submitted');
+
+// Actual Claude 2.1.29x replaces its ordinary permissions footer during a paste.
+// The old matcher sees no composer and makes zero Enter attempts for five seconds.
+const foldedClaude = `${'─'.repeat(60)}\n❯ [Pasted text #7 +2 lines]\n${'─'.repeat(60)}\n  paste again to expand          new task? /clear to save 902.9k tokens`;
+const claudeIdle = `❯\n  bypass permissions on (shift+tab to cycle)`;
+r = await run({ before: claudeIdle, screen: () => foldedClaude, text: multiline });
+assert.equal(r.enters.length, 0, 'generic/Codex behavior has not been broadened');
+r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
+  screen: ({ enters }) => normalizeClaudeInputScreen(enters ? claudeIdle : foldedClaude) });
+assert.equal(r.result.accepted, true, 'Claude paste hint is a valid live composer footer');
+assert.equal(r.enters.length, 1);
+r = await run({ before: foldedClaude, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER, screen: () => foldedClaude });
+assert.equal(r.enters.length, 0, 'an old hidden paste cannot authorize a fresh submission');
+r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
+  screen: () => `Prior report quoted:\n${foldedClaude}\n${claudeIdle}` });
+assert.equal(r.enters.length, 0, 'a quoted paste above the current empty composer is not new input');
 
 const long = Array.from({ length: 35 }, (_, i) => `request line ${i}`).join('\n');
 r = await run({ text: long, screen: ({ enters }) => enters ? idle : draft(long) });

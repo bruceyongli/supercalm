@@ -181,6 +181,23 @@ try {
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
   const queuedId = 's_claude_queued';
+  const foldedId = 's_claude_folded_paste';
+  const foldedTrace = await start(foldedId, 'claude-folded-paste', 'claude');
+  const longMessages = [
+    'Review this request:\n\n' + 'Keep every detail, including 中文，emoji 🧪 and https://example.test/long/path. '.repeat(16).trim(),
+    Array.from({ length: 160 }, (_, i) => `Line ${i}: Keep the complete request intact; do not submit any partial input. 保留全部内容。`).join('\n'),
+  ];
+  for (const [n, text] of longMessages.entries()) {
+    const response = await send(foldedId, text, { client_message_id: `claude-folded-${n}` });
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.equal((await send(foldedId, text, { client_message_id: `claude-folded-${n}` })).body.duplicate, true);
+  }
+  assert.deepEqual(foldedTrace().filter(r => r.event === 'paste').map(r => r.text), longMessages, 'each long message is one complete native paste');
+  assert.deepEqual(foldedTrace().filter(r => r.event === 'accepted').map(r => r.text), longMessages, 'Enter submits the full message once');
+  assert.equal(foldedTrace().filter(r => r.event === 'enter').length, 2);
+  assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(foldedId).n, 2);
+  console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', scenario: 'folded paste replaces permission footer',
+    lengths: longMessages.map(t => t.length), completePastes: 2, enters: 2, accepted: 2, retryDuplicates: 0 }));
   const claudeUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const queuedFile = join(scratch, `${claudeUuid}.jsonl`);
   writeFileSync(queuedFile, '');

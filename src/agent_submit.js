@@ -21,9 +21,10 @@ export async function submitAgentComposer({
   confirmSubmission = null,
   pause = sleep, clock = Date.now,
   initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3, draftMaxLines = 120,
+  draftFooterPattern = null,
 }) {
   const deadline = clock() + timeoutMs;
-  const draftOptions = { requireFooter: true, maxLines: draftMaxLines, preserveWraps: true, expectedText: text };
+  const draftOptions = { requireFooter: true, maxLines: draftMaxLines, preserveWraps: true, expectedText: text, footerPattern: draftFooterPattern };
   const beforeDraft = pendingComposerDraft(before, draftOptions)?.text || '';
   let observed = false;
   let attempts = 0;

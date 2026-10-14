@@ -2,6 +2,16 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { agentInputReady } from './agent_input_ready.js';
 import { stripAnsi } from './util.js';
 
+// A folded paste temporarily REPLACES the permission footer with this hint.
+// Keep this dialect confined to Claude; Codex's input contract is unchanged.
+export const CLAUDE_COMPOSER_FOOTER = /bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents|^\s*paste again to expand\b/i;
+
+export function claudePaste(text) {
+  // Literal send-keys can arrive in several reads and Claude may fold only the
+  // first chunk. Bracketed paste keeps newlines and the entire input together.
+  return `\x1b[200~${text}\x1b[201~`;
+}
+
 // Claude shows arbitrary model-generated prompt suggestions as DIM ghost text, not input. Plain
 // capture loses that distinction. Retain SGR evidence until the live composer is located, remove
 // only its dim suggestion spans, then trim tmux's bottom padding. Never normalize Codex this way.
@@ -9,7 +19,7 @@ export function normalizeClaudeInputScreen(screen) {
   const raw = String(screen || '').replace(/\r/g, '').split('\n');
   while (raw.length && !stripAnsi(raw.at(-1)).trim()) raw.pop();
   const lines = raw.map(stripAnsi);
-  const footer = lines.findLastIndex(line => /bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents/i.test(line));
+  const footer = lines.findLastIndex(line => CLAUDE_COMPOSER_FOOTER.test(line));
   const rule = line => /^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/.test(line);
   const bottom = lines.findLastIndex((line, i) => i < footer && rule(line));
   const top = lines.findLastIndex((line, i) => i < bottom && rule(line));

@@ -41,7 +41,7 @@ import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
-import { stashClaudeComposer, normalizeClaudeInputScreen } from './claude_composer.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
@@ -829,6 +829,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text) : null;
   const claudeComposer = requireOperatorTarget && !menuAnswer && (tool === 'claude' || !!claudeTranscript);
   const draftMaxLines = claudeComposer ? 768 : 120;
+  const draftFooterPattern = claudeComposer ? CLAUDE_COMPOSER_FOOTER : null;
   // A phone-sized viewport can crop the start of a tall draft. Include a bounded scrollback
   // window for Claude input only; verification still requires the live bottom composer/footer.
   const readInputScreen = async () => claudeComposer
@@ -869,7 +870,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   let inputTarget = null;
   if (requireOperatorTarget) {
     inputTarget = operatorInputPlan(screen, text, { menuAnswer, allowActive, replacePendingDraft,
-      ...(claudeComposer ? { draftMaxLines, strictComposer: true } : {}) });
+      ...(claudeComposer ? { draftMaxLines, draftFooterPattern, strictComposer: true } : {}) });
     if (!inputTarget.ready) return { accepted: false, reason: inputTarget.reason, pendingDraft: inputTarget.draft || '' };
   }
   if (inputTarget?.target === 'existing-draft') {
@@ -877,7 +878,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
     const receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: 0,
-      confirmSubmission, draftMaxLines,
+      confirmSubmission, draftMaxLines, draftFooterPattern,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
@@ -904,12 +905,12 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     await exec(TMUX, ['send-keys', '-t', name, 'C-u'], X);
     await sleep(30);
   }
-  await exec(TMUX, ['send-keys', '-t', name, '-l', '--', text], X);
+  await exec(TMUX, ['send-keys', '-t', name, '-l', '--', claudeComposer ? claudePaste(text) : text], X);
   let receipt = { accepted: true };
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
     receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
-      confirmSubmission, draftMaxLines,
+      confirmSubmission, draftMaxLines, draftFooterPattern,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });

@@ -51,9 +51,9 @@ function activeAgentScreen(screen) {
   return /(?:esc|ctrl-c) to interrupt|bypass permissions|accept edits|⏸|← for agents|(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(tail);
 }
 
-export function pendingComposerDraft(screen, { requireFooter = false, maxLines = 24, includePlaceholders = false, preserveWraps = false, expectedText = '' } = {}) {
+export function pendingComposerDraft(screen, { requireFooter = false, maxLines = 24, includePlaceholders = false, preserveWraps = false, expectedText = '', footerPattern = null } = {}) {
   const tail = cleanAgentScreen(screen).split('\n').map((line) => line.trimEnd()).slice(-maxLines);
-  const footerRx = /(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i;
+  const footerRx = footerPattern || /(?:gpt-[\w.-]+|% context left|\bxhigh\b|bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i;
   const ruleRx = /^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/;
   let nearest = null;
   for (let i = tail.length - 1; i >= 0; i--) {
@@ -143,7 +143,7 @@ export function agentInputReady(screen, { completeComposer = false } = {}) {
 // Programmatic text must land on a real composer or an explicitly answered choice form. tmux accepting
 // bytes is not delivery proof: startup/compaction screens and Claude's post-resume modal consume keys
 // without creating a user turn. The operator-input path uses this gate before it reports HTTP success.
-export function operatorInputDisposition(screen, { menuAnswer = false, allowActive = false, draftMaxLines = 24, strictComposer = false } = {}) {
+export function operatorInputDisposition(screen, { menuAnswer = false, allowActive = false, draftMaxLines = 24, strictComposer = false, draftFooterPattern = null } = {}) {
   // A live input target at the bottom (empty composer, choice form, or pending draft) outranks
   // transient words such as "Loading session" that may still be visible in scrollback above it.
   if (agentInputReady(screen, { completeComposer: strictComposer })) return { ready: true, target: 'composer' };
@@ -152,7 +152,7 @@ export function operatorInputDisposition(screen, { menuAnswer = false, allowActi
     : { ready: false, reason: 'resume-choice' };
   if (askMenuTypeDigit(screen)) return { ready: true, target: 'custom-answer' };
   if (menuAnswer && numberedChoicePrompt(screen)) return { ready: true, target: 'choice-menu' };
-  const pending = pendingComposerDraft(screen, { requireFooter: true, maxLines: draftMaxLines });
+  const pending = pendingComposerDraft(screen, { requireFooter: true, maxLines: draftMaxLines, footerPattern: draftFooterPattern });
   if (pending) return { ready: false, reason: 'pending-draft', draft: pending.text };
   const transient = transientInputReason(screen);
   if (transient) return { ready: false, reason: transient };
@@ -168,7 +168,7 @@ export function operatorInputDisposition(screen, { menuAnswer = false, allowActi
 export function operatorInputPlan(screen, requested, opts = {}) {
   const disposition = operatorInputDisposition(screen, opts);
   if (disposition.ready || disposition.reason !== 'pending-draft') return disposition;
-  const wrapped = pendingComposerDraft(screen, { requireFooter: true, preserveWraps: true, maxLines: opts.draftMaxLines || 24 });
+  const wrapped = pendingComposerDraft(screen, { requireFooter: true, preserveWraps: true, maxLines: opts.draftMaxLines || 24, footerPattern: opts.draftFooterPattern });
   if (pendingDraftMatches(disposition.draft, requested, wrapped?.lines)) {
     return { ready: true, target: 'existing-draft', draft: disposition.draft };
   }
