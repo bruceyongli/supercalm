@@ -81,7 +81,7 @@ export async function submitAgentComposer({
         }
       } else { changedDraft = ''; changedCount = 0; }
     } else if (observed && attempts > 0) {
-      const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true });
+      const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true, draftFooterPattern });
       if (state.ready) return { accepted: true, verified: true, attempts };
     }
     if (clock() >= deadline) break;

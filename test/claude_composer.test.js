@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { operatorInputPlan } from '../src/agent_input_ready.js';
-import { stashClaudeComposer, normalizeClaudeInputScreen } from '../src/claude_composer.js';
+import { operatorInputPlan, agentInputReady } from '../src/agent_input_ready.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER } from '../src/claude_composer.js';
 
 const footer = '⏵⏵ bypass permissions on (shift+tab to cycle)';
 const empty = `❯\n${footer}`;
@@ -15,6 +15,11 @@ assert.equal(operatorInputPlan(`unknown tool screen\n${footer}`, 'new request', 
 assert.equal(operatorInputPlan(`unknown tool screen\n${footer}`, 'new request', { allowActive: true }).target, 'active-agent', 'Codex/generic readiness stays unchanged');
 assert.equal(operatorInputPlan(`❯\n  multiline draft starting with a newline\n${footer}`, 'new request', claudeOptions).reason, 'pending-draft', 'blank first line is not an empty buffer');
 const rule = '─'.repeat(40);
+const emptyPasteHint = `${rule}\n❯\n${rule}\n  paste again to expand`;
+assert.equal(agentInputReady(emptyPasteHint), false, 'generic readiness contract stays unchanged');
+assert.equal(operatorInputPlan(emptyPasteHint, 'new request', { ...claudeOptions, draftFooterPattern: CLAUDE_COMPOSER_FOOTER }).target, 'composer');
+assert.equal(await stashClaudeComposer({ stash: async () => {}, readScreen: async () => emptyPasteHint, pause: async () => {} }), true,
+  'real Claude keeps its paste hint even after successfully stashing the previous folded draft');
 const ghost = `${rule}\n❯ \x1b[2mkeep iterating, report iteration 15 when it's done\x1b[0m\n${rule}\n${footer}\n${'\n'.repeat(45)}`;
 assert.equal(operatorInputPlan(normalizeClaudeInputScreen(ghost), 'new request', claudeOptions).target, 'composer', 'arbitrary dim suggestion is not a draft despite bottom padding');
 assert.equal(operatorInputPlan(normalizeClaudeInputScreen(ghost.replace('\x1b[2m', '').replace('\x1b[0m', '')), 'new request', claudeOptions).reason, 'pending-draft', 'identical real typed words remain a real draft');

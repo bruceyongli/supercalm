@@ -60,7 +60,7 @@ export async function stashClaudeComposer({ stash, readScreen, pause = sleep, cl
   await stash();
   do {
     await pause(80);
-    if (agentInputReady(normalizeClaudeInputScreen(await readScreen()), { completeComposer: true })) return true;
+    if (agentInputReady(normalizeClaudeInputScreen(await readScreen()), { completeComposer: true, footerPattern: CLAUDE_COMPOSER_FOOTER })) return true;
   } while (clock() < deadline);
   return false;
 }

@@ -111,9 +111,10 @@ export function pendingDraftMatches(pending, requested, wrappedLines = [], { pre
   return visible.endsWith('…') && wanted.startsWith(visible.slice(0, -1).trimEnd());
 }
 
-export function agentInputReady(screen, { completeComposer = false } = {}) {
+export function agentInputReady(screen, { completeComposer = false, footerPattern = null } = {}) {
   const clean = cleanAgentScreen(screen);
   const tail = clean.split('\n').slice(-24);
+  const claudeFooter = footerPattern || /(?:bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i;
   for (let index = tail.length - 1; index >= 0; index--) {
     const line = tail[index];
     const match = line.match(/^\s*([›❯])\s*(.*?)\s*$/);
@@ -127,11 +128,11 @@ export function agentInputReady(screen, { completeComposer = false } = {}) {
     const after = tail.slice(index + 1, index + 7).join('\n');
     const footer = marker === '›'
       ? /(?:gpt-[\w.-]+|% context left|\bxhigh\b)/i.test(after)
-      : /(?:bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents)/i.test(after);
+      : after.split('\n').some(line => claudeFooter.test(line));
     if (!footer) continue;
     if (completeComposer) {
       const rest = tail.slice(index + 1);
-      const footerAt = rest.findIndex(line => /bypass permissions|accept edits|plan mode|shift\+tab|⏸|← for agents/i.test(line));
+      const footerAt = rest.findIndex(line => claudeFooter.test(line));
       if (rest.slice(0, footerAt).some(line => line.trim() && !/^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/.test(line))) return false;
     }
     if (marker === '›' && body && !placeholder) continue; // Codex keeps its existing readiness semantics
@@ -146,7 +147,7 @@ export function agentInputReady(screen, { completeComposer = false } = {}) {
 export function operatorInputDisposition(screen, { menuAnswer = false, allowActive = false, draftMaxLines = 24, strictComposer = false, draftFooterPattern = null } = {}) {
   // A live input target at the bottom (empty composer, choice form, or pending draft) outranks
   // transient words such as "Loading session" that may still be visible in scrollback above it.
-  if (agentInputReady(screen, { completeComposer: strictComposer })) return { ready: true, target: 'composer' };
+  if (agentInputReady(screen, { completeComposer: strictComposer, footerPattern: draftFooterPattern })) return { ready: true, target: 'composer' };
   if (claudeResumePrompt(screen)) return menuAnswer
     ? { ready: true, target: 'choice-menu' }
     : { ready: false, reason: 'resume-choice' };

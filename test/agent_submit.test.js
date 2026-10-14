@@ -90,12 +90,17 @@ assert.equal(r.enters.length, 0, 'an existing folded paste is never blindly subm
 // The old matcher sees no composer and makes zero Enter attempts for five seconds.
 const foldedClaude = `${'─'.repeat(60)}\n❯ [Pasted text #7 +2 lines]\n${'─'.repeat(60)}\n  paste again to expand          new task? /clear to save 902.9k tokens`;
 const claudeIdle = `❯\n  bypass permissions on (shift+tab to cycle)`;
+const emptyPasteHint = `${'─'.repeat(60)}\n❯\n${'─'.repeat(60)}\n  paste again to expand`;
 r = await run({ before: claudeIdle, screen: () => foldedClaude, text: multiline });
 assert.equal(r.enters.length, 0, 'generic/Codex behavior has not been broadened');
 r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
   screen: ({ enters }) => normalizeClaudeInputScreen(enters ? claudeIdle : foldedClaude) });
 assert.equal(r.result.accepted, true, 'Claude paste hint is a valid live composer footer');
 assert.equal(r.enters.length, 1);
+r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
+  screen: ({ enters }) => enters ? emptyPasteHint : foldedClaude });
+assert.equal(r.result.accepted, true, 'Claude may retain the paste hint after Enter clears the composer');
+assert.equal(r.enters.length, 1, 'cleared paste is not submitted twice without a transcript receipt');
 r = await run({ before: foldedClaude, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER, screen: () => foldedClaude });
 assert.equal(r.enters.length, 0, 'an old hidden paste cannot authorize a fresh submission');
 r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
