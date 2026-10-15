@@ -78,6 +78,7 @@ import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorI
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
+import { createTerminalPipeRepair } from './terminal_pipe.js';
 import { refreshCodexQuestions, resolveCodexQuestion } from './codex_questions.js';
 import { storedQuestion } from './codex_question.js';
 
@@ -142,6 +143,15 @@ if space is low, stop new bulk writes and report it. Never delete another sessio
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
 const reg = new Map();
+const repairTerminalPipes = createTerminalPipeRepair({ tmux, onRepair(entry) {
+  // Bytes emitted while the logger was disconnected cannot be replayed. Existing
+  // viewers reconnect for the current tmux screen, then continue on the repaired tap.
+  stopTerminalTail(entry);
+  const viewers = [...entry.subscribers];
+  entry.subscribers.clear();
+  for (const res of viewers) { try { res.end(); } catch { res.destroy(); } }
+  console.log(`[aios] terminal output pipe restored (${entry.id})`);
+} });
 const pendingLaunches = new Map(); // sid -> cancellation ticket while preflight/worktree/tmux runs
 const pendingResumes = new Map(); // sid -> one shared relaunch promise; prevents overlapping model/settings restarts
 const resizeClients = new Map();
@@ -1063,7 +1073,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
     paneMayExist = true;
     await tmux('new-session', '-d', '-s', name, '-x', '200', '-y', '50', '-c', dir);
     await tmux('set-option', '-t', name, 'history-limit', '200000').catch(() => {});
-    await tmux('pipe-pane', '-t', name, `cat >> "${logFile}"`);
+    await tmux('pipe-pane', '-t', name, `exec cat >> ${shquote(logFile)}`);
 
   // A Git worktree chooses the checkout (provenance + branch); it is NOT a write jail. Full
   // autonomy means genuinely full even in a worktree (operator directive 2026-08-11) — the old
@@ -4130,6 +4140,8 @@ route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform', connection: 'keep-alive' });
   res.write('retry: 2000\n\n');
   const entry = register(s);
+  await repairTerminalPipes([...reg.values()]).catch(() => {});
+  if (req.destroyed || res.destroyed) return;
   if (entry && !entry.subscribers.size) {
     // Unviewed logs are no longer polled. Start at now; the snapshot below supplies history/screen.
     await entry.tailFlight?.catch(() => {});
@@ -4180,6 +4192,7 @@ async function boot() {
   await ensureServer();
   await tmuxOk('set-option', '-g', 'history-limit', '200000');
   await discover();
+  await repairTerminalPipes([...reg.values()]).catch(() => {});
   const swept = await sweepTemporaryProjects();
   if (swept.some((result) => result?.removed)) bus.emit('changed');
   const liveSessionIds = store.listExpectedLiveSessions().map((session) => session.id);
@@ -4195,6 +4208,9 @@ async function boot() {
     pollOnce().catch((e) => console.error('[aios] poll error', e.message)).finally(() => { _pollBusy = false; });
   }, POLL_MS);
   setInterval(() => tailOnce().catch((e) => console.error('[aios] tail error', e.message)), TAIL_MS);
+  // Independent of the status/LLM poller and of viewer presence: logs must also
+  // recover while no browser is open. One batch tmux query, never one per session.
+  setInterval(() => repairTerminalPipes([...reg.values()]).catch(() => {}), 5000).unref();
   console.log('[aios] sessions ready');
 }
 export const sessionReady = boot();

@@ -105,25 +105,46 @@ function evKey(e) {
   return e.kind === 'ask' && e.askId && e.questionId != null ? `ask|${e.askId}|${e.questionId}` : `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`;
 }
 
-// The scroll position belongs to the USER, not to us. It is preserved across every re-render / refresh /
-// story-update / session-switch, and restored (persisted per session) on reopen. We NEVER auto-scroll to
-// the latest message — the ONLY thing that jumps to newest is the explicit "Latest" button (storyToLatest).
+// Remember the user's reading intent, not just a pixel offset: following Latest survives new content,
+// hidden panels and session navigation; scrolling up opts out until the user returns to the bottom.
 let feedTop = 0;        // remembered .story-feed scrollTop for the current session
+let followLatest = true;
 let feedPersistT = 0;   // throttle timer for the per-session persist
+let feedResizeObserver = null;
 const SCROLL_KEY = (id) => `aios_story_scroll_${id}`;
-function persistScroll() { try { sessionStorage.setItem(SCROLL_KEY(sid), String(Math.round(feedTop))); } catch {} }
+function persistScroll() {
+  if (!sid) return;
+  try { sessionStorage.setItem(SCROLL_KEY(sid), JSON.stringify({ top: Math.round(feedTop), latest: followLatest })); } catch {}
+}
+function restoreScrollPreference() {
+  feedTop = 0; followLatest = true;
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY(sid)));
+    if (saved && typeof saved === 'object') {
+      feedTop = Math.max(0, Number(saved.top) || 0); followLatest = saved.latest !== false;
+    } else if (typeof saved === 'number') {
+      feedTop = Math.max(0, saved); followLatest = false; // legacy reading position
+    }
+  } catch {}
+}
+function visibleFeed(feed) { return feed?.isConnected && !panelEl?.hidden && feed.clientHeight > 0; }
+function restoreFeedScroll() {
+  const feed = panelEl?.querySelector('.story-feed');
+  // display:none has zero geometry. Never replace a real reading position with that temporary zero.
+  if (!visibleFeed(feed)) return;
+  feed.scrollTop = followLatest ? feed.scrollHeight : feedTop;
+  feedTop = feed.scrollTop;
+  updateLatestBtn(feed);
+}
 function nearBottom(feed) { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 8; }
 function updateLatestBtn(feed) {
   const btn = panelEl && panelEl.querySelector('[data-story-latest]');
   if (btn && feed) btn.hidden = nearBottom(feed); // show it only when the user is NOT already at the newest
 }
-function storyToLatest() { // the ONE sanctioned jump-to-newest
-  const feed = panelEl && panelEl.querySelector('.story-feed');
-  if (!feed) return;
-  feed.scrollTop = feed.scrollHeight;
-  feedTop = feed.scrollTop;
+function storyToLatest() {
+  followLatest = true;
+  restoreFeedScroll();
   persistScroll();
-  updateLatestBtn(feed);
 }
 
 // Cross-navigation story cache (sessionStorage): a hovered-then-clicked or previously-visited session's
@@ -533,8 +554,13 @@ function render() {
     <div data-story-status-slot></div>`;
     feed = panelEl.querySelector('.story-feed');
     feed.addEventListener('scroll', () => {
+      if (!visibleFeed(feed) || feed !== panelEl?.querySelector('.story-feed')) return;
       const previous = feedTop;
+      // Our own restoration generates a scroll event too. It must not change reading intent or page
+      // history; in particular, a cached short feed can temporarily clamp a restored older position.
+      if (feed.scrollTop === previous) return;
       feedTop = feed.scrollTop;
+      followLatest = nearBottom(feed);
       clearTimeout(feedPersistT); feedPersistT = setTimeout(persistScroll, 300);
       updateLatestBtn(feed);
       // Only an intentional upward scroll fetches history. Initial paint, a short feed or a timer
@@ -580,10 +606,17 @@ function render() {
   restoreStoryVideoState();
   if (feed) {
     // Disable native scroll anchoring in CSS: this explicit height delta anchors a prepended page once.
-    if (pendingAnchor != null) { feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor)); pendingAnchor = null; persistScroll(); }
-    feed.scrollTop = feedTop;
-    feedTop = feed.scrollTop;
-    updateLatestBtn(feed);
+    if (pendingAnchor != null) {
+      if (visibleFeed(feed) && !followLatest) feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor));
+      pendingAnchor = null;
+    }
+    restoreFeedScroll();
+    // Media/font loading and viewport changes can move the bottom after render. Track layout, not
+    // timers, and never pull someone away from older messages they deliberately scrolled to read.
+    feedResizeObserver ||= new ResizeObserver(restoreFeedScroll);
+    feedResizeObserver.disconnect();
+    feedResizeObserver.observe(feed);
+    for (const row of feed.children) feedResizeObserver.observe(row);
   }
 }
 
@@ -606,7 +639,7 @@ export async function loadEarlierStory() {
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
     const feed = panelEl.querySelector('.story-feed');
-    pendingAnchor = feed?.scrollHeight ?? null;
+    pendingAnchor = visibleFeed(feed) ? feed.scrollHeight : null;
     const byKey = new Map((r.events || []).map(e => [evKey(e), e]));
     for (const ev of events) byKey.set(evKey(ev), ev); // newest/live versions win over historical copies
     events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -853,9 +886,14 @@ async function refreshStoryNow({ quiet, flight }) {
 function pauseStoryRequests() {
   storyAbort.abort(); storyAbort = new AbortController(); refreshFlight = null; historyLoading = false;
 }
-export function setStoryActive(active) { liveUpdates?.setActive(active); }
+export function setStoryActive(active) {
+  if (active) restoreFeedScroll();
+  else { clearTimeout(feedPersistT); persistScroll(); }
+  liveUpdates?.setActive(active);
+}
 export function destroyStoryView(sessionId) {
   if (sessionId && sessionId !== sid) return;
+  persistScroll(); feedResizeObserver?.disconnect(); feedResizeObserver = null;
   liveUpdates?.close(); liveUpdates = null; pauseStoryRequests();
   storyGeneration++; panelEl = null; sid = null; catchup = null;
   clearTimeout(feedPersistT);
@@ -863,7 +901,10 @@ export function destroyStoryView(sessionId) {
 
 export function initStoryView({ sessionId, panel, live = false, signal }) {
   const switching = sid !== sessionId;
-  if (switching || panel !== panelEl) {
+  const remounting = switching || panel !== panelEl;
+  if (remounting) {
+    persistScroll(); clearTimeout(feedPersistT);
+    feedResizeObserver?.disconnect(); feedResizeObserver = null;
     liveUpdates?.close(); liveUpdates = null; pauseStoryRequests(); storyGeneration++;
   }
   if (switching) { asyncChoices.clear(); asyncSending.clear(); asyncErrors.clear(); }
@@ -891,9 +932,7 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
   if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
-  // Restore THIS session's last scroll position (survives refresh + reopen); 0 = top of the loaded story
-  // (its last user message), never auto-scrolled to the newest.
-  feedTop = Number(sessionStorage.getItem(SCROLL_KEY(sid))) || 0;
+  if (remounting) restoreScrollPreference();
   // Instant first paint from the cross-nav cache (hover-prefetched or last-visited), then refresh live.
   if (!showFull) {
     const cached = readStoryCache(sid);

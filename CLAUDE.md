@@ -394,6 +394,15 @@ style): a leading `/` opens a menu built **live from the existing `#s-settings` 
 (no duplicated settings logic); an unknown `/cmd` is offered as "send to agent" for line commands
 (`/compact`, …).
 
+Terminal liveness is separate from agent liveness: `terminal_pipe.js` checks owned panes in one batch
+at boot, stream connection and every five seconds. Restore only missing live-pane loggers with
+`pipe-pane -o`; never restart agents, send keys, truncate logs or replace healthy pipes. Reconnect
+existing viewers for a fresh screen snapshot, then continue the live byte stream.
+Story persists both reading position and follow-Latest intent per session. Latest/manual bottom
+continues following across updates, view switches and session navigation; scrolling up opts out.
+Hidden panels have zero geometry: never save it as the user's position. Flush pending persistence
+before teardown and restore only after showing the panel; delayed media layout must respect intent.
+
 ## Supervisor (`supervisor.js` + `web/session.js` supervisor tab)
 An **opt-in, per-session supervise agent**. The contract is one markdown `doc` per session with this
 shape: `# title`, `## Goal`, `## Hard rules`, `## Acceptance criteria` checkboxes, and

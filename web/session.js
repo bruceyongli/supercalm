@@ -800,7 +800,6 @@ async function loadWorkspaceFiles({ refresh = false, view = activeMainView } = {
 
 function setMainView(view) {
   activeMainView = MAIN_VIEWS.has(view) ? view : 'terminal';
-  storyClient?.setStoryActive(activeMainView === 'story');
   localStorage.setItem(PREF_MAIN_VIEW, activeMainView);
   shell.classList.toggle('conversation-mode', activeMainView === 'conversation');
   shell.classList.toggle('agent-mode', activeMainView === 'agent');
@@ -818,6 +817,7 @@ function setMainView(view) {
   document.querySelectorAll('[data-main-panel]').forEach((p) => {
     p.hidden = p.dataset.mainPanel !== activeMainView;
   });
+  storyClient?.setStoryActive(activeMainView === 'story'); // restore after the panel has real geometry
   if (activeMainView === 'story') loadStoryView();
   else if (activeMainView === 'conversation') loadTimeline();
   else if (activeMainView === 'agent') setTimeout(() => loadAgentView(), 0);
