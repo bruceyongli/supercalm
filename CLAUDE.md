@@ -398,6 +398,7 @@ Terminal liveness is separate from agent liveness: `terminal_pipe.js` checks own
 at boot, stream connection and every five seconds. Restore only missing live-pane loggers with
 `pipe-pane -o`; never restart agents, send keys, truncate logs or replace healthy pipes. Reconnect
 existing viewers for a fresh screen snapshot, then continue the live byte stream.
+Use printable tmux format separators: launchd's C locale turns tabs into underscores.
 Story persists both reading position and follow-Latest intent per session. Latest/manual bottom
 continues following across updates, view switches and session navigation; scrolling up opts out.
 Hidden panels have zero geometry: never save it as the user's position. Flush pending persistence

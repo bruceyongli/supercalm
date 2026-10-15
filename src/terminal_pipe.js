@@ -11,9 +11,11 @@ export function createTerminalPipeRepair({ tmux, onRepair = () => {}, clock = Da
   async function check(entries) {
     const eligible = entries.filter(e => !e.tailRetired && !e.relaunching && e.tmux && !e.tmux.startsWith('pending-'));
     if (!eligible.length) return;
+    // launchd commonly has a C locale. tmux replaces tab/control separators with underscores
+    // there, unlike an interactive UTF-8 shell. Use a printable delimiter in this machine format.
     const rows = await tmux('list-panes', '-a', '-F',
-      '#{session_name}\t#{pane_id}\t#{pane_pipe}\t#{pane_dead}\t#{window_active}\t#{pane_active}');
-    const panes = new Map(rows.trim().split('\n').map(row => row.split('\t'))
+      '#{session_name}|#{pane_id}|#{pane_pipe}|#{pane_dead}|#{window_active}|#{pane_active}');
+    const panes = new Map(rows.trim().split('\n').map(row => row.split('|'))
       .filter(p => p[4] === '1' && p[5] === '1').map(p => [p[0], p]));
     for (const entry of eligible) {
       const name = entry.tmux, pane = panes.get(name);

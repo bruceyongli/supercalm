@@ -7,10 +7,11 @@ let clock = 100, repaired = [], calls = [], dirs = [], fail = false;
 const tmux = async (...args) => {
   calls.push(args);
   if (args[0] === 'list-panes') {
+    assert.equal(args[3], '#{session_name}|#{pane_id}|#{pane_pipe}|#{pane_dead}|#{window_active}|#{pane_active}', 'machine format must survive tmux in launchd C locale');
     await new Promise(resolve => setTimeout(resolve, 10));
-    return 'broken\t%1\t0\t0\t1\t1\nhealthy\t%2\t1\t0\t1\t1\ndead\t%3\t0\t1\t1\t1\n'
-      + 'foreign\t%4\t0\t0\t1\t1\nretired\t%5\t0\t0\t1\t1\nrelaunching\t%6\t0\t0\t1\t1\n'
-      + 'broken\t%7\t0\t0\t0\t1\n';
+    return 'broken|%1|0|0|1|1\nhealthy|%2|1|0|1|1\ndead|%3|0|1|1|1\n'
+      + 'foreign|%4|0|0|1|1\nretired|%5|0|0|1|1\nrelaunching|%6|0|0|1|1\n'
+      + 'broken|%7|0|0|0|1\n';
   }
   if (args[0] === 'pipe-pane' && fail) throw new Error('disk full');
   return '1\n';

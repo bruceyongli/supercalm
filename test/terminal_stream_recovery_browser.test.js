@@ -18,6 +18,8 @@ const probe = createServer(); await new Promise(r => probe.listen(0, '127.0.0.1'
 const port = probe.address().port; await new Promise(r => probe.close(r));
 process.env.AIOS_DATA = join(scratch, 'data'); process.env.AIOS_TMUX = wrapper;
 process.env.AIOS_HOST = '127.0.0.1'; process.env.AIOS_PORT = String(port);
+// Match the launchd service, not the developer's UTF-8 shell: tmux sanitizes tabs to '_' in C.
+process.env.LANG = 'C'; process.env.LC_ALL = 'C';
 delete process.env.AIOS_NO_LISTEN;
 let browser, store, cleaned = false;
 function cleanup() {
@@ -79,7 +81,7 @@ try {
     assert.equal(await tmux('display-message', '-p', '-t', name, '#{pane_pid}'), pid, 'agent process survives logger recovery unchanged');
     assert.equal(await page.evaluate(() => performance.getEntriesByType('navigation').length), 1, 'updates resume without refresh or Story switching');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ width, before, frozen, recovered: current, recoveryMs, realPTY: true, realSSE: true, renderedXterm: true, agentPidUnchanged: true }));
+    console.log(JSON.stringify({ width, locale: process.env.LC_ALL, before, frozen, recovered: current, recoveryMs, realPTY: true, realSSE: true, renderedXterm: true, agentPidUnchanged: true }));
     await page.close();
   }
   assert.ok(readFileSync(logFile, 'utf8').startsWith('PRESERVED_HISTORY'), 'recovery appends; existing logs are never truncated');
