@@ -55,8 +55,16 @@ const HEALTH_CSS = `
       .storage-section .health-row a { min-width:0; overflow-wrap:anywhere; }
       .resource-table { table-layout:fixed; }
       .resource-table th:first-child { width:54%; }
+      .resource-with-disk th:first-child { width:42%; }
       .resource-table td { overflow-wrap:anywhere; }
       .resource-table details { font-size:11px; }
+      [data-resource-disk] { margin-top:14px; padding-top:12px; border-top:1px solid #202a35; }
+      .resource-disk-head { display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap; font-size:12px; }
+      .resource-disk-meter { display:block; width:100%; height:8px; margin:8px 0; accent-color:#8191a7; }
+      .resource-disk-meter::-webkit-meter-bar { background:#202a35; border:0; border-radius:8px; }
+      .resource-disk-meter::-webkit-meter-optimum-value { background:#8191a7; }
+      .resource-disk-meter::-webkit-meter-suboptimum-value { background:#c4a66a; }
+      .resource-disk-meter::-webkit-meter-even-less-good-value { background:#ce7e74; }
       @media (max-width: 800px) {
         .health-grid { grid-template-columns: 1fr; }
         /* phones: wide tables scroll inside their section; the notice's re-index action wraps under

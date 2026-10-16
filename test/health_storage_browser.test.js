@@ -18,6 +18,8 @@ const server = createServer(async (req, res) => {
   let body = ''; for await (const chunk of req) body += chunk;
   const json = data => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
   if (path === '/api/product/resources') { resourceCalls++; return json({ state: 'ready', checked_at: resourceCalls, errors: [],
+    capacity: { available_bytes: 70 * 1024 ** 3, total_bytes: 500 * 1024 ** 3 },
+    session_disk: [{ id: 's_running', disk_bytes: 7 * 1024 ** 3, disk_checked_at: Date.now(), disk_pending: false }],
     host: { level: 'warning', cores: 8, load_average: [50, 40, 30], total_memory_bytes: 16 * 1024 ** 3,
       memory_pressure: 'normal', swap_used_bytes: null, cpu_busy_percent: 98 },
     groups: [{ id: 'session:s_running', session_id: 's_running', title: 'Live <script> unsafe title', project: 'Fixture', kind: 'session',
@@ -59,7 +61,10 @@ try {
     await page.waitForSelector('[data-storage-session="s_killed"]');
     await page.waitForSelector('[data-resource-group="session:s_running"]');
     assert.match(await page.locator('[data-resource-overview]').innerText(), /swap unknown/);
+    assert.match(await page.locator('[data-resource-disk]').innerText(), /70\.0 GiB available \/ 500\.0 GiB/);
+    assert.equal(await page.locator('.resource-disk-meter').getAttribute('value'), '86');
     assert.match(await page.locator('[data-resource-sessions]').innerText(), /130\.0%[\s\S]*4\.0 GiB footprint/);
+    assert.match(await page.locator('[data-resource-sessions]').innerText(), /7\.0 GiB/);
     assert.equal(await page.locator('[data-resource-sessions] script').count(), 0);
     await page.locator('[data-resource-group="session:s_running"] summary').click();
     await page.locator('[data-resource-refresh]').click();

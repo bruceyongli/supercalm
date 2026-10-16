@@ -15,6 +15,18 @@ import * as store from './store.js';
 const exec = promisify(execFile);
 export const isInside = (path, root) => path === root || path.startsWith(root + sep);
 const SID = /^s_[a-zA-Z0-9_-]+$/;
+let measurements = 0;
+const measurementWaiters = [];
+async function withDiskSlot(fn) {
+  if (measurements >= 2) await new Promise(resolve => measurementWaiters.push(resolve));
+  else measurements++;
+  try { return await fn(); }
+  finally {
+    const next = measurementWaiters.shift();
+    if (next) next(); // transfer this slot, rather than briefly freeing it to a newer caller
+    else measurements--;
+  }
+}
 
 // Header metadata only: never scan records, compact, checkpoint, or promise these pages as savings.
 export function databaseStorage() {
@@ -58,13 +70,13 @@ export function cleanupEligibility(session) {
   return { cleanable: true, deletable: killed, reason: killed ? 'Killed by operator' : 'Stopped; history is resumable' };
 }
 
-export async function measureStoragePath(path) {
+export async function measureStoragePath(path, { timeoutMs = 120_000 } = {}) {
   if (!path || !String(path).startsWith(sep) || [sep, resolve(homedir())].includes(resolve(path))) return { bytes: 0, error: 'Broad or invalid path is not scanned' };
   try {
     const info = await lstat(path);
     if (info.isSymbolicLink()) return { bytes: 0, error: 'Symlink is not traversed' };
     if (!info.isDirectory()) return { bytes: info.blocks * 512, logical_bytes: info.size };
-    const result = await exec('du', ['-sk', path], { timeout: 120_000, killSignal: 'SIGKILL', maxBuffer: 65536 });
+    const result = await withDiskSlot(() => exec('du', ['-sk', path], { timeout: timeoutMs, killSignal: 'SIGKILL', maxBuffer: 65536 }));
     const blocks = Number(String(result.stdout).match(/^\s*(\d+)/)?.[1]);
     if (!Number.isFinite(blocks)) throw new Error('Invalid disk usage result');
     return { bytes: blocks * 1024 };

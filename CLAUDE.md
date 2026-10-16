@@ -45,7 +45,7 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 - UI principle: do not add visible controls/buttons for rare edge cases unless explicitly requested.
   Prefer automatic behavior, existing controls, or progressive fallback; keep the coding/voice UI low
   brain-load.
-- Host resources: Health → CPU & memory and `GET /api/product/resources` expose cached per-session
+- Host resources: Health → CPU, memory & disk and `GET /api/product/resources` expose cached per-session
   process accounting, detached managed-path jobs, and separate launchd services. CPU 100% is one core;
   macOS footprint includes compressed pages, unlike RSS. Never interpret their sum as physical RAM.
   New session launches check OS critical memory pressure; low free RAM or old swap alone cannot block
@@ -53,6 +53,12 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   on an overloaded host. Before spawning heavy batches, inspect resource pressure; unattended auth
   failures must stop for login rather than repeatedly opening browser windows. Diagnostics never grant
   authority to terminate another project's jobs or shared services.
+  The session rail replaces its grey brief with compact CPU/RAM/Disk values. Batch only visible rows
+  through `/api/product/resources/sessions`; patch value nodes without reordering rows or resetting dots.
+  CPU/memory share a 15-second sample; owned disk scopes use a bounded, serial one-minute cache and
+  share a two-process `du` limit with Health. Exclude shared project source, deduplicate nested scopes,
+  show unknown/stale honestly, and never trigger a full storage inventory from the rail. Needs You keeps
+  its actionable descriptions; resource sampling never advances activity or attention clocks.
 - **Links:** use the shared `web/file-reference.js` classification in Story, Terminal and rendered
   Markdown. A same-host HTTP URL is still a web URL; never infer a disk path from `.html`/`.md`/media
   suffixes. Tailscale may serve arbitrary project mounts beside `/aios`. Only explicit filesystem-root

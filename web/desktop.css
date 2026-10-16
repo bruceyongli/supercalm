@@ -128,9 +128,15 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-sess.active .dk-status { color: inherit; }
 /* STOPPED sub-header inside the page-body sessions list (#dk-rows) — a tighter variant of .dk-sec-row */
 .dk-sec-row.dk-sec-row-sub { margin: 16px 0 8px; }
-.dk-sess-l2 { font-size: 11.5px; color: #5c6675; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk-sess-l2 { display:flex; align-items:center; gap:6px; font-size:11px; min-height:18px; color:#8793a3; white-space:nowrap; }
 /* project tag on each session row so it's clear which session belongs to which project */
 .dk-sess-proj { font-family: 'JetBrains Mono', monospace; font-size: 9px; font-weight: 700; color: #9aa7b8; background: #0d1219; border: 1px solid #232c38; border-radius: 999px; padding: 1px 6px; margin-right: 6px; }
+.dk-sess-l2 .dk-sess-proj { margin-right:0; max-width:28%; flex-shrink:1; overflow:hidden; text-overflow:ellipsis; }
+.dk-sess-res { display:flex; justify-content:space-between; gap:6px; flex:1; min-width:0; font-variant-numeric:tabular-nums; }
+.dk-res-metric { display:inline-flex; align-items:baseline; gap:3px; white-space:nowrap; }
+.dk-res-label { font-size:8.5px; color:#7f8c9e; }
+.dk-res-value { font-family:'JetBrains Mono',monospace; font-size:10px; color:#a5b1c2; }
+.dk-res-metric.is-stale .dk-res-value { text-decoration:underline dotted #687585; text-underline-offset:3px; }
 .dk-empty-side { color: #3a4453; font-size: 12px; padding: 6px 9px; }
 .dk-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5c6675; padding: 8px 6px 2px; }
 .dk-version { border: 0; background: none; color: inherit; font: inherit; padding: 4px 0; cursor: pointer; border-radius: 5px; }

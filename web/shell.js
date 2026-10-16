@@ -10,6 +10,7 @@ import { groupedModelOptions } from './model-select.js';
 import { attentionCopy, cleanAttentionText } from './attention-preview.js';
 import { observeOnTheGoNeeds } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
+import { resourceLineHtml, mountSessionResources } from './session-resources.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -26,6 +27,7 @@ let hasSessionSnapshot = false;
 let sessionMutationEpoch = 0;
 const sessionTouchedAt = new Map();
 let onData = null; // per-page hook run after each data refresh (e.g. the inbox render)
+let railResources = null;
 
 export function getHome() { return home; }
 
@@ -254,7 +256,12 @@ function patchRailSession(current, next) {
   syncAttributes(currentAgent, nextAgent);
   currentAgent.textContent = nextAgent.textContent;
   currentAge.textContent = nextAge.textContent;
-  if (currentSummary.innerHTML !== nextSummary.innerHTML) currentSummary.innerHTML = nextSummary.innerHTML;
+  const project = currentSummary.querySelector('.dk-sess-proj'), nextProject = nextSummary.querySelector('.dk-sess-proj');
+  if (project && nextProject) { project.textContent = nextProject.textContent; syncAttributes(project, nextProject); }
+  else if (project) project.remove();
+  else if (nextProject) currentSummary.prepend(nextProject);
+  // Telemetry has its own refresh clock. Session SSE must not replace it with loading placeholders.
+  if (!currentSummary.querySelector('.dk-sess-res')) currentSummary.insertAdjacentHTML('beforeend', resourceLineHtml());
   return true;
 }
 function reconcileKeyed(container, specs) {
@@ -296,7 +303,7 @@ function renderSide() {
   const railSpec = (s) => ({ key: s.id, html: `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess data-sid="${esc(s.id)}">
       <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
-      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj">${esc(s.project)}</span>` : ''}${esc((s.summary || (s.status === 'starting' ? 'Starting…' : '') || s.title || '').slice(0, 64))}</span>
+      <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj" title="${esc(s.project)}">${esc(s.project)}</span>` : ''}${resourceLineHtml()}</span>
     </a>` });
   const specs = recent.map(railSpec);
   if (older.length) specs.push({ key: '__older', html: `<details class="dk-older dk-older-rail" id="dk-older-side">
@@ -310,6 +317,7 @@ function renderSide() {
     olderGroup.querySelector('[data-older-count]').textContent = older.length;
     reconcileKeyed(olderGroup.querySelector('[data-older-rows]'), older.map(railSpec));
   } // Keep the details node connected so SSE patches never close it or reset status-dot animations.
+  railResources?.refresh();
   // Footer = the important stuff only (operator): the running build (version, was the hostname) + the
   // REAL auth mode (fetched below; the old chip was a hardcoded green "proxy" dot). The wall clock is
   // gone — the OS shows the time.
@@ -594,6 +602,10 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   if (sessPlus) sessPlus.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openLaunch(); };
   // Prefetch a session's story on hover so opening it paints instantly (delegated — the list re-renders).
   const sessBox = $('#dk-sessions');
+  if (sessBox) {
+    railResources?.stop();
+    railResources = mountSessionResources(sessBox);
+  }
   if (sessBox) sessBox.addEventListener('pointerover', (e) => {
     const a = e.target.closest?.('[data-dk-sess]'); if (!a) return;
     try { prefetchStory(new URL(a.href, location.href).searchParams.get('id')); } catch {}
