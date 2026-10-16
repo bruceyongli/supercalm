@@ -5,6 +5,7 @@
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml } from '../common.js';
 import { mountHealthStorage } from '../health-storage.js';
+import { mountHealthResources } from '../health-resources.js';
 
 const HEALTH_CSS = `
       /* width:100% — the generic \`main { margin: 0 auto }\` disables flex-stretch sizing inside the SPA
@@ -52,6 +53,10 @@ const HEALTH_CSS = `
       .storage-table td:nth-child(n+3) { white-space:nowrap; }
       .storage-table input { width:20px; height:20px; }
       .storage-section .health-row a { min-width:0; overflow-wrap:anywhere; }
+      .resource-table { table-layout:fixed; }
+      .resource-table th:first-child { width:54%; }
+      .resource-table td { overflow-wrap:anywhere; }
+      .resource-table details { font-size:11px; }
       @media (max-width: 800px) {
         .health-grid { grid-template-columns: 1fr; }
         /* phones: wide tables scroll inside their section; the notice's re-index action wraps under
@@ -66,6 +71,7 @@ let root = null;
 let pill = null;
 let timer = null;
 let stopStorage = null;
+let stopResources = null;
 
 const esc = (s) => escapeHtml(String(s ?? ''));
 
@@ -175,17 +181,20 @@ export function init(el) {
       <div class="spacer"></div>
       <span class="pill" id="health-pill">…</span>
     </header>
+    <div class="health-wrap" id="health-resources"></div>
     <main class="health-wrap" id="health-root">
       <div class="empty">Loading health…</div>
     </main><div class="health-wrap" id="health-storage"></div>`;
   root = host.querySelector('#health-root');
   pill = host.querySelector('#health-pill');
   load();
+  stopResources = mountHealthResources(host.querySelector('#health-resources'));
   stopStorage = mountHealthStorage(host.querySelector('#health-storage'));
   timer = setInterval(load, 30000);
 }
 
 export function teardown() {
+  stopResources?.(); stopResources = null;
   stopStorage?.(); stopStorage = null;
   if (timer) clearInterval(timer);
   timer = null;

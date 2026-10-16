@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const assets = new Map(['views/health.js', 'health-storage.js', 'common.js', 'markdown-inline.js', 'file-reference.js']
+const assets = new Map(['views/health.js', 'health-storage.js', 'health-resources.js', 'common.js', 'markdown-inline.js', 'file-reference.js']
   .map(name => [`/${name}`, readFileSync(new URL(`../web/${name}`, import.meta.url))]));
 const component = { label: 'Terminal log', path: '/private/fixture/logs/s_killed.log', exclusive_bytes: 4096, bytes: 4096 };
 const rows = [
@@ -11,12 +11,19 @@ const rows = [
   { id: 's_stopped', title: 'Resumable stopped project', project_id: 'p1', project: 'Fixture', cleanable: true, deletable: false, reason: 'Stopped; history is resumable', bytes: 4096, disposable_bytes: 4096, components: [component] },
   { id: 's_running', title: 'Live session cannot be deleted', project_id: 'p1', project: 'Fixture', cleanable: false, deletable: false, status: 'working', bytes: 100 * 1024 ** 3, disposable_bytes: 0, components: [] },
 ];
-let scan = 1, scanning = false, storageCalls = 0, capacityCalls = 0, cleanupCalls = [], planCalls = [];
+let scan = 1, scanning = false, storageCalls = 0, capacityCalls = 0, cleanupCalls = [], planCalls = [], resourceCalls = 0;
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   if (assets.has(path)) { res.writeHead(200, { 'content-type': 'text/javascript' }); res.end(assets.get(path)); return; }
   let body = ''; for await (const chunk of req) body += chunk;
   const json = data => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
+  if (path === '/api/product/resources') { resourceCalls++; return json({ state: 'ready', checked_at: resourceCalls, errors: [],
+    host: { level: 'warning', cores: 8, load_average: [50, 40, 30], total_memory_bytes: 16 * 1024 ** 3,
+      memory_pressure: 'normal', swap_used_bytes: null, cpu_busy_percent: 98 },
+    groups: [{ id: 'session:s_running', session_id: 's_running', title: 'Live <script> unsafe title', project: 'Fixture', kind: 'session',
+      status: 'working', process_count: 2, detached_count: 1, cpu_percent: 130, rss_bytes: 1e8, footprint_bytes: 4 * 1024 ** 3, footprint_processes: 2,
+      processes: [{ pid: 123, ppid: 1, name: 'python', cpu_percent: 110, rss_bytes: 1e8, footprint_bytes: 4 * 1024 ** 3, ownership: 'managed-path' }] },
+    { id: 'service:local.voice', title: 'local.voice', kind: 'service', process_count: 1, cpu_percent: 60, rss_bytes: 1e8, footprint_bytes: null, processes: [] }] }); }
   if (path === '/api/product/health') return json({ version: 'fixture', auth: { mode: 'cli', providers: [] }, sessions: {},
     graphs: [{ name: 'Supervisor Data Factory', path: '/private/fixture/a-very-long-project-folder-name/another-long-directory-name/project', status: 'indexed', counts: { symbols: 12893, files: 3003, relations: 37685 } }], issues: [] });
   if (path === '/api/product/storage/capacity') { capacityCalls++; return json({
@@ -50,6 +57,15 @@ try {
       'an unfinished scan never claims zero cleanup bytes');
     scanning = false; await page.locator('[data-storage-refresh]').click();
     await page.waitForSelector('[data-storage-session="s_killed"]');
+    await page.waitForSelector('[data-resource-group="session:s_running"]');
+    assert.match(await page.locator('[data-resource-overview]').innerText(), /swap unknown/);
+    assert.match(await page.locator('[data-resource-sessions]').innerText(), /130\.0%[\s\S]*4\.0 GiB footprint/);
+    assert.equal(await page.locator('[data-resource-sessions] script').count(), 0);
+    await page.locator('[data-resource-group="session:s_running"] summary').click();
+    await page.locator('[data-resource-refresh]').click();
+    await page.waitForFunction(() => !document.querySelector('[data-resource-refresh]').disabled);
+    assert.equal(await page.locator('[data-resource-group="session:s_running"]').getAttribute('open'), '');
+    assert.equal(await page.locator('[data-resource-services]').getAttribute('open'), null);
     assert.match(await page.locator('[data-storage-overview]').innerText(), /11\.0 GiB reusable inside the database, not free disk space/);
     assert.equal(await page.locator('[data-storage-session="s_running"]').count(), 0);
     await page.locator('[data-storage-session="s_killed"]').check();
@@ -85,9 +101,11 @@ try {
     assert.equal(cleanupCalls.at(-1).confirm, true);
     assert.deepEqual(planCalls.at(-1), { sessions: ['s_killed'], mode: 'delete' });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'no whole-page horizontal overflow');
+    const resourceReads = resourceCalls;
     await page.evaluate(() => { window.health.teardown(); document.querySelector('#view').innerHTML = '<div id="next">Next view</div>'; window.dispatchEvent(new Event('focus')); });
     await page.waitForTimeout(100);
     assert.equal(await page.locator('#next').innerText(), 'Next view'); assert.deepEqual(await page.evaluate(() => window.errors), []);
+    assert.equal(resourceCalls, resourceReads, 'resource polling stops on teardown');
     console.log(JSON.stringify({ viewport, selected: 'retained', running: 'not selectable', stopped: 'not deletable', confirm: 'explicit', cleanupRequests: 1, teardown: 'safe' }));
     await page.close(); scan++;
   }

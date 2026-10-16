@@ -49,6 +49,7 @@ import { nativeWorkActivity, restoringWaiting } from './session_recovery_activit
 import { repairRebootRecency } from './session_recency_repair.js';
 import { originalTaskSeed } from './resume_seed.js';
 import { assertDiskHeadroom } from './disk_pressure.js';
+import { assertResourceHeadroom, sampleHostResources } from './resource_usage.js';
 import { assertSessionNotCleaning } from './session_cleanup_lock.js';
 import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
@@ -141,6 +142,13 @@ history when the task actually needs it. Disposable clones belong in $AIOS_SESSI
 must remove your own disposable clones/build copies after their last use rather than accumulating
 them until this long-running session ends. Check available disk space before large downloads/builds;
 if space is low, stop new bulk writes and report it. Never delete another session's files to make room.
+
+Before starting memory-heavy local models, video/dataset batches or parallel browser tests, check
+GET $AIOS_URL/api/product/resources. If it is still sampling, wait for the result. Under warning or
+critical host pressure, defer new heavy work; do not retry in a tight loop. Run at most one heavy
+batch per session at a time, reuse services, and stop only your own temporary workers after use.
+Do not open interactive sign-in flows from unattended retry loops. Authentication-required is a
+blocked condition to report once, not a reason to repeatedly launch another browser or CLI.
 </aios_session_hygiene>`;
 
 // in-memory registry of live sessions: id -> { id, tmux, logFile, offset, subscribers, lastHash, lastChange }
@@ -1171,6 +1179,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
 function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null }) {
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
   assertDiskHeadroom(project?.path);
+  assertResourceHeadroom(sampleHostResources.peek());
   const activeFastMode = tool === 'codex' && modelSupportsFast(model || TOOLS[tool].model) && !!fastMode;
   const sid = id('s');
   const ticket = { sid, cancelled: false, startedAt: now() };
@@ -1216,6 +1225,9 @@ async function completeLaunch(spec) {
     const t = performance.now();
     try { return await fn(); } finally { timings[name] = Math.round(performance.now() - t); }
   };
+  assertLaunchActive(spec);
+  // New work only: never kill/strand an existing conversation or consume reboot-recovery attempts.
+  await phase('resource-headroom', async () => assertResourceHeadroom(await sampleHostResources()));
   assertLaunchActive(spec);
   if (tool === 'agy') {
     await phase('auth', () => assertAgyCliLoggedIn());
@@ -3067,7 +3079,7 @@ route('POST', '/api/session/:id/child', async (req, res, { id: parentId }) => {
     json(res, 202, decorate(child));
   } catch (error) {
     if (temporaryProject) await cleanupTemporaryProject(temporaryProject.id).catch(() => {});
-    json(res, 400, { error: String(error.message || error) });
+    json(res, error.status || 400, { error: String(error.message || error), ...(error.code ? { code: error.code } : {}) });
   }
 });
 
@@ -3126,7 +3138,7 @@ route('POST', '/api/session', async (req, res) => {
     json(res, 202, decorate(s));
   } catch (e) {
     if (createdTemporaryProject) await cleanupTemporaryProject(createdTemporaryProject.id).catch(() => {});
-    json(res, e.code === 'disk-space-critical' ? 507 : 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
+    json(res, e.status || (e.code === 'disk-space-critical' ? 507 : 400), { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
   }
 });
 

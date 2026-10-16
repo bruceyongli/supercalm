@@ -1,5 +1,5 @@
 import { route, json, readJson } from './server.js';
-import { VERSION, DATA_DIR } from './config.js';
+import { VERSION, DATA_DIR, TMUX } from './config.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { now } from './util.js';
@@ -11,6 +11,23 @@ import { storageInventory, databaseStorage } from './disk_storage.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import { planStorageCleanup, executeStorageCleanup } from './disk_cleanup.js';
 import { bus } from './bus.js';
+import { createResourceInventory } from './resource_usage.js';
+
+const resources = createResourceInventory({ sessions: listSessions, projects: listProjects, tmux: TMUX });
+route('GET', '/api/product/resources', (req, res) => json(res, 200, resources.get()));
+let lastResourceAlert = 0;
+async function monitorResources() {
+  const snapshot = await resources.refresh();
+  if (snapshot?.host?.level !== 'critical' || Date.now() - lastResourceAlert < 30 * 60_000) return;
+  lastResourceAlert = Date.now();
+  bus.emit('notify', { title: 'Supercalm: critical memory pressure',
+    body: 'New session launches are blocked. Open Health → CPU & memory to review workloads. Existing sessions are kept.',
+    url: 'health', tag: 'memory-pressure' });
+}
+const resourceTimer = setInterval(monitorResources, 60_000);
+resourceTimer.unref();
+const firstResourceCheck = setTimeout(monitorResources, 8000);
+firstResourceCheck.unref();
 
 function withTimeout(label, promise, ms) {
   return Promise.race([
@@ -122,6 +139,11 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
   const auth = authResult?.error ? null : authResult;
   const issues = issueList({ auth, graphs });
   const disk = currentDiskCapacity();
+  const resource = resources.get();
+  if (resource.host && !resource.stale && ['warning', 'critical'].includes(resource.host.level)) {
+    issues.push({ severity: resource.host.level === 'critical' ? 'warn' : 'info', area: 'resources',
+      message: `Host load ${resource.host.load_average[0].toFixed(1)} on ${resource.host.cores} cores; memory pressure ${resource.host.memory_pressure}. ${resource.host.level === 'critical' ? 'New session launches are blocked.' : 'Review CPU & memory before starting heavy work.'}` });
+  }
   if (disk.level === 'warning' || disk.level === 'critical') issues.push({ severity: disk.level === 'critical' ? 'warn' : 'info',
     area: 'disk', message: `${(disk.available_bytes / 1024 ** 3).toFixed(1)} GiB available${disk.level === 'critical' ? ' — new agents are blocked until space is freed' : ' — review stopped-session cleanup'}` });
   json(res, 200, {
@@ -135,6 +157,7 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
     auth_error: authResult?.error || null,
     graphs,
     disk,
+    resources: { checked_at: resource.checked_at || null, stale: resource.stale, host: resource.host || null },
     issues,
   });
 });

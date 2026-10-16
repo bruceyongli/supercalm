@@ -7,7 +7,7 @@
 // suite so parallel children cannot interleave unreadably, and every completion reports its duration.
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { availableParallelism, tmpdir } from 'node:os';
+import { availableParallelism, tmpdir, loadavg, freemem } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { worktreeDbVerdict } from '../src/db_guard.js';
@@ -39,7 +39,10 @@ const files = readdirSync(join(ROOT, 'test'))
 if (!files.length) { console.error('run-tests: no test files found'); process.exit(1); }
 
 const t0 = Date.now();
-const requestedJobs = Number(process.env.AIOS_TEST_JOBS || Math.min(4, availableParallelism()));
+// Sharing the host with live agents: do not fan out four browser/Node suites on an overloaded host.
+// An explicit operator/CI worker setting still wins. This is conservative admission, not a hard quota.
+const defaultJobs = loadavg()[0] >= availableParallelism() || freemem() < 1024 ** 3 ? 1 : Math.min(4, availableParallelism());
+const requestedJobs = Number(process.env.AIOS_TEST_JOBS || defaultJobs);
 const jobs = Math.max(1, Math.min(files.length, Number.isFinite(requestedJobs) ? Math.floor(requestedJobs) : 1));
 const active = new Set();
 let next = 0;

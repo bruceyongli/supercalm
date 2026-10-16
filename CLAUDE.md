@@ -45,6 +45,14 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 - UI principle: do not add visible controls/buttons for rare edge cases unless explicitly requested.
   Prefer automatic behavior, existing controls, or progressive fallback; keep the coding/voice UI low
   brain-load.
+- Host resources: Health → CPU & memory and `GET /api/product/resources` expose cached per-session
+  process accounting, detached managed-path jobs, and separate launchd services. CPU 100% is one core;
+  macOS footprint includes compressed pages, unlike RSS. Never interpret their sum as physical RAM.
+  New session launches check OS critical memory pressure; low free RAM or old swap alone cannot block
+  work. Existing sessions/recovery are not killed or stranded. Heavy local tests default to one worker
+  on an overloaded host. Before spawning heavy batches, inspect resource pressure; unattended auth
+  failures must stop for login rather than repeatedly opening browser windows. Diagnostics never grant
+  authority to terminate another project's jobs or shared services.
 - **Links:** use the shared `web/file-reference.js` classification in Story, Terminal and rendered
   Markdown. A same-host HTTP URL is still a web URL; never infer a disk path from `.html`/`.md`/media
   suffixes. Tailscale may serve arbitrary project mounts beside `/aios`. Only explicit filesystem-root
