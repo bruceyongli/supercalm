@@ -10,7 +10,7 @@ import { createStoryUpdates } from '../src/story_updates.js';
 
 // Drive filesystem → SSE → bounded reader → REAL Story DOM. Lifecycle never leaves Working.
 const root = await mkdtemp(join(tmpdir(), 'aios-story-live-'));
-const assets = new Map(['story-view.js', 'story-live.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
+const assets = new Map(['story-view.js', 'story-request.js', 'story-live.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 const files = new Map();
 const sources = new Map();

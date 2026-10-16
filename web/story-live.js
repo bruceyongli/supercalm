@@ -21,10 +21,10 @@ export function createStoryLive({ sessionId, refresh, pause = () => {}, signal,
     if (!canRun() || timer) return;
     timer = setTimeout(run, Math.max(0, minIntervalMs - (Date.now() - lastRequest)));
   };
-  function disconnect() {
+  function disconnect({ cancelRequests = true } = {}) {
     clearTimeout(timer); clearInterval(repair); timer = null; repair = null;
     stream?.close(); stream = null;
-    pause();
+    if (cancelRequests) pause();
   }
   function connect() {
     if (!canRun() || stream) return;
@@ -39,7 +39,9 @@ export function createStoryLive({ sessionId, refresh, pause = () => {}, signal,
     stream.addEventListener('error', request); // native EventSource also reconnects and receives a fresh update
     repair = setInterval(() => {
       if (!canRun()) return;
-      if (Date.now() - lastEvent > recoveryMs * 2) { disconnect(); connect(); }
+      // Repair the notification socket independently: a slow but progressing Story download
+      // must not be aborted merely because its separate SSE heartbeat was delayed on mobile.
+      if (Date.now() - lastEvent > recoveryMs * 2) { disconnect({ cancelRequests: false }); connect(); }
       request(); // bounded cache-only repair, including a silently missed final report
     }, recoveryMs);
   }

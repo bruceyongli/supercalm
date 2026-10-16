@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
-const assets = new Map(['story-view.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
+const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 const calls = []; let legacyCalls = 0;
 const server = createServer(async (req, res) => {

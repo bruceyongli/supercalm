@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 import { parseSessionLog } from '../src/story.js';
 
 const root = new URL('../', import.meta.url);
-const assets = new Map(['story-view.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
+const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('web/' + name, root))]));
 let multi = false, fail = false;
 const received = [];

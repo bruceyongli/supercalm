@@ -6,6 +6,7 @@ import { chromium } from 'playwright';
 const root = new URL('../', import.meta.url);
 const assets = new Map([
   ['/story-view.js', readFileSync(new URL('web/story-view.js', root))],
+  ['/story-request.js', readFileSync(new URL('web/story-request.js', root))],
   ['/common.js', readFileSync(new URL('web/common.js', root))],
   ['/markdown-inline.js', readFileSync(new URL('web/markdown-inline.js', root))],
   ['/file-reference.js', readFileSync(new URL('web/file-reference.js', root))],

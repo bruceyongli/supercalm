@@ -18,6 +18,8 @@ jobs:
       - name: Secret & private-data scan
         run: node scripts/scan-secrets.mjs
       - run: npm ci || npm install
+      - name: Install Story regression browsers (including Safari engine)
+        run: npx playwright install --with-deps chromium webkit
       - run: npm test
         env:
           # Keep the suite off any real data dir; everything it needs is created fresh.

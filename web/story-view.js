@@ -4,6 +4,7 @@
 import { api, renderMarkdown, renderLinkedText } from './common.js';
 import { localFilePath, isFileReference } from './file-reference.js';
 import { unlockAudio } from './tts-player.js';
+import { requestStory, interruptedStoryRequest } from './story-request.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
 const COLOR = { you: '#58a6ff', sys: '#3a4453', work: '#8a95a5', plan: '#79b8ff', note: '#5c6675', sub: '#9aa7b8', edit: '#d9924e', fail: '#f2554d', check: '#4ecb6c', ship: '#2fd6be', report: '#b9c4d4', ask: '#e2b23e', stop: '#e2b23e' };
@@ -634,7 +635,7 @@ export async function loadEarlierStory() {
   historyLoading = true; historyError = '';
   render();
   try {
-    const r = await api(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`, { signal: storyRequestSignal(signal) });
+    const r = await requestStory(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`, { signal });
     if (sid !== mySid || generation !== storyGeneration || signal.aborted || identity !== storyIdentity) return;
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
@@ -797,20 +798,19 @@ export async function refreshStory({ quiet = true, followUp = false } = {}) {
       flight.again = false;
       result = await refreshStoryNow({ quiet, flight });
       quiet = true;
-    } while (flight.again && flight.sid === sid && flight.generation === storyGeneration && !flight.signal.aborted);
+    } while (result === true && flight.again && currentFlight(flight)); // failures return to the live controller's bounded backoff
     return result;
   })().finally(() => { if (refreshFlight === flight) refreshFlight = null; });
   return flight.promise;
 }
 
 const currentFlight = flight => flight.sid === sid && flight.generation === storyGeneration && !flight.signal.aborted;
-const storyRequestSignal = signal => AbortSignal.any([signal, AbortSignal.timeout(20000)]);
 async function catchUpStory(flight) {
   // Reconnects may span several completed exchanges. The ordinary recent window alone would skip
   // their reports. Walk bounded older pages only until the last displayed event, never the full log.
   while (catchup && currentFlight(flight)) {
     const gap = catchup;
-    const r = await api(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: storyRequestSignal(flight.signal) });
+    const r = await requestStory(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: flight.signal });
     if (!currentFlight(flight) || catchup !== gap) return;
     if (`${r.meta?.source || 'transcript'}|${r.meta?.file || ''}` !== storyIdentity) { catchup = null; return; }
     const older = r.events || [];
@@ -829,7 +829,7 @@ async function refreshStoryNow({ quiet, flight }) {
   const mySid = flight.sid; // capture: session/panel lifetime is fenced even across A → B → A
   try {
     // Live refresh always fetches ONLY the recent window, even after the operator loaded old pages.
-    const r = await api(`api/session/${mySid}/story`, { signal: storyRequestSignal(flight.signal) });
+    const r = await requestStory(`api/session/${mySid}/story`, { signal: flight.signal });
     // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
     // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
     // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
@@ -870,7 +870,7 @@ async function refreshStoryNow({ quiet, flight }) {
     const sig = JSON.stringify(events) + ':' + working
       + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
-    if (sig !== lastSig) { lastSig = sig; render(); }
+    if (sig !== lastSig || !panelEl.querySelector('.story-feed')) { lastSig = sig; render(); }
     else updateWorkingStatus(); // elapsed timers must not repaint even a single history row
     // Cache only the recent response, never all of the history the user chose to load.
     if (!showFull) writeStoryCache(mySid, { events: incoming, trimmed: !!r.meta?.trimmed, cursor: r.meta?.cursor || null, working, liveStatus, storySource, storyIdentity });
@@ -878,7 +878,10 @@ async function refreshStoryNow({ quiet, flight }) {
     return true;
   } catch (e) {
     if (currentFlight(flight) && e.code === 'STORY_CURSOR_INVALID') catchup = null;
-    if (currentFlight(flight) && !quiet && panelEl && !events.length) panelEl.innerHTML = `<div class="story-empty">story unavailable: ${esc(e.message || e)}</div>`;
+    if (currentFlight(flight) && panelEl && !events.length && !sendEchoes.length) {
+      if (interruptedStoryRequest(e)) panelEl.innerHTML = '<div class="story-empty" role="status">Story connection interrupted. Reconnecting…</div>';
+      else if (!quiet) panelEl.innerHTML = `<div class="story-empty" role="status">Story could not load: ${esc(e.message || e)}</div>`;
+    }
     if (currentFlight(flight)) return false; // live controller retries without discarding existing reports
   }
 }
@@ -943,6 +946,7 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
       lastSig = ''; render();
     }
   }
+  if (!events.length && !panelEl.children.length) panelEl.innerHTML = '<div class="story-empty" role="status">Loading recent conversation…</div>';
   const initial = refreshStory({ quiet: false });
   if (live) {
     const generation = storyGeneration;

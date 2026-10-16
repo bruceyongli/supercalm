@@ -403,6 +403,11 @@ Story persists both reading position and follow-Latest intent per session. Lates
 continues following across updates, view switches and session navigation; scrolling up opts out.
 Hidden panels have zero geometry: never save it as the user's position. Flush pending persistence
 before teardown and restore only after showing the panel; delayed media layout must respect intent.
+Story downloads use `story-request.js`: separate header/idle deadlines, renewed on received bytes,
+plus an absolute bound. Never turn an aborted/truncated JSON body into an empty successful report.
+Transient failures retain the current feed/cache and return to the live controller's retry backoff;
+navigation/background cancellation stays silent, and returning to the app reconnects automatically.
+The weak-network Story browser regression runs Chromium and WebKit (`playwright install chromium webkit`).
 
 ## Supervisor (`supervisor.js` + `web/session.js` supervisor tab)
 An **opt-in, per-session supervise agent**. The contract is one markdown `doc` per session with this

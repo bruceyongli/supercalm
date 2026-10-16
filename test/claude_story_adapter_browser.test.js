@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 import { parseSessionLog } from '../src/story.js';
 
-const assets = new Map(['story-view.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js', 'styles.css']
+const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js', 'styles.css']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 const native = (second, type, content, extra = {}) => JSON.stringify({ type, version: '2.1.291',
   timestamp: new Date(Date.UTC(2026, 9, 6, 8, 0, second)).toISOString(), message: { content, ...extra } });
