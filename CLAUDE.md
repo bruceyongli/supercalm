@@ -408,6 +408,10 @@ plus an absolute bound. Never turn an aborted/truncated JSON body into an empty 
 Transient failures retain the current feed/cache and return to the live controller's retry backoff;
 navigation/background cancellation stays silent, and returning to the app reconnects automatically.
 The weak-network Story browser regression runs Chromium and WebKit (`playwright install chromium webkit`).
+Native transcript screenshots are lazy, session-scoped image references, never base64 inside Story JSON.
+Keep report text independent of image downloads and small enough for the recent-conversation cache.
+Image reads are bounded/off-thread and bind to transcript identity, record offset and hash; appends
+remain valid, while sibling transcripts, rotation and overwritten records cannot reuse a reference.
 
 ## Supervisor (`supervisor.js` + `web/session.js` supervisor tab)
 An **opt-in, per-session supervise agent**. The contract is one markdown `doc` per session with this

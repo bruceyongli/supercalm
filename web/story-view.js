@@ -411,6 +411,7 @@ function eventHtml(ev, i, previewVideo = false) {
   // report/note bodies are the agent's own writing and render as MARKDOWN (tables/headings/code —
   // renderMarkdown escapes first, so this stays XSS-safe); everything else stays escaped plain text.
   const bodyText = ev.body || ev.text || '';
+  const shot = ev.shotRef ? `api/session/${encodeURIComponent(sid)}/story/image?ref=${encodeURIComponent(ev.shotRef)}` : ev.shot;
   const rich = ev.kind === 'report' || ev.kind === 'note';
   const videosHtml = previewVideo ? storyVideoPreviews(bodyText) : '';
   // Attachment previews render INSIDE the operator's bubble — one send, one bubble (operator: the
@@ -461,7 +462,7 @@ function eventHtml(ev, i, previewVideo = false) {
     ${evidenceResultHtml(ev)}
     ${ev.kind === 'plan' ? planHtml(ev) : ''}
     ${(ev.chips || []).length ? `<div class="story-chips">${ev.chips.map((c) => `<span class="story-chip">${esc(c)}</span>`).join('')}</div>` : ''}
-    ${ev.shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(ev.shot)}" alt="screenshot" loading="lazy" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
+    ${shot ? `<div class="story-shot-wrap"><img class="story-shot" data-story-shot src="${esc(shot)}" alt="screenshot" loading="lazy" decoding="async" /><span class="story-shot-cap">screenshot.png · click to enlarge</span></div>` : ''}
     ${stepsHtml(ev, i)}
     ${isAsk ? askHtml(ev) : ''}`;
   return `

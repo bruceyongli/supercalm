@@ -4,10 +4,10 @@
 // claude project JSONL by cwd-slug + session time window. Cached by file mtime — a 200MB rollout is
 // only re-parsed when it actually grew. Parsing/large-file reads run in a bounded worker pool.
 import { stat, open } from 'node:fs/promises';
-import { route, json } from './server.js';
+import { route, json, send } from './server.js';
 import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
 import { findClaudeLog } from './claude_transcripts.js';
-import { readStoryPage } from './story_reader.js';
+import { readStoryPage, readStoryImage } from './story_reader.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
@@ -194,6 +194,18 @@ const storyUpdates = createStoryUpdates({ bus, resolve: async sid => {
   const { s, file } = source;
   return { file, state: [s.status, s.question, s.summary, file ? null : s.revision] };
 } });
+route('GET', '/api/session/:id/story/image', async (req, res, { id: sid }, url) => {
+  try {
+    const source = await storySource(sid);
+    if (!source?.file) return json(res, 404, { error: 'Story image is no longer available.' });
+    const image = await readStoryImage({ file: source.file, ref: url.searchParams.get('ref') });
+    send(res, 200, Buffer.from(image.data), { 'content-type': image.mime,
+      'cache-control': 'private, max-age=86400', 'x-content-type-options': 'nosniff' });
+  } catch (error) {
+    json(res, ['STORY_IMAGE_MISSING', 'ENOENT'].includes(error.code) ? 404 : 503,
+      { error: 'Story image is unavailable. Reload the recent conversation.' });
+  }
+});
 route('GET', '/api/session/:id/story/updates', (req, res, { id: sid }) => {
   if (!getSession(sid)) return json(res, 404, { error: 'no such session' });
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-transform',
