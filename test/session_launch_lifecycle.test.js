@@ -15,6 +15,7 @@ const modeFile = join(root, 'tmux-mode');
 const logFile = join(root, 'tmux-log');
 const raceFile = join(root, 'tmux-race-started');
 const raceDoneFile = join(root, 'tmux-race-done');
+const repaintFile = join(root, 'tmux-repaint-target');
 writeFileSync(stateFile, '[]');
 writeFileSync(modeFile, 'ok');
 writeFileSync(logFile, '');
@@ -60,6 +61,10 @@ if (args[0] === 'pipe-pane') {
   if (mode === 'fail-pipe') process.exit(7);
 }
 if (args[0] === 'display-message') process.stdout.write('codex');
+if (args[0] === 'capture-pane' && existsSync(process.env.MOCK_TMUX_REPAINT)
+    && val('-t') === readFileSync(process.env.MOCK_TMUX_REPAINT, 'utf8')) {
+  process.stdout.write('Loading restored conversation… ' + Date.now() + '\\nMeet the latest model\\n› Explain this codebase');
+}
 process.exit(0);
 `);
 chmodSync(mock, 0o755);
@@ -74,10 +79,12 @@ process.env.MOCK_TMUX_MODE = modeFile;
 process.env.MOCK_TMUX_LOG = logFile;
 process.env.MOCK_TMUX_RACE = raceFile;
 process.env.MOCK_TMUX_RACE_DONE = raceDoneFile;
+process.env.MOCK_TMUX_REPAINT = repaintFile;
 
 const store = await import('../src/store.js');
 const { BOOT_ID } = await import('../src/config.js');
-const { queueLaunch, killSession, discover, resume } = await import('../src/sessions.js');
+const { queueLaunch, killSession, discover, resume, noteReply } = await import('../src/sessions.js');
+const { createAttentionReport, dismissAttention, getAttentionDismissal } = await import('../src/attention_store.js');
 const project = store.createProject({ id: 'p_launch', name: 'Launch lifecycle', path: projectPath });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // These transitions launch several real Node mock-tmux processes. A busy host
@@ -134,6 +141,9 @@ assert.ok(!names().includes('aios-restart-partial'), 'restart recovery kills a p
 // conversations and restore the durable visible state; an explicit exited session must stay stopped.
 store.createSession({ id: 's_reboot_working', project_id: project.id, tool: 'codex', tmux: 'gone-working', status: 'working' });
 store.createSession({ id: 's_reboot_waiting', project_id: project.id, tool: 'codex', tmux: 'gone-waiting', status: 'waiting' });
+const prebootActivity = Date.now() - 30 * 86400_000;
+store.updateSession('s_reboot_working', { last_activity: prebootActivity });
+store.updateSession('s_reboot_waiting', { last_activity: prebootActivity });
 store.updateSession('s_reboot_waiting', { question: 'Choose the deployment target', summary: 'Deployment target needed', category: 'decision' });
 store.createSession({ id: 's_explicit_stop', project_id: project.id, tool: 'codex', tmux: 'gone-stopped', status: 'exited', desired_status: 'exited', status_reason: 'operator-stop' });
 await discover();
@@ -148,10 +158,32 @@ assert.equal(rebootWaiting.status, 'waiting', 'Needs You state survives process 
 assert.equal(rebootWaiting.desired_status, 'waiting');
 assert.equal(rebootWaiting.runtime_status, 'running');
 assert.equal(rebootWaiting.question, 'Choose the deployment target');
+assert.equal(rebootWaiting.last_activity, prebootActivity, 'restoring an idle pane is not new work');
+assert.equal(rebootWorking.last_activity, prebootActivity, 'resume itself is not work even for a working pane');
+assert.equal(JSON.parse(store.eventsFor('s_reboot_waiting', 10).find(e => e.type === 'boot-recovery-start').payload).previous_last_activity,
+  prebootActivity, 'checkpoint retains the exact pre-reboot activity');
 assert.ok(names().includes(rebootWaiting.tmux), 'waiting session is ready to accept the eventual reply');
 assert.equal(store.getSession('s_explicit_stop').status, 'exited');
 assert.ok(!names().includes('gone-stopped'), 'explicitly stopped session is not restarted');
 assert.equal(store.eventsFor('s_reboot_working', 10)[0]?.type, 'boot-recovery-complete');
+
+// Repaint several startup frames beyond the original first-snapshot special case. Neither the age,
+// report count nor a cross-device dismissal may move; a real reply must release the guard immediately.
+const report = createAttentionReport(rebootWaiting.id, 'Deployment target needed').message;
+dismissAttention(rebootWaiting.id, report.id);
+writeFileSync(repaintFile, rebootWaiting.tmux);
+const captures = () => calls().filter(args => args[0] === 'capture-pane' && args.includes(rebootWaiting.tmux)).length;
+const initialCaptures = captures();
+await waitFor(() => captures() >= initialCaptures + 4, 'multiple startup repaint polls', 20000);
+await delay(200);
+assert.equal(store.getSession(rebootWaiting.id).status, 'waiting');
+assert.equal(store.getSession(rebootWaiting.id).last_activity, prebootActivity);
+assert.equal(getAttentionDismissal(rebootWaiting.id).report_id, report.id);
+assert.equal(store.messagesFor(rebootWaiting.id).filter(m => m.direction === 'out').length, 1);
+noteReply(rebootWaiting.id);
+assert.equal(store.getSession(rebootWaiting.id).status, 'working');
+assert.ok(store.getSession(rebootWaiting.id).last_activity > prebootActivity);
+rmSync(repaintFile);
 
 // A failed recovery remains durably recoverable, but records its bounded attempt. A later boot pass
 // can retry and resets the budget only after the replacement pane is actually established.
@@ -181,6 +213,7 @@ rmSync(raceDoneFile, { force: true });
 writeFileSync(modeFile, 'relaunch-race');
 await waitFor(() => existsSync(raceFile), 'poll race arm');
 await resume(switching.id, { force: true });
+assert.ok(store.getSession(switching.id).last_activity > switching.last_activity, 'explicit model/settings resume remains real activity');
 await waitFor(() => existsSync(raceDoneFile), 'stale poll completion');
 await delay(100);
 assert.equal(store.getSession(switching.id).status, 'working', 'stale pre-relaunch poll cannot mark replacement exited');

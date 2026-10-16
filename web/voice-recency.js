@@ -9,7 +9,11 @@ export function voiceActivityTimestamp(session, messages = null) {
   const genuine = times.filter(value => Number.isFinite(value) && value > 0);
   // If there is no genuine message, session creation is the conservative fallback. last_activity is
   // only for legacy projections without a creation timestamp, never to revive an old known session.
-  return genuine.length ? Math.max(...genuine) : Number(messages ? session?.started_at : session?.started_at || session?.last_activity) || 0;
+  const evidenceAt = genuine.length ? Math.max(...genuine) : Number(messages ? session?.started_at : session?.started_at || session?.last_activity) || 0;
+  // A replayed detect report can be created today from old work. The repaired durable work clock is
+  // an upper bound, not a reason to promote machine-only activity into the operator's voice queue.
+  const workAt = Number(session?.last_activity);
+  return Number.isFinite(workAt) && workAt > 0 ? Math.min(evidenceAt, workAt) : evidenceAt;
 }
 export function isRecentVoiceSession(session, currentTime = Date.now(), messages = null) {
   if (!session || (session.status && !['starting', 'working', 'waiting'].includes(session.status))) return false;

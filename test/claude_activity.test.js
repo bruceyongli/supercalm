@@ -87,7 +87,7 @@ try {
   const reportWithNewTimestamp = { ...session, last_key: { ts: at } };
   assert.equal(splitSessionRecency([reportWithNewTimestamp], at).older.length, 1);
   assert.equal(isRecentVoiceSession(reportWithNewTimestamp, at), false, 'old re-extracted reports cannot enter the 24-hour voice queue');
-  assert.equal(splitSessionRecency([{ ...reportWithNewTimestamp, tool: 'codex' }], at).recent.length, 1, 'Codex recency semantics remain unchanged');
+  assert.equal(splitSessionRecency([{ ...reportWithNewTimestamp, tool: 'codex' }], at).older.length, 1, 'reboot report replay cannot promote Codex either');
   rememberClaudeHook(session.id, { event: 'Stop', sent_at: old, background_tasks: [], last_assistant_message: 'Done.' });
   assert.equal(rememberClaudeHook(session.id, { event: 'Notification', sent_at: at, notification_type: 'idle_prompt' }).status, null,
     'a repeated passive reminder does not create a new waiting episode');
@@ -99,5 +99,5 @@ try {
   assert.equal(result.changed, false);
   console.log(JSON.stringify({ session: session.id, scenario: 'old Claude report + repeated maintenance/replays',
     falseActivity: 0, reportReplay: 'suppressed', freshSource: 'full native report', quietNativeWork: 'working',
-    recentAndVoiceQueues: 'old', readBudget: 256 * 1024, codex: 'unchanged' }));
+    recentAndVoiceQueues: 'old', readBudget: 256 * 1024, codex: 'durable recency clock' }));
 } finally { await rm(dir, { recursive: true, force: true }); }

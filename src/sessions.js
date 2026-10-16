@@ -45,6 +45,8 @@ import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
+import { nativeWorkActivity, restoringWaiting } from './session_recovery_activity.js';
+import { repairRebootRecency } from './session_recency_repair.js';
 import { originalTaskSeed } from './resume_seed.js';
 import { assertDiskHeadroom } from './disk_pressure.js';
 import { assertSessionNotCleaning } from './session_cleanup_lock.js';
@@ -1495,7 +1497,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     ended_at: null,
     exit_code: null,
     ...(durableStatus === 'waiting' ? {} : { question: null }),
-    last_activity: now(),
+    ...(recoveryReason === 'boot-recovery' ? {} : { last_activity: now() }),
   });
   // Replace the registry generation so a poll that observed the intentional kill/recreate gap cannot
   // retire the new pane when its stale `has-session = false` result arrives. Keep terminal subscribers
@@ -1504,6 +1506,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   if (previousEntry) { previousEntry.tailRetired = true; stopTerminalTail(previousEntry); }
   reg.delete(sid);
   const resumedEntry = register(updated);
+  if (recoveryReason === 'boot-recovery' && durableStatus === 'waiting') resumedEntry.restoredWaitingSince = now();
   if (previousEntry) resumedEntry.subscribers = previousEntry.subscribers;
   watchTerminalTail(resumedEntry);
   // A resumed waiting session briefly renders its startup/loading screen before the old prompt. Keep
@@ -1553,7 +1556,8 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
       status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
       runtime_heartbeat_at: now(), status_reason: reason,
       ...(reason.startsWith('operator-') ? { question: null } : {}),
-      ended_at: now(), exit_code: code, last_activity: now(),
+      ended_at: now(), exit_code: code,
+      ...(entry.restoredWaitingSince && reason === 'unexpected-exit' ? {} : { last_activity: now() }),
     });
     store.addEvent(entry.id, 'exit', { code, reason, desired_status: updated.desired_status });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'exit' });
@@ -1618,6 +1622,7 @@ async function recoverMissingSession(s) {
   });
   store.addEvent(s.id, 'boot-recovery-start', {
     attempt,
+    previous_last_activity: s.last_activity,
     previous_boot_id: s.runtime_boot_id || null,
     previous_runtime_status: s.runtime_status || null,
     desired_status: desired,
@@ -1704,7 +1709,8 @@ export async function discover() {
         ended_at: null,
         exit_code: null,
       });
-      register(adopted);
+      const entry = register(adopted);
+      if (adopted.status === 'waiting') entry.restoredWaitingSince = now();
       store.addEvent(s.id, 'boot-adopted', { previous_boot_id: s.runtime_boot_id || null, restored_status: desired });
     } else {
       const result = await recoverMissingSession(s);
@@ -1956,6 +1962,10 @@ async function pollOnce() {
       }
     }
     const h = hash(stableSnap(snap));
+    const wasRestoring = !!entry.restoredWaitingSince;
+    const nativeAt = wasRestoring ? (await nativeWorkActivity(s).catch(() => ({ lastAt: 0 }))).lastAt : 0;
+    const restoring = restoringWaiting(entry, s, nativeAt);
+    const previousChange = entry.lastChange;
     let changed, claudeActivity = null;
     const claudeQuestion = s.tool === 'claude' ? terminalQuestionPrompt(snap) : null;
     let newClaudeQuestion = false;
@@ -2000,6 +2010,8 @@ async function pollOnce() {
         }
       }
     } else changed = observeMonitorSnapshot(entry, h, s.status);
+    if (restoring) { changed = false; entry.lastChange = previousChange; }
+    else if (wasRestoring && nativeAt > Number(s.last_activity)) { changed = true; entry.lastChange = now(); }
     const idleMs = now() - entry.lastChange;
 
     // PARKED lifecycle (park.js, traceability A3): byte-still beyond the threshold -> flag + one
@@ -2070,6 +2082,9 @@ async function pollOnce() {
         }
       }
     }
+    if (restoring && !terminalQuestionPrompt(snap)) {
+      status = 'waiting'; question = s.question;
+    }
     if (s.status === 'waiting' && status === 'working' && now() < (entry.preserveWaitingUntil || 0)) {
       status = 'waiting';
       question = s.question;
@@ -2089,7 +2104,7 @@ async function pollOnce() {
     if (s.tool === 'claude' && status === 'waiting' && s.status === 'waiting'
         && !changed && (!claudeQuestion || getClaudeLifecycle(s.id)?.attention)) question = s.question;
     applyStatus(s, status, question, changed, {
-      forceAttention: (!!claudeActivity?.newReport || newClaudeQuestion) && status === 'waiting',
+      forceAttention: !restoring && (!!claudeActivity?.newReport || newClaudeQuestion) && status === 'waiting',
       promptId: s.tool === 'claude' ? getClaudeLifecycle(s.id)?.attention_id || (claudeQuestion ? entry.claudeQuestionKey : '') : '',
       claudeSource: !claudeQuestion && claudeActivity?.phase === 'waiting' && claudeActivity?.report?.ts === claudeActivity?.lastAt
         ? claudeActivity.report.text : undefined,
@@ -2190,6 +2205,7 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
 export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {}, activityBump = true, forceAttention = false, promptId = '' } = {}) {
   const session = store.getSession(sid);
   if (!session || session.status === 'exited') return session;
+  if (activityBump) { const entry = reg.get(sid); if (entry) delete entry.restoredWaitingSince; }
   const nextQuestion = status === 'waiting' && question == null ? session.question : question;
   const result = applyStatus(session, status, nextQuestion, activityBump, { source, extra, forceAttention, claudeSource: question, promptId });
   if (session.tool === 'claude' && result?.updated?.last_activity > session.last_activity) {
@@ -3854,13 +3870,24 @@ route('POST', '/api/project/:id/helpers', async (req, res, { id: pid }) => {
   json(res, 200, { ok: true, helpers: setHelpers(pid, b), deployable: _selfDeployable(p.path), isolation_gap: isolationGap(pid) });
 });
 
+function noteTerminalActivity(sid) {
+  const entry = reg.get(sid);
+  // One durable receipt per restored episode, not an event for every keystroke. Never store raw keys
+  // (which may be secrets); this only prevents recovery repair from rewinding a real operator action.
+  if (entry?.restoredWaitingSince) {
+    store.addEvent(sid, 'terminal-input', { after_restore: true });
+    delete entry.restoredWaitingSince;
+  }
+  store.updateSession(sid, { last_activity: now() });
+}
+
 route('POST', '/api/session/:id/key', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   const b = await readJson(req);
   if (!b.key) return json(res, 400, { error: 'key required' });
   await sendKey(s.tmux, b.key);
-  store.updateSession(sid, { last_activity: now() });
+  noteTerminalActivity(sid);
   json(res, 200, { ok: true });
 });
 
@@ -3885,7 +3912,7 @@ route('POST', '/api/session/:id/type', async (req, res, { id: sid }) => {
   }
   await sendRaw(s.tmux, data);
   markTyping(sid); // live terminal keystrokes are operator presence too -> hold supervisor auto-sends
-  store.updateSession(sid, { last_activity: now() });
+  noteTerminalActivity(sid);
   json(res, 200, { ok: true });
 });
 
@@ -4191,6 +4218,8 @@ route('GET', '/api/session/:id/stream', async (req, res, { id: sid }) => {
 async function boot() {
   await ensureServer();
   await tmuxOk('set-option', '-g', 'history-limit', '200000');
+  const repairedClocks = await repairRebootRecency(store.db);
+  if (repairedClocks.length) console.log(`[aios] restored ${repairedClocks.length} reboot-inflated activity clocks`);
   await discover();
   await repairTerminalPipes([...reg.values()]).catch(() => {});
   const swept = await sweepTemporaryProjects();

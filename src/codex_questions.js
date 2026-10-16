@@ -27,7 +27,8 @@ export function rememberCodexQuestion(sid, prompt) {
     if (report.created) clearAttentionDismissal(sid);
   }
   const current = { ...prompt, answered, reportId: report?.message?.id || null, ...(answered ? { answeredWith: reply.text.slice(0, 200) } : {}) };
-  const updated = store.updateSession(sid, { structured_question: JSON.stringify(current) });
+  const updated = store.updateSession(sid, { structured_question: JSON.stringify(current),
+    ...(!answered ? { last_activity: Math.max(Number(session.last_activity) || 0, Number(prompt.ts) || 0) } : {}) });
   store.addEvent(sid, 'codex-async-question', { call_id: prompt.id, questions: prompt.questions.length, answered });
   bus.emit('session-status', sessionStatusPayload(updated, { source: 'codex-async-question', extra: {
     unread: attentionUnreadCount(sid),

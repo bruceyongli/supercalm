@@ -2,7 +2,8 @@ import { db } from './store.js';
 
 const lastInput = db.prepare("SELECT MAX(ts) ts FROM messages WHERE session_id=? AND direction='in'");
 const lastIntent = db.prepare(`SELECT MAX(ts) ts FROM events WHERE session_id=? AND (
-  type IN ('launch','resume','input','usage-limit-stop','stop-request','kill-request')
+  type IN ('launch','input','terminal-input','usage-limit-stop','stop','kill','stop-request','kill-request')
+  OR (type='resume' AND COALESCE(json_extract(payload,'$.reason'),'')!='boot-recovery')
   OR (type='hook' AND json_valid(payload) AND json_extract(payload,'$.tool')='claude'
     AND json_extract(payload,'$.event') IN ('UserPromptSubmit','Stop','StopFailure','PermissionRequest',
       'Elicitation','ElicitationResult','PreCompact','PostCompact','SubagentStart','SubagentStop'))

@@ -18,4 +18,6 @@ assert.equal(isRecentVoiceSession(session, now, messages), true, 'a genuine new 
 const fresh = { ...session, id: 's_new', last_key: { id: 2, ts: now } };
 assert.equal(nextOnTheGoAttention([session, fresh], new Set())?.id, 's_new');
 assert.equal(nextOnTheGoAttention([session], new Set()), null);
+assert.equal(isRecentVoiceSession({ ...fresh, tool: 'codex', last_activity: now - 30 * day }, now), false,
+  'a reboot-replayed report cannot bypass the repaired work clock in the voice queue');
 console.log('voice_recency.test ok');

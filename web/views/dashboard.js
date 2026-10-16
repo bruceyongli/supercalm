@@ -110,6 +110,11 @@ function reconcile(container, specs) {
     let el = existing.get(spec.key);
     if (!el || (el.dataset.render !== spec.html && !isInteracting(el))) {
       const fresh = keyedNode(spec.html, spec.key);
+      const draft = el?.querySelector('.dk-reply textarea');
+      if (draft?.value && fresh.querySelector('.dk-reply textarea')) {
+        fresh.querySelector('.dk-reply textarea').value = draft.value;
+        fresh.querySelector('.dk-reply').hidden = el.querySelector('.dk-reply').hidden;
+      }
       if (el) el.replaceWith(fresh);
       el = fresh;
     }
@@ -162,7 +167,11 @@ function renderInbox(home) {
   for (const container of [cardsEl, olderCardsEl]) {
     for (const card of [...(container?.children || [])]) {
       const target = placements.get(card.dataset.key);
-      if (target && target !== container) target.appendChild(card);
+      if (target && target !== container) {
+        const focused = card.contains(document.activeElement) ? document.activeElement : null;
+        target.appendChild(card);
+        focused?.focus({ preventScroll: true });
+      }
     }
   }
   if (cardsEl) reconcile(cardsEl, cardSpecs);

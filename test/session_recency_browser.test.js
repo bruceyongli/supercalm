@@ -13,7 +13,8 @@ const waiting = (id, at) => ({ id, title: `Task ${id}`, project: 'Fixture', tool
 const sessions = [waiting('s_recent', now), waiting('s_old', now - 2 * day), waiting('s_old_reply', now - 3 * day),
   { id: 's_old_work', title: 'Long running task', project: 'Fixture', tool: 'codex', status: 'working', unread: 0, last_activity: now - 2 * day },
   { ...waiting('s_dismissed', now - 4 * day), dismissed: true, dismissed_at: now - day },
-  { ...waiting('s_fresh_report', now - 5 * day), last_key: { id: 12, ts: now, text: 'Fresh update' } }];
+  { ...waiting('s_fresh_report', now), started_at: now - 5 * day, last_key: { id: 12, ts: now, text: 'Fresh update' } },
+  { ...waiting('s_replayed', now - 30 * day), last_key: { id: 13, ts: now, text: 'Startup chrome observed after reboot' } }];
 const storyRequests = [], inputBodies = [];
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' };
 function json(res, data) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); }
@@ -55,7 +56,9 @@ try {
     catch (error) { throw new Error(JSON.stringify({ errors, content: await page.evaluate(() => document.querySelector('#view')?.innerText || document.title) }) + '\n' + error.message); }
     assert.equal(await page.locator('#dk-older-needs').getAttribute('open'), null);
     assert.equal(await page.locator('#dk-older-side').getAttribute('open'), null);
-    assert.equal(await page.locator('#dk-older-needs-count').textContent(), '2');
+    assert.equal(await page.locator('#dk-older-needs-count').textContent(), '3');
+    assert.equal(await page.locator('#dk-cards [data-sid="s_replayed"]').count(), 0, 'startup report cannot promote an old session');
+    assert.equal(await page.locator('#dk-older-side [data-sid="s_replayed"]').count(), 1, 'sidebar uses the same durable age');
     assert.equal(await page.locator('#dk-cards [data-sid="s_recent"]').isVisible(), true);
     assert.equal(await page.locator('#dk-cards [data-sid="s_fresh_report"]').isVisible(), true, 'old session with a new report remains prominent');
     assert.equal(await page.locator('#dk-cards [data-sid="s_old"]').count(), 0);
@@ -101,7 +104,7 @@ try {
     await draft.locator('textarea').focus();
     await page.evaluate(async () => {
       const { upsertSession } = await import('/aios/shell.js');
-      upsertSession({ id: 's_old', last_key: { id: 30, ts: Date.now(), text: 'A new report' } });
+      upsertSession({ id: 's_old', last_activity: Date.now(), last_key: { id: 30, ts: Date.now(), text: 'A new report' } });
     });
     await page.locator('#dk-cards [data-sid="s_old"]').waitFor();
     assert.equal(await page.locator('#dk-cards [data-sid="s_old"] textarea').inputValue(), 'Keep this draft when a fresh report arrives.', 'promoting a card preserves its draft and focus');

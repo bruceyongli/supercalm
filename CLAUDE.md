@@ -111,6 +111,11 @@ category ∈ action|decision|review|working. The needs-you queue shows the clean
 badge and hides `working` false-positives; push uses it. Runs once per waiting episode, off the poll loop.
 Idle/change detection hashes a STABILIZED snapshot (`stableSnap` drops the composer prompt, codex's
 rotating placeholder hint, and the tool footer) so idle sessions settle to `waiting` instead of flickering.
+Host/service recovery is not work: preserve `last_activity` on automatic resume and do not promote
+restored waiting sessions for startup/replayed terminal frames. Release that guard on genuine input,
+hooks or newer native conversation records (including work during downtime); runtime heartbeats stay
+separate. Both home lists use this durable clock, not the time an old report was re-extracted. Any
+legacy timestamp repair must retain messages/dismissals and record its evidence in an audit event.
 
 ## Voice concierge (`voice.js` + `web/voicemode.js`)
 Story's **Explain**, phone reports and the needs-you voice queue open the SAME conversation UI and
