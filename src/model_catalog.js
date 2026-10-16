@@ -233,6 +233,22 @@ let CATALOG_META = { scannedAt: null, source: 'static' };
 let PROVIDER_BY_PROXY = new Map();
 let ROUTES_BY_ID = new Map();
 
+// Compare real family versions, not catalog order or lexicographic ids (5.10 > 5.9). A dated
+// snapshot belongs to its base version; prefer the undated id when both are advertised.
+function latestClaudeFamily(models, family) {
+  const pattern = new RegExp(`^claude-${family}-(\\d+(?:[.-]\\d+)*)$`, 'i');
+  return models.filter(sessionModelEligible).map(model => {
+    const match = model.id.replace(/-\d{8}$/, '').match(pattern);
+    return match ? { model, version: match[1].split(/[.-]/).map(Number) } : null;
+  }).filter(Boolean).sort((a, b) => {
+    for (let i = 0; i < Math.max(a.version.length, b.version.length); i++) {
+      const delta = (b.version[i] || 0) - (a.version[i] || 0);
+      if (delta) return delta;
+    }
+    return Number(/-\d{8}$/.test(a.model.id)) - Number(/-\d{8}$/.test(b.model.id));
+  })[0]?.model;
+}
+
 function refreshClaudeAliases() {
   const provider = PROVIDERS.find((p) => p.proxy === 'claude');
   if (!provider) return;
@@ -241,7 +257,7 @@ function refreshClaudeAliases() {
     ...provider.models,
   ];
   for (const [alias, family] of Object.entries(CLAUDE_ALIAS_FAMILIES)) {
-    const model = ranked.find((candidate) =>
+    const model = latestClaudeFamily(provider.models, family) || ranked.find((candidate) =>
       (candidate.kind || 'chat') === 'chat' && new RegExp(`^claude-${family}(?:-|$)`, 'i').test(candidate.id)
     );
     if (model) MODEL_ALIASES[alias] = model.id;
@@ -437,9 +453,10 @@ export function topProviderModels(proxy, limit = 3, { liveOnly = true } = {}) {
 export function toolModels(tool) {
   if (tool === 'agy') return listProxyModels({ providers: ['antigravity'] }); // agy-native — its CLI login serves these
 
-  // Alias entries replace their concrete targets (don't ALSO list claude-opus-4-8 when
-  // "opus" maps to it — duplicate rows with near-identical labels confuse the picker).
-  const seen = new Set(tool === 'claude' ? Object.values(MODEL_ALIASES) : []);
+  // Keep the concrete default selectable so a NEW session is pinned to the advertised version,
+  // not a floating family alias. The shared picker deduplicates its label against the friendly alias
+  // while preserving whichever id is selected (including aliases saved on existing sessions).
+  const seen = new Set(tool === 'claude' ? Object.values(MODEL_ALIASES).filter(id => id !== defaultToolModel(tool)) : []);
   // Alias labels follow the catalog (e.g. "opus" shows whatever claude-opus-* it maps to today).
   const nativeAliases =
     tool === 'claude'
@@ -483,7 +500,8 @@ export function toolModels(tool) {
   });
 }
 
-// The DEFAULT model for a tool's fresh sessions: the newest flagship its own provider serves.
+// The DEFAULT model for a tool's fresh sessions: newest Opus for Claude; the live subscription/fleet
+// flagship recommendation for Codex and other CLIs. This is launch policy, not a running-session edit.
 // Ranking follows the LIVE catalog, so a new model generation becomes the default without a code
 // change (the operator's standing ask — no stale hardcoded defaults): the provider's ordered
 // `recommended` list leads (applyCatalog: subscription-CLI priority first, fleet catalog second),
@@ -495,6 +513,10 @@ export function defaultToolModel(tool) {
   const provider = PROVIDERS.find((p) => (p.nativeFor || []).includes(tool));
   if (!provider) return null;
   const chat = provider.models.filter(sessionModelEligible);
+  if (tool === 'claude') {
+    const opus = latestClaudeFamily(chat, 'opus');
+    if (opus) return opus.id;
+  }
   const byId = new Map(chat.map((m) => [m.id, m]));
   const ranked = [
     ...(provider.recommended || []).map((id) => byId.get(id)).filter(Boolean),

@@ -414,6 +414,8 @@ if (nsRescan) {
   };
 }
 $('#btn-new').onclick = () => {
+  nsModel = null;
+  nsEffort = null;
   nsAutonomy = nsAutonomy || (STATE.defaults && STATE.defaults.autonomy) || 'full';
   const sel = $('#ns-project');
   sel.innerHTML = '<option value="">— pick or use path below —</option>' +
@@ -421,6 +423,7 @@ $('#btn-new').onclick = () => {
   renderSeg('#ns-tool', STATE.tools.map((t) => ({ value: t.id, label: t.label })), nsTool, (v) => {
     nsTool = v;
     nsModel = null;
+    nsEffort = null;
     updateToolDeps();
   });
   renderSeg('#ns-autonomy', (STATE.autonomyLevels || ['ask', 'auto', 'full']).map((a) => ({ value: a, label: AUTONOMY_LABELS[a] || a })), nsAutonomy, (v) => (nsAutonomy = v));

@@ -471,12 +471,13 @@ export async function openLaunch(opts = {}) {
     </div>`;
   const q = (sel) => m.querySelector(sel);
   const toolBtns = [...m.querySelectorAll('#nl-tool [data-tool]')];
-  const fillEfforts = () => {
+  const fillEfforts = ({ reset = false } = {}) => {
     const t = tools.find(x => x.id === toolBtns.find(b => b.classList.contains('on'))?.dataset.tool);
     const model = (t?.models || []).find(x => x.id === q('#nl-model').value);
     const efforts = model?.efforts ?? t?.efforts ?? [];
     const previous = q('#nl-effort').value;
-    const selected = efforts.includes(previous) ? previous : model?.defaultEffort || t?.defaultEffort;
+    const preferred = model?.defaultEffort || t?.defaultEffort;
+    const selected = !reset && efforts.includes(previous) ? previous : efforts.includes(preferred) ? preferred : efforts[0];
     q('#nl-effort-field').hidden = !efforts.length;
     q('#nl-effort').innerHTML = efforts.map(value => `<option value="${esc(value)}" ${value === selected ? 'selected' : ''}>${esc(value)}</option>`).join('');
   };
@@ -486,9 +487,9 @@ export async function openLaunch(opts = {}) {
       selected: t?.model || '',
       leading: (t?.models || []).length ? [] : [{ value: '', label: 'default' }],
     });
-    fillEfforts();
+    fillEfforts({ reset: true });
   };
-  q('#nl-model').onchange = fillEfforts;
+  q('#nl-model').onchange = () => fillEfforts();
   fillModels();
   for (const b of toolBtns) b.onclick = () => { toolBtns.forEach((x) => x.classList.toggle('on', x === b)); fillModels(); };
   // Visibility must be SYNCED, not only reacted to: on a fresh install with zero projects,

@@ -36,6 +36,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 - **Vanilla Node, no framework.** `node:http` + a tiny router in `src/server.js`; `node:sqlite`
   (built in) in `src/store.js`. ESM (`"type":"module"`). Keep runtime dependencies sparse:
   `web-push` for notifications; Agent View's AG-UI wire adapter is repository-native.
+- Fresh-session defaults follow the live catalog: Codex's current subscription/fleet flagship with
+  `xhigh`, Claude Code's numerically newest Opus. Switching agents in the launcher resets its model
+  and effort; explicit picks within that agent remain selectable. Never migrate existing sessions
+  merely because a newer model was discovered. Explicit administrator model overrides still win.
 - Frontend is plain HTML/CSS/JS in `web/` (dark monospace, mobile-first). xterm.js is **vendored**
   in `web/vendor/`. Shared helpers in `web/common.js`.
 - UI principle: do not add visible controls/buttons for rare edge cases unless explicitly requested.

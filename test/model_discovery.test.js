@@ -116,8 +116,8 @@ assert.equal(latestClaude.find((model) => model.id === 'opus')?.modelLabel, 'Cla
   'the friendly Claude family alias follows the newest advertised family member');
 assert.equal(routeForModel('opus').model, 'claude-opus-5',
   'the launch route behind the friendly alias advances with the catalog, not only its label');
-assert.equal(defaultToolModel('claude'), 'claude-fable-5-1',
-  'descriptive role metadata does not hide the newly recommended flagship from fresh-session defaults');
+assert.equal(defaultToolModel('claude'), 'claude-opus-5',
+  'new Claude sessions prefer latest Opus, independently of other recommended families');
 assert.deepEqual(topProviderModels('claude').map((model) => model.id),
   ['claude-fable-5-1', 'claude-opus-5'],
   'automatic Supervisor recommendations use the same current family-filtered catalog');
