@@ -17,9 +17,13 @@ try {
 
   const mod = await import(`../src/model_catalog.js?case=${Date.now()}`);
   assert.equal(await mod.fleetKey(), 'local-provider-test-key');
+  writeFileSync(join(home, '.dev.vars'), 'LOCAL_PROVIDER_PROXY_KEY=rotated-test-key\n');
+  assert.equal(await mod.fleetKey(), 'local-provider-test-key', 'ordinary requests reuse the bounded cache');
+  assert.equal(await mod.fleetKey({ refresh: true }), 'rotated-test-key', 'discovery re-reads rotated credentials');
 
   process.env.AIOS_PROXY_KEY = 'explicit-aios-key';
   assert.equal(await mod.fleetKey(), 'explicit-aios-key');
+  assert.equal(await mod.fleetKey({ refresh: true }), 'explicit-aios-key', 'refresh still respects explicit configuration');
 
   console.log('model_catalog_key.test ok');
 } finally {

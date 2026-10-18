@@ -20,115 +20,30 @@ import {
   currentProviders,
   fleetKey,
   listProxyModels,
-  normalizeReasoningEfforts,
 } from './model_catalog.js';
 import { discoverCliModels } from './cli_model_discovery.js';
 import { refreshProviderModels } from './model_providers.js';
+import { fetchInventoryJson, scanProvider, discoverySeeds } from './model_inventory.js';
+export { prettyModelId } from './model_inventory.js';
 
 const CATALOG_PATH = join(DATA_DIR, 'model_catalog.json');
 const OVERVIEW_PORT = Number(process.env.AIOS_FLEET_OVERVIEW_PORT || 8791);
-const FETCH_TIMEOUT_MS = 5000;
 const RESCAN_INTERVAL_MS = Number(process.env.AIOS_MODEL_RESCAN_MS || 3600_000);
 
-async function fetchJson(url, key) {
-  try {
-    const res = await fetch(url, {
-      headers: { authorization: `Bearer ${key}` },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
-// claude-opus-4-8 -> "Claude Opus 4.8"; claude-fable-5 -> "Claude Fable 5";
-// claude-3-5-haiku-latest -> "Claude 3.5 Haiku Latest". Joins consecutive numeric
-// segments with '.' so version-ish ids read like the curated labels do.
-export function prettyModelId(id) {
-  const parts = String(id).split('-').filter(Boolean);
-  const out = [];
-  for (const p of parts) {
-    if (/^\d+$/.test(p) && out.length && /^\d[\d.]*$/.test(out[out.length - 1])) out[out.length - 1] += '.' + p;
-    else out.push(/^\d/.test(p) ? p : p[0].toUpperCase() + p.slice(1));
-  }
-  return out.join(' ');
-}
-
-async function scanProvider(seed, ov, key) {
-  const port = Number(ov?.port || seed.port);
-  const ovModels = new Map((ov?.models || []).map((m) => [m.id, m]));
-  const seedModels = new Map((seed.models || []).map((m) => [m.id, m]));
-  // The fleet owns version-family semantics. Ask it for one newest model per family instead of
-  // duplicating brittle id parsing in AIOS. Older proxy installs may not know this query parameter,
-  // so fall back to their byte-compatible bare inventory only when the filtered request fails.
-  let live = await fetchJson(`http://127.0.0.1:${port}/v1/models?latest=1`, key);
-  const inventoryFilter = Array.isArray(live?.data) ? 'latest' : null;
-  if (!inventoryFilter) live = await fetchJson(`http://127.0.0.1:${port}/v1/models`, key);
-  const ids = Array.isArray(live?.data) ? live.data.filter((d) => d && d.id) : null;
-  const models = ids?.length
-    ? ids.map((d) => {
-        const o = ovModels.get(d.id);
-        const s = seedModels.get(d.id);
-        return {
-          id: d.id,
-          label: o?.displayName || s?.label || d.display_name || prettyModelId(d.id),
-          recommended: o ? !!o.recommended : !!s?.recommended,
-          vision: d.capabilities?.image_input ?? o?.capabilities?.image_input ?? s?.vision,
-          efforts: normalizeReasoningEfforts(d.supported_reasoning_efforts || d.supportedReasoningEfforts || d.reasoning_efforts || d.supported_reasoning_levels || d.efforts || o?.efforts || o?.reasoning_efforts || s?.efforts),
-          kind: o?.kind || s?.kind || 'chat',
-          role: o?.role || s?.role || null,
-        };
-      })
-    : [...seedModels.values()]; // port down -> keep what we knew, just mark it down
-  const modelIds = new Set(models.map((model) => model.id));
-  const overviewRecommended = Array.isArray(ov?.recommended)
-    ? ov.recommended.filter((id) => typeof id === 'string' && modelIds.has(id))
-    : [];
-  const overviewRecommendedSet = new Set(overviewRecommended);
-  return {
-    proxy: seed.proxy,
-    label: seed.label || seed.proxy,
-    port,
-    nativeFor: seed.nativeFor || [],
-    up: !!ids?.length,
-    inventoryFilter,
-    // Spark keeps retired LLM names routable without listing them as separate
-    // models. Preserve this metadata across scans and application restarts.
-    aliases: seed.proxy === 'spark' ? (live?.x_proxy_inventory?.aliases || seed.aliases || {}) : {},
-    deprecated: ov?.deprecated || seed.deprecated || null,
-    // Preserve the provider's ordered recommendation list instead of reducing it to booleans.
-    // This is the automatic "best current models" signal consumed by Supervisor defaults.
-    // A newly recommended model can reach /v1/models before an older Overview recommendation array
-    // is refreshed. Prepend those flagged live rows (Fable 5.1 was the real incident), then retain
-    // Overview's curated order for every model that survived the latest-family filter.
-    recommended: [...new Set([
-      ...models.filter((model) => model.recommended && !overviewRecommendedSet.has(model.id)).map((model) => model.id),
-      ...overviewRecommended,
-      ...models.filter((model) => model.recommended).map((model) => model.id),
-    ])],
-    models,
-  };
-}
-
 export async function scanCatalog() {
-  const key = await fleetKey();
-  const overview = await fetchJson(`http://127.0.0.1:${OVERVIEW_PORT}/admin/overview`, key);
-  const ovByProxy = new Map((overview?.providers || []).map((p) => [p.proxy, p]));
+  const key = await fleetKey({ refresh: true });
+  const { value: overview } = await fetchInventoryJson(`http://127.0.0.1:${OVERVIEW_PORT}/admin/overview`, key);
+  const overviewProviders = (Array.isArray(overview?.providers) ? overview.providers : []).filter(p => p?.proxy);
+  const ovByProxy = new Map(overviewProviders.map((p) => [p.proxy, p]));
 
   // provider set: static seed order first, then current (previously scanned), then overview-only
-  const seeds = new Map(PROXY_PROVIDERS.map((p) => [p.proxy, p]));
-  for (const p of currentProviders()) if (!seeds.has(p.proxy)) seeds.set(p.proxy, p);
-  for (const [proxy, p] of ovByProxy) {
-    if (!seeds.has(proxy) && Number(p.port)) seeds.set(proxy, { proxy, label: proxy, port: p.port, nativeFor: [], models: [] });
-  }
+  const seeds = discoverySeeds(PROXY_PROVIDERS, currentProviders(), overviewProviders);
 
   // Builtin rows the user disabled on the Models page drop out of the scan entirely — their
   // models leave the catalog on the next apply, exactly like removing a user provider.
   let disabled = new Set();
   try { disabled = (await import('./model_providers.js')).builtinDisabled(); } catch {}
-  return Promise.all([...seeds.values()].filter((s2) => !disabled.has(s2.proxy)).map((seed) => scanProvider(seed, ovByProxy.get(seed.proxy), key)));
+  return Promise.all(seeds.filter((s2) => !disabled.has(s2.proxy)).map((seed) => scanProvider(seed, ovByProxy.get(seed.proxy), key)));
 }
 
 export function mergeCliCatalog(providers, cliProviders = {}) {
@@ -165,7 +80,9 @@ async function performRescan() {
       console.error('[aios] model catalog not persisted:', e.message)
     );
   }
-  return { ok, scannedAt, providerCount: providers.length, modelCount: models.length, added, cli: cli.sources, apiProviders };
+  const failures = providers.filter(p => p.scanError).map(p => ({ provider: p.proxy, error: p.scanError, retained: !!p.up }));
+  const degraded = providers.every(p => p.reachable === false) || providers.some(p => p.stale && p.up);
+  return { ok, scannedAt, providerCount: providers.length, modelCount: models.length, added, cli: cli.sources, apiProviders, failures, degraded };
 }
 
 export function rescanModels() {
@@ -193,9 +110,21 @@ route('POST', '/api/models/refresh', async (req, res) => {
     if (applyCatalog(saved.providers, { scannedAt: saved.scannedAt, source: 'disk' }))
       console.log(`[aios] model catalog loaded from disk (${saved.scannedAt})`);
   } catch {}
-  setTimeout(() => rescanModels().then(
-    (r) => console.log(`[aios] model scan: ${r.modelCount} models${r.added.length ? `, +${r.added.length} new` : ''}`),
-    (e) => console.error('[aios] model scan failed:', e.message)
-  ), 3000);
-  setInterval(() => rescanModels().catch(() => {}), RESCAN_INTERVAL_MS).unref();
+  // Failed discovery retries promptly but with a bounded backoff, not an hourly empty picker or
+  // a tight authentication loop. Never retry simply because an unused, never-seen provider is absent.
+  let retryTimer, attempts = 0;
+  async function scheduledScan() {
+    clearTimeout(retryTimer);
+    let degraded = true;
+    try {
+      const r = await rescanModels();
+      console.log(`[aios] model scan: ${r.modelCount} models${r.added.length ? `, +${r.added.length} new` : ''}${r.failures.length ? `; ${JSON.stringify(r.failures)}` : ''}`);
+      degraded = r.degraded;
+    } catch (e) { console.error('[aios] model scan failed:', e.message); }
+    if (degraded && attempts < 3) retryTimer = setTimeout(scheduledScan, [60_000, 120_000, 300_000][attempts++]);
+    else if (!degraded) attempts = 0;
+    retryTimer?.unref();
+  }
+  setTimeout(scheduledScan, 3000).unref();
+  setInterval(() => { attempts = 0; void scheduledScan(); }, RESCAN_INTERVAL_MS).unref();
 })();

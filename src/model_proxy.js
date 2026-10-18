@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { route, json, readJson } from './server.js';
-import { currentProviders, fleetKey, listProxyModels, routeForModel } from './model_catalog.js';
+import { currentProviders, fleetKey, listProxyModels, routeForModel, assertModelRoute } from './model_catalog.js';
+import { anthropicHeaders } from './anthropic_headers.js';
+
+function requestRoute(model, res) {
+  try { return assertModelRoute(routeForModel(model)); }
+  catch (error) {
+    json(res, 400, { type: 'error', error: { type: 'invalid_request_error', code: error.code, message: error.message } });
+    return null;
+  }
+}
 
 function rid(prefix) {
   return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 24)}`;
@@ -42,7 +51,8 @@ async function fetchJson(url, body, headers = {}) {
 
 async function forwardJson(req, res, path) {
   const body = await readJson(req);
-  const r = routeForModel(body.model);
+  const r = requestRoute(body.model, res);
+  if (!r) return;
   const forwarded = { ...body, model: r.model };
   const upstream = await fetchJson(upstreamUrl(r.port, path), forwarded);
   await pipeUpstream(upstream, res);
@@ -582,13 +592,11 @@ async function streamChatAsAnthropic(upstream, res, model, requestTools = []) {
 
 async function handleAnthropicMessages(req, res) {
   const body = await readJson(req);
-  const r = routeForModel(body.model);
+  const r = requestRoute(body.model, res);
+  if (!r) return;
   const model = r.model || body.model;
   if (r.proxy === 'claude') {
-    const upstream = await fetchJson(upstreamUrl(r.port, '/v1/messages'), { ...body, model }, {
-      'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
-      'anthropic-beta': req.headers['anthropic-beta'] || '',
-    });
+    const upstream = await fetchJson(upstreamUrl(r.port, '/v1/messages'), { ...body, model }, anthropicHeaders(req.headers, body));
     return pipeUpstream(upstream, res);
   }
 
@@ -607,12 +615,10 @@ async function handleAnthropicMessages(req, res) {
 
 async function handleAnthropicCountTokens(req, res) {
   const body = await readJson(req);
-  const r = routeForModel(body.model);
+  const r = requestRoute(body.model, res);
+  if (!r) return;
   if (r.proxy === 'claude') {
-    const upstream = await fetchJson(upstreamUrl(r.port, '/v1/messages/count_tokens'), { ...body, model: r.model }, {
-      'anthropic-version': req.headers['anthropic-version'] || '2023-06-01',
-      'anthropic-beta': req.headers['anthropic-beta'] || '',
-    });
+    const upstream = await fetchJson(upstreamUrl(r.port, '/v1/messages/count_tokens'), { ...body, model: r.model }, anthropicHeaders(req.headers, body));
     return pipeUpstream(upstream, res);
   }
   const rough = JSON.stringify({ system: body.system || '', messages: body.messages || [], tools: body.tools || [] });
@@ -988,7 +994,8 @@ async function streamChatAsResponse(upstream, res, body) {
 
 async function handleResponses(req, res) {
   const body = await readJson(req);
-  const r = routeForModel(body.model);
+  const r = requestRoute(body.model, res);
+  if (!r) return;
   const model = r.model || body.model;
   if (r.proxy === 'codex') {
     const upstream = await fetchJson(upstreamUrl(r.port, '/v1/responses'), { ...body, model });

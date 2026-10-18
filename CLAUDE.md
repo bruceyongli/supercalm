@@ -331,10 +331,17 @@ behind `PROXY_API_KEY`** (only `/admin/*` is keyless) — `fleetKey()` in `model
 the proxies' own launchd plists (`~/Library/LaunchAgents/*proxy*.plist`; override `AIOS_PROXY_KEY`), zero
 per-machine config. EVERY fleet caller must use it: the cli-proxy bridge (`model_proxy.js`), the voice brain
 (`llm.js`), summaries (`summarize.js`), session tokens (`authmode.js`) — a dummy/keyless call = 401 "Please
-run /login" in claude sessions and silent voice/summary failures. Scans run at boot + every 6h +
+run /login" in claude sessions and silent voice/summary failures. Scans run at boot + every hour +
 on demand; results are applied in-process (`applyCatalog()` rebuilds the route index; `TOOLS[*].models` are
 getters so `/api/state` always serves the live lists) and persisted to `data/model_catalog.json` (survives
 restarts, fleet-down boots keep the last scan). Claude alias labels (`opus`→…) follow the catalog.
+Failed probes retain the last successful inventory, including builtin providers, and record stale/reachable
+metadata separately; bounded 1/2/5-minute recovery retries do not empty the CLI picker. Discovery refreshes
+cached fleet credentials. Bare native Claude/GPT IDs belong to their native provider, even before discovery
+or when another provider advertises the same ID. Explicit user/provider routes still win. Unknown generic
+IDs fail before dispatch, never silently fall through to Antigravity. Claude-native requests containing
+`context_management` carry the required Anthropic context-management beta header; preserve caller betas,
+context edits and exact model identity instead of stripping unsupported fields or substituting models.
 **CLI updates**: `GET /api/tools/versions` compares each CLI (`--version`, resolved in TOOL_PATH order — the
 same binary sessions run) against the npm registry (claude/codex; agy has no public feed). `POST
 /api/tools/check` = the one-click (versions + model rescan); `POST /api/tools/:id/update` runs the CLI's own

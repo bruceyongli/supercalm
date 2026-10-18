@@ -38,12 +38,13 @@ async function readDevVarsProxyKey() {
 // local shared key from ~/.dev.vars (LOCAL_PROVIDER_PROXY_KEY), from the proxy
 // fleet's .dev.vars/launchd plist, or from an explicit Supercalm env override. Falls
 // back to the dummy key only if no local key is discoverable. Cached after the
-// first read — lazy, no I/O at import time.
-let fleetKeyCache;
-export async function fleetKey() {
+// first read for one minute — lazy, no I/O at import time. Discovery can refresh immediately.
+let fleetKeyCache, fleetKeyReadAt = 0;
+export async function fleetKey({ refresh = false } = {}) {
   if (process.env.AIOS_PROXY_KEY) return process.env.AIOS_PROXY_KEY;
   if (process.env.LOCAL_PROVIDER_PROXY_KEY) return process.env.LOCAL_PROVIDER_PROXY_KEY;
-  if (fleetKeyCache !== undefined) return fleetKeyCache;
+  if (!refresh && fleetKeyCache !== undefined && Date.now() - fleetKeyReadAt < 60_000) return fleetKeyCache;
+  fleetKeyReadAt = Date.now();
   const devVarsKey = await readDevVarsProxyKey();
   if (devVarsKey) return (fleetKeyCache = devVarsKey);
   try {
@@ -264,12 +265,20 @@ function refreshClaudeAliases() {
   }
 }
 
+function nativeModelOwner(id) {
+  // GPT-OSS and AGY's synthetic Claude *-thinking variants are distinct fleet products, not
+  // native subscription IDs. Keep their discovered routes; explicit prefixes always work too.
+  if (/^claude-/.test(id) && !/-thinking$/.test(id)) return 'claude';
+  return /^gpt-\d/.test(id) ? 'codex' : null;
+}
+
 function rebuildIndex() {
   PROVIDER_BY_PROXY = new Map(PROVIDERS.map((p) => [p.proxy, p]));
   ROUTES_BY_ID = new Map();
   for (const p of PROVIDERS) {
     for (const m of p.models) {
-      if (!ROUTES_BY_ID.has(m.id)) ROUTES_BY_ID.set(m.id, { ...m, proxy: p.proxy, providerLabel: p.label, port: p.port });
+      const nativeOwner = nativeModelOwner(m.id);
+      if (!ROUTES_BY_ID.has(m.id) || p.proxy === nativeOwner) ROUTES_BY_ID.set(m.id, { ...m, proxy: p.proxy, providerLabel: p.label, port: p.port });
     }
   }
   // Alias metadata is routing-only: saved Spark model selections continue to
@@ -308,6 +317,11 @@ export function applyCatalog(providers, meta = {}) {
       port: Number(p.port),
       nativeFor: Array.isArray(p.nativeFor) ? p.nativeFor : [],
       up: p.up !== false,
+      reachable: typeof p.reachable === 'boolean' ? p.reachable : null,
+      stale: !!p.stale,
+      lastAttemptAt: p.lastAttemptAt || null,
+      lastSuccessfulAt: p.lastSuccessfulAt || null,
+      scanError: typeof p.scanError === 'string' ? p.scanError.slice(0, 200) : null,
       inventoryFilter: p.inventoryFilter === 'latest' ? 'latest' : null,
       aliases: p.proxy === 'spark' && p.aliases && typeof p.aliases === 'object' && !Array.isArray(p.aliases)
         ? Object.fromEntries(Object.entries(p.aliases).filter(([alias, concrete]) => alias && typeof concrete === 'string')) : {},
@@ -333,14 +347,14 @@ export function applyCatalog(providers, meta = {}) {
           role: m.role || null,
         })),
     }));
-  if (!clean.length || !clean.some((p) => p.models.length)) return false;
+  if (!clean.length) return false;
   // OPERATOR PINS: seed entries marked pinned:true persist through rescans even when the provider's
   // /v1/models omits them (verified-passthrough or awaiting-entitlement models, 2026-07-20 picks).
   for (const p of clean) {
     // A successful filtered inventory is authoritative. Re-adding a missing static pin here would
     // resurrect the exact old version that `latest=1` intentionally collapsed (for example Fable 5
     // beside Fable 5.1). Keep pins only for offline or legacy bare-inventory fallback behavior.
-    if (p.up !== false && p.inventoryFilter === 'latest') continue;
+    if (p.up !== false && (p.inventoryFilter === 'latest' || (p.reachable && !p.models.length))) continue;
     const seed = PROXY_PROVIDERS.find((sp) => sp.proxy === p.proxy);
     if (!seed) continue;
     const pinned = seed.models.filter((m) => m.pinned);
@@ -359,10 +373,10 @@ export function applyCatalog(providers, meta = {}) {
   return true;
 }
 
-// liveOnly: skip providers whose last scan found the port unreachable (scanProvider marks `up:false`;
-// a fleet-less install marks EVERY fleet provider down on its first scan). Pickers that offer models to
-// RUN pass liveOnly — offering a down provider's model is a guaranteed failure (first-time-user report:
-// "showed all models, and most are not available"). Admin/label surfaces keep the full catalog.
+// liveOnly excludes providers never successfully discovered (up:false). A failed probe retains a
+// previously working inventory: reachable/stale describe current discovery health independently.
+// A transient discovery outage must not erase the CLI picker or redirect a saved session's model.
+// Admin/label surfaces keep the full catalog, including undiscovered static seeds.
 // `top`: cap the SELECTABLE list at the best N chat models per provider (recommended first, then the
 // provider's own order — the fleet operator curates that order). 0 = uncapped; routing/resolution
 // callers must stay uncapped or running sessions on older models would stop resolving.
@@ -558,17 +572,27 @@ export function routeForModel(model) {
     };
   }
   const route = ROUTES_BY_ID.get(raw) || ROUTES_BY_ID.get(MODEL_ALIASES[raw]);
-  if (route) return { ...route, model: route.upstreamModel || route.id };
-
-  const fallback = PROVIDER_BY_PROXY.get(process.env.AIOS_DEFAULT_PROXY || 'antigravity') || PROVIDERS[0];
+  // A newly released native model may reach the CLI before discovery. Its namespace determines
+  // the provider, even if only a different provider currently advertises it. Explicit user routes
+  // and provider prefixes above still win; disabling the native provider must not redirect it.
+  const concrete = route?.upstreamModel || MODEL_ALIASES[raw] || raw;
+  const owner = nativeModelOwner(concrete);
+  if (route && (!owner || route.proxy === owner)) return { ...route, model: route.upstreamModel || route.id };
+  const provider = owner ? PROVIDER_BY_PROXY.get(owner) : null;
+  if (provider) return { proxy: provider.proxy, providerLabel: provider.label, port: provider.port,
+    id: raw, model: concrete, label: raw, inferred: true };
+  // Display/metadata callers can retain an unknown stored ID. Dispatchers must reject it before
+  // network access, rather than sending the user's prompts to a different account/provider.
   return {
-    proxy: fallback.proxy,
-    providerLabel: fallback.label,
-    port: Number(process.env.AIOS_DEFAULT_PROXY_PORT || fallback.port),
-    id: raw,
-    model: raw,
-    label: raw,
+    proxy: null, providerLabel: null, port: null, id: raw, model: raw, label: raw, unresolved: true,
   };
+}
+
+export function assertModelRoute(route) {
+  if (route && !route.unresolved && (route.base || Number(route.port) > 0)) return route;
+  const error = new Error(`Unknown model route: ${String(route?.model || route?.id || '(empty)').slice(0, 160)}. Refresh models or select an explicit provider/model.`);
+  error.code = 'unknown_model_route'; error.status = 400;
+  throw error;
 }
 
 export function modelDisplayLabel(model) {

@@ -91,10 +91,7 @@ const fleetAt = scanSource.indexOf('await scanCatalog()');
 assert.ok(cliAt > 0 && cliAt < apiAt && apiAt < fleetAt, 'refresh precedence is CLI → API provider → fleet');
 assert.match(scanSource, /rescanInFlight/, 'automated/manual scans are single-flight');
 assert.match(scanSource, /AIOS_MODEL_RESCAN_MS \|\| 3600_000/, 'automatic discovery repeats hourly by default');
-const latestFleetAt = scanSource.indexOf('/v1/models?latest=1');
-const bareFleetAt = scanSource.indexOf('/v1/models`, key', latestFleetAt);
-assert.ok(latestFleetAt > 0 && bareFleetAt > latestFleetAt,
-  'fleet discovery requests the proxy-owned latest-family view first and keeps a legacy bare fallback');
+// Latest-first and bare-fallback behavior is exercised with HTTP fixtures in model_inventory.test.js.
 
 applyCatalog([{
   proxy: 'claude',
