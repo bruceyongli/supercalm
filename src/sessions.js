@@ -84,6 +84,7 @@ import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './termin
 import { createTerminalPipeRepair } from './terminal_pipe.js';
 import { refreshCodexQuestions, resolveCodexQuestion } from './codex_questions.js';
 import { storedQuestion } from './codex_question.js';
+import { createSessionLiveness, confirmedMissing, sessionHealthError } from './session_liveness.js';
 
 const exec = promisify(execFile);
 // timeout/killSignal so a wedged tmux call can never stall the poll/tail loops.
@@ -728,6 +729,9 @@ async function tmuxOk(...args) {
     return false;
   }
 }
+const sessionLiveness = createSessionLiveness({ run: tmux,
+  onError: evidence => console.error('[aios] session health unavailable; retaining lifecycle state', JSON.stringify(evidence)) });
+let discoveryDeferred = false;
 
 // Keep a persistent, hidden keepalive session so the tmux server stays up with
 // DETACHED, IGNORED stdio. Critical: a tmux server with no sessions exits, so if we
@@ -777,7 +781,7 @@ async function waitForAgentInput(name, timeoutMs = RESUME_INPUT_READY_MS) {
   do {
     const screen = await tmux('capture-pane', '-p', '-t', name).catch(() => '');
     if (agentInputReady(screen)) return true;
-    if (!(await tmuxOk('has-session', '-t', name))) return false;
+    if (await sessionLiveness.probe(name) === 'missing') return false;
     await sleep(250);
   } while (now() < deadline);
   return false;
@@ -1387,15 +1391,36 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
+  const recoveryCancelled = () => {
+    if (recoveryReason !== 'boot-recovery') return false;
+    const current = store.getSession(sid);
+    return !current || current.tmux !== s.tmux || !['working', 'waiting'].includes(current.desired_status)
+      || /^operator-/.test(current.status_reason || '');
+  };
+  const checkRecovery = () => {
+    if (recoveryCancelled()) throw Object.assign(new Error('Recovery cancelled by newer session intent'), { code: 'recovery-cancelled' });
+  };
   if (s.tool === 'agy') {
     await assertAgyCliLoggedIn();
     await ensureAgyStatuslineHook().catch((e) => console.error('[aios] agy statusline hook install failed:', e.message));
   }
-  const alive = await tmuxOk('has-session', '-t', s.tmux);
+  const presence = await sessionLiveness.probe(s.tmux);
+  checkRecovery();
+  if (presence === 'unknown') throw sessionHealthError();
+  const alive = presence === 'alive';
   // A tmux pane lingers at a shell prompt after the agent (claude/codex/agy) exits, so `has-session`
-  // alone means "pane exists", NOT "agent running". Only short-circuit when the agent is genuinely live
-  // (status not exited); an exited session must relaunch even though its pane lingers.
-  if (alive && s.status !== 'exited' && !force) return s; // genuinely running -> don't double-launch
+  // alone means "pane exists", NOT "agent running". Inspect the process, not possibly stale DB status.
+  if (alive && !force) {
+    const cmd = await paneCmd(s.tmux);
+    if (!cmd) throw sessionHealthError();
+    if (!SHELLS.has(cmd)) {
+      // The UI can be stale while the original agent is still alive. Resume then means reattach,
+      // not kill/relaunch. Explicit settings/model force-resumes retain their existing behavior.
+      const attached = adoptLiveSession(s, recoveryReason === 'boot-recovery' ? 'boot-adopted' : 'resume-adopted');
+      if (!attached) throw sessionHealthError();
+      return waitForInput ? { ...attached, input_ready: await waitForAgentInput(s.tmux) } : attached;
+    }
+  }
   assertDiskHeadroom(store.getProject(s.project_id)?.path);
   // Missing native history is not permission to --continue somebody else's latest conversation, nor
   // to kill a still-live agent and discover the loss afterwards. First look for this EXACT UUID.
@@ -1405,7 +1430,9 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     store.addEvent(sid, 'resume-refused', { reason: error.code, native: claudeResumeId(s.claude_transcript) });
     throw error;
   }
+  checkRecovery();
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
+  checkRecovery();
   let durableStatus = ['working', 'waiting'].includes(preserveStatus)
     ? preserveStatus
     : (['working', 'waiting'].includes(s.desired_status) ? s.desired_status : 'working');
@@ -1481,6 +1508,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
       store.addEvent(sid, 'resume-reseed', { reason: 'native-conversation-missing', task_message: true });
     }
   }
+  checkRecovery();
   const name = await startPane({
     sid,
     project,
@@ -1496,6 +1524,10 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     resumeId,
     cwd,
   });
+  if (recoveryCancelled()) {
+    await tmuxOk('kill-session', '-t', name);
+    checkRecovery();
+  }
   store.addEvent(sid, 'resume', { tmux: name, resumeId, reason: recoveryReason, restored_status: durableStatus, reseeded: !!resumeTask });
   const updated = store.updateSession(sid, {
     status: durableStatus,
@@ -1562,6 +1594,7 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
   // pollOnce works from a snapshot of registry entries and awaits tmux. A model/settings relaunch can
   // replace an entry while that await is in flight. Never let the old generation mark or delete the new one.
   if (reg.get(entry.id) !== entry) return false;
+  if (reason === 'unexpected-exit' && (entry.relaunching || pendingResumes.has(entry.id))) return false;
   const s = store.getSession(entry.id);
   if (s && s.status !== 'exited') {
     const updated = store.updateSession(entry.id, {
@@ -1569,9 +1602,9 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
       runtime_heartbeat_at: now(), status_reason: reason,
       ...(reason.startsWith('operator-') ? { question: null } : {}),
       ended_at: now(), exit_code: code,
-      ...(entry.restoredWaitingSince && reason === 'unexpected-exit' ? {} : { last_activity: now() }),
+      ...(reason === 'unexpected-exit' ? {} : { last_activity: now() }),
     });
-    store.addEvent(entry.id, 'exit', { code, reason, desired_status: updated.desired_status });
+    store.addEvent(entry.id, 'exit', { code, reason, desired_status: updated.desired_status, previous_last_activity: s.last_activity });
     emitSessionStatus(updated, { previousStatus: s.status, source: 'exit' });
     bus.emit('changed');
     bus.emit('event', { type: 'exit', session: entry.id });
@@ -1592,6 +1625,29 @@ function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
   return true;
 }
 
+// Reconcile metadata only. Never send input, recreate a pane, manufacture a report or clear a
+// dismissal. Recheck durable intent after asynchronous observation so Stop/Kill wins the race.
+function adoptLiveSession(observed, source = 'runtime-adopted') {
+  const s = store.getSession(observed.id);
+  const explicit = source === 'resume-adopted';
+  if (!s || s.tmux !== observed.tmux || s.desired_status !== observed.desired_status
+      || (!explicit && /^(operator-|launch-interrupted)/.test(s.status_reason || '')) || s.runtime_status === 'stopping') return null;
+  const desired = ['working', 'waiting'].includes(s.desired_status) ? s.desired_status : explicit ? 'working' : s.status;
+  if (!['working', 'waiting'].includes(desired)) return null;
+  const existing = reg.get(s.id);
+  if (existing && !existing.tailRetired && s.status === desired && s.runtime_status === 'running' && s.ended_at == null) return s;
+  const adopted = store.updateSession(s.id, { status: desired, desired_status: desired,
+    runtime_status: 'running', runtime_boot_id: BOOT_ID, runtime_heartbeat_at: now(),
+    status_reason: source, recovery_attempts: 0, ended_at: null, exit_code: null });
+  const entry = register(adopted);
+  if (desired === 'waiting') entry.restoredWaitingSince = now();
+  store.addEvent(s.id, source, { tmux: s.tmux, previous_boot_id: s.runtime_boot_id,
+    previous_status: s.status, previous_ended_at: s.ended_at, restored_status: desired, agent_restarted: false });
+  emitSessionStatus(adopted, { previousStatus: s.status, source });
+  bus.emit('changed');
+  return adopted;
+}
+
 function scheduleTemporaryProjectCleanup(projectId) {
   if (!projectId) return;
   setImmediate(() => cleanupTemporaryProject(projectId).then((result) => {
@@ -1609,6 +1665,10 @@ function scheduleSessionStorageCleanup(sessionId) {
 }
 
 async function recoverMissingSession(s) {
+  const current = store.getSession(s.id);
+  if (!current || current.tmux !== s.tmux || current.desired_status !== s.desired_status
+      || !['working', 'waiting'].includes(current.desired_status) || /^operator-/.test(current.status_reason || '')) return { skipped: true };
+  s = current;
   const intended = s.desired_status || s.status;
   const desired = ['working', 'waiting'].includes(intended) ? intended : 'working';
   const attempt = (Number(s.recovery_attempts) || 0) + 1;
@@ -1641,13 +1701,23 @@ async function recoverMissingSession(s) {
   });
   try {
     const recovered = await resume(s.id, {
-      force: true,
+      force: false, // recheck: a pane may have appeared after the boot inventory was captured
       preserveStatus: desired,
       recoveryReason: 'boot-recovery',
     });
     store.addEvent(s.id, 'boot-recovery-complete', { attempt, restored_status: desired, tmux: recovered.tmux });
     return { recovered: true, session: recovered };
   } catch (error) {
+    const current = store.getSession(s.id);
+    if (error?.code === 'recovery-cancelled' || !current || !['working', 'waiting'].includes(current.desired_status)
+        || /^operator-/.test(current.status_reason || '')) return { skipped: true };
+    if (error?.code === 'session-health-unavailable') {
+      // An observation outage is not a failed agent restart and must not exhaust its retry budget.
+      store.updateSession(s.id, { runtime_status: s.runtime_status, status_reason: s.status_reason,
+        recovery_attempts: s.recovery_attempts });
+      discoveryDeferred = true;
+      return { deferred: true };
+    }
     const message = String(error?.message || error || 'unknown recovery failure').slice(0, 500);
     const failed = store.updateSession(s.id, {
       status: 'error',
@@ -1674,16 +1744,14 @@ async function recoverMissingSession(s) {
 // it must not turn the last operator/agent state into a deliberate stop. Existing panes are adopted by
 // this boot; missing working/waiting panes are relaunched with the same conversation and visible state.
 export async function discover() {
-  let names = [];
-  try {
-    names = (await tmux('list-sessions', '-F', '#{session_name}')).split('\n').filter(Boolean);
-  } catch {
-    names = []; // no tmux server yet
-  }
-  const alive = new Set(names);
+  const inventory = await sessionLiveness.inventory();
+  discoveryDeferred = !inventory.known;
+  if (!inventory.known) return { deferred: true }; // retry without killing/relaunching anything
+  const alive = inventory.names;
   let recovered = 0;
   let failedRecovery = 0;
   for (const s of store.listExpectedLiveSessions()) {
+    if (pendingResumes.has(s.id)) continue;
     if (s.status === 'starting') {
       // server.listen can accept a launch while this asynchronous boot reconciliation is still in
       // flight. A current-process ticket owns that row; completeLaunch will publish or clean it.
@@ -1709,25 +1777,14 @@ export async function discover() {
       scheduleTemporaryProjectCleanup(s.project_id);
       scheduleSessionStorageCleanup(s.id);
     } else if (alive.has(s.tmux)) {
-      const desired = ['working', 'waiting'].includes(s.desired_status) ? s.desired_status : s.status;
-      const adopted = store.updateSession(s.id, {
-        ...(s.status !== desired ? { status: desired } : {}),
-        desired_status: desired,
-        runtime_status: 'running',
-        runtime_boot_id: BOOT_ID,
-        runtime_heartbeat_at: now(),
-        status_reason: 'boot-adopted',
-        recovery_attempts: 0,
-        ended_at: null,
-        exit_code: null,
-      });
-      const entry = register(adopted);
-      if (adopted.status === 'waiting') entry.restoredWaitingSince = now();
-      store.addEvent(s.id, 'boot-adopted', { previous_boot_id: s.runtime_boot_id || null, restored_status: desired });
+      const cmd = await paneCmd(s.tmux);
+      if (!cmd) { discoveryDeferred = true; continue; }
+      if (!SHELLS.has(cmd)) adoptLiveSession(s, 'boot-adopted');
+      else if (s.status !== 'exited') register(s); // a lingering shell is not a recovered agent
     } else {
       const result = await recoverMissingSession(s);
       if (result.recovered) recovered++;
-      else failedRecovery++;
+      else if (!result.skipped && !result.deferred) failedRecovery++;
     }
   }
   console.log(`[aios] discovered ${reg.size} live session(s); recovered ${recovered}; recovery failures ${failedRecovery}`);
@@ -1895,8 +1952,27 @@ async function enforceUsageLimit(s, entry) {
 const CODEX_USAGE_LIMIT_RX = /you'?ve hit your usage limit|upgrade to (plus|pro) to continue using codex|usage limit[^\n]*try again/i;
 
 async function pollOnce() {
+  if (discoveryDeferred) await discover();
+  // Snapshot registry ownership before awaiting the inventory; newly launched/replaced entries
+  // must not be tested against an older observation. One inventory replaces N has-session forks.
+  const entries = [...reg.values()];
+  const inventory = await sessionLiveness.inventory();
+  if (!inventory.known) {
+    for (const entry of entries) confirmedMissing(entry, inventory);
+    return;
+  }
+  // Hooks may revive the DB row after a false exit without rebuilding the monitor registry.
+  // Reattach such rows (including legacy unexpected exits) as soon as a good inventory returns.
+  for (const s of store.listExpectedLiveSessions()) {
+    if (s.status === 'starting' || pendingResumes.has(s.id) || pendingLaunches.has(s.id)) continue;
+    if (inventory.names.has(s.tmux) && (!reg.has(s.id) || s.status === 'exited' || s.ended_at != null)) {
+      const cmd = await paneCmd(s.tmux);
+      if (cmd && !SHELLS.has(cmd)) adoptLiveSession(s);
+    }
+  }
   let fellBackThisTick = false; // cap auto-fallback relaunches to 1 per tick (staggers a mass quota burn)
-  for (const entry of [...reg.values()]) {
+  for (const entry of entries) {
+    if (reg.get(entry.id) !== entry) continue;
     const s = store.getSession(entry.id);
     if (!s || s.status === 'exited') {
       entry.tailRetired = true;
@@ -1909,8 +1985,10 @@ async function pollOnce() {
     // Native async questions can arrive while the CLI continues working. Observe a bounded delta
     // independently of terminal status; never make the operator inbox parse complete histories.
     void refreshCodexQuestions(s);
-    if (!(await tmuxOk('has-session', '-t', entry.tmux))) {
-      markExited(entry, null);
+    const absent = !inventory.names.has(entry.tmux);
+    const missing = confirmedMissing(entry, inventory);
+    if (absent) {
+      if (missing) markExited(entry, null);
       continue;
     }
     if (now() - (entry.lastRuntimeHeartbeat || 0) >= RUNTIME_HEARTBEAT_MS) {
@@ -1918,6 +1996,7 @@ async function pollOnce() {
       if (store.touchSessionRuntime(s.id, BOOT_ID, heartbeatAt)) entry.lastRuntimeHeartbeat = heartbeatAt;
     }
     const cmd = await paneCmd(entry.tmux);
+    if (!cmd) continue; // failed command observation is not an idle frame or an exit
     if (SHELLS.has(cmd)) {
       // Grace: a just-(re)launched pane is briefly at the shell before `. launch.sh` execs the agent.
       // Marking it exited here would freeze the session (poll loop then skips exited rows). Wait it out —
@@ -3628,7 +3707,9 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
   const s = store.getSession(sid);
   if (!s) return { missing: true };
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
-  if (!(await tmuxOk('has-session', '-t', s.tmux))) {
+  const presence = await sessionLiveness.probe(s.tmux);
+  if (presence === 'unknown') throw sessionHealthError();
+  if (presence === 'missing') {
     if (s.status !== 'exited') {
       const updated = store.updateSession(sid, {
         status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
@@ -3911,7 +3992,9 @@ route('POST', '/api/session/:id/type', async (req, res, { id: sid }) => {
   const b = await readJson(req);
   const data = typeof b.data === 'string' ? b.data : '';
   if (!data) return json(res, 400, { error: 'data required' });
-  if (!(await tmuxOk('has-session', '-t', s.tmux))) {
+  const presence = await sessionLiveness.probe(s.tmux);
+  if (presence === 'unknown') return json(res, 503, { error: sessionHealthError().message, retry: true });
+  if (presence === 'missing') {
     if (s.status !== 'exited') {
       const updated = store.updateSession(sid, {
         status: 'exited', runtime_status: 'exited', runtime_boot_id: BOOT_ID,
@@ -4145,7 +4228,7 @@ route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
   let result = store.updateSession(sid, patch);
   store.addEvent(sid, 'settings', patch);
 
-  const alive = await tmuxOk('has-session', '-t', s.tmux);
+  const alive = await sessionLiveness.probe(s.tmux) === 'alive';
   const needsRelaunch = changed.some((k) => !(T.live && T.live[k]));
   let applied = 'stored';
   try {

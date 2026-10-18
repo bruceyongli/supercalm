@@ -32,7 +32,8 @@ const summaryServer = createHttpServer(async (req, res) => {
 });
 await new Promise(resolve => summaryServer.listen(0, '127.0.0.1', resolve));
 process.env.AIOS_DATA = join(scratch, 'data');
-process.env.AIOS_TMUX = '/usr/bin/false';
+// An empty successful inventory proves no pane exists. Generic exit 1 now correctly means UNKNOWN.
+process.env.AIOS_TMUX = '/usr/bin/true';
 process.env.AIOS_HOST = '127.0.0.1';
 process.env.AIOS_PORT = String(port);
 process.env.AIOS_CLAUDE_HOOKS = '1';

@@ -19,6 +19,11 @@ for (const item of [row('session_meta', now, {}), row('turn_context', now, {}),
 assert.equal(nativeWorkTimestamp(work(now + 120_000), codex), 0, 'invalid future timestamps cannot unlock restoration');
 const session = { ...codex, status: 'waiting', last_activity: old };
 const entry = { restoredWaitingSince: boot, lastChange: old, lastHash: null };
+const workingEntry = { lastChange: old, lastHash: null };
+assert.equal(observeMonitorSnapshot(workingEntry, 'replayed working screen', 'working', now), false);
+assert.equal(workingEntry.lastChange, old, 'reattaching a working pane does not manufacture activity');
+assert.equal(observeMonitorSnapshot(workingEntry, 'new output', 'working', now), true);
+assert.equal(workingEntry.lastChange, now, 'subsequent real work still advances the clock');
 for (const frame of ['Loading conversation…', 'Meet the latest model', 'Ready', 'Tip updated']) {
   const prior = entry.lastChange;
   let changed = observeMonitorSnapshot(entry, frame, session.status);

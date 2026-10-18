@@ -32,7 +32,19 @@ const write = (v) => writeFileSync(stateFile, JSON.stringify([...new Set(v)]));
 const val = (flag) => args[args.indexOf(flag) + 1];
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 appendFileSync(logFile, JSON.stringify(args) + '\\n');
-if (args[0] === 'list-sessions') { process.stdout.write(read().join('\\n')); process.exit(0); }
+if (args[0] === 'list-sessions') {
+  if (readFileSync(modeFile, 'utf8').trim() === 'relaunch-race' && !existsSync(raceFile)) {
+    const name = read().find(n => n.startsWith('aios-'));
+    const observed = read().filter(n => n !== name);
+    writeFileSync(raceFile, 'started');
+    while (read().includes(name)) await delay(10);
+    while (!read().some(n => n.startsWith('aios-') && n !== name)) await delay(10);
+    await delay(500);
+    writeFileSync(raceDoneFile, 'done');
+    process.stdout.write(observed.join('\\n')); process.exit(0);
+  }
+  process.stdout.write(read().join('\\n')); process.exit(0);
+}
 if (args[0] === 'new-session') {
   const name = val('-s');
   if (readFileSync(modeFile, 'utf8').trim() === 'relaunch-race' && existsSync(raceFile)) await delay(500);

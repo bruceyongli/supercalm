@@ -10,9 +10,9 @@ export function observeMonitorSnapshot(entry, nextHash, persistedStatus, at = Da
   const first = entry.lastHash == null;
   const changed = nextHash !== entry.lastHash;
   entry.lastHash = nextHash;
-  // Previously this reset lastChange for every waiting session at boot, briefly classified it as
-  // working, then generated a second "new" report when the idle timer elapsed.
-  const realActivity = changed && !(first && persistedStatus === 'waiting');
+  // The first snapshot establishes a baseline, even for a recovered working pane. It proves only
+  // that a screen exists, not that new work happened while we were attaching its monitor.
+  const realActivity = changed && !first;
   if (realActivity) entry.lastChange = at;
   return realActivity;
 }

@@ -493,7 +493,7 @@ server = http.createServer(async (req, res) => {
     return json(res, 404, { error: 'not found' });
   } catch (err) {
     console.error('[aios] handler error', req.method, url.pathname, err);
-    if (!res.headersSent) json(res, 500, { error: String(err?.message || err) });
+    if (!res.headersSent) json(res, err?.code === 'session-health-unavailable' ? 503 : 500, { error: String(err?.message || err) });
     else res.end();
   }
 });

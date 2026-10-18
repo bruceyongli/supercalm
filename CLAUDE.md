@@ -76,6 +76,12 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
    stdout/stderr pipe and never closes it → `execFile` hangs forever. `ensureServer()` keeps a
    detached, stdio-ignored keepalive session (`_aios_keep`) so later `execFile` calls just attach.
    All tmux/ffmpeg exec calls also carry a `timeout`+`SIGKILL` backstop.
+   Lifecycle checks use one shared tmux inventory per poll. A timeout, resource/fork error or generic
+   command failure means **unknown**, never exited; confirmed absence needs repeated observations.
+   Failed boot discovery retries without relaunching agents. Reattach live agents with stale exited
+   metadata without sending input or restarting them; a lingering shell is not a live agent.
+   Preserve Stop/Kill intent across asynchronous recovery, and preserve activity clocks and attention
+   dismissals during monitoring/reattachment. Log sanitized probe failures instead of swallowing them.
 2. **Submit delay.** Agent TUIs absorb an `Enter` sent immediately after pasted text. `sendText()`
    pauses `SUBMIT_DELAY_MS` (~320ms) before Enter so the composer registers the text and submits.
    Do not send `Ctrl-C` to "clear" before input — a second Ctrl-C on an empty composer quits codex.
