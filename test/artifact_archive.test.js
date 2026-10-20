@@ -21,6 +21,7 @@ await new Promise(resolve => probe.close(resolve));
 // touching Spark in the test suite. No production transport has a bypass switch.
 await mkdir(join(fixture, 'bin'));
 await writeFile(join(fixture, 'bin', 'ssh'), '#!/bin/sh\nfor arg do command="$arg"; done\nexec /bin/sh -c "$command"\n', { mode: 0o700 });
+await writeFile(join(fixture, 'bin', 'sync'), '#!/bin/sh\nexit 0\n', { mode: 0o700 }); // Linux sync -f is not available on macOS fixtures.
 process.env.PATH = join(fixture, 'bin') + ':' + process.env.PATH;
 const exec = promisify(execFile);
 const { archiveWorker, archiveRequest, validateArchiveLocation } = await import('../src/archive_transport.js');
@@ -44,6 +45,15 @@ await cp(local, remote, { recursive: true, preserveTimestamps: true, verbatimSym
 try {
   assert.throws(() => validateArchiveLocation('-oProxyCommand=bad', remote), /Invalid/);
   assert.throws(() => validateArchiveLocation('spark', '/home'), /dedicated/);
+  const copySource = join(process.env.AIOS_DATA, 'session-artifacts', 's_copy', 'files');
+  await mkdir(copySource, { recursive: true });
+  await writeFile(join(copySource, 'executable.sh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  await writeFile(join(copySource, 'readable.md'), '# Mode preservation\n', { mode: 0o644 });
+  const copyRemote = join(fixture, 'remote', 's_copy', 'files');
+  await exec(process.execPath, ['bin/archive-artifacts.mjs', 'copy', 's_copy', 'files', 'fixture', copyRemote],
+    { env: process.env, timeout: 30_000, maxBuffer: 1024 * 1024 });
+  assert.equal((await lstat(join(copyRemote, 'executable.sh'))).mode & 0o777, 0o755);
+  assert.equal((await lstat(join(copyRemote, 'readable.md'))).mode & 0o777, 0o644);
   const before = await archiveWorker({ op: 'digest', root: local });
   const copied = await archiveRequest('fixture', { op: 'digest', root: remote });
   assert.equal(before.digest, copied.digest, 'contents/modes/symlink targets verified');
@@ -63,7 +73,7 @@ try {
   await writeFile(join(remote, 'app.js'), await readFile(join(local, 'app.js')));
   await cli('evict');
   await assert.rejects(() => lstat(local), { code: 'ENOENT' });
-  assert.equal((await archiveRecords({ fresh: true }))[0].state, 'archived');
+  assert.equal((await archiveRecords({ fresh: true })).find(r => r.sessionId === 's_archive').state, 'archived');
   assert.equal(await archivedFile('s_other', join(local, '报告.md')), null);
   const info = await storedFileInfo('s_archive', join(local, '报告.md'));
   assert.ok(info.archive);

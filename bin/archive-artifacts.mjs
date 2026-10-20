@@ -46,10 +46,10 @@ function same(a, b) {
 async function transfer(fromRemote, location, local) {
   const remoteCommand = fromRemote
     ? `tar -C ${shellQuote(location.remoteRoot)} -cf - .`
-    : `umask 077; mkdir -p ${shellQuote(dirname(location.remoteRoot))} && mkdir ${shellQuote(location.remoteRoot)} && tar -C ${shellQuote(location.remoteRoot)} -xf - && sync -f ${shellQuote(location.remoteRoot)}`;
+    : `umask 077; mkdir -p ${shellQuote(dirname(location.remoteRoot))} && mkdir ${shellQuote(location.remoteRoot)} && tar -C ${shellQuote(location.remoteRoot)} -xpf - && sync -f ${shellQuote(location.remoteRoot)}`;
   const ssh = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
     location.host, remoteCommand], { stdio: [fromRemote ? 'ignore' : 'pipe', fromRemote ? 'pipe' : 'inherit', 'inherit'] });
-  const tar = spawn('tar', fromRemote ? ['-C', local, '-xf', '-'] : ['-C', local, '-cf', '-', '.'],
+  const tar = spawn('tar', fromRemote ? ['-C', local, '-xpf', '-'] : ['-C', local, '-cf', '-', '.'],
     { env: { ...process.env, COPYFILE_DISABLE: '1' }, stdio: [fromRemote ? 'pipe' : 'ignore', fromRemote ? 'inherit' : 'pipe', 'inherit'] });
   const finished = process => new Promise((resolve, reject) => {
     process.on('error', reject);
@@ -72,6 +72,7 @@ try {
     if (operation === 'copy') await transfer(false, { host, remoteRoot }, sourceRoot);
     console.log('Hashing local files and the remote copy (no deletion)...');
     const local = await localDigest();
+    console.log(`Local digest complete: ${local.files} files, ${local.links} links. Verifying remote contents...`);
     const remote = await remoteDigest({ host, remoteRoot });
     same(local, remote);
     if (local.fingerprint !== (await localDigest(false)).fingerprint) throw new Error('Source changed; not registered');
