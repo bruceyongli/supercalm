@@ -40,6 +40,12 @@ for (const display of [
   '[Image #14]\n[Image #15][Pasted text #16 +4 li\nnes]',
   '[Image #14] [Image #15][Pasted text #16 +4 lines][Pasted content #17 +2 lines]',
 ]) assert.equal(owned(display, 'Compare /tmp/first.png /tmp/second.png and explain the differences.'), true, display);
+const mixedChips = '[Image #14] [Image #15][Pasted text #16 +4 lines]';
+for (let width = 16; width <= 120; width++) {
+  const wrapped = mixedChips.match(new RegExp(`.{1,${width}}`, 'g')).map(line => line.trim()).join('\n');
+  assert.equal(owned(wrapped, 'Review /tmp/a.png /tmp/b.png'), true, `chip wrapping at ${width} columns`);
+  assert.equal(owned(wrapped, 'Review /tmp/a.png /tmp/b.png', mixedChips), false, `old chips at ${width} columns`);
+}
 assert.equal(owned('[Pasted text #1 +20 lines]', 'Long request'), true);
 assert.equal(owned('[Image #1] [Image #2]', '/tmp/a.png /tmp/b.jpg'), true, 'an actual image-only send');
 assert.equal(owned('[Image #1] Explain this', '/tmp/a.png Explain this'), true, 'short unfolded text with an image chip');

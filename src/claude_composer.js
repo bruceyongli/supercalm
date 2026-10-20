@@ -19,7 +19,19 @@ const CHIP = /\[(Image|Pasted (?:text|content))\s+#(\d+)(?:\s+\+\d+\s+lines?)?\]
 const IMAGE_PATH = /(?:\/|[A-Za-z]:\\)[^\s"'<>]*?\.(?:png|jpe?g|gif|webp|bmp)(?=$|[\s"'<>),;])/gi;
 const normalized = value => String(value || '').replace(/\s+/g, ' ').trim();
 const chipKey = match => `${match[1].toLowerCase()}:${match[2]}`;
-const draftViews = draft => [...new Set([draft?.text || '', draft?.lines?.join('') || ''].filter(Boolean))];
+// capture-pane can wrap both inside a word AND at a space in the same chip. Normalize only the
+// bounded, exact chip grammar; never erase spaces from arbitrary visible operator text.
+function normalizeChips(view) {
+  return view.replace(/\[[^[\]]{1,160}\]/g, raw => {
+    const match = raw.replace(/\s/g, '').match(/^\[(Image|Pastedtext|Pastedcontent)#(\d+)(?:\+(\d+)lines?)?\]$/i);
+    if (!match || (match[1].toLowerCase() === 'image' && match[3])) return raw;
+    const type = match[1].toLowerCase() === 'image' ? 'Image'
+      : match[1].toLowerCase() === 'pastedtext' ? 'Pasted text' : 'Pasted content';
+    return `[${type} #${match[2]}${match[3] ? ` +${match[3]} lines` : ''}]`;
+  });
+}
+const draftViews = draft => [...new Set([draft?.text || '', draft?.lines?.join('') || '']
+  .filter(Boolean).map(normalizeChips))];
 
 function inputImages(text) {
   const ranges = [];
@@ -61,10 +73,11 @@ function foldedPartsMatch(parts, wanted) {
 export function claudeOwnedPaste({ draft, beforeDraft, text }) {
   const oldChips = new Set(draftViews(beforeDraft).flatMap(view => [...view.matchAll(CHIP)].map(chipKey)));
   const wanted = normalized(text);
+  const literalChips = normalizeChips(wanted);
   const { count: imageCount, withoutImages } = inputImages(String(text));
   for (const view of draftViews(draft)) {
     const chips = [...view.matchAll(CHIP)];
-    if (!chips.length || chips.some(chip => oldChips.has(chipKey(chip)) || wanted.includes(chip[0]))) continue;
+    if (!chips.length || chips.some(chip => oldChips.has(chipKey(chip)) || literalChips.includes(chip[0]))) continue;
     const images = chips.filter(chip => chip[1].toLowerCase() === 'image');
     // Never interpret a leading image-only repaint as the complete message while text is still
     // arriving. Plain text around chips must match too; a foreign draft isn't a wildcard.
