@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, realpath, mkdir, writeFile, readFile, cp, rm, symlink, lstat } from 'node:fs/promises';
+import { mkdtemp, realpath, mkdir, writeFile, readFile, cp, rm, symlink, lstat, lchmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -42,6 +42,10 @@ await writeFile(join(local, 'nested', 'entry.html'), '<h1>Narrow scope</h1>');
 await symlink('../报告.md', join(local, 'nested', 'outside-folder.md'));
 await symlink(join(fixture, 'private.txt'), join(local, 'escape.md'));
 await cp(local, remote, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+if (process.platform === 'darwin') {
+  await lchmod(join(local, 'alias.md'), 0o755);
+  await lchmod(join(remote, 'alias.md'), 0o777); // Actual macOS -> Linux archive semantics.
+}
 try {
   assert.throws(() => validateArchiveLocation('-oProxyCommand=bad', remote), /Invalid/);
   assert.throws(() => validateArchiveLocation('spark', '/home'), /dedicated/);

@@ -44,7 +44,9 @@ export async function archiveWorker(request) {
             throw new Error(`File changed during verification: ${relative}`);
           }
         } else throw new Error(`Unsupported archive entry: ${relative}`);
-        hash.update(JSON.stringify([relative, kind, st.mode & 0o777, kind === 'file' ? st.size : 0, content]) + '\n');
+        // macOS commonly reports symlinks as 0755; Linux exposes fixed 0777. Their target,
+        // not these nonportable permission bits, controls traversal. Regular modes still match.
+        hash.update(JSON.stringify([relative, kind, kind === 'link' ? 0 : st.mode & 0o777, kind === 'file' ? st.size : 0, content]) + '\n');
         if (kind === 'dir') await walk(full, relative);
       }
     }
