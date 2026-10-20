@@ -80,6 +80,8 @@ import {
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { renderedFileMeta, serveRenderedFile } from './file_render.js';
+import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
+import { sweepScratchJobs } from './scratch_jobs.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
 import { createTerminalPipeRepair } from './terminal_pipe.js';
 import { refreshCodexQuestions, resolveCodexQuestion } from './codex_questions.js';
@@ -143,6 +145,11 @@ history when the task actually needs it. Disposable clones belong in $AIOS_SESSI
 must remove your own disposable clones/build copies after their last use rather than accumulating
 them until this long-running session ends. Check available disk space before large downloads/builds;
 if space is low, stop new bulk writes and report it. Never delete another session's files to make room.
+For disposable build/test/download jobs, use: node "$AIOS_SCRATCH_RUN" -- <command> <args>.
+It supplies a fresh job TMPDIR / AIOS_JOB_TMPDIR, cleans completed successful jobs, and retains failed
+jobs for 24 hours. Save durable results under AIOS_SESSION_ARTIFACTS before the command exits.
+Detached workers or open files protect a job from cleanup. Do not create repeated untracked build
+copies in the session temp root; use this job runner, and reuse one working copy where possible.
 
 Before starting memory-heavy local models, video/dataset batches or parallel browser tests, check
 GET $AIOS_URL/api/product/resources. If it is still sampling, wait for the result. Under warning or
@@ -3508,7 +3515,7 @@ function mediaByteRange(header, size) {
   return { start, end };
 }
 
-function streamMediaFile(req, res, target, st, type, { download = false } = {}) {
+function streamMediaFile(req, res, target, st, type, { download = false, file = null } = {}) {
   const range = mediaByteRange(req.headers.range, st.size);
   if (range?.invalid) {
     res.writeHead(416, {
@@ -3532,8 +3539,9 @@ function streamMediaFile(req, res, target, st, type, { download = false } = {}) 
   if (partial) headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
   res.writeHead(partial ? 206 : 200, headers);
   if (!st.size) return res.end();
-  const stream = createReadStream(target, { start, end });
+  const stream = file ? storedFileStream(target, file, { start, end }) : createReadStream(target, { start, end });
   stream.on('error', () => res.destroy());
+  res.on('close', () => stream.destroy());
   stream.pipe(res);
 }
 
@@ -3567,8 +3575,10 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   const resolved = await resolveSessionFile(s, rel);
   if (!resolved) return json(res, 403, { error: 'path is outside the session file scope' });
   const { target, displayPath } = resolved;
-  let st;
-  try { st = await stat(target); } catch { return json(res, 404, { error: 'file not found' }); }
+  let file;
+  try { file = await storedFileInfo(sid, target); }
+  catch (error) { return json(res, error.status || 404, { error: error.status === 503 ? error.message : 'file not found' }); }
+  const st = file.info;
   if (st.isDirectory()) return json(res, 400, { error: 'path is a directory' });
   const ext = extname(target).toLowerCase();
   const isImg = FILE_IMAGE_RX.test(ext);
@@ -3578,7 +3588,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
   const viewBase = `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(rel)}`;
 
   if (u.searchParams.get('open') === '1' && !raw) {
-    const rendered = renderedFileMeta(sid, target, st.size);
+    const rendered = renderedFileMeta(sid, file.canonicalTarget || target, st.size);
     const destination = rendered.renderInline !== false && rendered.renderUrl || `${viewBase}&raw=1`;
     res.writeHead(303, { location: `/aios/${destination}`, 'cache-control': 'no-store' });
     return res.end();
@@ -3591,27 +3601,29 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     else if (isAudio) kind = 'audio';
     else if (isPdf) kind = 'pdf';
     else {
-      const head = await readHead(target, Math.min(8192, st.size || 1)).catch(() => '');
+      let head;
+      try { head = (await storedFileRead(target, file, 8192)).toString('utf8'); }
+      catch { return json(res, file.archive ? 503 : 404, { error: file.archive ? 'Archive storage unavailable; retry shortly' : 'file not found' }); }
       kind = (st.size === 0 || (head && !head.includes("\u0000"))) ? "text" : "binary";
     }
     return json(res, 200, {
       path: displayPath, rel, name: basename(target),
       bytes: st.size, mtime: st.mtimeMs, contentKind: kind, binary: kind === 'binary',
+      storage: file.archive ? 'archive' : 'local',
       truncated: kind === 'text' && st.size > FILE_VIEW_MAX_BYTES,
       viewUrl: `${viewBase}&raw=1`, downloadUrl: `${viewBase}&raw=1&download=1`,
-      ...renderedFileMeta(sid, target, st.size),
+      ...renderedFileMeta(sid, file.canonicalTarget || target, st.size),
     });
   }
 
   try {
     const type = FILE_VIEW_CONTENT_TYPES[ext] || (isImg || isVideo || isAudio || isPdf ? 'application/octet-stream' : 'text/plain; charset=utf-8');
     if (isVideo || isAudio || download) {
-      streamMediaFile(req, res, target, st, type, { download });
+      streamMediaFile(req, res, target, st, type, { download, file });
       return;
     }
-    let data = await readFile(target);
-    let truncated = false;
-    if (data.length > FILE_VIEW_MAX_BYTES) { data = data.subarray(0, FILE_VIEW_MAX_BYTES); truncated = true; }
+    const data = await storedFileRead(target, file, FILE_VIEW_MAX_BYTES);
+    const truncated = st.size > FILE_VIEW_MAX_BYTES;
     const inline = !download && (/^text\//.test(type) || /json|pdf|markdown/.test(type) || isImg);
     const headers = {
       'content-type': type,
@@ -3622,7 +3634,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
     res.writeHead(200, headers);
     res.end(data);
   } catch {
-    json(res, 404, { error: 'file not found' });
+    json(res, file.archive ? 503 : 404, { error: file.archive ? 'Archive storage unavailable; retry without regenerating the file' : 'file not found' });
   }
 });
 
@@ -4335,6 +4347,11 @@ async function boot() {
   // Independent of the status/LLM poller and of viewer presence: logs must also
   // recover while no browser is open. One batch tmux query, never one per session.
   setInterval(() => repairTerminalPipes([...reg.values()]).catch(() => {}), 5000).unref();
+  const cleanJobs = () => sweepScratchJobs().then(removed => {
+    if (removed.length) console.log(`[aios] cleaned ${removed.length} completed scratch jobs`);
+  }).catch(error => console.error('[aios] scratch job cleanup deferred:', error.message));
+  setImmediate(cleanJobs);
+  setInterval(cleanJobs, 5 * 60_000).unref();
   console.log('[aios] sessions ready');
 }
 export const sessionReady = boot();

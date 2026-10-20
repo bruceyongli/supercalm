@@ -59,6 +59,27 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   share a two-process `du` limit with Health. Exclude shared project source, deduplicate nested scopes,
   show unknown/stale honestly, and never trigger a full storage inventory from the rail. Needs You keeps
   its actionable descriptions; resource sampling never advances activity or attention clocks.
+- Storage tiers: agents and live SQLite stay on the local host. `bin/archive-artifacts.mjs` copies
+  an explicitly selected artifact subdirectory to SSH storage (e.g. Spark), verifies SHA-256 contents,
+  permissions and symlink targets, and registers its location before an explicit `evict`. Eviction
+  rechecks remote integrity, local fingerprints and open handles; changed/busy/unknown files stay.
+  Use `AIOS_DATA=<canonical-data> node bin/archive-artifacts.mjs copy SID DIRECTORY HOST REMOTE_DIRECTORY`,
+  then `... evict SID DIRECTORY`; `verify` adopts a pre-copied tree and `restore` verifies before
+  restoring without overwriting a local tree. Interrupted eviction paths remain in the local record
+  for recovery; never delete a lock or quarantine without inspecting its owning process and record.
+  The small `artifact-archives` location records must be backed up with AIOS data. SSH is storage-only,
+  bounded to four readers; a disconnected archive returns retryable unavailability, not data loss.
+  File/source/download/render/relative assets and voice source grounding use the same approved session
+  paths through `stored_file.js`, without local hydration or bypassing symlink/session boundaries.
+  Archives are not a second backup after local eviction; retain independent backup for important outputs.
+  Never put the live WAL database on a network share or run a space-hungry VACUUM during low space.
+- Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.
+  Each job gets its own TMPDIR / AIOS_JOB_TMPDIR; copy durable reports to AIOS_SESSION_ARTIFACTS
+  before exit. Success is cleaned after its process group and open handles are gone; failures or
+  interrupted wrappers retain evidence for 24 hours. The serial five-minute sweeper only owns tagged
+  job directories, never guesses that an old untagged directory in a live session is disposable.
+  Whole-session/Health cleanup cannot bypass protected job records. Do not wrap the coding agent
+  CLI itself: this is a temporary job runner, not an agent permission/sandbox wrapper.
 - **Links:** use the shared `web/file-reference.js` classification in Story, Terminal and rendered
   Markdown. A same-host HTTP URL is still a web URL; never infer a disk path from `.html`/`.md`/media
   suffixes. Tailscale may serve arbitrary project mounts beside `/aios`. Only explicit filesystem-root

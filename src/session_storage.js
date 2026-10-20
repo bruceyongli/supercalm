@@ -1,6 +1,7 @@
 import { mkdir, readdir, rm, rmdir } from 'node:fs/promises';
 import { join, sep } from 'node:path';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, ROOT } from './config.js';
+import { sessionHasProtectedJobs } from './scratch_jobs.js';
 
 const STORAGE_ROOT = join(DATA_DIR, 'session-storage');
 const ARTIFACT_ROOT = join(DATA_DIR, 'session-artifacts');
@@ -37,6 +38,7 @@ export function sessionStorageEnv(sessionId) {
     AIOS_SESSION_STORAGE: paths.root,
     AIOS_SESSION_TMPDIR: paths.tmp,
     AIOS_SESSION_ARTIFACTS: paths.artifacts,
+    AIOS_SCRATCH_RUN: join(ROOT, 'bin', 'scratch-run.mjs'),
     // Standard names cover Node, Python, shell utilities, browsers, and most test harnesses.
     // TMPDIR conventionally carries a trailing separator on macOS.
     TMPDIR: paths.tmp + sep,
@@ -47,6 +49,7 @@ export function sessionStorageEnv(sessionId) {
 
 export async function cleanupSessionStorage(sessionId) {
   const paths = sessionStoragePaths(sessionId);
+  if (await sessionHasProtectedJobs(sessionId)) return { removed: false, reason: 'protected-scratch-jobs' };
   await rm(paths.root, { recursive: true, force: true, maxRetries: 2 });
   // Durable artifacts stay with the session, but do not accumulate one empty directory per launch.
   try { await rmdir(paths.artifacts); }
@@ -67,8 +70,8 @@ export async function sweepSessionStorage(liveSessionIds = []) {
   }
   for (const entry of entries) {
     if (!entry.isDirectory() || !SESSION_ID_RX.test(entry.name) || live.has(entry.name)) continue;
-    await cleanupSessionStorage(entry.name);
-    removed.push(entry.name);
+    const result = await cleanupSessionStorage(entry.name);
+    if (result.removed) removed.push(entry.name);
   }
   return removed;
 }

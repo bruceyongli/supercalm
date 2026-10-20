@@ -3,8 +3,8 @@
 // that detail compact. This module turns only files approved by sessions.resolveSessionFile into a
 // small, queryable source pack. It never broadens file access or sends paths to the browser.
 
-import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
+import { storedFileInfo, storedFileRead } from './stored_file.js';
 
 const TEXT_EXTENSIONS = new Set([
   '.md', '.markdown', '.txt', '.json', '.jsonc', '.csv', '.tsv', '.yaml', '.yml', '.toml', '.log', '.rst',
@@ -136,11 +136,12 @@ export async function buildVoiceSourcePack({
     try { resolved = await resolveFile(session, reference.target); } catch { continue; }
     if (!resolved?.target || seenTargets.has(resolved.target)) continue;
     seenTargets.add(resolved.target);
-    let info;
-    try { info = await stat(resolved.target); } catch { continue; }
+    let file;
+    try { file = await storedFileInfo(session.id, resolved.target); } catch { continue; }
+    const info = file.info;
     if (!info.isFile() || info.size <= 0 || info.size > maxFileBytes || !TEXT_EXTENSIONS.has(extname(resolved.target).toLowerCase())) continue;
     let content;
-    try { content = await readFile(resolved.target, 'utf8'); } catch { continue; }
+    try { content = (await storedFileRead(resolved.target, file, maxFileBytes)).toString('utf8'); } catch { continue; }
     if (!content || content.includes('\0')) continue;
     content = content.slice(0, Math.min(maxFileChars, maxTotalChars - totalChars));
     const firstHeading = content.match(/^#\s+(.+)$/m)?.[1];

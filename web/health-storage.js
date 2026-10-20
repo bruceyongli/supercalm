@@ -66,6 +66,7 @@ export function mountHealthStorage(host) {
       <span>of ${formatDiskBytes(disk.total_bytes)} · ${esc(disk.level || 'unknown')}</span></div>
       <div class="health-meta">${data.state === 'scanning' ? `Scanning ${data.progress?.scanned || 0}/${data.progress?.total || 0} storage scopes…` : `Last measured ${data.scanned_at ? new Date(data.scanned_at).toLocaleString() : 'not yet'}`} · stopped-session temp/logs ${hasInventory ? formatDiskBytes(data.disposable_bytes) : 'measuring…'}${hasInventory && data.state === 'scanning' ? ' (previous scan)' : ''}</div>
       ${db && !db.error ? `<div class="health-meta">SQLite file ${formatDiskBytes(db.file_bytes)} · ${formatDiskBytes(db.reusable_bytes)} reusable inside the database, not free disk space${db.wal_bytes ? ` · WAL ${formatDiskBytes(db.wal_bytes)}` : ''}.</div>` : ''}
+      ${data.remote_storage?.bytes ? `<div class="health-meta">Archived off this device: ${formatDiskBytes(data.remote_storage.bytes)} · ${data.remote_storage.archives.length} verified archives. Report links remain available; remote storage must be online.</div>` : ''}
       ${disk.level === 'critical' ? '<p class="health-warn">New and resumed agents are blocked to preserve disk headroom. Existing agents are not killed.</p>' : ''}
       ${data.errors?.length ? `<p class="health-info">${data.errors.length} locations could not be measured; totals are incomplete.</p>` : ''}${data.error ? `<p class="health-warn">${esc(data.error)}</p>` : ''}`;
   }

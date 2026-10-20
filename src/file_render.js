@@ -1,12 +1,13 @@
 // Read-only, directory-scoped artifact hosting. A rendered document gets an
 // opaque browser origin, including when opened directly in a new tab.
 import { randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { realpath, stat, readFile } from 'node:fs/promises';
+import { realpath } from 'node:fs/promises';
 import { basename, dirname, extname, join, relative, isAbsolute } from 'node:path';
 import { db } from './store.js';
 import { renderMarkdown, escapeHtml } from '../web/common.js';
 import { isFileReference, localFilePath } from '../web/file-reference.js';
+import { archivedFile } from './artifact_archive.js';
+import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS file_render_grants (
   token TEXT PRIMARY KEY, session_id TEXT NOT NULL, entry_path TEXT NOT NULL,
@@ -47,14 +48,26 @@ export async function serveRenderedFile(req, res, { session, token, asset, resol
   if (!name || name.includes('\\') || name.includes('\0') || name.split('/').some(p => !p || p.startsWith('.'))) return fail(403, 'Invalid preview path');
   const type = types[extname(name).toLowerCase()];
   if (!type) return fail(415, 'This file type is not served by rendered previews');
-  let root, target, info;
+  let root, target, info, file;
   try {
-    root = await realpath(dirname(grant.entry_path));
-    target = await realpath(join(root, name));
+    root = await realpath(dirname(grant.entry_path)).catch(async error => {
+      if (error.code === 'ENOENT' && await archivedFile(session.id, grant.entry_path)) return dirname(grant.entry_path);
+      throw error;
+    });
+    const candidate = join(root, name);
+    target = await realpath(candidate).catch(async error => {
+      if (error.code === 'ENOENT' && await archivedFile(session.id, candidate)) return candidate;
+      throw error;
+    });
     const rel = relative(root, target);
     if (rel.startsWith('..') || isAbsolute(rel)) return fail(403, 'Outside preview folder');
-    info = await stat(target);
-  } catch { return fail(404, 'Preview file not found'); }
+    file = await storedFileInfo(session.id, target);
+    if (file.canonicalTarget) {
+      const canonicalRel = relative(root, file.canonicalTarget);
+      if (canonicalRel.startsWith('..') || isAbsolute(canonicalRel)) return fail(403, 'Outside preview folder');
+    }
+    info = file.info;
+  } catch (error) { return fail(error.status || 404, error.status === 503 ? error.message : 'Preview file not found'); }
   if (!info.isFile()) return fail(400, 'Not a file');
   const host = String(req.headers.host || 'localhost');
   if (!/^[a-z0-9.:[\]-]+$/i.test(host)) return fail(400, 'Invalid host');
@@ -71,7 +84,9 @@ export async function serveRenderedFile(req, res, { session, token, asset, resol
   };
   if (/\.(?:md|markdown)$/i.test(target)) {
     if (info.size > 8 * 1024 * 1024) return fail(413, 'Markdown too large to render; use Source or Download');
-    const text = await readFile(target, 'utf8');
+    let text;
+    try { text = (await storedFileRead(target, file, 8 * 1024 * 1024)).toString('utf8'); }
+    catch { return fail(503, 'Archive storage unavailable; retry when storage reconnects'); }
     res.writeHead(200, headers);
     const hostname = new URL(`http://${host}`).hostname;
     const html = renderMarkdown(text, { linkHref(href) {
@@ -92,7 +107,7 @@ export async function serveRenderedFile(req, res, { session, token, asset, resol
   // Stream full HTML (large dashboards commonly exceed the source viewer's 2 MB
   // text limit). Truncating here would cut scripts in half and yield blank pages.
   res.writeHead(200, {...headers, 'content-length': info.size});
-  const stream = createReadStream(target);
+  const stream = storedFileStream(target, file);
   stream.on('error', () => res.destroy());
   res.on('close', () => stream.destroy());
   stream.pipe(res);

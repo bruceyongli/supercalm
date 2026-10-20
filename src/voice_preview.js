@@ -20,6 +20,7 @@ import { DATA_DIR } from './config.js';
 import * as store from './store.js';
 import { sessionStoragePaths } from './session_storage.js';
 import { resolveSessionFile } from './sessions.js';
+import { storedFileInfo } from './stored_file.js';
 import { capturePreview, terminalTail } from './agents/evidence.js';
 import { activePreviewProfiles } from './preview_profiles.js';
 import { getTarget } from './release_monitor.js';
@@ -125,7 +126,7 @@ async function logMentionedImages(session, limit) {
     try {
       const resolved = await resolveSessionFile(session, rel);
       if (!resolved?.target) continue;
-      const st = await stat(resolved.target).catch(() => null);
+      const st = await storedFileInfo(session.id, resolved.target).then(file => file.info).catch(() => null);
       if (!st?.isFile() || !st.size) continue;
       out.push({
         label: basename(resolved.target),

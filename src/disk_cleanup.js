@@ -12,6 +12,7 @@ import { gitOut } from './git.js';
 import { withSessionCleanup } from './session_cleanup_lock.js';
 import { bus } from './bus.js';
 import { currentDiskCapacity } from './disk_pressure.js';
+import { sessionHasProtectedJobs } from './scratch_jobs.js';
 
 const exec = promisify(execFile), plans = new Map(), receipts = new Map(), flights = new Map();
 const MODES = new Set(['disposable', 'outputs', 'delete']);
@@ -38,6 +39,7 @@ async function stoppedSession(id, mode) {
   if (!eligibility.cleanable || (mode === 'delete' && !eligibility.deletable)) fail(eligibility.reason || 'Only operator-killed sessions can be deleted');
   const lifecycle = await import('./sessions.js');
   if (lifecycle.sessionBusyForCleanup(id)) fail('Session is launching or resuming');
+  if (await sessionHasProtectedJobs(id)) fail('Session has protected job scratch; let its workers finish and its retention period expire');
   if (store.db.prepare("SELECT 1 FROM sessions WHERE parent_session_id=? AND status!='exited' LIMIT 1").get(id)) fail('Session has live child sessions');
   // No process termination is part of cleanup. A stale DB row must not authorize deleting live files.
   const pane = await exec(TMUX, ['has-session', '-t', s.tmux], { timeout: 5000, encoding: 'utf8' })
