@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { submitAgentComposer, serializeAgentInput } from '../src/agent_submit.js';
 import { agentInputReady, operatorInputPlan, pendingComposerDraft } from '../src/agent_input_ready.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
-import { CLAUDE_COMPOSER_FOOTER, normalizeClaudeInputScreen } from '../src/claude_composer.js';
+import { CLAUDE_COMPOSER_FOOTER, normalizeClaudeInputScreen, claudeOwnedPaste } from '../src/claude_composer.js';
 
 const idle = '› Ask Codex to do anything\n\nGPT-6-Astra xhigh · /tmp/test';
 const draft = text => `› ${text}\n\nGPT-6-Astra xhigh · /tmp/test`;
@@ -16,11 +16,11 @@ for (const hint of ['Ask Codex to do anything', 'Improve documentation in @filen
 assert.equal(pendingComposerDraft(accepted('fix it')), null, 'submitted transcript text is not a pending draft');
 assert.equal(pendingComposerDraft('❯ prior request\n\n❯\n  bypass permissions on'), null, 'empty Claude composer bounds the search');
 
-async function run({ screen, onEnter = () => {}, text = 'fix it', before = idle, timeoutMs = 2400, draftFooterPattern = null }) {
+async function run({ screen, onEnter = () => {}, text = 'fix it', before = idle, timeoutMs = 2400, draftFooterPattern = null, ownedPaste = null }) {
   let t = 0;
   const enters = [];
   const result = await submitAgentComposer({
-    text, before, timeoutMs, draftFooterPattern,
+    text, before, timeoutMs, draftFooterPattern, ownedPaste,
     clock: () => t,
     pause: async ms => { t += ms; },
     readScreen: async () => screen({ time: t, enters: enters.length }),
@@ -91,6 +91,33 @@ assert.equal(r.enters.length, 0, 'an existing folded paste is never blindly subm
 const foldedClaude = `${'─'.repeat(60)}\n❯ [Pasted text #7 +2 lines]\n${'─'.repeat(60)}\n  paste again to expand          new task? /clear to save 902.9k tokens`;
 const claudeIdle = `❯\n  bypass permissions on (shift+tab to cycle)`;
 const emptyPasteHint = `${'─'.repeat(60)}\n❯\n${'─'.repeat(60)}\n  paste again to expand`;
+const chipScreen = text => `${'─'.repeat(60)}\n❯ ${text}\n${'─'.repeat(60)}\n  paste again to expand                   ✓ Update`;
+const composite = '[Image #14] [Image #15][Pasted text #16 +4 lines]';
+const claudePasteOptions = { before: claudeIdle, draftFooterPattern: CLAUDE_COMPOSER_FOOTER, ownedPaste: claudeOwnedPaste };
+r = await run({ ...claudePasteOptions, text: attachments,
+  screen: ({ enters }) => enters ? emptyPasteHint : chipScreen(composite) });
+assert.equal(r.result.accepted, true, 'screenshot: image chips plus folded text are our paste, not input-changed');
+assert.equal(r.enters.length, 1);
+assert.ok(r.enters[0] >= 480, 'folded chip composition settles before Enter');
+r = await run({ ...claudePasteOptions, text: attachments,
+  screen: ({ time, enters }) => enters ? emptyPasteHint : chipScreen(time < 1200 ? '[Image #14] [Image #15]' : composite) });
+assert.equal(r.result.accepted, true, 'slow image expansion waits for the text chip instead of aborting');
+assert.ok(r.enters[0] >= 1200, 'do not submit an image-only intermediate frame');
+r = await run({ ...claudePasteOptions, text: attachments,
+  screen: ({ enters }) => enters >= 2 ? emptyPasteHint : chipScreen(composite) });
+assert.equal(r.result.accepted, true);
+assert.equal(r.enters.length, 2, 'ignored Enter is retried, not the image paste');
+r = await run({ ...claudePasteOptions, text: attachments, screen: () => chipScreen(composite) });
+assert.equal(r.result.accepted, false, 'a chip is not a delivery receipt');
+assert.equal(r.enters.length, 3, 'folded inputs still bound Enter retries');
+r = await run({ ...claudePasteOptions, before: chipScreen(composite), text: attachments, screen: () => chipScreen(composite) });
+assert.equal(r.enters.length, 0, 'old composite drafts are never submitted as the new message');
+r = await run({ ...claudePasteOptions, text: attachments,
+  screen: ({ enters }) => chipScreen(enters ? 'A different human request' : composite) });
+assert.equal(r.result.reason, 'input-changed');
+assert.equal(r.enters.length, 1, 'a genuine edit after Enter is not submitted or repasted');
+r = await run({ before: idle, text: attachments, screen: () => draft(composite) });
+assert.equal(r.enters.length, 0, 'Claude composite dialect never broadens Codex input recognition');
 r = await run({ before: claudeIdle, screen: () => foldedClaude, text: multiline });
 assert.equal(r.enters.length, 0, 'generic/Codex behavior has not been broadened');
 r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,

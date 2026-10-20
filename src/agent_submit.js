@@ -21,11 +21,12 @@ export async function submitAgentComposer({
   confirmSubmission = null,
   pause = sleep, clock = Date.now,
   initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3, draftMaxLines = 120,
-  draftFooterPattern = null,
+  draftFooterPattern = null, ownedPaste = null,
 }) {
   const deadline = clock() + timeoutMs;
   const draftOptions = { requireFooter: true, maxLines: draftMaxLines, preserveWraps: true, expectedText: text, footerPattern: draftFooterPattern };
-  const beforeDraft = pendingComposerDraft(before, draftOptions)?.text || '';
+  const beforeComposer = pendingComposerDraft(before, draftOptions);
+  const beforeDraft = beforeComposer?.text || '';
   let observed = false;
   let attempts = 0;
   let lastEnter = -Infinity;
@@ -48,14 +49,19 @@ export async function submitAgentComposer({
     const ownText = pendingDraftMatches(withHint?.text, text, withHint?.lines);
     // Large pastes may be folded by the CLI. Only a NEW paste token, introduced by this transaction,
     // counts; an old folded draft cannot authorize submitting somebody else's text.
-    const newPaste = draft && /^\[Pasted (?:text|content)[^\]]*\]$/i.test(draft.text) && draft.text !== beforeDraft;
+    const newPaste = draft && (ownedPaste
+      ? ownedPaste({ draft, beforeDraft: beforeComposer, text })
+      : /^\[Pasted (?:text|content)[^\]]*\]$/i.test(draft.text) && draft.text !== beforeDraft);
     if (ownText || newPaste) {
       changedDraft = ''; changedCount = 0;
       observed = true;
       const current = withHint.text;
       stableCount = stableDraft === current ? stableCount + 1 : 1;
       stableDraft = current;
-      if (attempts < maxAttempts && (attempts === 0 || (stableCount >= 2 && clock() - lastEnter >= retryMs))) {
+      // Claude can paint images before the rest of a bracketed paste. Let its chip composition
+      // settle over two frames before the first Enter as well. Literal text/Codex stay unchanged.
+      const settled = !ownedPaste || ownText || stableCount >= 2;
+      if (settled && attempts < maxAttempts && (attempts === 0 || (stableCount >= 2 && clock() - lastEnter >= retryMs))) {
         await pressEnter();
         attempts++;
         lastEnter = clock();
@@ -76,7 +82,7 @@ export async function submitAgentComposer({
         if (changedDraft !== draft.text) { changedDraft = draft.text; changedAt = clock(); changedCount = 1; }
         else changedCount++;
         stableCount = 0;
-        if (changedCount >= 2 && clock() - changedAt >= 480 && (!confirmSubmission || clock() >= deadline)) {
+        if (changedCount >= 2 && clock() - changedAt >= 480 && ((!confirmSubmission && !ownedPaste) || clock() >= deadline)) {
           return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
         }
       } else { changedDraft = ''; changedCount = 0; }

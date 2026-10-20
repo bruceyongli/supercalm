@@ -198,6 +198,27 @@ try {
   assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(foldedId).n, 2);
   console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', scenario: 'folded paste replaces permission footer',
     lengths: longMessages.map(t => t.length), completePastes: 2, enters: 2, accepted: 2, retryDuplicates: 0 }));
+  const imagesId = 's_claude_image_paste';
+  const imagesTrace = await start(imagesId, 'claude-image-paste', 'claude');
+  const imageAttachments = ['Screenshot 2026-10-20 at 13.47.57.png', '第二张 screenshot.png'].map(name => ({
+    name, path: join(scratch, name), type: 'image/png', format: 'PNG', isImage: true,
+  }));
+  const imageText = 'Compare both screenshots with our original goal. Explain the differences; discuss only.';
+  const imagesOptions = { attachments: imageAttachments, client_message_id: 'claude-image-paste-proof' };
+  const imagesResponse = await send(imagesId, imageText, imagesOptions);
+  assert.equal(imagesResponse.status, 200, JSON.stringify(imagesResponse.body));
+  assert.equal((await send(imagesId, imageText, imagesOptions)).body.duplicate, true);
+  const imagesAccepted = imagesTrace().filter(r => r.event === 'accepted');
+  const imagesPasted = imagesTrace().filter(r => r.event === 'paste');
+  assert.equal(imagesAccepted.length, 1, 'mixed image/text chips deliver once, not once per chip');
+  assert.equal(imagesPasted.length, 1, 'retrying the HTTP receipt never pastes the images again');
+  assert.equal(imagesAccepted[0].text, imagesPasted[0].text);
+  assert.ok(imagesAccepted[0].text.startsWith(imageText));
+  for (const attachment of imageAttachments) assert.ok(imagesAccepted[0].text.includes(attachment.path));
+  assert.equal(imagesTrace().filter(r => r.event === 'enter').length, 1);
+  assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(imagesId).n, 1);
+  console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', scenario: 'two image chips plus folded text',
+    http: imagesResponse.status, completePastes: 1, enters: 1, accepted: 1, persisted: 1, retryDuplicates: 0 }));
   const claudeUuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const queuedFile = join(scratch, `${claudeUuid}.jsonl`);
   writeFileSync(queuedFile, '');

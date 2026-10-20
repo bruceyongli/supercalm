@@ -410,7 +410,12 @@ attachments render once in Story/graph using original source identity/time; mach
 not become operator requests. Codex submission and notify protocols are unchanged.
 Claude text sends use explicit bracketed paste so PTY chunk boundaries never split one request into
 a folded token plus trailing input. While folded, `paste again to expand` replaces the permission
-footer: recognize it as Claude composer evidence before pressing Enter. A newly observed paste token
+footer: recognize it as Claude composer evidence before pressing Enter. Claude may render ONE paste
+as several `[Image #N]` and `[Pasted text #N +M lines]` chips, mixed with visible text. Recognize the
+whole new composition (including wrapped chips and uploaded paths with spaces), not just one folded
+text token. Wait for chip rendering to settle, match visible text against the request, and reject
+old/reused chips or image-only intermediate frames when the request includes text. Keep this dialect
+Claude-only; a rendering change is not proof of a human edit. A newly observed paste token
 is not a delivery receipt; still require the composer to advance or an exact native acknowledgement.
 
 The terminal is **interactive on desktop**. xterm runs with `disableStdin:true` and its helper

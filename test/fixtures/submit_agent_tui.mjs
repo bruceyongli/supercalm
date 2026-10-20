@@ -7,6 +7,10 @@ let stashed = '';
 let attempts = 0;
 let last = '';
 let pasteNumber = 0;
+const folded = mode === 'claude-folded-paste' || mode === 'claude-image-paste';
+const foldedDisplay = () => mode === 'claude-image-paste'
+  ? `[Image #${pasteNumber * 3 + 11}] [Image #${pasteNumber * 3 + 12}][Pasted text #${pasteNumber * 3 + 13} +4 lines]`
+  : `[Pasted text #${pasteNumber} +${input.split('\n').length - 1} lines]`;
 const marker = family === 'claude' ? '❯' : '›';
 const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
   ? '\x1b[2mkeep iterating, report iteration 15 when it\'s done\x1b[0m'
@@ -14,9 +18,9 @@ const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
 const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to cycle)' : 'GPT-6-Astra xhigh · /tmp/delivery-test';
 const render = (display = input) => process.stdout.write(mode === 'question'
   ? '\x1b[2J\x1b[1;1HChoose a recovery path:\r\n❯ 1. Resume from summary\r\n  2. Resume full session as-is\r\nEnter to confirm\r\n'
-  : mode === 'claude-folded-paste' && input
-    ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ [Pasted text #${pasteNumber} +${input.split('\n').length - 1} lines]\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
-    : mode === 'claude-folded-paste' && pasteNumber
+  : folded && input
+    ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ ${foldedDisplay()}\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
+    : folded && pasteNumber
       ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
     : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);

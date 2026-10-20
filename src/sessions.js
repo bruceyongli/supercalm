@@ -41,7 +41,7 @@ import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
-import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste } from './claude_composer.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste, claudeOwnedPaste } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
@@ -902,7 +902,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
     const receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: 0,
-      confirmSubmission, draftMaxLines, draftFooterPattern,
+      confirmSubmission, draftMaxLines, draftFooterPattern, ownedPaste: claudeComposer ? claudeOwnedPaste : null,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
@@ -934,7 +934,7 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
     receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
-      confirmSubmission, draftMaxLines, draftFooterPattern,
+      confirmSubmission, draftMaxLines, draftFooterPattern, ownedPaste: claudeComposer ? claudeOwnedPaste : null,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
