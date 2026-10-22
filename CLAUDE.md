@@ -73,6 +73,15 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   paths through `stored_file.js`, without local hydration or bypassing symlink/session boundaries.
   Archives are not a second backup after local eviction; retain independent backup for important outputs.
   Never put the live WAL database on a network share or run a space-hungry VACUUM during low space.
+  For a fully stopped, unshared managed worktree, the same archive CLI accepts `@worktree` as the
+  DIRECTORY argument. It checks durable/runtime intent and tmux, verifies all dirty/untracked files,
+  and locks Git's worktree registration before eviction so pruning cannot discard its index/branch
+  connection. A cross-process session lease excludes resume and cleanup during migration. Resume
+  restores the exact verified tree before `ensureWorktree` can recreate anything; unavailable/corrupt
+  storage or a conflicting local tree fails closed with history intact. The small Git administrative
+  metadata and native conversation histories remain local. Do not archive live/waiting sessions or
+  the proxy fleet. Session leases use the POSIX flock helper already used by deployment and are
+  kernel-released on exit/reboot; inspect per-archive interrupted-operation locks before recovery.
 - Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.
   Each job gets its own TMPDIR / AIOS_JOB_TMPDIR; copy durable reports to AIOS_SESSION_ARTIFACTS
   before exit. Success is cleaned after its process group and open handles are gone; failures or

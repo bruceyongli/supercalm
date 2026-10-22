@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // Explicit operator maintenance: never selects/deletes a session by age alone.
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { pipeline } from 'node:stream/promises';
-import { mkdir, lstat, realpath, rename, rm, statfs, rmdir } from 'node:fs/promises';
+import { mkdir, lstat, realpath, rename, rm, rmdir } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR } from '../src/config.js';
-import { archiveIndexRoot, archiveRecordId, archiveRecords, saveArchiveRecord } from '../src/artifact_archive.js';
-import { archiveWorker, archiveRequest, shellQuote, validateArchiveLocation } from '../src/archive_transport.js';
+import { archiveIndexRoot, archiveRecordId, archiveRecords, saveArchiveRecord, validateArchiveRecord } from '../src/artifact_archive.js';
+import { archiveWorker, archiveRequest, validateArchiveLocation } from '../src/archive_transport.js';
+import { transferArchive as transfer, sameArchive as same, restoreArchive } from '../src/archive_transfer.js';
+import { withSessionArchiveLock } from '../src/archive_lock.js';
+import { inactiveArchiveSession } from '../src/archive_session.js';
 
 const exec = promisify(execFile);
 const [operation, sessionId, name, host, remoteRoot] = process.argv.slice(2);
@@ -16,12 +18,17 @@ if (!['copy', 'verify', 'evict', 'restore'].includes(operation) || !/^s_[a-zA-Z0
     || !name || name.startsWith('.') || name !== basename(name) || /[\0\r\n\\]/.test(name)) {
   throw new Error('Usage: AIOS_DATA=/absolute/data node bin/archive-artifacts.mjs copy|verify SID DIRECTORY SSH_HOST REMOTE_DIRECTORY\n       ... evict|restore SID DIRECTORY');
 }
-const sourceRoot = join(DATA_DIR, 'session-artifacts', sessionId, name);
+const worktree = name === '@worktree';
+let owner = worktree ? await inactiveArchiveSession(sessionId) : null;
+const sourceRoot = worktree ? owner.session.worktree_path : join(DATA_DIR, 'session-artifacts', sessionId, name);
+if (!sourceRoot) throw new Error('Session has no worktree');
+const worktreeFields = worktree ? { kind: 'worktree', repoPath: owner.project.path } : {};
+// Apply the same namespace validation before even opening a source/destination.
+validateArchiveRecord({ sessionId, sourceRoot, ...worktreeFields, host: 'validation', remoteRoot: '/archive/validation/only/root', digest: '0'.repeat(64), bytes: 0, state: 'verified' });
 const parent = dirname(sourceRoot);
 if (await realpath(parent) !== parent) throw new Error('Artifact parent is a symlink');
 await mkdir(archiveIndexRoot, { recursive: true, mode: 0o700 });
 const lock = join(archiveIndexRoot, `${archiveRecordId(sourceRoot)}.lock`);
-await mkdir(lock); // Fail closed on another maintenance process or an interrupted operation.
 async function unopened(path) {
   try {
     const result = await exec('lsof', ['-nP', '+D', path], { timeout: 120_000, maxBuffer: 1024 * 1024 });
@@ -38,29 +45,13 @@ async function localDigest(contents = true, root = sourceRoot) {
 async function remoteDigest(record) {
   return archiveRequest(record.host, { op: 'digest', root: record.remoteRoot }, { timeoutMs: 60 * 60_000 });
 }
-function same(a, b) {
-  if (a.digest !== b.digest || a.bytes !== b.bytes || a.files !== b.files || a.links !== b.links || a.directories !== b.directories) {
-    throw new Error('Archive verification mismatch; local files retained');
-  }
-}
-async function transfer(fromRemote, location, local) {
-  const remoteCommand = fromRemote
-    ? `tar -C ${shellQuote(location.remoteRoot)} -cf - .`
-    : `umask 077; mkdir -p ${shellQuote(dirname(location.remoteRoot))} && mkdir ${shellQuote(location.remoteRoot)} && tar -C ${shellQuote(location.remoteRoot)} -xpf - && sync -f ${shellQuote(location.remoteRoot)}`;
-  const ssh = spawn('ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3',
-    location.host, remoteCommand], { stdio: [fromRemote ? 'ignore' : 'pipe', fromRemote ? 'pipe' : 'inherit', 'inherit'] });
-  const tar = spawn('tar', fromRemote ? ['-C', local, '-xpf', '-'] : ['-C', local, '-cf', '-', '.'],
-    { env: { ...process.env, COPYFILE_DISABLE: '1' }, stdio: [fromRemote ? 'pipe' : 'ignore', fromRemote ? 'inherit' : 'pipe', 'inherit'] });
-  const finished = process => new Promise((resolve, reject) => {
-    process.on('error', reject);
-    process.on('close', code => code === 0 ? resolve() : reject(new Error(`Transfer failed (${code}); local source retained`)));
-  });
-  const timer = setTimeout(() => { tar.kill('SIGKILL'); ssh.kill('SIGKILL'); }, 6 * 60 * 60_000);
-  try { await Promise.all([finished(ssh), finished(tar), pipeline(fromRemote ? ssh.stdout : tar.stdout, fromRemote ? tar.stdin : ssh.stdin)]); }
-  catch (error) { tar.kill('SIGKILL'); ssh.kill('SIGKILL'); throw error; }
-  finally { clearTimeout(timer); }
-}
+await withSessionArchiveLock(sessionId, async () => {
+await mkdir(lock); // Fail closed on another maintenance process or an interrupted operation.
 try {
+  if (worktree) {
+    owner = await inactiveArchiveSession(sessionId); // Recheck AFTER acquiring the shared lease.
+    if (owner.session.worktree_path !== sourceRoot || owner.project.path !== worktreeFields.repoPath) throw new Error('Session ownership changed');
+  }
   let record = (await archiveRecords({ fresh: true })).find(r => r.sourceRoot === sourceRoot);
   if (operation === 'copy' || operation === 'verify') {
     validateArchiveLocation(host, remoteRoot);
@@ -76,7 +67,7 @@ try {
     const remote = await remoteDigest({ host, remoteRoot });
     same(local, remote);
     if (local.fingerprint !== (await localDigest(false)).fingerprint) throw new Error('Source changed; not registered');
-    record = { version: 1, sessionId, sourceRoot, host, remoteRoot, ...local, state: 'verified', verifiedAt: Date.now() };
+    record = { ...record, version: 1, sessionId, sourceRoot, host, remoteRoot, ...worktreeFields, ...local, state: 'verified', verifiedAt: Date.now() };
     await saveArchiveRecord(record);
     console.log(JSON.stringify({ verified: true, sourceRoot, host, remoteRoot, ...local }));
   } else if (operation === 'evict') {
@@ -86,6 +77,19 @@ try {
     await unopened(sourceRoot);
     if ((await localDigest(false)).fingerprint !== record.fingerprint) throw new Error('Source changed since verification; local files retained');
     same(record, await remoteDigest(record)); // A vanished/corrupt remote must never authorize deletion.
+    if (worktree) {
+      await inactiveArchiveSession(sessionId);
+      const listing = (await exec('git', ['-C', record.repoPath, 'worktree', 'list', '--porcelain'], { timeout: 10000 })).stdout;
+      const block = listing.split('\n\n').find(b => b.split('\n').includes(`worktree ${sourceRoot}`));
+      if (!block) throw new Error('Worktree registration is missing');
+      const existingLock = block.split('\n').find(l => l === 'locked' || l.startsWith('locked '));
+      if (!existingLock) {
+        const reason = `AIOS archive ${sessionId}`;
+        await exec('git', ['-C', record.repoPath, 'worktree', 'lock', '--reason', reason, sourceRoot], { timeout: 10000 });
+        record = { ...record, gitLockOwned: true, gitLockReason: reason };
+        await saveArchiveRecord(record);
+      }
+    }
     const quarantine = join(parent, `.archive-eviction-${randomUUID()}`);
     record = { ...record, evictionPath: quarantine };
     await saveArchiveRecord(record); // Crash-recovery breadcrumb, before rename.
@@ -105,16 +109,7 @@ try {
     console.log(JSON.stringify({ evicted: sourceRoot, recoverableFrom: `${record.host}:${record.remoteRoot}`, bytes: record.bytes }));
   } else {
     if (!record) throw new Error('No archive found');
-    if (await lstat(sourceRoot).catch(() => null)) throw new Error('Local destination exists; restore never overwrites it');
-    const disk = await statfs(parent);
-    if (disk.bavail * disk.bsize < record.bytes + 5 * 1024 ** 3) throw new Error('Not enough space to restore with a 5 GiB reserve');
-    const stage = join(parent, `.archive-restore-${randomUUID()}`);
-    await mkdir(stage, { mode: 0o700 });
-    await transfer(true, record, stage);
-    same(record, await localDigest(true, stage));
-    if (await lstat(sourceRoot).catch(() => null)) throw new Error(`Destination appeared; verified restore retained at ${stage}`);
-    await rename(stage, sourceRoot);
-    await saveArchiveRecord({ ...record, state: 'verified', restoredAt: Date.now(), verifiedAt: 0 });
-    console.log(JSON.stringify({ restored: sourceRoot, remoteRetained: true }));
+    console.log(JSON.stringify(await restoreArchive(record)));
   }
 } finally { await rmdir(lock); }
+});

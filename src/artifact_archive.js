@@ -1,16 +1,21 @@
 // Small local location records, not a second copy/cache of archived data. Originals keep their URLs.
 import { readFile, readdir, mkdir, writeFile, rename, lstat, realpath } from 'node:fs/promises';
-import { join, relative, resolve, isAbsolute } from 'node:path';
+import { join, relative, resolve, isAbsolute, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DATA_DIR } from './config.js';
 import { validateArchiveLocation } from './archive_transport.js';
+import { worktreeRoot } from './worktrees.js';
 
 export const archiveIndexRoot = join(DATA_DIR, 'artifact-archives');
 const inside = (root, path) => path.startsWith(root + '/');
 export function validateArchiveRecord(record) {
   if (!/^s_[a-zA-Z0-9_-]+$/.test(record.sessionId || '')) throw new Error('Invalid archive owner');
   const base = resolve(DATA_DIR, 'session-artifacts', record.sessionId);
-  if (!inside(base, record.sourceRoot) || resolve(record.sourceRoot) !== record.sourceRoot
+  if (record.kind === 'worktree') {
+    const parts = relative(resolve(worktreeRoot()), record.sourceRoot).split('/');
+    if (!inside(resolve(worktreeRoot()), record.sourceRoot) || resolve(record.sourceRoot) !== record.sourceRoot
+        || parts.length !== 2 || parts[1] !== record.sessionId || !isAbsolute(record.repoPath || '')) throw new Error('Archive must own its managed session worktree');
+  } else if (record.kind != null || !inside(base, record.sourceRoot) || resolve(record.sourceRoot) !== record.sourceRoot
       || relative(base, record.sourceRoot).split('/').length !== 1) throw new Error('Archive must own one artifact subdirectory');
   validateArchiveLocation(record.host, record.remoteRoot);
   if (!/^[a-f0-9]{64}$/.test(record.digest || '') || !Number.isSafeInteger(record.bytes) || record.bytes < 0) throw new Error('Unverified archive');
@@ -56,8 +61,9 @@ export async function archivedFile(sessionId, target) {
     try { if ((await lstat(parent)).isSymbolicLink()) return null; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  const base = join(DATA_DIR, 'session-artifacts', sessionId);
+  const base = record.kind === 'worktree' ? resolve(worktreeRoot()) : join(DATA_DIR, 'session-artifacts', sessionId);
   if (await realpath(base).catch(() => base) !== base) return null;
+  if (record.kind === 'worktree' && await realpath(dirname(record.sourceRoot)).catch(() => '') !== dirname(record.sourceRoot)) return null;
   return { ...record, path: relative(record.sourceRoot, target) };
 }
 export async function archiveStorageSummary() {

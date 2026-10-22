@@ -1,3 +1,4 @@
+import { withSessionArchiveLock } from './archive_lock.js';
 const locks = new Set();
 export function sessionIsCleaning(id) { return locks.has(id); }
 export function assertSessionNotCleaning(id) {
@@ -10,5 +11,5 @@ export function assertSessionNotCleaning(id) {
 export async function withSessionCleanup(id, operation) {
   assertSessionNotCleaning(id);
   locks.add(id);
-  try { return await operation(); } finally { locks.delete(id); }
+  try { return await withSessionArchiveLock(id, operation); } finally { locks.delete(id); }
 }

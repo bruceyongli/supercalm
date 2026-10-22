@@ -1,6 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
+import { withSessionArchiveLock } from './archive_lock.js';
+import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
@@ -1438,6 +1440,14 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     throw error;
   }
   checkRecovery();
+  // Restore the exact archived tree (including dirty/untracked work) BEFORE ensureWorktree
+  // can recreate a checkout from a branch. Offline/corrupt storage must leave the session stopped.
+  const restoredArchive = await restoreArchivedWorktree(s);
+  const afterRestore = store.getSession(sid);
+  if (restoredArchive && (!afterRestore || (afterRestore.revision !== s.revision && /^operator-/.test(afterRestore.status_reason || '')))) {
+    throw Object.assign(new Error('Resume cancelled by newer operator intent; restored files are preserved'), { code: 'recovery-cancelled' });
+  }
+  checkRecovery();
   if (alive) await tmuxOk('kill-session', '-t', s.tmux); // kill the lingering/old pane, then relaunch fresh
   checkRecovery();
   let durableStatus = ['working', 'waiting'].includes(preserveStatus)
@@ -1576,15 +1586,15 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
 }
 
 export function resume(sid, options = {}) {
-  try { assertSessionNotCleaning(sid); } catch (error) { return Promise.reject(error); }
   const inflight = pendingResumes.get(sid);
   if (inflight) return inflight;
+  try { assertSessionNotCleaning(sid); } catch (error) { return Promise.reject(error); }
 
   // Polling must ignore the expected interval between killing the old pane and publishing its replacement.
   // A poll already waiting on tmux is handled by markExited's registry-generation ownership check below.
   const entry = reg.get(sid);
   if (entry) entry.relaunching = true;
-  const attempt = resumeNow(sid, options).finally(() => {
+  const attempt = withSessionArchiveLock(sid, () => resumeNow(sid, options)).finally(() => {
     pendingResumes.delete(sid);
     // On failure resumeNow leaves the old registry generation in place. Let polling reconcile it again.
     if (entry && reg.get(sid) === entry) entry.relaunching = false;
