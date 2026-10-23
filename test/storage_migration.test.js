@@ -25,6 +25,7 @@ try {
   const evidence = await verifyStoragePair(source, target);
   assert.equal(await reuseStorageVerification(source, target, evidence), evidence);
   assert.equal(evidence.files, 2); assert.equal(evidence.links, 2);
+  assert.equal(evidence.uniqueContentReads, 1, 'hardlinked contents are independently read once per verified inode version');
   assert.equal(evidence.bytes, 2 * Buffer.byteLength('persisted report\n'));
   await writeFile(join(target, '中文.md'), 'wrong data\n');
   assert.equal(await reuseStorageVerification(source, target, evidence), null, 'modified destination invalidates cached content verification');

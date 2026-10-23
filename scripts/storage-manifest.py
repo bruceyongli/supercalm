@@ -13,8 +13,9 @@ import os
 import stat
 import sys
 import fcntl
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from collections import deque
+from threading import Lock
 
 
 def encoded(value):
@@ -116,6 +117,47 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
     group_changes = []
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_VERIFY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
+    content_cache, content_lock = {}, Lock()
+    content_reads = 0
+
+    def content_hash(path, before):
+        nonlocal content_reads
+        key = tuple(signature(before)) if before.st_nlink > 1 else None
+        owner = True
+        if key is not None:
+            with content_lock:
+                future = content_cache.get(key)
+                if future is None:
+                    future = content_cache[key] = Future()
+                else:
+                    owner = False
+            if not owner:
+                return future.result()
+        try:
+            content = hashlib.sha256()
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb", buffering=0) as stream:
+                if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
+                    fcntl.fcntl(stream.fileno(), 48, 1)
+                if signature(os.fstat(stream.fileno())) != signature(before):
+                    raise ValueError("File changed before read: " + path)
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    content.update(chunk)
+                if signature(os.fstat(stream.fileno())) != signature(before):
+                    raise ValueError("File changed during read: " + path)
+            with content_lock:
+                content_reads += 1
+            result = content.hexdigest()
+            if key is not None:
+                future.set_result(result)
+            return result
+        except BaseException as error:
+            if key is not None:
+                future.set_exception(error)
+            raise
 
     def record(path, relative):
         before = os.lstat(path)
@@ -136,20 +178,9 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
                 raise ValueError("Group change would alter access: " + relative)
             meta[3] = normalized
         if stat.S_ISREG(mode):
-            content = hashlib.sha256()
-            if contents:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(descriptor, "rb", buffering=0) as stream:
-                    if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
-                        fcntl.fcntl(stream.fileno(), 48, 1)
-                    if signature(os.fstat(stream.fileno())) != signature(before):
-                        raise ValueError("File changed before read: " + relative)
-                    while True:
-                        chunk = stream.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        content.update(chunk)
-            result = ["file", meta, before.st_size, content.hexdigest() if contents else ""]
+            # Hardlinks are one native inode. Hash each immutable inode version once,
+            # while still checking every path's metadata and link topology separately.
+            result = ["file", meta, before.st_size, content_hash(path, before) if contents else ""]
         elif stat.S_ISLNK(mode):
             result = ["link", meta, os.readlink(path)]
         elif stat.S_ISDIR(mode):
@@ -215,7 +246,7 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
     # number cannot be reproduced on a second filesystem.
     digest.update(encoded(["hardlinks", sorted(paths for paths in groups.values() if len(paths) > 1)]))
     return {"algorithm": "sha256", "digest": digest.hexdigest(), "fingerprint": fingerprint.hexdigest(),
-            **counts, "ephemeralSockets": ipc,
+            **counts, "uniqueContentReads": content_reads, "ephemeralSockets": ipc,
             "equivalentGroupChanges": group_changes,
             "scope": "contents,names,modes,ownership,file-flags,hardlinks,symlink-targets,ACLs,xattrs"}
 
