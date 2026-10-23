@@ -70,7 +70,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     if revisions.startswith(target + "/") or revisions.startswith(source + "/"):
         raise ValueError("Revisions must be outside both roots")
     device = os.lstat(source).st_dev
-    counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "sockets": 0}
+    counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "sockets": 0, "unstableSources": []}
     hardlinks = {}
     last_progress = time.monotonic()
     progress_lock = Lock()
@@ -150,7 +150,11 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         after = os.lstat(src)
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise ValueError("Source changed while staging; retry after quiescing: " + rel)
+            # Staging is not cutover. An active transcript must not prevent unrelated
+            # later files from being copied. Record every changed path for a quiesced
+            # reconciliation; independent stable verification still gates all removal.
+            with progress_lock:
+                counts["unstableSources"].append(rel)
         with progress_lock:
             if time.monotonic() - last_progress > 15:
                 print(json.dumps({"progress": counts}), flush=True)

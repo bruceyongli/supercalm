@@ -97,9 +97,11 @@ try {
       const revisions = join(mount, 'migration-revisions', id, String(Date.now()));
       const args = [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, revisions];
       if (mapping.ephemeralSockets === true) args.push('--ephemeral-sockets');
-      await command('python3', args);
-      await save({ state: 'copied', error: null, pid: null });
-      console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true }));
+      const output = await command('python3', args, { collect: true });
+      const result = JSON.parse(output.trim().split('\n').at(-1));
+      const unstable = result.unstableSources || [];
+      await save({ state: unstable.length ? 'staged-changing' : 'copied', error: null, pid: null, unstableSources: unstable });
+      console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true, unstableSources: unstable }));
     } else {
       if (operation === 'cutover') await assertUnused([source, target]);
       const options = {

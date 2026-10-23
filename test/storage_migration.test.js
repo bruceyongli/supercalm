@@ -36,6 +36,23 @@ try {
     await exec('/usr/bin/xattr', ['-w', 'com.aios.migration-test', 'wrong', join(target, '中文.md')]);
     await assert.rejects(verifyStoragePair(source, target), /differ/);
     await exec('/usr/bin/xattr', ['-w', 'com.aios.migration-test', 'attribute value', join(target, '中文.md')]);
+    const changing = join(root, 'changing'), staged = join(root, 'staged');
+    await mkdir(changing); await mkdir(staged);
+    await writeFile(join(changing, 'a'), 'initial'); await writeFile(join(changing, 'z'), 'later file');
+    const script = `import importlib.util,sys,os,json
+spec=importlib.util.spec_from_file_location('copy',sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+original=m.native_copy
+def racing(src,dst,metadata=False):
+ original(src,dst,metadata)
+ if not metadata and os.path.basename(src)=='a':
+  with open(src,'a') as stream: stream.write(' changed')
+m.native_copy=racing
+print(json.dumps(m.copy_tree(sys.argv[2],sys.argv[3],sys.argv[4])))`;
+    const stagedResult = JSON.parse((await exec('python3', ['-c', script,
+      fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), changing, staged, join(root, 'changing-revisions')])).stdout);
+    assert.deepEqual(stagedResult.unstableSources, ['a']);
+    assert.equal(await readFile(join(staged, 'z'), 'utf8'), 'later file', 'a growing active transcript cannot starve later histories');
+    await assert.rejects(verifyStoragePair(changing, staged), /differ/, 'staging never authorizes an unsafe cutover');
   }
   assert.deepEqual(parseOpenFiles('p7\0cwriter\0\nf2\0n/work/p/data\0\nf3\0n/work/prefix/no\0', ['/work/p']),
     [{ pid: 7, command: 'writer', descriptor: '2', path: '/work/p/data' }]);
