@@ -11,6 +11,8 @@ const rows = [
   { id: 's_stopped', title: 'Resumable stopped project', project_id: 'p1', project: 'Fixture', cleanable: true, deletable: false, reason: 'Stopped; history is resumable', bytes: 4096, disposable_bytes: 4096, components: [component] },
   { id: 's_running', title: 'Live session cannot be deleted', project_id: 'p1', project: 'Fixture', cleanable: false, deletable: false, status: 'working', bytes: 100 * 1024 ** 3, disposable_bytes: 0, components: [] },
 ];
+const liveStorage = { available: true, migrated_roots: 0, planned_roots: 12,
+  volume: { available_bytes: 1.4 * 1024 ** 4 }, backing: { available_bytes: 2.5 * 1024 ** 4 } };
 let scan = 1, scanning = false, storageCalls = 0, capacityCalls = 0, cleanupCalls = [], planCalls = [], resourceCalls = 0;
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
@@ -30,10 +32,10 @@ const server = createServer(async (req, res) => {
     graphs: [{ name: 'Supervisor Data Factory', path: '/private/fixture/a-very-long-project-folder-name/another-long-directory-name/project', status: 'indexed', counts: { symbols: 12893, files: 3003, relations: 37685 } }], issues: [] });
   if (path === '/api/product/storage/capacity') { capacityCalls++; return json({
     capacity: { available_bytes: 19 * 1024 ** 3, total_bytes: 500 * 1024 ** 3, level: 'warning', checked_at: Date.now() },
-    database: { file_bytes: 13 * 1024 ** 3, reusable_bytes: 11 * 1024 ** 3 } }); }
+    database: { file_bytes: 13 * 1024 ** 3, reusable_bytes: 11 * 1024 ** 3 }, live_storage: liveStorage }); }
   if (path === '/api/product/storage') { storageCalls++; return json({ state: scanning ? 'scanning' : 'ready', scanned_at: scanning ? undefined : scan,
     capacity: { available_bytes: 20 * 1024 ** 3, total_bytes: 500 * 1024 ** 3, level: 'warning' },
-    database: { file_bytes: 13 * 1024 ** 3, reusable_bytes: 11 * 1024 ** 3 }, disposable_bytes: scanning ? undefined : 8192,
+    database: { file_bytes: 13 * 1024 ** 3, reusable_bytes: 11 * 1024 ** 3 }, live_storage: liveStorage, disposable_bytes: scanning ? undefined : 8192,
     projects: scanning ? [] : [{ id: 'p1', name: 'Fixture', path: '/private/fixture', source_bytes: 1024, session_bytes: 2048 }], sessions: scanning ? [] : rows, shared: [] }); }
   if (path === '/api/product/storage/plan') {
     const parsed = JSON.parse(body); planCalls.push(parsed);
@@ -72,6 +74,7 @@ try {
     assert.equal(await page.locator('[data-resource-group="session:s_running"]').getAttribute('open'), '');
     assert.equal(await page.locator('[data-resource-services]').getAttribute('open'), null);
     assert.match(await page.locator('[data-storage-overview]').innerText(), /11\.0 GiB reusable inside the database, not free disk space/);
+    assert.match(await page.locator('[data-storage-overview]').innerText(), /Spark live storage: 1\.4 TiB[\s\S]*2\.5 TiB on backing disk[\s\S]*0\/12 storage roots migrated/);
     assert.equal(await page.locator('[data-storage-session="s_running"]').count(), 0);
     await page.locator('[data-storage-session="s_killed"]').check();
     assert.match(await page.locator('[data-storage-selection]').innerText(), /temp\/logs only: approximately 4\.0 KiB/);

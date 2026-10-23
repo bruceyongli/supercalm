@@ -12,6 +12,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gitOut } from './git.js';
+import { assertLiveStorage } from './live_storage.js';
 
 // ---- pure path/name helpers -------------------------------------------------------------------
 // A git-ref- and filesystem-safe component: only [A-Za-z0-9._-], no '..', no leading/trailing '.'/'-',
@@ -115,8 +116,10 @@ function serialize(key, fn) {
 // lifecycle callers can still handle failures differently.
 export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '', baseBranch = '' }) {
   return serialize(resolve(repoPath), async () => {
+    await assertLiveStorage(repoPath);
     if (!(await isGitRepo(repoPath))) throw new Error('not a git worktree: ' + repoPath);
     const path = assertUnderRoot(desiredPath || worktreePathFor(project, sid));
+    await assertLiveStorage(path);
     const branch = desiredBranch || branchFor(project, sid);
 
     if (await worktreeExists(repoPath, path)) return { path, branch, reused: true }; // resume / re-launch

@@ -1,10 +1,11 @@
 // Small local location records, not a second copy/cache of archived data. Originals keep their URLs.
-import { readFile, readdir, mkdir, writeFile, rename, lstat, realpath } from 'node:fs/promises';
+import { readFile, readdir, mkdir, writeFile, rename, lstat } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { DATA_DIR } from './config.js';
 import { validateArchiveLocation } from './archive_transport.js';
 import { worktreeRoot } from './worktrees.js';
+import { isManagedStoragePath } from './live_storage.js';
 
 export const archiveIndexRoot = join(DATA_DIR, 'artifact-archives');
 const inside = (root, path) => path.startsWith(root + '/');
@@ -62,8 +63,8 @@ export async function archivedFile(sessionId, target) {
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   const base = record.kind === 'worktree' ? resolve(worktreeRoot()) : join(DATA_DIR, 'session-artifacts', sessionId);
-  if (await realpath(base).catch(() => base) !== base) return null;
-  if (record.kind === 'worktree' && await realpath(dirname(record.sourceRoot)).catch(() => '') !== dirname(record.sourceRoot)) return null;
+  if (!await isManagedStoragePath(base, { allowMissing: true })) return null;
+  if (record.kind === 'worktree' && !await isManagedStoragePath(dirname(record.sourceRoot))) return null;
   return { ...record, path: relative(record.sourceRoot, target) };
 }
 export async function archiveStorageSummary() {

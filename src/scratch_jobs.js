@@ -1,11 +1,12 @@
 // Opt-in job ownership: clean a completed build/test, not an entire live session.
-import { mkdir, readFile, readdir, writeFile, rename, rm, lstat, realpath, unlink, rmdir } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, rm, lstat, unlink, rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DATA_DIR } from './config.js';
 import { assertDiskHeadroom } from './disk_pressure.js';
+import { assertLiveStorage, isManagedStoragePath, storageMigrationProtected } from './live_storage.js';
 
 const exec = promisify(execFile);
 const recordsRoot = join(DATA_DIR, 'scratch-jobs');
@@ -53,6 +54,7 @@ export async function cleanScratchJob(job, options = {}) {
 async function cleanOwnedJob(job, { now = Date.now(), alive = processExists, unused = pathIsUnused } = {}) {
   const expected = jobPath(job.sessionId, job.id);
   if (expected !== job.path) throw new Error('Scratch job path changed');
+  if (storageMigrationProtected(expected)) return { retained: 'storage-migration' };
   if (alive(job.pid, true) || (!job.finishedAt && alive(job.ownerPid))) return { retained: 'active-process' };
   if (!job.finishedAt) {
     // A crashed wrapper is not proof of successful work. Preserve it for a day, just like failure.
@@ -63,7 +65,7 @@ async function cleanOwnedJob(job, { now = Date.now(), alive = processExists, unu
   if (now < job.expiresAt) return { retained: 'failure-evidence' };
   const info = await lstat(expected).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
   if (info) {
-    if (!info.isDirectory() || await realpath(expected) !== expected) return { retained: 'path-changed' };
+    if (!info.isDirectory() || !await isManagedStoragePath(expected)) return { retained: 'path-changed' };
     if (!await unused(expected)) return { retained: 'open-files-or-unknown' };
     await rm(expected, { recursive: true, force: false });
   }
@@ -96,9 +98,10 @@ export async function runScratchJob(sessionId, command, args = []) {
   if (!command) throw new Error('A command is required');
   assertDiskHeadroom();
   const id = `j_${randomUUID()}`, path = jobPath(sessionId, id);
+  await assertLiveStorage(path);
   await mkdir(recordsRoot, { recursive: true, mode: 0o700 });
   await mkdir(path, { recursive: true, mode: 0o700 });
-  if (await realpath(path) !== path) throw new Error('Scratch job directory is redirected');
+  if (!await isManagedStoragePath(path)) throw new Error('Scratch job directory is redirected');
   let job = { version: 1, id, sessionId, path, ownerPid: process.pid, pid: null, startedAt: Date.now() };
   await writeJob(job);
   const child = spawn(command, args, { detached: true, stdio: 'inherit', env: {

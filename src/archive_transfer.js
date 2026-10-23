@@ -1,11 +1,12 @@
 import { spawn, execFile } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { promisify } from 'node:util';
-import { mkdir, lstat, statfs, rename, realpath } from 'node:fs/promises';
+import { mkdir, lstat, statfs, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { archiveWorker, shellQuote } from './archive_transport.js';
 import { archiveRecords, saveArchiveRecord } from './artifact_archive.js';
+import { assertLiveStorage, isManagedStoragePath } from './live_storage.js';
 
 const exec = promisify(execFile);
 export function sameArchive(a, b) {
@@ -33,7 +34,8 @@ export async function transferArchive(fromRemote, location, local) {
 // Caller owns the cross-process session lease. Staging is retained on failure for recovery.
 export async function restoreArchive(record) {
   const source = record.sourceRoot, parent = dirname(source);
-  if (await realpath(parent) !== parent) throw new Error('Restore parent changed or is a symlink');
+  await assertLiveStorage(parent);
+  if (!await isManagedStoragePath(parent)) throw new Error('Restore parent changed or is a symlink');
   if (await lstat(source).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) {
     throw new Error('Local destination exists; restore never overwrites it');
   }
@@ -43,7 +45,7 @@ export async function restoreArchive(record) {
   await mkdir(stage, { mode: 0o700 });
   await transferArchive(true, record, stage);
   sameArchive(record, await archiveWorker({ op: 'digest', root: stage }));
-  if (await realpath(parent) !== parent) throw new Error('Restore parent changed; staging retained');
+  if (!await isManagedStoragePath(parent)) throw new Error('Restore parent changed; staging retained');
   if (await lstat(source).catch(error => { if (error.code === 'ENOENT') return null; throw error; })) throw new Error(`Destination appeared; verified restore retained at ${stage}`);
   await rename(stage, source);
   await saveArchiveRecord({ ...record, state: 'verified', restoredAt: Date.now(), verifiedAt: 0 });

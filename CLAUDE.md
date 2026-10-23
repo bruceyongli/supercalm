@@ -82,6 +82,20 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   metadata and native conversation histories remain local. Do not archive live/waiting sessions or
   the proxy fleet. Session leases use the POSIX flock helper already used by deployment and are
   kernel-released on exit/reboot; inspect per-archive interrupted-operation locks before recovery.
+- Optional live remote storage uses explicit logical-path mappings in `data/live-storage.json` (or a
+  pointer to a local control config). An approved root alias does not authorize nested symlink escapes.
+  Keep SQLite and mount credentials/control state local. On macOS the storage helper reads its SMB
+  secret from Keychain without prompts; never put passwords in argv, environment, scripts or logs.
+  `bin/storage-mount-watch.mjs` reconnects a dedicated share and optional APFS sparsebundle, verifies
+  the backing image plus volume marker, and publishes a small local connection/capacity record. Health
+  shows volume and backing-disk headroom separately, and planned roots are not reported as migrated.
+  Missing/replaced active aliases or unavailable storage fail closed; never recreate a local fallback.
+  `retainDuringMigration` suspends managed cleanup of mapped paths while their originals are copied.
+  `bin/migrate-live-storage.mjs copy|verify` only stages and checks data, retaining originals. A successful
+  copy is NOT a live cutover: coordinate writer quiescence, native conversation recovery and final
+  integrity verification separately before switching paths or removing a verified local duplicate.
+  Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
+  detach/reconnect durability with disposable fixtures before choosing a storage transport.
 - Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.
   Each job gets its own TMPDIR / AIOS_JOB_TMPDIR; copy durable reports to AIOS_SESSION_ARTIFACTS
   before exit. Success is cleaned after its process group and open handles are gone; failures or

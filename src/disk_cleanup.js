@@ -13,6 +13,7 @@ import { withSessionCleanup } from './session_cleanup_lock.js';
 import { bus } from './bus.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import { sessionHasProtectedJobs } from './scratch_jobs.js';
+import { storageMigrationProtected } from './live_storage.js';
 
 const exec = promisify(execFile), plans = new Map(), receipts = new Map(), flights = new Map();
 const MODES = new Set(['disposable', 'outputs', 'delete']);
@@ -51,6 +52,7 @@ async function stoppedSession(id, mode) {
 async function checkedTarget(component, session, projects) {
   const proxy = resolve(join(homedir(), 'proxy'));
   const target = resolve(component.path), base = resolve(component.base);
+  if (storageMigrationProtected(target)) fail('Storage migration is retaining this path; finish migration before cleanup', 'storage-migration');
   if (target === base || !isInside(target, base) || isInside(target, proxy)) fail('Target is outside its managed storage boundary');
   let info;
   try { info = await lstat(target); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }

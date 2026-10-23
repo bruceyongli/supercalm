@@ -11,6 +11,7 @@ import { worktreeRoot } from './worktrees.js';
 import { sessionStoragePaths } from './session_storage.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import * as store from './store.js';
+import { liveStorageStatus } from './live_storage.js';
 
 const exec = promisify(execFile);
 export const isInside = (path, root) => path === root || path.startsWith(root + sep);
@@ -154,7 +155,7 @@ export function createStorageInventory({ projects = store.listProjects, sessions
           .catch(e => { error = String(e.message || e); }).finally(() => { flight = null; });
       }
       return { state: flight ? 'scanning' : error ? 'error' : 'ready', progress: { scanned, total }, error,
-        ...(cache || { projects: [], sessions: [], shared: [] }), capacity: currentDiskCapacity(), database: databaseStorage() };
+        ...(cache || { projects: [], sessions: [], shared: [] }), capacity: currentDiskCapacity(), database: databaseStorage(), live_storage: liveStorageStatus() };
     },
     invalidate() { generation++; cache = null; },
     async settled() { await flight; return this.get(); },

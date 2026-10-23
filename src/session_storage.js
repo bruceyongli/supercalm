@@ -2,6 +2,7 @@ import { mkdir, readdir, rm, rmdir } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { DATA_DIR, ROOT } from './config.js';
 import { sessionHasProtectedJobs } from './scratch_jobs.js';
+import { assertLiveStorage, storageMigrationProtected } from './live_storage.js';
 
 const STORAGE_ROOT = join(DATA_DIR, 'session-storage');
 const ARTIFACT_ROOT = join(DATA_DIR, 'session-artifacts');
@@ -25,6 +26,7 @@ export function sessionStoragePaths(sessionId) {
 
 export async function prepareSessionStorage(sessionId) {
   const paths = sessionStoragePaths(sessionId);
+  await Promise.all([assertLiveStorage(paths.tmp), assertLiveStorage(paths.artifacts)]);
   await Promise.all([
     mkdir(paths.tmp, { recursive: true, mode: 0o700 }),
     mkdir(paths.artifacts, { recursive: true, mode: 0o700 }),
@@ -49,6 +51,7 @@ export function sessionStorageEnv(sessionId) {
 
 export async function cleanupSessionStorage(sessionId) {
   const paths = sessionStoragePaths(sessionId);
+  if (storageMigrationProtected(paths.root) || storageMigrationProtected(paths.artifacts)) return { removed: false, reason: 'storage-migration' };
   if (await sessionHasProtectedJobs(sessionId)) return { removed: false, reason: 'protected-scratch-jobs' };
   await rm(paths.root, { recursive: true, force: true, maxRetries: 2 });
   // Durable artifacts stay with the session, but do not accumulate one empty directory per launch.

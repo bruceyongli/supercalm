@@ -10,6 +10,7 @@ import { projectGraphSummary } from './project_graph_core.js';
 import { storageInventory, databaseStorage, storageComponents, measureStoragePath } from './disk_storage.js';
 import { archiveStorageSummary } from './artifact_archive.js';
 import { currentDiskCapacity } from './disk_pressure.js';
+import { liveStorageStatus } from './live_storage.js';
 import { planStorageCleanup, executeStorageCleanup } from './disk_cleanup.js';
 import { bus } from './bus.js';
 import { createResourceInventory } from './resource_usage.js';
@@ -190,7 +191,7 @@ route('GET', '/api/product/storage', async (req, res, _params, url) => {
 });
 // Cheap live capacity polling does not serialize the inventory or start a directory scan.
 route('GET', '/api/product/storage/capacity', async (req, res) => {
-  json(res, 200, { capacity: currentDiskCapacity(), database: databaseStorage(),
+  json(res, 200, { capacity: currentDiskCapacity(), database: databaseStorage(), live_storage: liveStorageStatus(),
     remote_storage: await archiveStorageSummary().catch(() => ({ error: 'Archive index unavailable' })) });
 });
 route('POST', '/api/product/storage/plan', async (req, res) => {
