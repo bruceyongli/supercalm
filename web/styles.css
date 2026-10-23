@@ -585,6 +585,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .status-txt.waiting { color: var(--yellow); }
 .status-txt.working { color: var(--green); }
 .status-txt.error { color: var(--red); }
+.status-txt.retrying, .dot.retrying { color: var(--yellow); }
+.dot.retrying { background: var(--yellow); }
 
 /* projects */
 .projects { display: flex; flex-wrap: wrap; gap: 8px; }

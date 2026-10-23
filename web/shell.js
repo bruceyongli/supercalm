@@ -11,6 +11,7 @@ import { attentionCopy, cleanAttentionText } from './attention-preview.js';
 import { observeOnTheGoNeeds } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
 import { resourceLineHtml, mountSessionResources } from './session-resources.js';
+import { sessionIndicator } from './session-indicator.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -85,7 +86,8 @@ function recalcHome() {
     ...home,
     sessions,
     counts: {
-      waiting: sessions.filter((s) => s.status === 'waiting').length,
+      waiting: sessions.filter((s) => s.status === 'waiting' && !sessionIndicator(s).blocked).length,
+      blocked: sessions.filter((s) => sessionIndicator(s).blocked).length,
       working: sessions.filter((s) => s.status === 'working').length,
       live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
       dismissed: sessions.filter((s) => s.dismissed).length,
@@ -139,7 +141,7 @@ export function upsertSession(raw, { publish = true } = {}) {
   // publish Working first. Never let that older, unversioned response roll lifecycle state backward.
   if (patch.status === 'starting' && current.status && current.status !== 'starting'
       && (!patch.ts || Number(patch.ts) < Number(current.ts || 0))) {
-    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
+    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'provider_issue', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
     patch = Object.fromEntries(Object.entries(patch).filter(([key]) => !lifecycle.has(key)));
   }
   const next = mergeSessionPatch(current, patch);
@@ -183,6 +185,12 @@ export function dismissedAttention() {
 // task/title, latest curated summary, and current question; do not pretend to know a deeper outcome
 // when those fields do not contain one.
 export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
+  if (sessionIndicator(s).blocked) return {
+    state: 'Blocked', awaiting: true, request: cleanAttentionText(s.title || s.project || s.id, 180),
+    doing: '', outcome: 'The selected model is at capacity; work cannot continue.',
+    need: 'Retry later or choose another model.', actionSource: 'provider',
+    attentionMode: 'action', next: 'The session is still alive. Dismiss only clears this report.',
+  };
   const status = String(s?.status || 'stopped');
   const awaiting = status === 'waiting' || (status === 'working' && s?.pending_input);
   const state = status === 'working' && s?.pending_input ? 'Needs you · working' : status === 'working' ? 'Working'
@@ -287,6 +295,7 @@ function renderSide() {
   if (!$('#dk-counters')) return; // page without the shell mounted
   const c = home.counts || {};
   $('#dk-counters').innerHTML = `
+    ${c.blocked ? `<span class="dk-cnt"><i class="dk-dot error"></i>${c.blocked} blocked</span>` : ''}
     <span class="dk-cnt"><i class="dk-dot warn"></i>${c.waiting || 0} waiting</span>
     <span class="dk-cnt"><i class="dk-dot ok"></i>${c.working || 0} working</span>
     <span class="dk-cnt muted">${c.live || 0} live</span>`;
@@ -302,7 +311,7 @@ function renderSide() {
   const { recent, older } = splitSessionRecency(live);
   const railSpec = (s) => ({ key: s.id, html: `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess data-sid="${esc(s.id)}">
-      <span class="dk-sess-l1"><i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
+      <span class="dk-sess-l1"><i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
       <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj" title="${esc(s.project)}">${esc(s.project)}</span>` : ''}${resourceLineHtml()}</span>
     </a>` });
   const specs = recent.map(railSpec);

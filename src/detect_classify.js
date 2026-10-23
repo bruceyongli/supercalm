@@ -1,5 +1,6 @@
 import { stripAnsi } from './util.js';
 import { claudeTerminalFrame, claudeBackgroundWork, getClaudeLifecycle } from './claude_lifecycle.js';
+import { detectProviderIssue, providerIssueMessage } from './provider_status.js';
 
 // PURE terminal-pattern classifier — no store/sessions/server imports, so it is unit-testable without
 // booting the service. The poll-loop wiring (setClassifier) lives in detect.js, which re-exports this.
@@ -336,6 +337,12 @@ export function classify({ session, snap, idleMs, authGraceUntil, claudeActivity
   // 2) explicit approval / menu prompts -> waiting
   const terminal = session.tool === 'claude' ? terminalQuestionPrompt(text) : null;
   if (terminal) return { status: 'waiting', question: questionFrom(text, true) };
+  const providerIssue = detectProviderIssue(text, { tool: session.tool });
+  if (providerIssue) return {
+    status: providerIssue.phase === 'retrying' ? 'working' : 'waiting',
+    question: providerIssue.phase === 'retrying' ? null : providerIssueMessage(providerIssue),
+    providerIssue,
+  };
   const recentHook = hs && Date.now() - hs.ts < HOOK_TTL_MS;
   if (recentHook && (hs.attention || hs.error)) return { status: hs.status, question: hs.question, authNeeded: hs.authNeeded };
   // A completed Claude response can quote approval prompts or spinner glyphs. The live menu/footer

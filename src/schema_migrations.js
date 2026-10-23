@@ -206,4 +206,9 @@ export const CORE_MIGRATIONS = [
     description: 'Persist native asynchronous questions separately from process working state',
     up(db) { ensureColumn(db, 'sessions', 'structured_question', 'TEXT'); },
   },
+  {
+    id: '0009_session_provider_issue',
+    description: 'Distinguish provider capacity blockers from operator questions without ending the CLI',
+    up(db) { ensureColumn(db, 'sessions', 'provider_issue', 'TEXT'); },
+  },
 ];

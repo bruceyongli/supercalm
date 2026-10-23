@@ -26,6 +26,7 @@ import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
 import { ensureAgyStatuslineHook } from './agy_statusline.js';
 import { cleanModelId, isNativeModel, modelDisplayLabel, modelSupportsFast, routeForModel, listProxyModels } from './model_catalog.js';
 import { projectSession, sessionStatusPayload } from './session_projection.js';
+import { providerIssue as readProviderIssue, providerIssueMessage } from './provider_status.js';
 import { generateSessionMap, getSessionMap, sessionMapOptions } from './session_map.js';
 import { getSessionSpace, ensureSessionSpace, sourceSliceFor, startSpaceBuilder, kickLabels } from './session_space.js';
 import { labelStats, setLabeling, labelConfig, setLabelConfig } from './session_labels.js';
@@ -2162,6 +2163,7 @@ async function pollOnce() {
 
     let status = 'working';
     let question = null;
+    let providerIssue = null;
     if (classifier) {
       const r = classifier({ session: s, tool: s.tool, paneCmd: cmd, snap, idleMs, changed, claudeActivity, authGraceUntil: entry.authGraceUntil });
       if (r) {
@@ -2177,6 +2179,7 @@ async function pollOnce() {
         entry.authNeeded = false; // no auth error this poll
         status = r.status || status;
         question = r.question ?? null;
+        providerIssue = r.providerIssue || null;
         // autonomous session asked us to auto-accept a one-time gate (trust / bypass warning)
         if (r.confirm && now() - (entry.lastConfirm || 0) > 6000) {
           entry.lastConfirm = now();
@@ -2190,10 +2193,10 @@ async function pollOnce() {
         }
       }
     }
-    if (restoring && !terminalQuestionPrompt(snap)) {
+    if (restoring && !terminalQuestionPrompt(snap) && !providerIssue) {
       status = 'waiting'; question = s.question;
     }
-    if (s.status === 'waiting' && status === 'working' && now() < (entry.preserveWaitingUntil || 0)) {
+    if (s.status === 'waiting' && status === 'working' && !providerIssue && now() < (entry.preserveWaitingUntil || 0)) {
       status = 'waiting';
       question = s.question;
     }
@@ -2212,6 +2215,7 @@ async function pollOnce() {
     if (s.tool === 'claude' && status === 'waiting' && s.status === 'waiting'
         && !changed && (!claudeQuestion || getClaudeLifecycle(s.id)?.attention)) question = s.question;
     applyStatus(s, status, question, changed, {
+      providerIssue,
       forceAttention: !restoring && (!!claudeActivity?.newReport || newClaudeQuestion) && status === 'waiting',
       promptId: s.tool === 'claude' ? getClaudeLifecycle(s.id)?.attention_id || (claudeQuestion ? entry.claudeQuestionKey : '') : '',
       claudeSource: !claudeQuestion && claudeActivity?.phase === 'waiting' && claudeActivity?.report?.ts === claudeActivity?.lastAt
@@ -2224,7 +2228,16 @@ const _claudeLastInput = store.db.prepare("SELECT COALESCE(MAX(id),0) id FROM me
 const _claudeNativeSubmit = store.db.prepare(`SELECT id FROM events WHERE session_id=? AND type='hook'
   AND json_valid(payload) AND json_extract(payload,'$.event')='UserPromptSubmit'
   AND (json_extract(payload,'$.native_session_id')=? OR COALESCE(json_extract(payload,'$.native_session_id'),'')='') ORDER BY id DESC LIMIT 1`);
-function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false, claudeSource, promptId = '' } = {}) {
+function applyStatus(s, status, question, activityBump, { source = 'poll', extra = {}, forceAttention = false, claudeSource, promptId = '', providerIssue } = {}) {
+  const priorIssue = readProviderIssue(s.provider_issue);
+  const issue = providerIssue === undefined ? (status === 'waiting' ? priorIssue : null) : readProviderIssue(providerIssue);
+  const encodedIssue = issue ? JSON.stringify(issue) : null;
+  const issueChanged = encodedIssue !== (s.provider_issue || null);
+  const blocked = issue?.phase === 'blocked';
+  if (blocked) question = providerIssueMessage(issue);
+  // A capacity failure can replace an existing idle prompt without a Working transition. Surface
+  // that new blocker once; heartbeat/repaint/summary passes must not reopen a dismissed episode.
+  forceAttention ||= blocked && issueChanged;
   let claudeKey = null, duplicateSource = false;
   if (s.tool === 'claude' && status === 'waiting') {
     const turnKey = _claudeNativeSubmit.get(s.id, claudeResumeId(s.claude_transcript) || '')?.id
@@ -2237,6 +2250,7 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
     }
   }
   const patch = {};
+  if (issueChanged) patch.provider_issue = encodedIssue;
   if (status && status !== s.status) {
     patch.status = status;
     patch.status_reason = source;
@@ -2263,6 +2277,16 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
   if (wasWaiting && !nowWaiting) {
     patch.summary = null; // leaving waiting -> drop the stale summary/category
     patch.category = null;
+  }
+  if (issue) {
+    const metadata = blocked
+      ? { summary: providerIssueMessage(issue), category: 'action', stage: 'blocked', degraded: 0 }
+      : { summary: null, category: null, stage: 'executing', degraded: 1 };
+    for (const [key, value] of Object.entries(metadata)) if (s[key] !== value || Object.hasOwn(patch, key)) patch[key] = value;
+  } else if (priorIssue) {
+    patch.degraded = 0;
+    patch.stage = null;
+    if (nowWaiting) { patch.summary = attentionSeed; patch.category = 'review'; }
   }
   if (!Object.keys(patch).length && !forceAttention) return null;
   const updated = Object.keys(patch).length ? store.updateSession(s.id, patch) : s;
@@ -2302,7 +2326,10 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
       } : {}),
     },
   });
-  if (report?.created) runSummary(s.id, s.tool === 'claude' ? { ...report, sourceText: claudeSource || question } : report); // async refinement; the visible fallback is already durable
+  if (report?.created) {
+    if (blocked) bus.emit('waiting', { session: s.id, summary: providerIssueMessage(issue), category: 'action' });
+    else runSummary(s.id, s.tool === 'claude' ? { ...report, sourceText: claudeSource || question } : report); // async refinement; the visible fallback is already durable
+  }
   bus.emit('changed');
   return { updated, report };
 }
@@ -2310,12 +2337,12 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
 // Lifecycle hooks and terminal polling must enter the exact same attention transition. The old hook
 // path wrote status='waiting' directly, so polling saw no transition and never created the unread
 // report that powers Needs You.
-export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {}, activityBump = true, forceAttention = false, promptId = '' } = {}) {
+export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {}, activityBump = true, forceAttention = false, promptId = '', providerIssue = null } = {}) {
   const session = store.getSession(sid);
   if (!session || session.status === 'exited') return session;
   if (activityBump) { const entry = reg.get(sid); if (entry) delete entry.restoredWaitingSince; }
   const nextQuestion = status === 'waiting' && question == null ? session.question : question;
-  const result = applyStatus(session, status, nextQuestion, activityBump, { source, extra, forceAttention, claudeSource: question, promptId });
+  const result = applyStatus(session, status, nextQuestion, activityBump, { source, extra, forceAttention, claudeSource: question, promptId, providerIssue });
   if (session.tool === 'claude' && result?.updated?.last_activity > session.last_activity) {
     const entry = reg.get(sid);
     if (entry) entry.lastChange = now();
@@ -2375,6 +2402,7 @@ async function runSummary(sid, report = null) {
   }
   const cur = store.getSession(sid);
   if (!cur || cur.status !== 'waiting') return; // moved on while summarizing
+  if (readProviderIssue(cur.provider_issue)) return; // a late summary cannot replace a concrete provider blocker
   if (cur.tool === 'claude' && report?.message?.id && getLatestAttentionReport(sid)?.id !== report.message.id) return;
   const structured = storedQuestion(cur);
   if (structured?.mode === 'async' && !structured.answered) return; // authoritative question beats screen summaries
@@ -2444,6 +2472,7 @@ function applyAuthNeeded(s) {
   const summary = reauthSummary(s);
   const question = reauthQuestion(s);
   const patch = {};
+  if (s.provider_issue) patch.provider_issue = null;
   if (s.status !== 'waiting') patch.status = 'waiting';
   if (s.status !== 'waiting') patch.status_reason = 'auth-needed';
   if (s.summary !== summary) patch.summary = summary;

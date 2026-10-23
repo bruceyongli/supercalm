@@ -271,6 +271,15 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
   `~/omni/docs/voice-integration.md`, `~/omni/docs/spark-testing-policy.md` and proxy routing guidance.
 
 ## Detection model (`detect.js`)
+Provider capacity is a typed `provider_issue`, separate from process lifecycle. A terminal-native
+"Selected model is at capacity" failure displays a red blocked indicator across the rail, dashboard,
+session header, browser identity and phone/PWA; the CLI remains alive. Explicit native retry output
+displays Retrying without a new attention card. Parse only live output, not composer drafts, quoted
+fixtures or an older failure followed by healthy output. Persist one report per failure episode,
+preserve cross-device dismissal/activity clocks, and clear the warning on progress, a new native
+question, accepted input or relaunch. Never send keys, switch models or restart a session for this
+display feature. Capacity summaries are deterministic; a late LLM summary cannot overwrite them.
+
 State per session: `starting → working ↔ waiting → exited`. Codex/agy retain hook-first (TTL),
 gate, prompt, active-output, bounded background-hold and idle detection. Claude uses a typed
 lifecycle adapter (`claude_lifecycle.js`): real questions/permissions beat background work; native

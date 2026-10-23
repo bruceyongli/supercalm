@@ -9,6 +9,7 @@ import { startVoiceMode } from '../voicemode.js';
 import { setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
 import { splitSessionRecency } from '../session-recency.js';
+import { sessionIndicator } from '../session-indicator.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
 // (a CLI installed + a credential) actually pass; otherwise it points at the wizard. Checked once
@@ -131,7 +132,7 @@ function renderInbox(home) {
   if (nc) { nc.hidden = !cards.length; nc.textContent = cards.length; }
   const cardsEl = $('#dk-cards');
   const cardSpec = (s) => {
-    const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
+    const [blabel, bcolor] = sessionIndicator(s).blocked ? ['BLOCKED', '#f85149'] : BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
     const preview = sessionAttentionPreview(s, { optionCount: questions.length });
     const handledReview = s.category === 'review' && preview.actionSource === 'default';
@@ -208,13 +209,12 @@ function renderInbox(home) {
   const all = home.sessions || [];
   const live = all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
   const stopped = all.filter((s) => !['starting', 'working', 'waiting'].includes(s.status));
-  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : st === 'starting' ? 'Starting' : st === 'error' ? 'Failed' : 'Stopped');
   const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}" data-dk-row data-sid="${esc(s.id)}">
-      <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i>${agentChip(s.tool)}
+      <i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i>${agentChip(s.tool)}
       <b class="dk-row-name">${esc(fullTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
-      <span class="dk-status ${s.status}">${sWord(s.status)}</span>
+      <span class="dk-status ${sessionIndicator(s).state}">${sessionIndicator(s).label}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
     </a>`;
   const shownStopped = stoppedExpanded ? stopped : stopped.slice(0, STOPPED_SHOWN);

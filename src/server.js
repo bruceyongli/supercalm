@@ -258,7 +258,8 @@ export function buildState() {
     sessions: all,
     queue,
     counts: {
-      waiting: queue.filter((s) => s.queueTier !== 'stale').length,
+      waiting: queue.filter((s) => s.queueTier !== 'stale' && s.provider_issue?.phase !== 'blocked').length,
+      blocked: all.filter((s) => s.status === 'waiting' && s.provider_issue?.phase === 'blocked').length,
       stale: queue.filter((s) => s.queueTier === 'stale').length,
       working: all.filter((s) => s.status === 'working').length,
       live: all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,

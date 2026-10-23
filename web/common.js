@@ -1,4 +1,5 @@
 import { renderInline, markdownTableCells, markdownDestination } from './markdown-inline.js';
+import { sessionIndicator } from './session-indicator.js';
 export { renderLinkedText, renderInline } from './markdown-inline.js';
 
 export const $ = (s, r = document) => r.querySelector(s);
@@ -85,6 +86,7 @@ const STATUS_META = {
   starting: { color: '#58a6ff', glyph: '', prefix: '> ', label: 'starting' },
   exited: { color: '#8b949e', glyph: 'x', prefix: 'x ', label: 'exited' },
   error: { color: '#f85149', glyph: '!', prefix: '! ', label: 'error' },
+  retrying: { color: '#d29922', glyph: '', prefix: '> ', label: 'retrying' },
   ready: { color: '#58a6ff', glyph: '', prefix: '', label: 'ready' },
 };
 
@@ -131,13 +133,14 @@ export function setAiosFavicon({ label = 'A', status = 'ready', accent = '#58a6f
 
 export function setSessionBrowserIdentity(session) {
   const s = session || {};
-  const meta = STATUS_META[s.status] || STATUS_META.ready;
+  const indicator = sessionIndicator(s);
+  const meta = STATUS_META[indicator.state] || STATUS_META.ready;
   const title = compactTabText(s.title || 'Session', 58);
   const project = compactTabText(s.project?.name || s.toolLabel || s.tool || 'Supercalm', 24);
-  document.title = `${meta.prefix}${title} · ${project} · ${meta.label}`;
+  document.title = `${meta.prefix}${title} · ${project} · ${s.provider_issue ? indicator.label.toLowerCase() : meta.label}`;
   const tool = String(s.tool || s.toolLabel || '');
   const letter = tool === 'codex' ? 'X' : tool === 'claude' ? 'C' : tool === 'agy' ? 'A' : (s.project?.name || 'A').slice(0, 1);
-  setAiosFavicon({ label: letter, status: s.status, accent: s.toolColor || '#58a6ff' });
+  setAiosFavicon({ label: letter, status: indicator.state, accent: s.toolColor || '#58a6ff' });
 }
 
 export function setDashboardBrowserIdentity(state = {}) {
@@ -145,8 +148,9 @@ export function setDashboardBrowserIdentity(state = {}) {
   const waiting = Number(c.waiting || 0);
   const working = Number(c.working || 0);
   const live = Number(c.live || 0);
-  const status = waiting ? 'waiting' : working ? 'working' : live ? 'ready' : 'exited';
-  document.title = waiting ? `! ${waiting} waiting · Supercalm` : live ? `${working} working · ${live} live · Supercalm` : 'Supercalm · idle';
+  const blocked = Number(c.blocked || 0);
+  const status = blocked ? 'error' : waiting ? 'waiting' : working ? 'working' : live ? 'ready' : 'exited';
+  document.title = blocked ? `! ${blocked} blocked · ${waiting} waiting · Supercalm` : waiting ? `! ${waiting} waiting · Supercalm` : live ? `${working} working · ${live} live · Supercalm` : 'Supercalm · idle';
   setAiosFavicon({ label: 'A', status });
 }
 

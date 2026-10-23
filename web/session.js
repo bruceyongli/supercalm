@@ -12,6 +12,7 @@ import { installTerminalScrolling, terminalScrollMode, terminalHasNativeLatest, 
 import { mountFilePreview } from './file-preview.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
+import { sessionIndicator } from './session-indicator.js';
 
 // The session markup: the `.session-shell` grid + every panel, WITHOUT the sidebar (the surrounding
 // app-shell owns the ONE sidebar now). Exported so web/views/session-view.js mounts the real session view
@@ -1895,7 +1896,7 @@ function applySessionInfo(s) {
   // unversioned Starting lifecycle fields while retaining useful static metadata from that response.
   if (s.status === 'starting' && latestSessionInfo?.status && latestSessionInfo.status !== 'starting'
       && latestSessionInfo.ts && !s.ts) {
-    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
+    const lifecycle = new Set(['status', 'question', 'summary', 'category', 'stage', 'provider_issue', 'last_activity', 'ended_at', 'exit_code', 'parked', 'degraded']);
     patch = Object.fromEntries(Object.entries(s).filter(([key]) => !lifecycle.has(key)));
   }
   const merged = mergeSessionPatch(latestSessionInfo, patch);
@@ -1907,8 +1908,10 @@ function applySessionInfo(s) {
   renderHeaderTitle(merged);
   const st = $('#s-status');
   if (st && merged.status) {
-    st.textContent = merged.status;
-    st.className = 'status-txt ' + merged.status;
+    const indicator = sessionIndicator(merged);
+    st.textContent = indicator.label;
+    st.className = 'status-txt ' + indicator.state;
+    st.title = indicator.detail;
   }
   const resume = $('#b-resume');
   if (resume && merged.status) resume.hidden = merged.status !== 'exited';

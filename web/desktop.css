@@ -79,6 +79,7 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; display: inline-block; background: #5c6675; }
 .dk-dot.ok { background: #4ecb6c; }
 .dk-dot.warn { background: #e2b23e; }
+.dk-dot.error { background: #f85149; }
 .dk-dot.pulse { animation: dkpulse 2.8s ease-in-out infinite; }
 @keyframes dkpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .dk-dot.pulse { animation: none; } }
@@ -124,6 +125,8 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-status { flex-shrink: 0; }
 .dk-status.working { color: #4ecb6c; } /* no blink — the operator asked the sidenav to stop pulsing */
 .dk-status.waiting { color: #e2b23e; }
+.dk-status.retrying { color: #e2b23e; }
+.dk-status.error { color: #f85149; }
 .dk-status.exited, .dk-status.stopped { color: #5c6675; } /* stopped/parked sessions — muted (rail + page body) */
 .dk-sess.active .dk-status { color: inherit; }
 /* STOPPED sub-header inside the page-body sessions list (#dk-rows) — a tighter variant of .dk-sec-row */

@@ -18,6 +18,7 @@ import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQue
 import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
+import { sessionIndicator } from './session-indicator.js';
 
 registerSW();
 
@@ -60,11 +61,9 @@ function ago(ts) {
   return Math.round(m / 1440) + 'd';
 }
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#3fbf5f'] };
-function badgeFor(s) { return BADGE[s.category] || null; }
+function badgeFor(s) { return sessionIndicator(s).blocked ? ['BLOCKED', '#f85149'] : BADGE[s.category] || null; }
 const AGENT_LABEL = { claude: 'Claude Code', codex: 'Codex', agy: 'Antigravity' };
 function chipColor(tool) { return tool === 'claude' ? 'var(--chip-claude)' : 'var(--chip-codex)'; }
-function statusColor(st) { return st === 'working' ? 'var(--green-dot)' : st === 'exited' ? 'var(--tx-faint)' : st === 'starting' ? 'var(--blue)' : st === 'error' ? 'var(--red)' : 'var(--yellow)'; }
-function statusWord(st) { return st === 'working' ? 'Working' : st === 'exited' ? 'Stopped' : st === 'starting' ? 'Starting' : st === 'error' ? 'Failed' : 'Waiting'; }
 function toast(t) {
   S.toast = t;
   clearTimeout(S.toastTimer);
@@ -73,6 +72,9 @@ function toast(t) {
 }
 function hhmm(ts) { const d = new Date(Number(ts)); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
 function attentionPreview(session, { optionCount = 0 } = {}) {
+  if (sessionIndicator(session).blocked) return { request: session.title || session.id,
+    outcome: 'The selected model is at capacity; work cannot continue.',
+    need: 'Retry later or choose another model.', actionSource: 'provider' };
   const copy = attentionCopy({
     request: session.title,
     question: session.question,
@@ -183,7 +185,7 @@ function loadDetail(sid) {
     for (const entry of d?.composer_history || []) composerHistoryRemember(sid, entry?.text);
     if (S.screen !== 'session' || S.sid !== sid) return; // late responses cannot replace the next session
     // identical message set -> keep the existing DOM entirely (no scroll/pulse churn)
-    const sig = (x) => (x?.messages || []).map((m) => m.id + ':' + (m.read_at ? 1 : 0)).join(',') + '|' + x?.status + '|' + (x?.question || '').length;
+    const sig = (x) => (x?.messages || []).map((m) => m.id + ':' + (m.read_at ? 1 : 0)).join(',') + '|' + x?.status + '|' + JSON.stringify(x?.provider_issue) + '|' + (x?.question || '').length;
     const changed = sig(d) !== sig(S.detail);
     S.detail = d;
     if (S.screen === 'session' && S.sid === sid && changed) renderSoft();
@@ -203,7 +205,8 @@ function patchSession(payload) {
   else return; // unread-only patches cannot construct an unknown session row
   const sessions = S.home.sessions;
   S.home.counts = {
-    waiting: sessions.filter((s) => s.status === 'waiting').length,
+    waiting: sessions.filter((s) => s.status === 'waiting' && !sessionIndicator(s).blocked).length,
+    blocked: sessions.filter((s) => sessionIndicator(s).blocked).length,
     working: sessions.filter((s) => s.status === 'working').length,
     live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
     dismissed: sessions.filter((s) => s.dismissed).length,
@@ -570,10 +573,10 @@ function renderHome() {
 
   const sessRow = (s) => `
     <button class="sessrow" data-open="${esc(s.id)}">
-      <span class="dot ${s.status === 'working' ? 'pulse' : ''}" style="background:${statusColor(s.status)}"></span>
+      <span class="dot ${sessionIndicator(s).dot.includes('pulse') ? 'pulse' : ''}" style="background:${sessionIndicator(s).color}" role="img" aria-label="${esc(sessionIndicator(s).detail)}"></span>
       <span class="sessname">${esc(s.title || s.id)}</span>
       <span class="sesstask">${esc(s.summary || s.question || '')}</span>
-      <span class="sessstatus" style="color:${statusColor(s.status)}">${statusWord(s.status)}</span>
+      <span class="sessstatus" style="color:${sessionIndicator(s).color}">${sessionIndicator(s).label}</span>
       <span class="sesstime">${ago(s.last_activity)}</span>
     </button>`;
   const { recent: recentLive, older: olderLive } = splitSessionRecency(live.filter((s) => !needs.includes(s) && !s.dismissed));
@@ -681,7 +684,7 @@ function renderSession() {
     </div>`;
   }).join('');
 
-  const status = statusWord(s.status);
+  const indicator = sessionIndicator(s);
   return `
   <div class="screen">
     <div class="sv-head">
@@ -696,7 +699,7 @@ function renderSession() {
       <button class="sq" id="open-actions">⋯</button>
     </div>
     <button class="sv-strip" id="open-panels">
-      <span class="st"><span class="dot ${s.status === 'working' ? 'pulse' : ''}" style="background:${statusColor(s.status)}"></span><span style="color:${statusColor(s.status)}">${status}</span></span>
+      <span class="st" title="${esc(indicator.detail)}"><span class="dot ${indicator.dot.includes('pulse') ? 'pulse' : ''}" style="background:${indicator.color}"></span><span style="color:${indicator.color}">${indicator.label}</span></span>
       <span class="hint">panels ›</span>
     </button>
     ${un.length ? `<div class="sv-playwrap"><button class="playsess" id="play-sess">${playing ? '■ Stop reading' : `▶ Play ${un.length} unread`}</button></div>` : ''}

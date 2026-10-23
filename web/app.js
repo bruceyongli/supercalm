@@ -1,6 +1,7 @@
 import { $, $$, api, coalesce, fmtAgo, escapeHtml, wireMic, registerSW, enablePush, pushStatus, isInteracting, setDashboardBrowserIdentity } from './common.js';
 import { startVoiceMode } from './voicemode.js';
 import { groupedModelOptions } from './model-select.js';
+import { sessionIndicator } from './session-indicator.js';
 
 let STATE = { sessions: [], projects: [], queue: [], tools: [], counts: {} };
 
@@ -221,7 +222,7 @@ function sessionRow(s) {
   row.className = 'srow';
   const resumeBtn = s.status === 'exited' ? `<button class="btn ghost sm" data-resume="${s.id}">resume</button>` : '';
   row.innerHTML =
-    `<span class="dot ${s.status}"></span>${badge(s)}` +
+    `<span class="dot ${sessionIndicator(s).state}" role="img" aria-label="${escapeHtml(sessionIndicator(s).detail)}" title="${escapeHtml(sessionIndicator(s).detail)}"></span>${badge(s)}` +
     `<span class="title"><b>${where(s)}</b> <span class="muted">${escapeHtml(s.title || '')}</span> ${meta(s)}</span>` +
     `<span class="meta status-txt ${s.status}">${s.parked ? 'parked' : s.status}</span>` +
     `<span class="meta hide-sm">${fmtAgo(s.last_activity)} ago</span>` +

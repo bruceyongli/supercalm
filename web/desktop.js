@@ -6,6 +6,7 @@ import { api, escapeHtml as esc, fmtAgo } from './common.js';
 import { startVoiceMode } from './voicemode.js';
 import { subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
+import { sessionIndicator } from './session-indicator.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const $ = (s) => document.querySelector(s);
@@ -63,7 +64,7 @@ function renderInbox(home) {
   nc.hidden = !cards.length;
   nc.textContent = cards.length;
   $('#dk-cards').innerHTML = cards.map((s) => {
-    const [blabel, bcolor] = BADGE[s.category] || BADGE.review;
+    const [blabel, bcolor] = sessionIndicator(s).blocked ? ['BLOCKED', '#f85149'] : BADGE[s.category] || BADGE.review;
     const questions = optionQuestions(s);
     const preview = sessionAttentionPreview(s, { optionCount: questions.length });
     const handledReview = s.category === 'review' && preview.actionSource === 'default';
@@ -109,13 +110,12 @@ function renderInbox(home) {
   const all = home.sessions || [];
   const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
   const stopped = all.filter((s) => s.status !== 'working' && s.status !== 'waiting');
-  const sWord = (st) => (st === 'working' ? 'Working' : st === 'waiting' ? 'Waiting' : 'Stopped');
   const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}">
-      <i class="dk-dot ${s.status === 'working' ? 'ok pulse' : s.status === 'waiting' ? 'warn' : ''}"></i>${agentChip(s.tool)}
+      <i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i>${agentChip(s.tool)}
       <b class="dk-row-name">${esc(shortTitle(s))}</b>
       <span class="dk-row-task">${esc((s.summary || s.title || '').slice(0, 90))}</span>
-      <span class="dk-status ${s.status}">${sWord(s.status)}</span>
+      <span class="dk-status ${sessionIndicator(s).state}">${sessionIndicator(s).label}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
     </a>`;
   // Bound the stopped list — showing all N (117, or 1000 later) is unreasonable. Show the most-recent few
