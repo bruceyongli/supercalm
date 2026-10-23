@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 import fcntl
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from collections import deque
 from threading import Lock
 
@@ -77,7 +77,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     progress_lock = Lock()
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_COPY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
-    pending = deque()
+    pending = {}
     directories = []
 
     def retain(path, relative):
@@ -105,26 +105,10 @@ def copy_tree(source, target, revisions, allow_sockets=False):
             if previous is None:
                 os.mkdir(dst)
             names = sorted(os.listdir(src))
-            for name in names:
-                child = os.path.join(src, name)
-                info = os.lstat(child)
-                args = (child, os.path.join(dst, name), os.path.join(rel, name))
-                # Inodes with many names dominate pnpm trees. One worker owns copying
-                # an inode; its siblings await that exact target before linking to it.
-                # No work item waits for an owner queued behind it: ownership is taken
-                # inside the running worker, not while scheduling the directory.
-                if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
-                    future = pool.submit(walk, *args)
-                    pending.append(future)
-                    if len(pending) >= workers * 4:
-                        pending.popleft().result()
-                else:
-                    walk(*args)
-            # Keep the file pipeline full across tiny package directories. Waiting
-            # at every one-/two-file directory serialized millions of network ops.
-            # Finalize directory extras/metadata only after ALL file work is done.
-            directories.append((src, dst, rel, before, previous))
-            return
+            # The coordinator schedules children only after their parent exists.
+            # Directory stat/mkdir operations must also overlap network latency;
+            # doing them on the traversal thread serialized package-heavy trees.
+            return before, previous, names
         elif stat.S_ISSOCK(before.st_mode) and allow_sockets:
             counts["sockets"] += 1
             retain(dst, rel)
@@ -196,15 +180,27 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         progress()
 
     try:
-        walk(source, target, "")
-        while pending:
-            pending.popleft().result()
+        jobs = deque([(source, target, "")])
+        while jobs or pending:
+            while jobs and len(pending) < workers * 4:
+                args = jobs.popleft()
+                pending[pool.submit(walk, *args)] = args
+            ready, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in ready:
+                src, dst, rel = pending.pop(future)
+                result = future.result()
+                if result is not None:
+                    before, previous, names = result
+                    directories.append((src, dst, rel, before, previous))
+                    for name in reversed(names):
+                        jobs.appendleft((os.path.join(src, name), os.path.join(dst, name), os.path.join(rel, name)))
+        finalized = deque()
         for directory in directories:
-            pending.append(pool.submit(finish_directory, *directory))
-            if len(pending) >= workers * 4:
-                pending.popleft().result()
-        while pending:
-            pending.popleft().result()
+            finalized.append(pool.submit(finish_directory, *directory))
+            if len(finalized) >= workers * 4:
+                finalized.popleft().result()
+        while finalized:
+            finalized.popleft().result()
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     return counts
