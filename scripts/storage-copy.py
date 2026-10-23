@@ -17,8 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from collections import deque
 from threading import Lock
 
-def same_metadata(source, target):
-    a, b = os.lstat(source), os.lstat(target)
+def same_metadata(source, target, source_info=None, target_info=None):
+    a, b = source_info or os.lstat(source), target_info or os.lstat(target)
     # Older rsync staging has second-resolution times. Do not rewrite every unchanged
     # inode merely to add sub-second precision; full integrity checks still cover all
     # persistent permissions/ownership/flags/ACL/xattrs, including directory metadata.
@@ -28,8 +28,8 @@ def same_metadata(source, target):
     return fields(a) == fields(b)
 
 
-def copy_metadata(source, target, force=False):
-    if force or not same_metadata(source, target):
+def copy_metadata(source, target, force=False, source_info=None, target_info=None):
+    if force or not same_metadata(source, target, source_info, target_info):
         native_copy(source, target, metadata=True)
 
 libc = ctypes.CDLL(None, use_errno=True)
@@ -78,6 +78,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_COPY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
     pending = deque()
+    directories = []
 
     def retain(path, relative):
         if not os.path.lexists(path):
@@ -93,13 +94,17 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         before = os.lstat(src)
         if before.st_dev != device:
             raise ValueError("Nested filesystem: " + rel)
-        previous = os.lstat(dst) if os.path.lexists(dst) else None
+        try:
+            previous = os.lstat(dst)
+        except FileNotFoundError:
+            previous = None
         if stat.S_ISDIR(before.st_mode):
             if previous and not stat.S_ISDIR(previous.st_mode):
                 retain(dst, rel)
-            os.makedirs(dst, exist_ok=True)
+                previous = None
+            if previous is None:
+                os.mkdir(dst)
             names = sorted(os.listdir(src))
-            children = []
             for name in names:
                 child = os.path.join(src, name)
                 info = os.lstat(child)
@@ -110,16 +115,16 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 # inside the running worker, not while scheduling the directory.
                 if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                     future = pool.submit(walk, *args)
-                    children.append(future); pending.append(future)
+                    pending.append(future)
                     if len(pending) >= workers * 4:
                         pending.popleft().result()
                 else:
                     walk(*args)
-            for child in children:
-                child.result()
-            for extra in set(os.listdir(dst)) - set(names):
-                retain(os.path.join(dst, extra), os.path.join(rel, extra))
-            copy_metadata(src, dst, force=previous is None or not rel)
+            # Keep the file pipeline full across tiny package directories. Waiting
+            # at every one-/two-file directory serialized millions of network ops.
+            # Finalize directory extras/metadata only after ALL file work is done.
+            directories.append((src, dst, rel, before, previous))
+            return
         elif stat.S_ISSOCK(before.st_mode) and allow_sockets:
             counts["sockets"] += 1
             retain(dst, rel)
@@ -135,18 +140,17 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                         owner = False
             try:
                 if not owner:
-                    first = future.result()
-                    first_info = os.lstat(first)
+                    first, first_info = future.result()
                     if not previous or previous.st_ino != first_info.st_ino or previous.st_dev != first_info.st_dev:
                         retain(dst, rel)
                         os.link(first, dst)
                 elif (previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
                       and before.st_size == previous.st_size and int(before.st_mtime) == int(previous.st_mtime)):
                     counts["quickChecked"] += 1
-                    copy_metadata(src, dst)
+                    copy_metadata(src, dst, source_info=before, target_info=previous)
                 elif (previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
                       and os.readlink(src) == os.readlink(dst)):
-                    copy_metadata(src, dst)
+                    copy_metadata(src, dst, source_info=before, target_info=previous)
                 else:
                     temporary = os.path.join(os.path.dirname(dst), ".aios-copy-" + str(uuid.uuid4()))
                     native_copy(src, temporary)
@@ -155,7 +159,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                     if stat.S_ISREG(before.st_mode):
                         counts["copiedBytes"] += before.st_size
                 if future and owner:
-                    future.set_result(dst)
+                    future.set_result((dst, os.lstat(dst)))
             except BaseException as error:
                 if future and owner:
                     future.set_exception(error)
@@ -164,6 +168,10 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         else:
             raise ValueError("Unsupported persistent entry: " + rel)
         after = os.lstat(src)
+        stable(src, rel, before, after)
+        progress()
+
+    def stable(src, rel, before, after):
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             # Staging is not cutover. An active transcript must not prevent unrelated
@@ -171,13 +179,32 @@ def copy_tree(source, target, revisions, allow_sockets=False):
             # reconciliation; independent stable verification still gates all removal.
             with progress_lock:
                 counts["unstableSources"].append(rel)
+
+    def progress():
+        nonlocal last_progress
         with progress_lock:
             if time.monotonic() - last_progress > 15:
                 print(json.dumps({"progress": counts}), flush=True)
                 last_progress = time.monotonic()
 
+    def finish_directory(src, dst, rel, before, previous):
+        for extra in set(os.listdir(dst)) - set(os.listdir(src)):
+            retain(os.path.join(dst, extra), os.path.join(rel, extra))
+        copy_metadata(src, dst, force=previous is None or not rel,
+                      source_info=before, target_info=previous)
+        stable(src, rel, before, os.lstat(src))
+        progress()
+
     try:
         walk(source, target, "")
+        while pending:
+            pending.popleft().result()
+        for directory in directories:
+            pending.append(pool.submit(finish_directory, *directory))
+            if len(pending) >= workers * 4:
+                pending.popleft().result()
+        while pending:
+            pending.popleft().result()
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     return counts

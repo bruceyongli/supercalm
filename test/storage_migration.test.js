@@ -64,6 +64,21 @@ print(json.dumps(m.copy_tree(sys.argv[2],sys.argv[3],sys.argv[4])))`;
     await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), linked, linkedCopy, join(root, 'link-revisions')]);
     assert.equal((await lstat(join(linkedCopy, 'owner'))).ino, originalCopyInode, 'parallel reconciliation preserves a correct existing hardlink group');
     await verifyStoragePair(linked, linkedCopy);
+    const packages = join(root, 'packages'), packageCopy = join(root, 'packages-copy');
+    await mkdir(packages); await mkdir(packageCopy);
+    for (let n = 0; n < 48; n++) {
+      const directory = join(packages, 'package-' + n, 'nested');
+      await mkdir(directory, { recursive: true });
+      await link(join(linked, 'owner'), join(directory, 'shared'));
+      await writeFile(join(directory, 'unique'), String(n));
+    }
+    await mkdir(join(packageCopy, 'package-0', 'nested'), { recursive: true });
+    await writeFile(join(packageCopy, 'package-0', 'nested', 'old'), 'retain extra');
+    await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), packages, packageCopy, join(root, 'package-revisions')]);
+    const packageEvidence = await verifyStoragePair(packages, packageCopy);
+    assert.equal(packageEvidence.files, 96);
+    assert.equal(packageEvidence.uniqueContentReads, 49, 'hardlinks across tiny directories retain their shared inode');
+    assert.equal(await readFile(join(root, 'package-revisions', 'package-0', 'nested', 'old'), 'utf8'), 'retain extra');
   }
   assert.deepEqual(parseOpenFiles('p7\0cwriter\0\nf2\0n/work/p/data\0\nf3\0n/work/prefix/no\0', ['/work/p']),
     [{ pid: 7, command: 'writer', descriptor: '2', path: '/work/p/data' }]);
