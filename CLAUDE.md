@@ -91,9 +91,15 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   shows volume and backing-disk headroom separately, and planned roots are not reported as migrated.
   Missing/replaced active aliases or unavailable storage fail closed; never recreate a local fallback.
   `retainDuringMigration` suspends managed cleanup of mapped paths while their originals are copied.
-  `bin/migrate-live-storage.mjs copy|verify` only stages and checks data, retaining originals. A successful
-  copy is NOT a live cutover: coordinate writer quiescence, native conversation recovery and final
-  integrity verification separately before switching paths or removing a verified local duplicate.
+  `bin/migrate-live-storage.mjs copy|verify` stages and checks data, retaining originals. `cutover`
+  requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
+  fingerprints and no open source/target handles. A durable journal precedes alias activation; only
+  the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.
+  `bin/storage-maintenance.mjs freeze SID...|thaw` is explicit operator maintenance, not Stop: snapshot
+  terminals/native identity, fence input/launch/recovery/hooks/supervision, and SIGSTOP only the selected
+  process families. Thaw identity-checks recorded PIDs. Never freeze its own controller or the proxy.
+  A pause does not release cwd/file descriptors: restart affected owners before a guarded cutover;
+  neither a frozen process nor a successful copy authorizes deletion of an in-use local tree.
   Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
   detach/reconnect durability with disposable fixtures before choosing a storage transport.
 - Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.

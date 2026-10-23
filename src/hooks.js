@@ -9,6 +9,7 @@ import { claudeSettingsPath } from './hookcfg.js';
 import { flagOn } from './flags.js';
 import { claudeResumeId } from './claude_transcripts.js';
 import { providerIssueFromError } from './provider_status.js';
+import { storageMaintenanceFor } from './storage_maintenance.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
@@ -35,6 +36,7 @@ const _latestOutput = store.db.prepare("SELECT id FROM messages WHERE session_id
 export function repairMissedHookAttention() {
   const repaired = [];
   for (const { id } of _waitingSessions.all()) {
+    if (storageMaintenanceFor(id)) continue;
     const hook = _latestHook.get(id);
     if (!hook) continue;
     let event = '', payload = {};
@@ -53,6 +55,11 @@ export function repairMissedHookAttention() {
 
 function handle(tool, b, res) {
   const sid = b.session || b.session_id || b['session-id'];
+  if (sid && storageMaintenanceFor(sid)) {
+    // Keep late lifecycle evidence, without treating a maintenance pause as completion.
+    store.addEvent(sid, 'storage-maintenance-hook', { tool, event: String(b.event || b.type || b.hook_event_name || '') });
+    return json(res, 200, { ok: true, ignored: 'storage-maintenance' });
+  }
   const event = String(b.event || b.type || b.hook_event_name || '').trim();
   if (sid && event) {
     const s = store.getSession(sid);

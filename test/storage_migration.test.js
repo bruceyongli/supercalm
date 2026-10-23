@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, link, readlink, lstat, rm, chmod, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import { storageManifest, verifyStoragePair, switchStorageRoot, durableJson, parseOpenFiles } from '../src/storage_migration.js';
+const exec = promisify(execFile);
+const root = await realpath(await mkdtemp(join(tmpdir(), 'aios-storage-migration-')));
+const source = join(root, 'original'), mount = join(root, 'mounts', 'spark'), target = join(mount, 'data', 'project');
+try {
+  await mkdir(source); await mkdir(target, { recursive: true });
+  await writeFile(join(source, '中文.md'), 'persisted report\n');
+  await chmod(join(source, '中文.md'), 0o600);
+  await link(join(source, '中文.md'), join(source, 'hardlink'));
+  await symlink('中文.md', join(source, 'relative'));
+  await symlink('/deliberately-missing-reference', join(source, 'dangling'));
+  if (process.platform === 'darwin') {
+    await exec('/usr/bin/xattr', ['-w', 'com.aios.migration-test', 'attribute value', join(source, '中文.md')]);
+    await exec('/bin/chmod', ['+a', 'everyone allow read', join(source, '中文.md')]);
+    await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, join(mount, 'revisions')]);
+  } else await exec('cp', ['-a', source + '/.', target]);
+  const evidence = await verifyStoragePair(source, target);
+  assert.equal(evidence.files, 2); assert.equal(evidence.links, 2);
+  assert.equal(evidence.bytes, 2 * Buffer.byteLength('persisted report\n'));
+  await writeFile(join(target, '中文.md'), 'wrong data\n');
+  await assert.rejects(verifyStoragePair(source, target), /differ/);
+  await writeFile(join(target, '中文.md'), 'persisted report\n');
+  await verifyStoragePair(source, target);
+  if (process.platform === 'darwin') {
+    await exec('/usr/bin/xattr', ['-w', 'com.aios.migration-test', 'wrong', join(target, '中文.md')]);
+    await assert.rejects(verifyStoragePair(source, target), /differ/);
+    await exec('/usr/bin/xattr', ['-w', 'com.aios.migration-test', 'attribute value', join(target, '中文.md')]);
+  }
+  assert.deepEqual(parseOpenFiles('p7\0cwriter\0\nf2\0n/work/p/data\0\nf3\0n/work/prefix/no\0', ['/work/p']),
+    [{ pid: 7, command: 'writer', descriptor: '2', path: '/work/p/data' }]);
+  const configFile = join(root, 'config.json');
+  await durableJson(configFile, { version: 1, id: 'fixture', mount, mappings: [{ source, target }] });
+  const st = await lstat(source);
+  const journal = { id: 'fixture', sourceInode: st.ino, sourceDevice: st.dev };
+  const states = [];
+  const save = async change => { Object.assign(journal, change); states.push(change.state); };
+  const latest = await verifyStoragePair(source, target);
+  await assert.rejects(switchStorageRoot({ source, target, configFile, journal, save, evidence: latest,
+    checkUnused: async () => { throw Error('owned by a live writer'); } }), /live writer/);
+  assert.equal((await lstat(source)).isDirectory(), true);
+  await switchStorageRoot({ source, target, configFile, journal, save, evidence: latest,
+    checkUnused: async () => {}, checkMounted: async () => {} });
+  assert.equal(await readlink(source), target);
+  assert.equal((await readFile(join(source, '中文.md'), 'utf8')), 'persisted report\n');
+  assert.equal(JSON.parse(await readFile(configFile, 'utf8')).mappings[0].active, true);
+  assert.deepEqual(states, ['switching', 'switched', 'reclaiming', 'complete']);
+  assert.equal(journal.quarantine, null);
+  console.log('storage migration: integrity, xattrs/ACLs, hardlinks, aliases, busy guard and verified cutover passed');
+} finally { await rm(root, { recursive: true, force: true }); }

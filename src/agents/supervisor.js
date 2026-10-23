@@ -2,6 +2,7 @@ import { db, getGrant, upsertGrant, listEnabledGrants, getSession } from '../sto
 import { applyMigrations, ensureColumn } from '../migrations.js';
 import { now, clamp } from '../util.js';
 import { SELF_URL } from '../config.js';
+import { storageMaintenanceFor } from '../storage_maintenance.js';
 import { parseJsonObject, curatedModels } from './model.js';
 import { tailStr, citedSources } from './evidence.js';
 import { SYS_ANSWER, CALIBRATION_ADDENDUM, AUTONOMY_ADDENDUM, DELEGATED_HOW_ADDENDUM, SYS_ANSWER_DOD, STAGE_ADDENDUM, AUTOPILOT_PLAN_ADDENDUM, RESERVED_APPROVAL_ADDENDUM, AUTOPILOT_RELEASE_ADDENDUM, COPILOT_RECOVERY_ADDENDUM, AUTOPILOT_RECOVERY_ADDENDUM, TIME_CONTINUITY_ADDENDUM, LEARNING_PROVENANCE_ADDENDUM, SUPERVISOR_COORDINATION_ADDENDUM, SCOPE_CARD_ADMIN_ADDENDUM, AUTOPILOT_SCOPE_CARD_ADMIN_ADDENDUM, ESCALATION_HYGIENE_ADDENDUM, buildAnswerUserText, detectsOperatorDirectedChoice, isNonMutatingCurrentCardReview, isNonMutatingSupervisorCoordination, enforceAnswerSafety, enforceCopilotCurrentCardReview } from './answer_prompt.js';
@@ -2460,6 +2461,7 @@ async function checkWedge(ctx, cfg, ev, t = now()) {
 }
 export async function onTick(ctx) {
   const s = ctx.session();
+  if (s && storageMaintenanceFor(s.id)) return;
   const cfg = ctx.getConfig();
   const t = now();
   if (!s || s.status === 'starting') return;

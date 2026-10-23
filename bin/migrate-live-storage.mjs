@@ -1,17 +1,18 @@
 #!/usr/bin/env node
-// Non-destructive staging only, not deployment or live cutover. Originals always stay in place.
-// Quiesce writers and verify before a separately coordinated maintenance/cutover operation.
+// Explicit storage migration, never deployment. copy/verify retain originals; cutover requires
+// native integrity verification and no open source/target handles before switching an alias.
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, writeFile, rename, lstat, realpath, stat, open } from 'node:fs/promises';
+import { mkdir, readFile, lstat, realpath, stat, open } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { join, dirname, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { validateLiveStorage } from '../src/live_storage.js';
-import { archiveWorker } from '../src/archive_transport.js';
+import { verifyStoragePair, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
-if (!['copy', 'verify'].includes(operation) || !configFile || !sourceArg) {
-  throw new Error('Usage: migrate-live-storage.mjs copy|verify CONFIG SOURCE (originals retained)');
+if (!['copy', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
+  throw new Error('Usage: migrate-live-storage.mjs copy|verify|cutover CONFIG SOURCE');
 }
 const config = validateLiveStorage(JSON.parse(await readFile(configFile, 'utf8')));
 const source = resolve(sourceArg);
@@ -50,8 +51,7 @@ if (!journal) {
 if (journal.source !== source || journal.target !== target) throw new Error('Migration identity changed');
 const save = async changes => {
   Object.assign(journal, changes, { updatedAt: Date.now() });
-  await writeFile(journalFile + '.tmp', JSON.stringify(journal, null, 2), { mode: 0o600 });
-  await rename(journalFile + '.tmp', journalFile);
+  await durableJson(journalFile, journal);
 };
 const log = createWriteStream(join(journalRoot, id + '.log'), { flags: 'a', mode: 0o600 });
 let logError = null, activeChild = null, loggedBytes = 0;
@@ -81,31 +81,27 @@ async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 
     return Buffer.concat(chunks).toString();
   } finally { clearTimeout(timer); activeChild = null; }
 }
-async function verify() {
-  // Independent content hashes: Apple's openrsync checksum/AppleDouble dry-run is not the
-  // authority for deleting originals. This command remains staging-only even when hashes agree.
-  const local = await archiveWorker({ op: 'digest', root: source });
-  const remote = await archiveWorker({ op: 'digest', root: target });
-  const after = await archiveWorker({ op: 'digest', root: source, contents: false });
-  if (local.digest !== remote.digest || local.fingerprint !== after.fingerprint
-      || (await lstat(source)).mode !== (await lstat(target)).mode) {
-    throw new Error('Copy differs or source changed during verification; both copies retained');
-  }
-  return { algorithm: 'sha256', files: local.files, bytes: local.bytes,
-    scope: 'names, file contents, modes, symlink targets', cutoverReady: false };
-}
 try {
   {
     if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw new Error('Source identity changed; inspect journal before recovery');
     if (operation === 'copy') {
       await save({ state: 'copying' });
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
-      await command('/usr/bin/rsync', ['-aEH', '--stats', source + '/', target + '/']);
+      // Native copyfile preserves ACL/xattrs/hardlinks without Apple's openrsync AppleDouble
+      // hardlink bug. Superseded staging entries stay on Spark, never silently deleted.
+      const revisions = join(mount, 'migration-revisions', id, String(Date.now()));
+      const args = [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, revisions];
+      if (mapping.ephemeralSockets === true) args.push('--ephemeral-sockets');
+      await command('python3', args);
       await save({ state: 'copied' });
       console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true }));
     } else {
-      const verification = await verify(); await save({ state: 'content-verified', verifiedAt: Date.now(), verification });
-      console.log(JSON.stringify({ verified: source, target, verification, sourceRetained: true }));
+      await assertUnused([source, target]);
+      const verification = await verifyStoragePair(source, target, { ephemeralSockets: mapping.ephemeralSockets === true });
+      await save({ state: 'verified', verifiedAt: Date.now(), verification });
+      if (operation === 'cutover') {
+        console.log(JSON.stringify(await switchStorageRoot({ source, target, configFile, journal, save, evidence: verification })));
+      } else console.log(JSON.stringify({ verified: source, target, verification, sourceRetained: true }));
     }
   }
 } catch (error) {

@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createServer } from 'node:net';
+const root = await mkdtemp(join(tmpdir(), 'aios-storage-maintenance-'));
+const probe = createServer(); await new Promise(r => probe.listen(0, '127.0.0.1', r));
+const port = probe.address().port; await new Promise(r => probe.close(r));
+process.env.AIOS_DATA = join(root, 'data'); process.env.AIOS_WORKTREE_ROOT = join(root, 'worktrees');
+process.env.AIOS_TMUX = '/usr/bin/false'; process.env.AIOS_HOST = '127.0.0.1'; process.env.AIOS_PORT = String(port);
+process.env.AIOS_SUMMARY_PORT = '1'; delete process.env.AIOS_NO_LISTEN;
+let store;
+try {
+  const { featureReady } = await import('../src/server.js'); await featureReady;
+  store = await import('../src/store.js');
+  const api = await import('../src/sessions.js');
+  const m = await import('../src/storage_maintenance.js');
+  const path = join(root, 'project'); await mkdir(path);
+  const project = store.createProject({ id: 'p_maintenance', name: 'Storage fixture', path });
+  store.createSession({ id: 's_maintenance', project_id: project.id, tool: 'codex', tmux: 'fixture-maintenance', status: 'waiting' });
+  store.updateSession('s_maintenance', { last_activity: 1234, desired_status: 'waiting', question: 'Original question' });
+  const before = store.getSession('s_maintenance');
+  const job = { version: 1, kind: 'live-storage-migration', phase: 'frozen', blockLaunches: true,
+    sessions: [{ id: before.id, token: 'fixture', phase: 'frozen' }] };
+  await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
+  assert.equal(m.storageMaintenanceFor(before.id).token, 'fixture');
+  const blocked = error => error.code === 'storage-maintenance' && error.status === 503;
+  await assert.rejects(api.sendText(before.tmux, 'must not be delivered'), blocked);
+  await assert.rejects(api.sendRaw(before.tmux, 'x'), blocked);
+  await assert.rejects(api.sendKey(before.tmux, 'Enter'), blocked);
+  await assert.rejects(api.resume(before.id), blocked);
+  assert.throws(() => api.queueLaunch({ project, tool: 'codex', task: 'must not launch' }), blocked);
+  api.noteAgentStatus(before.id, 'working');
+  assert.equal(store.getSession(before.id).last_activity, before.last_activity);
+  assert.equal(store.getSession(before.id).status, 'waiting');
+  const post = async (path, data) => {
+    const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data) });
+    return { status: response.status, body: await response.json() };
+  };
+  const result = await post('/api/hook/codex', { session_id: before.id, event: 'agent-turn-complete' });
+  assert.equal(result.status, 200); assert.equal(result.body.ignored, 'storage-maintenance');
+  const settings = await post(`/api/session/${before.id}/settings`, { effort: 'high' });
+  assert.equal(settings.status, 503);
+  assert.equal(store.getSession(before.id).last_activity, before.last_activity);
+  // Explicit operator Kill is never fenced by migration and takes precedence over recovery.
+  await api.killSession(before.id);
+  assert.equal(store.getSession(before.id).desired_status, 'exited');
+  assert.equal(store.getSession(before.id).status_reason, 'operator-kill');
+  job.phase = 'complete'; await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
+  assert.equal(m.storageMaintenanceFor(before.id), null);
+  console.log('storage maintenance: real handlers fence input/launch/settings/hooks; clocks/history preserved; operator Kill wins');
+} finally {
+  store?.db.close(); await rm(root, { recursive: true, force: true });
+}
+process.exit(0);

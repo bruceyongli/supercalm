@@ -2,6 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
+import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable } from './storage_maintenance.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
@@ -855,10 +856,12 @@ function resizeCandidate(sid, t = now()) {
 // parking detector — sendText confirms it after a menu answer so answers actually deliver.
 
 export async function sendText(name, text, options = {}) {
+  assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
 
 async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false, claudeTranscript = null, tool = null } = {}) {
+  assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   // Claude-only evidence. Codex keeps its established TUI submit/retry protocol unchanged.
   const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text) : null;
   const claudeComposer = requireOperatorTarget && !menuAnswer && (tool === 'claude' || !!claudeTranscript);
@@ -977,6 +980,7 @@ const KEYMAP = {
   'ctrl-d': 'C-d', 'ctrl-r': 'C-r', 'ctrl-z': 'C-z', 'ctrl-u': 'C-u',
 };
 export async function sendKey(name, key) {
+  assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   const k = KEYMAP[String(key).toLowerCase()] || key;
   await exec(TMUX, ['send-keys', '-t', name, k], X);
 }
@@ -987,6 +991,7 @@ export async function sendKey(name, key) {
 // per-keystroke input to a raw-mode TUI (CLAUDE.md gotcha #8), not the programmatic paste+Enter that
 // the delay in sendText() guards against.
 export async function sendRaw(name, data) {
+  assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', data], X);
 }
 
@@ -1191,6 +1196,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
 }
 
 function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null }) {
+  assertStorageLaunchAvailable();
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
   assertDiskHeadroom(project?.path);
   assertResourceHeadroom(sampleHostResources.peek());
@@ -1587,6 +1593,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
 }
 
 export function resume(sid, options = {}) {
+  try { assertStorageSessionAvailable(sid, options.maintenanceToken); } catch (error) { return Promise.reject(error); }
   const inflight = pendingResumes.get(sid);
   if (inflight) return inflight;
   try { assertSessionNotCleaning(sid); } catch (error) { return Promise.reject(error); }
@@ -1609,6 +1616,7 @@ export function sessionBusyForCleanup(sid) {
 }
 
 function markExited(entry, code, { reason = 'unexpected-exit' } = {}) {
+  if (reason === 'unexpected-exit' && storageMaintenanceFor(entry.id)) return false;
   // pollOnce works from a snapshot of registry entries and awaits tmux. A model/settings relaunch can
   // replace an entry while that await is in flight. Never let the old generation mark or delete the new one.
   if (reg.get(entry.id) !== entry) return false;
@@ -1683,6 +1691,7 @@ function scheduleSessionStorageCleanup(sessionId) {
 }
 
 async function recoverMissingSession(s) {
+  if (storageMaintenanceFor(s.id)) return { skipped: true };
   const current = store.getSession(s.id);
   if (!current || current.tmux !== s.tmux || current.desired_status !== s.desired_status
       || !['working', 'waiting'].includes(current.desired_status) || /^operator-/.test(current.status_reason || '')) return { skipped: true };
@@ -1769,6 +1778,7 @@ export async function discover() {
   let recovered = 0;
   let failedRecovery = 0;
   for (const s of store.listExpectedLiveSessions()) {
+    if (storageMaintenanceFor(s.id)) continue;
     if (pendingResumes.has(s.id)) continue;
     if (s.status === 'starting') {
       // server.listen can accept a launch while this asynchronous boot reconciliation is still in
@@ -1982,6 +1992,7 @@ async function pollOnce() {
   // Hooks may revive the DB row after a false exit without rebuilding the monitor registry.
   // Reattach such rows (including legacy unexpected exits) as soon as a good inventory returns.
   for (const s of store.listExpectedLiveSessions()) {
+    if (storageMaintenanceFor(s.id)) continue;
     if (s.status === 'starting' || pendingResumes.has(s.id) || pendingLaunches.has(s.id)) continue;
     if (inventory.names.has(s.tmux) && (!reg.has(s.id) || s.status === 'exited' || s.ended_at != null)) {
       const cmd = await paneCmd(s.tmux);
@@ -1990,6 +2001,7 @@ async function pollOnce() {
   }
   let fellBackThisTick = false; // cap auto-fallback relaunches to 1 per tick (staggers a mass quota burn)
   for (const entry of entries) {
+    if (storageMaintenanceFor(entry.id)) continue;
     if (reg.get(entry.id) !== entry) continue;
     const s = store.getSession(entry.id);
     if (!s || s.status === 'exited') {
@@ -2341,6 +2353,7 @@ function applyStatus(s, status, question, activityBump, { source = 'poll', extra
 // report that powers Needs You.
 export function noteAgentStatus(sid, status, question = null, { source = 'hook', extra = {}, activityBump = true, forceAttention = false, promptId = '', providerIssue = null } = {}) {
   const session = store.getSession(sid);
+  if (storageMaintenanceFor(sid)) return session;
   if (!session || session.status === 'exited') return session;
   if (activityBump) { const entry = reg.get(sid); if (entry) delete entry.restoredWaitingSince; }
   const nextQuestion = status === 'waiting' && question == null ? session.question : question;
@@ -2357,6 +2370,7 @@ export function noteAgentStatus(sid, status, question = null, { source = 'hook',
 // the attention boundary here is therefore a one-time repair, not a broad reopening of waiting rows.
 export function repairMissingAttentionReport(sid, { source = 'hook-repair', extra = {} } = {}) {
   const session = store.getSession(sid);
+  if (storageMaintenanceFor(sid)) return { repaired: false, report: null };
   if (!session || session.status !== 'waiting') return { repaired: false, report: null };
   const result = applyStatus(session, 'waiting', session.question, false, { source, extra, forceAttention: true });
   return { repaired: !!result?.report?.created, report: result?.report || null };
@@ -4251,6 +4265,7 @@ route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
 // Change autonomy / effort / model on the fly. Live where the tool supports it
 // (claude `/effort`, codex `/fast`), else applied by relaunching the session continuing the conversation.
 route('POST', '/api/session/:id/settings', async (req, res, { id: sid }) => {
+  try { assertStorageSessionAvailable(sid); } catch (error) { return json(res, error.status, { error: error.message, code: error.code }); }
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   const T = TOOLS[s.tool];
