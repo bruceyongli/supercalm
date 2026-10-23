@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, link, readlink, lstat, rm, chmod, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, link, readlink, lstat, rm, chmod, chown, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { storageManifest, verifyStoragePair, switchStorageRoot, durableJson, parseOpenFiles } from '../src/storage_migration.js';
 const exec = promisify(execFile);
 const root = await realpath(await mkdtemp(join(tmpdir(), 'aios-storage-migration-')));
+process.env.AIOS_DATA = join(root, 'control-data');
+const { storageManifest, verifyStoragePair, reuseStorageVerification, switchStorageRoot, durableJson, parseOpenFiles } = await import('../src/storage_migration.js');
 const source = join(root, 'original'), mount = join(root, 'mounts', 'spark'), target = join(mount, 'data', 'project');
 try {
   await mkdir(source); await mkdir(target, { recursive: true });
@@ -22,9 +23,11 @@ try {
     await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, join(mount, 'revisions')]);
   } else await exec('cp', ['-a', source + '/.', target]);
   const evidence = await verifyStoragePair(source, target);
+  assert.equal(await reuseStorageVerification(source, target, evidence), evidence);
   assert.equal(evidence.files, 2); assert.equal(evidence.links, 2);
   assert.equal(evidence.bytes, 2 * Buffer.byteLength('persisted report\n'));
   await writeFile(join(target, '中文.md'), 'wrong data\n');
+  assert.equal(await reuseStorageVerification(source, target, evidence), null, 'modified destination invalidates cached content verification');
   await assert.rejects(verifyStoragePair(source, target), /differ/);
   await writeFile(join(target, '中文.md'), 'persisted report\n');
   await verifyStoragePair(source, target);
@@ -53,5 +56,16 @@ try {
   assert.equal(JSON.parse(await readFile(configFile, 'utf8')).mappings[0].active, true);
   assert.deepEqual(states, ['switching', 'switched', 'reclaiming', 'complete']);
   assert.equal(journal.quarantine, null);
+  if (process.platform === 'darwin' && process.getgroups().includes(12) && process.getgid() !== 12) {
+    const a = join(root, 'groups-source'), b = join(root, 'groups-target');
+    await mkdir(a); await mkdir(b); await writeFile(join(a, 'plain.txt'), 'same content'); await writeFile(join(b, 'plain.txt'), 'same content');
+    await chown(b, process.getuid(), 12); await chown(join(b, 'plain.txt'), process.getuid(), 12);
+    await assert.rejects(verifyStoragePair(a, b), /differ/);
+    const sourceGid = (await lstat(a)).gid; // BSD directories inherit their parent's group.
+    const normalized = await verifyStoragePair(a, b, { equivalentGroups: [{ from: sourceGid, to: 12 }] });
+    assert.equal(normalized.equivalentGroupChanges.length, 2, 'the original labels remain in the audit evidence');
+    await chmod(join(a, 'plain.txt'), 0o640);
+    await assert.rejects(verifyStoragePair(a, b, { equivalentGroups: [{ from: sourceGid, to: 12 }] }), /Group change would alter access/);
+  }
   console.log('storage migration: integrity, xattrs/ACLs, hardlinks, aliases, busy guard and verified cutover passed');
 } finally { await rm(root, { recursive: true, force: true }); }

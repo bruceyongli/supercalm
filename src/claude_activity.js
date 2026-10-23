@@ -13,6 +13,9 @@ const textOf = content => typeof content === 'string' ? content : Array.isArray(
 export function claudeActivityRecord(row, nativeId, at = Date.now()) {
   if (!row || row.isSidechain || row.agentId || (nativeId && (row.sessionId || row.session_id)
       && (row.sessionId || row.session_id) !== nativeId)) return null;
+  // Resume can append an old background-task teardown notice for display only.
+  // It was not submitted to the model and must not wake an idle session.
+  if (row.queueTranscriptOnly === true && claudeSystemInput(row)) return null;
   const queued = claudeQueuedUser(row);
   const ts = Date.parse(queued?.timestamp || row.timestamp);
   if (!Number.isFinite(ts) || ts <= 0 || ts > at + 60_000) return null;

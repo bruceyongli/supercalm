@@ -25,6 +25,6 @@ export function assertStorageLaunchAvailable() {
   if (readStorageMaintenance()?.blockLaunches) throw storageMaintenanceError();
 }
 export function storageMaintenanceError() {
-  return Object.assign(Error('Storage migration is briefly pausing this session. Your message is preserved; retry when migration finishes.'),
+  return Object.assign(Error('Storage migration is pausing this session. Your message is preserved; retry when migration finishes.'),
     { code: 'storage-maintenance', status: 503 });
 }

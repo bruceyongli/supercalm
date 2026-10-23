@@ -97,11 +97,16 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.
   `bin/storage-maintenance.mjs freeze SID...|park SID...|thaw` is explicit operator maintenance, not Stop: snapshot
   terminals/native identity, fence input/launch/recovery/hooks/supervision, and SIGSTOP only the selected
-  process families. Thaw identity-checks recorded PIDs. Never freeze its own controller or the proxy.
+  process families. Thaw identity-checks recorded PIDs; interactive TTYs use exact-conversation
+  restart (SIGCONT alone can strand the CLI behind its job-control shell). Keep the fence until
+  actual input readiness, and archive visible unsent drafts without submitting them.
+  Never freeze its own controller or the proxy.
   A pause does not release cwd/file descriptors: restart affected owners before a guarded cutover;
   neither a frozen process nor a successful copy authorizes deletion of an in-use local tree.
   Park/restart uses local nonce-bound handlers and verified exact native conversation IDs, never
   a global latest-conversation fallback. Operator Stop/Kill wins; restart retains activity clocks.
+  Display-only native task teardown notices are not new work. Verification pins an immutable
+  implementation and may reuse its full hash proof only if both source/target fingerprints match.
   Native physical cwd and logical project paths are equivalent only through registered mappings,
   so fresh Story bindings survive relocation without borrowing a sibling session's transcript.
   Optional `newRoots` policies provision only absent immediate-child project/worktree roots on Spark,

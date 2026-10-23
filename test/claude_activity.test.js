@@ -73,6 +73,10 @@ try {
   assert.equal(claudeActivityRecord(row('assistant', at, { message: { id: 'null-parts', content: [null, { type: 'text', text: 'Streaming.' }] } }), native, at).phase,
     'unknown', 'empty content parts do not crash the native observer');
   assert.equal(claudeActivityRecord(row('system', at), native), null);
+  const teardown = row('user', at, { queueTranscriptOnly: true, promptSource: 'system',
+    message: { role: 'user', content: '<task-notification>Background shell command did not finish before the previous session ended</task-notification>' } });
+  assert.equal(claudeActivityRecord(teardown, native), null, 'resume-only task teardown cannot create work');
+  assert.ok(claudeActivityRecord({ ...teardown, queueTranscriptOnly: false }, native), 'real delivered background feedback still counts');
   assert.equal(claudeActivityRecord(assistant('future', at + 120000, 'Wrong clock.'), native, at), null);
   assert.equal(claudeAttentionKey(session, ' A  report ', 2), claudeAttentionKey(session, 'A report', 2));
   assert.notEqual(claudeAttentionKey(session, 'A report', 2), claudeAttentionKey(session, 'A report', 3), 'a new request permits a new identically worded response');

@@ -1,0 +1,56 @@
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createServer } from 'node:http';
+import { mkdtemp, mkdir, writeFile, readFile, chmod, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+const exec = promisify(execFile);
+const root = await mkdtemp(join(tmpdir(), 'aios-storage-tty-'));
+const socket = `aios-storage-fixture-${process.pid}`;
+const cli = join(root, 'cli.mjs'), receipt = join(root, 'received');
+const wrapper = join(root, 'tmux.mjs');
+process.env.AIOS_DATA = join(root, 'data'); process.env.AIOS_TMUX = wrapper;
+process.env.AIOS_NO_LISTEN = '1';
+const mux = (...args) => exec('tmux', ['-L', socket, '-f', '/dev/null', ...args]);
+const launch = () => mux('new-session', '-d', '-s', 'fixture-storage', `${process.execPath} ${cli} ${receipt}`);
+let store, server;
+const calls = [];
+try {
+  await mkdir(join(root, 'project'));
+  await writeFile(cli, `import fs from 'node:fs';process.stdin.setRawMode(true);process.stdin.resume();process.stdin.on('data',b=>fs.appendFileSync(process.argv[2],b));console.log('Ready');`);
+  await writeFile(wrapper, `#!/usr/bin/env node\nimport{spawnSync}from'node:child_process';const r=spawnSync('tmux',['-L',${JSON.stringify(socket)},'-f','/dev/null',...process.argv.slice(2)],{stdio:'inherit'});process.exit(r.status??1);\n`);
+  await chmod(wrapper, 0o755);
+  store = await import('../src/store.js');
+  store.createProject({ id: 'p_tty', name: 'TTY fixture', path: join(root, 'project') });
+  store.createSession({ id: 's_tty', project_id: 'p_tty', tool: 'codex', tmux: 'fixture-storage', status: 'waiting' });
+  store.updateSession('s_tty', { desired_status: 'waiting', last_activity: 1234 });
+  const before = store.getSession('s_tty');
+  server = createServer(async (req, res) => {
+    calls.push(req.url);
+    if (req.url.endsWith('/storage-pause')) await mux('kill-session', '-t', 'fixture-storage');
+    else await launch();
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, tmux: 'fixture-storage', input_ready: true }));
+  });
+  await new Promise(r => server.listen(0, '127.0.0.1', r));
+  process.env.AIOS_PORT = String(server.address().port);
+  await launch();
+  await new Promise(r => setTimeout(r, 250));
+  const original = (await mux('display-message', '-p', '-t', 'fixture-storage', '#{pane_pid}')).stdout.trim();
+  await exec(process.execPath, ['bin/storage-maintenance.mjs', 'freeze', 's_tty'], { env: process.env });
+  await exec(process.execPath, ['bin/storage-maintenance.mjs', 'thaw', 's_tty'], { env: process.env });
+  const replacement = (await mux('display-message', '-p', '-t', 'fixture-storage', '#{pane_pid}')).stdout.trim();
+  assert.notEqual(original, replacement, 'interactive thaw must restart, never leave a stopped shell job behind');
+  assert.deepEqual(calls, ['/api/session/s_tty/storage-pause', '/api/session/s_tty/storage-resume']);
+  await new Promise(r => setTimeout(r, 200));
+  await mux('send-keys', '-t', 'fixture-storage', '-l', 'input-reaches-agent');
+  await new Promise(r => setTimeout(r, 100));
+  assert.equal(await readFile(receipt, 'utf8'), 'input-reaches-agent');
+  assert.deepEqual(store.getSession('s_tty'), before);
+  console.log('storage TTY recovery: actual isolated tmux, exact restart path, foreground input works, no activity rewrite');
+} finally {
+  await mux('kill-server').catch(() => {});
+  await new Promise(r => server ? server.close(r) : r());
+  store?.db.close(); await rm(root, { recursive: true, force: true });
+}

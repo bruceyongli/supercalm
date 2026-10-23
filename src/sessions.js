@@ -82,7 +82,7 @@ import {
   sessionStoragePaths,
   sweepSessionStorage,
 } from './session_storage.js';
-import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan } from './agent_input_ready.js';
+import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan, pendingComposerDraft } from './agent_input_ready.js';
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
@@ -4293,6 +4293,14 @@ route('POST', '/api/session/:id/storage-pause', async (req, res, { id: sid }) =>
     } else if (session.tool === 'claude') {
       if (!claudeResumeId(session.claude_transcript) || !await findClaudeLog(null, session)) throw Error('Exact Claude history must be verified before pausing');
     } else throw Error('This tool has no exact native conversation recovery contract');
+    // The terminal snapshot is captured before freezing. Archive a visible unsent
+    // draft into the existing input history; never submit it during maintenance.
+    if (pending.screenBackup) {
+      const draft = pendingComposerDraft(await readFile(pending.screenBackup, 'utf8'), { requireFooter: true, maxLines: 200 });
+      if (draft?.text && !/^\[Pasted text\b/i.test(draft.text)) {
+        store.addEvent(sid, 'composer-draft-archived', { text: draft.text, displaced_by: 'storage-maintenance' });
+      }
+    }
     const entry = reg.get(sid); if (entry) entry.relaunching = true;
     if (!await tmuxOk('kill-session', '-t', session.tmux) && await sessionLiveness.probe(session.tmux) !== 'missing') {
       throw sessionHealthError();
@@ -4305,9 +4313,13 @@ route('POST', '/api/session/:id/storage-pause', async (req, res, { id: sid }) =>
 route('POST', '/api/session/:id/storage-resume', async (req, res, { id: sid }) => {
   try {
     const { pending, session } = authorizedStorageMaintenance(req, sid);
-    if (!['parking', 'parked'].includes(pending.phase)) throw Object.assign(Error('The storage controller has not completed cutover'), { status: 409 });
-    const resumed = await resume(sid, { maintenanceToken: pending.token, recoveryReason: 'storage-maintenance', preserveStatus: session.desired_status });
-    json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status });
+    if (!['parking', 'parked', 'resuming'].includes(pending.phase)) throw Object.assign(Error('The storage controller has not completed cutover'), { status: 409 });
+    // Repeated readiness checks must not restart the new pane or adopt it as work.
+    const resumed = session.tmux !== pending.tmux && session.status_reason === 'storage-maintenance'
+      && await sessionLiveness.probe(session.tmux) === 'alive' ? session
+      : await resume(sid, { maintenanceToken: pending.token, recoveryReason: 'storage-maintenance', preserveStatus: session.desired_status });
+    const inputReady = await waitForAgentInput(resumed.tmux);
+    json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status, input_ready: inputReady });
   } catch (error) { json(res, error.status || 409, { error: error.message }); }
 });
 

@@ -1,15 +1,29 @@
 // Operator-invoked storage cutover primitives. No database writes and no process termination.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { open, rename, symlink, lstat, readFile, readlink, realpath, rm, mkdir } from 'node:fs/promises';
+import { open, rename, symlink, lstat, readFile, writeFile, readlink, realpath, rm, mkdir } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { validateLiveStorage, assertLiveStorage } from './live_storage.js';
+import { DATA_DIR } from './config.js';
 
 const exec = promisify(execFile);
 const worker = fileURLToPath(new URL('../scripts/storage-manifest.py', import.meta.url));
 const inside = (p, root) => p === root || p.startsWith(root === sep ? sep : root + sep);
+const snapshotRoot = join(DATA_DIR, 'storage-manifest-tools');
+async function manifestSnapshot(hash = null) {
+  if (hash && !/^[0-9a-f]{64}$/.test(hash)) throw Error('Invalid verification implementation identity');
+  const code = await readFile(hash ? join(snapshotRoot, hash + '.py') : worker);
+  const actual = createHash('sha256').update(code).digest('hex');
+  if (hash && actual !== hash) throw Error('Verification implementation changed');
+  await mkdir(snapshotRoot, { recursive: true, mode: 0o700 });
+  const path = join(snapshotRoot, actual + '.py');
+  try { await writeFile(path, code, { flag: 'wx', mode: 0o600 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  if (createHash('sha256').update(await readFile(path)).digest('hex') !== actual) throw Error('Verification implementation changed');
+  return { path, hash: actual };
+}
 
 export async function durableJson(file, value) {
   const temp = file + '.' + randomUUID() + '.tmp';
@@ -51,22 +65,43 @@ export async function assertUnused(roots) {
     + [...new Set(owners.map(p => p.pid + ':' + p.command))].slice(0, 12).join(', ')), { code: 'storage-in-use', owners });
 }
 
-export async function storageManifest(root, { metadataOnly = false, ephemeralSockets = false } = {}) {
-  const args = [worker, root];
+export async function storageManifest(root, { metadataOnly = false, ephemeralSockets = false, equivalentGroups = [], workerFile = worker } = {}) {
+  const args = [workerFile, root];
   if (metadataOnly) args.push('--metadata-only');
   if (ephemeralSockets) args.push('--ephemeral-sockets');
+  for (const group of equivalentGroups) {
+    if (!Number.isInteger(group.from) || !Number.isInteger(group.to) || group.from < 0 || group.to < 0) throw Error('Invalid group equivalence');
+    args.push(`--equivalent-group=${group.from}:${group.to}`);
+  }
   const { stdout } = await exec('python3', args, { timeout: 12 * 3600_000, maxBuffer: 8 * 1024 * 1024 });
   return JSON.parse(stdout);
 }
 
 export async function verifyStoragePair(source, target, options = {}) {
-  const local = await storageManifest(source, options);
-  const remote = await storageManifest(target, options);
-  const after = await storageManifest(source, { ...options, metadataOnly: true });
+  // Long jobs must not mix verifier implementations if the checkout is updated while
+  // a remote read is in flight. All three passes use one content-addressed local script.
+  const implementation = await manifestSnapshot();
+  const fixed = { ...options, workerFile: implementation.path };
+  const local = await storageManifest(source, fixed);
+  const remote = await storageManifest(target, fixed);
+  const after = await storageManifest(source, { ...fixed, metadataOnly: true });
   if (local.digest !== remote.digest) throw Error('Persistent contents or native metadata differ; both copies retained');
   if (local.fingerprint !== after.fingerprint) throw Error('Source changed during verification; both copies retained');
   if (remote.ephemeralSockets.length) throw Error('Destination contains runtime sockets; inspect before cutover');
-  return local;
+  return { ...local, targetFingerprint: remote.fingerprint, implementationHash: implementation.hash };
+}
+
+// A completed independent content verification can be reused at cutover only while
+// BOTH inode/ctime/size/name/native-root fingerprints are unchanged. This allows long
+// reads before the maintenance pause; any intervening write forces a fresh full check.
+export async function reuseStorageVerification(source, target, evidence, options = {}) {
+  if (!evidence?.digest || !evidence.fingerprint || !evidence.targetFingerprint || !evidence.implementationHash) return null;
+  const implementation = await manifestSnapshot(evidence.implementationHash);
+  const fixed = { ...options, metadataOnly: true, workerFile: implementation.path };
+  const local = await storageManifest(source, fixed);
+  if (local.fingerprint !== evidence.fingerprint) return null;
+  const remote = await storageManifest(target, fixed);
+  return remote.fingerprint === evidence.targetFingerprint ? evidence : null;
 }
 
 export async function switchStorageRoot({ source, target, configFile, journal, save,
@@ -75,6 +110,7 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   const mapping = config.mappings.find(m => m.source === source && m.target === target);
   if (!mapping || !evidence?.digest || source === dirname(source) || !inside(target, config.mount)) throw Error('Invalid cutover identity');
   const options = { ephemeralSockets: mapping.ephemeralSockets === true, metadataOnly: true };
+  if (evidence.implementationHash) options.workerFile = (await manifestSnapshot(evidence.implementationHash)).path;
   if (await realpath(source) !== source || await realpath(target) !== target) throw Error('Cutover roots must be physical directories');
   const original = await lstat(source);
   if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw Error('Source identity changed');

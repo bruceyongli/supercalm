@@ -104,7 +104,7 @@ def signature(info, is_root=False):
             getattr(info, "st_flags", 0), info.st_nlink]
 
 
-def manifest(root, contents=True, sockets=False, records=False):
+def manifest(root, contents=True, sockets=False, records=False, equivalent_groups=None):
     root = os.path.abspath(root)
     first = os.lstat(root)
     if not stat.S_ISDIR(first.st_mode) or os.path.realpath(root) != root:
@@ -113,6 +113,7 @@ def manifest(root, contents=True, sockets=False, records=False):
     groups = {}
     counts = {"files": 0, "directories": 0, "links": 0, "bytes": 0}
     ipc = []
+    group_changes = []
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_VERIFY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
 
@@ -126,6 +127,14 @@ def manifest(root, contents=True, sockets=False, records=False):
         attrs = attributes(path) if contents or not relative else []
         meta = [relative, stat.S_IMODE(mode), before.st_uid, before.st_gid,
                 getattr(before, "st_flags", 0), attrs, acl(path) if contents or not relative else ""]
+        normalized = (equivalent_groups or {}).get(before.st_gid)
+        if contents and normalized is not None and normalized != before.st_gid:
+            # An ordinary owner's copy may not assign a group the owner does not belong
+            # to. Only an explicit mapping with IDENTICAL group/other access is allowed.
+            # ACLs and set-id semantics never qualify; preserve their originals instead.
+            if meta[6] or mode & (stat.S_ISGID | stat.S_ISUID) or ((mode >> 3) & 7) != (mode & 7):
+                raise ValueError("Group change would alter access: " + relative)
+            meta[3] = normalized
         if stat.S_ISREG(mode):
             content = hashlib.sha256()
             if contents:
@@ -160,10 +169,14 @@ def manifest(root, contents=True, sockets=False, records=False):
         before, meta, result = future.result()
         fingerprint.update(encoded([relative, signature(before, not relative)]))
         if not relative:
-            fingerprint.update(encoded(["root-native-metadata", meta]))
+            original_meta = list(meta)
+            original_meta[3] = before.st_gid
+            fingerprint.update(encoded(["root-native-metadata", original_meta]))
         if stat.S_ISSOCK(before.st_mode):
             ipc.append(relative)
             return
+        if meta and before.st_gid != meta[3]:
+            group_changes.append({"path": relative, "originalGid": before.st_gid, "storedGid": meta[3]})
         if stat.S_ISREG(before.st_mode):
             counts["files"] += 1; counts["bytes"] += before.st_size
             if before.st_nlink > 1:
@@ -203,13 +216,19 @@ def manifest(root, contents=True, sockets=False, records=False):
     digest.update(encoded(["hardlinks", sorted(paths for paths in groups.values() if len(paths) > 1)]))
     return {"algorithm": "sha256", "digest": digest.hexdigest(), "fingerprint": fingerprint.hexdigest(),
             **counts, "ephemeralSockets": ipc,
+            "equivalentGroupChanges": group_changes,
             "scope": "contents,names,modes,ownership,file-flags,hardlinks,symlink-targets,ACLs,xattrs"}
 
 
 if __name__ == "__main__":
     try:
+        groups = {}
+        for option in sys.argv[2:]:
+            if option.startswith("--equivalent-group="):
+                a, b = map(int, option.split("=", 1)[1].split(":"))
+                groups[a] = b
         print(json.dumps(manifest(sys.argv[1], "--metadata-only" not in sys.argv[2:],
-                                  "--ephemeral-sockets" in sys.argv[2:], "--records" in sys.argv[2:])))
+                                  "--ephemeral-sockets" in sys.argv[2:], "--records" in sys.argv[2:], groups)))
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

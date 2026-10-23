@@ -10,6 +10,7 @@ process.env.AIOS_DATA = join(root, 'data'); process.env.AIOS_WORKTREE_ROOT = joi
 process.env.AIOS_TMUX = '/usr/bin/true'; process.env.AIOS_HOST = '127.0.0.1'; process.env.AIOS_PORT = String(port);
 process.env.AIOS_CODEX_SESSIONS_DIR = join(root, 'native-history');
 process.env.AIOS_SUMMARY_PORT = '1'; delete process.env.AIOS_NO_LISTEN;
+process.env.AIOS_RESUME_INPUT_READY_MS = '1';
 let store;
 try {
   const { featureReady } = await import('../src/server.js'); await featureReady;
@@ -56,6 +57,7 @@ try {
   job.sessions[0].phase = 'parked'; await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
   const resumed = await post(`/api/session/${before.id}/storage-resume`, {}, 'fixture');
   assert.equal(resumed.status, 200, JSON.stringify(resumed));
+  assert.equal(resumed.body.input_ready, false, 'an empty terminal cannot complete maintenance recovery');
   assert.equal(store.getSession(before.id).last_activity, before.last_activity);
   assert.equal(store.getSession(before.id).question, before.question);
   assert.match(await readFile(join(process.env.AIOS_DATA, 'launch', before.id + '.sh'), 'utf8'), new RegExp('resume[\\s\\S]*' + native));

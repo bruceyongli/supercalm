@@ -8,7 +8,7 @@ import { join, dirname, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { validateLiveStorage } from '../src/live_storage.js';
-import { verifyStoragePair, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
+import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
 if (!['copy', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
@@ -101,9 +101,14 @@ try {
       await save({ state: 'copied', error: null, pid: null });
       console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true }));
     } else {
-      await assertUnused([source, target]);
-      const verification = await verifyStoragePair(source, target, { ephemeralSockets: mapping.ephemeralSockets === true });
-      await save({ state: 'verified', verifiedAt: Date.now(), verification });
+      if (operation === 'cutover') await assertUnused([source, target]);
+      const options = {
+        ephemeralSockets: mapping.ephemeralSockets === true, equivalentGroups: mapping.equivalentGroups || [],
+      };
+      const reused = journal.state === 'verified'
+        ? await reuseStorageVerification(source, target, journal.verification, options) : null;
+      const verification = reused || await verifyStoragePair(source, target, options);
+      await save({ state: 'verified', verifiedAt: Date.now(), verification, error: null });
       if (operation === 'cutover') {
         // Integrity reads do not mutate shared configuration. Serialize only the actual
         // alias transaction; a large verification must not stall unrelated cutovers.

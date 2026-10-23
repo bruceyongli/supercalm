@@ -40,6 +40,20 @@ async function request(s, action) {
   if (!res.ok) throw Error(`${s.id} storage ${action}: ${body.error || res.status}`);
   return body;
 }
+async function park(s) {
+  // Record recovery intent before releasing the old terminal. SIGCONT alone is
+  // unsafe for a job-control shell: the CLI can stay alive but lose the foreground.
+  s.phase = 'parking'; await save();
+  await request(s, 'pause');
+  const table = await processes();
+  for (const p of job.processes.filter(p => s.processIds?.includes(p.pid))) {
+    if (table.get(p.pid)?.started !== p.started) continue;
+    try { process.kill(p.pid, 'SIGTERM'); process.kill(p.pid, 'SIGCONT'); }
+    catch (e) { if (e.code !== 'ESRCH') throw e; }
+  }
+  s.phase = 'parked'; await save();
+  console.log(JSON.stringify({ parked: s.id, native: s.codex_uuid || s.claude_transcript, historyPreserved: true }));
+}
 try {
   if (operation === 'freeze') {
     if (job && !['frozen', 'freezing'].includes(job.phase)) throw Error('An unfinished maintenance transition exists; inspect/thaw it first');
@@ -107,18 +121,7 @@ try {
     for (const sid of ids) {
       const s = job.sessions.find(s => s.id === sid);
       if (!s || !['frozen', 'parking'].includes(s.phase)) throw Error('Session is not frozen: ' + sid);
-      // Persist restart intent BEFORE the terminal can disappear. Thaw can recover an
-      // interruption between the server acknowledgement and the final parked checkpoint.
-      s.phase = 'parking'; await save();
-      await request(s, 'pause');
-      const table = await processes();
-      for (const p of job.processes.filter(p => s.processIds?.includes(p.pid))) {
-        if (table.get(p.pid)?.started !== p.started) continue;
-        try { process.kill(p.pid, 'SIGTERM'); process.kill(p.pid, 'SIGCONT'); }
-        catch (e) { if (e.code !== 'ESRCH') throw e; }
-      }
-      s.phase = 'parked'; await save();
-      console.log(JSON.stringify({ parked: sid, native: s.codex_uuid || s.claude_transcript, historyPreserved: true }));
+      await park(s);
     }
   } else {
     if (!job) throw Error('No maintenance freeze to thaw');
@@ -126,10 +129,17 @@ try {
     if (ids.some(id => !selected.some(s => s.id === id))) throw Error('Unknown maintenance session');
     const selectedPids = new Set(selected.flatMap(s => s.processIds || []));
     const restarted = [];
-    for (const s of selected.filter(s => ['parking', 'parked'].includes(s.phase))) {
+    for (const s of selected.filter(s => s.phase === 'frozen')) {
+      const tty = (await exec('/bin/ps', ['-p', s.rootPids.join(','), '-o', 'tty=']).catch(() => ({ stdout: '' }))).stdout.trim();
+      if (tty.split(/\s+/).some(value => value && value !== '??' && value !== '-')) await park(s);
+    }
+    for (const s of selected.filter(s => ['parking', 'parked', 'resuming'].includes(s.phase))) {
       const current = session(s.id);
       if (current && ['working', 'waiting'].includes(current.desired_status) && !/^operator-/.test(current.status_reason || '')) {
-        await request(s, 'resume');
+        s.phase = 'resuming'; await save();
+        const result = await request(s, 'resume');
+        s.resumedTmux = result.tmux; await save();
+        if (result.input_ready !== true) throw Error(`${s.id} is loading its exact conversation; maintenance remains fenced. Retry thaw to check readiness, not to send input.`);
         restarted.push(s.id);
       }
       s.phase = 'complete'; await save();
