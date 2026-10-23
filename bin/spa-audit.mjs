@@ -277,7 +277,7 @@ try {
   if (!sessionStep?.terminalActive) fails.push('persisted Terminal preference was not active after session mount');
   if (!String(sessionStep?.bodyClass || '').split(/\s+/).includes('session-page')) fails.push('session route did not apply the full-bleed session-page layout class');
   if (!killed || killed.id) fails.push('kill action did not route home in place');
-  const homeTitleRx = /^(?:Supercalm · idle|! \d+ waiting · Supercalm|\d+ working · \d+ live · Supercalm)$/;
+  const homeTitleRx = /^(?:Supercalm · idle|! \d+ waiting · Supercalm|! \d+ blocked · \d+ waiting · Supercalm|\d+ working · \d+ live · Supercalm)$/;
   if (killed && !homeTitleRx.test(killed.title || '')) fails.push(`kill action left stale session browser identity on home: "${killed.title || ''}"`);
   for (const a of rep.actions) {
     if (!a.sideSameNode) fails.push(`${a.action}: .dk-side was re-created`);

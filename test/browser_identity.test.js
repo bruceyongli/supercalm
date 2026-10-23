@@ -92,4 +92,18 @@ assert.equal(document.title, '3 working · 3 live · Supercalm');
 svg = renderedIconSvg();
 assert(svg.includes('stroke="#3fb950"'), 'dashboard shows working status when no sessions are waiting');
 
+globalThis.document = mockDocument();
+setDashboardBrowserIdentity({ counts: { blocked: 1, waiting: 2, working: 3, live: 6 } });
+assert.equal(document.title, '! 1 blocked · 2 waiting · Supercalm');
+assert(renderedIconSvg().includes('stroke="#f85149"'), 'provider blockers take precedence over ordinary waiting');
+
+setSessionBrowserIdentity({ title: 'Implement update', tool: 'codex', status: 'waiting',
+  provider_issue: { code: 'capacity', phase: 'blocked' }, project: { name: 'aios' } });
+assert.equal(document.title, '! Implement update · aios · model at capacity');
+assert(renderedIconSvg().includes('stroke="#f85149"'), 'a live but blocked session has a red status ring');
+setSessionBrowserIdentity({ title: 'Implement update', tool: 'codex', status: 'working',
+  provider_issue: { code: 'capacity', phase: 'retrying' }, project: { name: 'aios' } });
+assert.equal(document.title, '> Implement update · aios · retrying');
+assert(renderedIconSvg().includes('stroke="#d29922"'), 'automatic retries are amber, not blocked or ordinary working');
+
 console.log('browser_identity.test ok');
