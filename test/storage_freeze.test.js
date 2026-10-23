@@ -21,7 +21,7 @@ try {
   store.createSession({ id: 's_freeze', project_id: 'p_freeze', tool: 'codex', tmux: 'fixture-storage', status: 'waiting' });
   store.updateSession('s_freeze', { desired_status: 'waiting', last_activity: 1234 });
   const before = store.getSession('s_freeze');
-  const run = action => exec(process.execPath, ['bin/storage-maintenance.mjs', action, ...(action === 'freeze' ? ['s_freeze'] : [])],
+  const run = (action, extra = []) => exec(process.execPath, ['bin/storage-maintenance.mjs', action, ...(action === 'freeze' ? ['s_freeze'] : []), ...extra],
     { env: process.env, timeout: 25_000 });
   await run('freeze');
   const value = await readFile(heartbeat, 'utf8');
@@ -39,6 +39,17 @@ try {
   await assert.rejects(exec(process.execPath, ['bin/storage-maintenance.mjs', 'thaw', 's_other'], { env: process.env, timeout: 25_000 }), /Unknown maintenance session/);
   await exec(process.execPath, ['bin/storage-maintenance.mjs', 'thaw', 's_freeze'], { env: process.env, timeout: 25_000 });
   assert.equal(JSON.parse(await readFile(join(process.env.AIOS_DATA, 'storage-maintenance.json'))).phase, 'complete');
+  const native = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  process.env.AIOS_CODEX_SESSIONS_DIR = join(root, 'native-history');
+  await mkdir(process.env.AIOS_CODEX_SESSIONS_DIR);
+  await writeFile(join(process.env.AIOS_CODEX_SESSIONS_DIR, `rollout-fixture-${native}.jsonl`), JSON.stringify({ type: 'session_meta', payload: {
+    id: native, cwd: join(root, 'project'), base_instructions: { text: 'large harness context '.repeat(3000) },
+  } }) + '\n');
+  await run('freeze', [`--native=s_freeze:${native}`]);
+  assert.equal(JSON.parse(await readFile(join(process.env.AIOS_DATA, 'storage-maintenance.json'))).sessions[0].codex_uuid, native,
+    'explicit verified native identity supports real headers larger than one read chunk');
+  await run('thaw');
+  assert.deepEqual(store.getSession('s_freeze'), before);
   console.log('storage freeze: real SIGSTOP/SIGCONT, exact PID scope, draft snapshot, unchanged session row');
 } finally {
   try { agent.kill('SIGCONT'); agent.kill('SIGTERM'); } catch {}

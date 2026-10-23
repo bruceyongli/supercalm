@@ -101,7 +101,21 @@ try {
         if (!file) throw Error('Explicit native history is missing');
         const handle = await open(file, 'r');
         let row;
-        try { const b = Buffer.alloc(16384); const r = await handle.read(b, 0, b.length, 0); row = JSON.parse(b.subarray(0, r.bytesRead).toString().split('\n')[0]); }
+        try {
+          const chunks = []; let size = 0, complete = false;
+          while (size < 2 * 1024 * 1024) {
+            const b = Buffer.alloc(16384), r = await handle.read(b, 0, b.length, size);
+            if (!r.bytesRead) { complete = true; break; }
+            const part = b.subarray(0, r.bytesRead), end = part.indexOf(10);
+            chunks.push(end < 0 ? part : part.subarray(0, end)); size += r.bytesRead;
+            if (end >= 0) { complete = true; break; }
+          }
+          if (!complete) throw Error('Native session header is too large to verify safely');
+          // Headers include the harness instructions and often exceed 16 KiB. Never
+          // log a malformed fragment, which may contain private conversation context.
+          try { row = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+          catch { throw Error('Native session header is incomplete or invalid'); }
+        }
         finally { await handle.close(); }
         if (row.type !== 'session_meta' || row.payload?.id !== uuid || !sameStoragePath(row.payload.cwd, s.worktree_path || s.project_path)) throw Error('Explicit native history belongs to another workspace');
         s.codex_uuid = uuid; s.explicitNativeIdentity = true;
