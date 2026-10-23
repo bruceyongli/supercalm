@@ -23,19 +23,32 @@ export function validateLiveStorage(config) {
   if (new Set(config.mappings.map(m => m.source)).size !== config.mappings.length) throw new Error('Duplicate storage source');
   if (new Set(config.mappings.map(m => m.target)).size !== config.mappings.length) throw new Error('Duplicate storage destination');
   if (config.statusFile && (!config.statusFile.startsWith('/') || inside(config.statusFile, config.mount))) throw new Error('Storage status must remain local');
+  for (const policy of config.newRoots || []) {
+    if (!['project', 'worktree'].includes(policy.kind) || !policy.sourceParent?.startsWith('/')
+        || resolve(policy.sourceParent) !== policy.sourceParent || policy.sourceParent.split('/').filter(Boolean).length < 2
+        || !policy.targetParent?.startsWith(config.mount + '/') || resolve(policy.targetParent) !== policy.targetParent
+        || inside(policy.sourceParent, config.mount) || inside(config.mount, policy.sourceParent) && policy.sourceParent !== homedir()
+        || /\/proxy(?:\/|$)/.test(policy.sourceParent)
+        || (policy.exclude && (!Array.isArray(policy.exclude) || policy.exclude.some(n => typeof n !== 'string' || n.includes('/'))))) {
+      throw new Error('Unsafe new-storage-root policy');
+    }
+  }
   return config;
 }
 function unavailable(cause) {
   return Object.assign(new Error('Spark storage is unavailable. Files are preserved; reconnect storage before continuing. Local fallback is disabled.', { cause }),
     { code: 'storage-unavailable', status: 503 });
 }
-export function liveStorageConfig() {
+export function liveStorageConfigFile() {
   const file = process.env.AIOS_LIVE_STORAGE_CONFIG || join(DATA_DIR, 'live-storage.json');
   let value;
   try { value = JSON.parse(readFileSync(file, 'utf8')); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  if (value.configFile) value = JSON.parse(readFileSync(value.configFile, 'utf8'));
-  return validateLiveStorage(value);
+  return value.configFile || file;
+}
+export function liveStorageConfig() {
+  const file = liveStorageConfigFile();
+  return file ? validateLiveStorage(JSON.parse(readFileSync(file, 'utf8'))) : null;
 }
 export function expectedStoragePath(path, config = liveStorageConfig()) {
   const logical = resolve(path);
@@ -62,7 +75,10 @@ export function sameStoragePath(left, right, config = liveStorageConfig()) {
   catch { return false; }
 }
 export function storageMigrationProtected(path, config = liveStorageConfig()) {
-  return !!config?.retainDuringMigration && config.mappings.some(m => inside(resolve(path), m.source));
+  // "Migrate, don't delete" remains durable after migration completes. Future disposable
+  // jobs may opt into their own retention policy without erasing the migrated corpus.
+  return !!(config?.retainDuringMigration || config?.preserveMigratedData)
+    && config.mappings.some(m => inside(resolve(path), m.source) || inside(resolve(path), m.target));
 }
 export async function isManagedStoragePath(path, { allowMissing = false, config = liveStorageConfig() } = {}) {
   const expected = expectedStoragePath(path, config);

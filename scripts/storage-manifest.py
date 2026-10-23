@@ -43,6 +43,8 @@ def attributes(path):
     size = libc.listxattr(raw, None, 0, 1)  # XATTR_NOFOLLOW
     if size < 0:
         raise OSError(ctypes.get_errno(), "Cannot list xattrs", path)
+    if size == 0:
+        return []
     names = ctypes.create_string_buffer(size)
     actual = libc.listxattr(raw, names, size, 1)
     if actual < 0:
@@ -71,7 +73,9 @@ def acl(path):
         code = ctypes.get_errno()
         # Darwin reports ENOENT for "no extended ACL" too. Check the inode itself;
         # the surrounding before/after stat still detects an actual disappearance.
-        if code == errno.ENOENT and os.path.lexists(path):
+        if code == errno.ENOENT:
+            # Every caller has a before-stat and checks the same path again afterwards.
+            # That detects disappearance without another network stat for the usual no-ACL case.
             return ""
         if code in (errno.ENOENT, errno.ENOTSUP):
             raise OSError(code, "Cannot inspect ACL", path)
@@ -100,7 +104,7 @@ def signature(info, is_root=False):
             getattr(info, "st_flags", 0), info.st_nlink]
 
 
-def manifest(root, contents=True, sockets=False):
+def manifest(root, contents=True, sockets=False, records=False):
     root = os.path.abspath(root)
     first = os.lstat(root)
     if not stat.S_ISDIR(first.st_mode) or os.path.realpath(root) != root:
@@ -112,82 +116,86 @@ def manifest(root, contents=True, sockets=False):
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_VERIFY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
 
-    def file_record(path, relative):
+    def record(path, relative):
         before = os.lstat(path)
-        if before.st_dev != first.st_dev or not stat.S_ISREG(before.st_mode):
-            raise ValueError("File identity/type changed: " + relative)
-        meta = [relative, stat.S_IMODE(before.st_mode), before.st_uid, before.st_gid,
-                getattr(before, "st_flags", 0), attributes(path) if contents else [], acl(path) if contents else ""]
-        content = hashlib.sha256()
-        if contents:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(descriptor, "rb", buffering=0) as stream:
-                if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
-                    fcntl.fcntl(stream.fileno(), 48, 1)
-                if signature(os.fstat(stream.fileno())) != signature(before):
-                    raise ValueError("File changed before read: " + relative)
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    content.update(chunk)
-        if signature(before) != signature(os.lstat(path)):
-            raise ValueError("File changed during verification: " + relative)
-        return before, encoded(["file", meta, before.st_size, content.hexdigest() if contents else ""])
-
-    def consume_file(relative, before, result):
-        fingerprint.update(encoded([relative, signature(before)]))
-        counts["files"] += 1; counts["bytes"] += before.st_size
-        if before.st_nlink > 1:
-            groups.setdefault((before.st_dev, before.st_ino), []).append(relative)
-        digest.update(result)
-
-    def walk(path, relative, before=None):
-        before = before or os.lstat(path)
         if before.st_dev != first.st_dev:
             raise ValueError("Nested filesystem: " + relative)
-        fingerprint.update(encoded([relative, signature(before, not relative)]))
         mode = before.st_mode
         if stat.S_ISSOCK(mode) and sockets:
-            ipc.append(relative)
-            return
+            return before, None, None
         attrs = attributes(path) if contents or not relative else []
         meta = [relative, stat.S_IMODE(mode), before.st_uid, before.st_gid,
                 getattr(before, "st_flags", 0), attrs, acl(path) if contents or not relative else ""]
-        if not relative:
-            fingerprint.update(encoded(["root-native-metadata", meta]))
-        if stat.S_ISLNK(mode):
-            counts["links"] += 1
-            digest.update(encoded(["link", meta, os.readlink(path)]))
+        if stat.S_ISREG(mode):
+            content = hashlib.sha256()
+            if contents:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(descriptor, "rb", buffering=0) as stream:
+                    if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
+                        fcntl.fcntl(stream.fileno(), 48, 1)
+                    if signature(os.fstat(stream.fileno())) != signature(before):
+                        raise ValueError("File changed before read: " + relative)
+                    while True:
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        content.update(chunk)
+            result = ["file", meta, before.st_size, content.hexdigest() if contents else ""]
+        elif stat.S_ISLNK(mode):
+            result = ["link", meta, os.readlink(path)]
         elif stat.S_ISDIR(mode):
-            counts["directories"] += 1
-            digest.update(encoded(["directory", meta]))
-            pending = deque()
-            def drain():
-                rel, future = pending.popleft()
-                info, record = future.result()
-                consume_file(rel, info, record)
-            with os.scandir(path) as entries:
-                children = sorted(entries, key=lambda entry: entry.name)
-            for entry in children:
-                child, rel = entry.path, os.path.join(relative, entry.name)
-                if entry.is_file(follow_symlinks=False):
-                    pending.append((rel, pool.submit(file_record, child, rel)))
-                    if len(pending) >= workers * 4:
-                        drain()
-                else:
-                    while pending:
-                        drain()
-                    walk(child, rel)
-            while pending:
-                drain()
+            result = ["directory", meta]
         else:
             raise ValueError("Unsupported persistent entry: " + relative)
         if signature(before, not relative) != signature(os.lstat(path), not relative):
             raise ValueError("Tree changed during verification: " + relative)
+        return before, meta, encoded(result)
+
+    # Pipeline metadata for directories and links as well as files. Flushing at every
+    # directory used to serialize thousands of remote ACL/xattr/stat round-trips.
+    # Folding remains deterministic preorder, byte-identical to the original manifest.
+    pending = deque()
+    def drain():
+        relative, future = pending.popleft()
+        before, meta, result = future.result()
+        fingerprint.update(encoded([relative, signature(before, not relative)]))
+        if not relative:
+            fingerprint.update(encoded(["root-native-metadata", meta]))
+        if stat.S_ISSOCK(before.st_mode):
+            ipc.append(relative)
+            return
+        if stat.S_ISREG(before.st_mode):
+            counts["files"] += 1; counts["bytes"] += before.st_size
+            if before.st_nlink > 1:
+                groups.setdefault((before.st_dev, before.st_ino), []).append(relative)
+        elif stat.S_ISDIR(before.st_mode):
+            counts["directories"] += 1
+        else:
+            counts["links"] += 1
+        digest.update(result)
+        if records:
+            print(json.dumps({"path": relative, "digest": hashlib.sha256(result).hexdigest(),
+                              "metadata": meta, "size": before.st_size if stat.S_ISREG(before.st_mode) else None}), flush=True)
+
+    def walk(path, relative, directory=True):
+        pending.append((relative, pool.submit(record, path, relative)))
+        if len(pending) >= workers * 8:
+            drain()
+        if directory:
+            before = os.lstat(path)
+            if not stat.S_ISDIR(before.st_mode) or before.st_dev != first.st_dev:
+                raise ValueError("Directory changed or nested filesystem: " + relative)
+            with os.scandir(path) as entries:
+                children = sorted(entries, key=lambda entry: entry.name)
+            for entry in children:
+                walk(entry.path, os.path.join(relative, entry.name), entry.is_dir(follow_symlinks=False))
+            if signature(before, not relative) != signature(os.lstat(path), not relative):
+                raise ValueError("Directory changed while listing: " + relative)
 
     try:
         walk(root, "")
+        while pending:
+            drain()
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     # Preserve every hard-link relationship within this root; an external link's inode
@@ -201,7 +209,7 @@ def manifest(root, contents=True, sockets=False):
 if __name__ == "__main__":
     try:
         print(json.dumps(manifest(sys.argv[1], "--metadata-only" not in sys.argv[2:],
-                                  "--ephemeral-sockets" in sys.argv[2:])))
+                                  "--ephemeral-sockets" in sys.argv[2:], "--records" in sys.argv[2:])))
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

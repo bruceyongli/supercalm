@@ -1,5 +1,6 @@
 import { statfsSync } from 'node:fs';
 import { DATA_DIR } from './config.js';
+import { liveStorageStatus } from './live_storage.js';
 
 const GiB = 1024 ** 3;
 export function diskCapacity(info, { reserveBytes = Number(process.env.AIOS_DISK_RESERVE_BYTES) || 5 * GiB,
@@ -26,5 +27,16 @@ export function assertDiskHeadroom(path = DATA_DIR) {
     error.code = 'disk-space-critical';
     error.status = 507;
     throw error;
+  }
+  // A sparse image's nominal free space can exceed its SMB backing disk. Check BOTH
+  // cached capacities; never start a new writer just because the image could still grow.
+  const remote = liveStorageStatus();
+  if (remote?.available && remote.migrated_roots > 0) {
+    const reserve = Number(process.env.AIOS_DISK_RESERVE_BYTES) || 5 * GiB;
+    for (const [name, disk] of [['volume', remote.volume], ['backing disk', remote.backing]]) {
+      if (!Number.isFinite(disk?.available_bytes) || disk.available_bytes >= reserve) continue;
+      throw Object.assign(new Error(`Spark ${name} space is critically low (${(disk.available_bytes / GiB).toFixed(1)} GiB available). Files are preserved; restore storage headroom before starting or resuming an agent.`),
+        { code: 'disk-space-critical', status: 507 });
+    }
   }
 }

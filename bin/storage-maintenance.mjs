@@ -43,7 +43,7 @@ async function request(s, action) {
 try {
   if (operation === 'freeze') {
     if (job && !['frozen', 'freezing'].includes(job.phase)) throw Error('An unfinished maintenance transition exists; inspect/thaw it first');
-    if (ids.some(id => job?.sessions.some(s => s.id === id))) throw Error('A selected session already belongs to this maintenance job');
+    if (ids.some(id => job?.sessions.some(s => s.id === id && s.phase !== 'complete'))) throw Error('A selected session already belongs to this maintenance job');
     const selected = ids.map(id => {
       const s = session(id);
       if (!s || !['working', 'waiting'].includes(s.desired_status) || /\/proxy(?:\/|$)/.test(s.project_path || '')) throw Error('Session is not eligible: ' + id);
@@ -74,7 +74,11 @@ try {
       s.screenBackup = join(backup, s.id + '.terminal.txt');
       await writeFile(s.screenBackup, screen, { mode: 0o600 });
     }
-    if (job) { job.sessions.push(...selected); job.phase = 'freezing'; }
+    if (job) {
+      job.sessions = [...job.sessions.filter(s => !ids.includes(s.id)), ...selected];
+      job.processes = job.processes.filter(p => !owned.some(q => p.pid === q.pid && p.started === q.started));
+      job.phase = 'freezing';
+    }
     else job = { version: 1, kind: 'live-storage-migration', id: randomUUID(), phase: 'freezing',
       blockLaunches: true, createdAt: Date.now(), sessions: selected, processes: [] };
     await save();
@@ -118,8 +122,11 @@ try {
     }
   } else {
     if (!job) throw Error('No maintenance freeze to thaw');
+    const selected = ids.length ? job.sessions.filter(s => ids.includes(s.id)) : job.sessions;
+    if (ids.some(id => !selected.some(s => s.id === id))) throw Error('Unknown maintenance session');
+    const selectedPids = new Set(selected.flatMap(s => s.processIds || []));
     const restarted = [];
-    for (const s of job.sessions.filter(s => ['parking', 'parked'].includes(s.phase))) {
+    for (const s of selected.filter(s => ['parking', 'parked'].includes(s.phase))) {
       const current = session(s.id);
       if (current && ['working', 'waiting'].includes(current.desired_status) && !/^operator-/.test(current.status_reason || '')) {
         await request(s, 'resume');
@@ -129,10 +136,12 @@ try {
     }
     const table = await processes();
     for (const p of job.processes) {
-      if (p.wasStopped || table.get(p.pid)?.started !== p.started) continue;
+      if (!selectedPids.has(p.pid) || p.wasStopped || table.get(p.pid)?.started !== p.started) continue;
       try { process.kill(p.pid, 'SIGCONT'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
     }
-    job.phase = 'complete'; job.completedAt = Date.now(); for (const s of job.sessions) s.phase = 'complete'; await save();
-    console.log(JSON.stringify({ resumed: job.sessions.map(s => s.id), restartedWithExactHistory: restarted }));
+    for (const s of selected) s.phase = 'complete';
+    if (job.sessions.every(s => s.phase === 'complete')) { job.phase = 'complete'; job.completedAt = Date.now(); }
+    await save();
+    console.log(JSON.stringify({ resumed: selected.map(s => s.id), restartedWithExactHistory: restarted }));
   }
 } finally { db.close(); }

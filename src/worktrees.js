@@ -13,6 +13,7 @@ import { mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gitOut } from './git.js';
 import { assertLiveStorage } from './live_storage.js';
+import { provisionLiveStorageRoot } from './storage_provision.js';
 
 // ---- pure path/name helpers -------------------------------------------------------------------
 // A git-ref- and filesystem-safe component: only [A-Za-z0-9._-], no '..', no leading/trailing '.'/'-',
@@ -119,6 +120,7 @@ export async function ensureWorktree({ repoPath, sid, project, desiredPath = '',
     await assertLiveStorage(repoPath);
     if (!(await isGitRepo(repoPath))) throw new Error('not a git worktree: ' + repoPath);
     const path = assertUnderRoot(desiredPath || worktreePathFor(project, sid));
+    await provisionLiveStorageRoot(dirname(path), 'worktree');
     await assertLiveStorage(path);
     const branch = desiredBranch || branchFor(project, sid);
 

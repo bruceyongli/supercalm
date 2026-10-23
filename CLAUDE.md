@@ -104,6 +104,14 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   a global latest-conversation fallback. Operator Stop/Kill wins; restart retains activity clocks.
   Native physical cwd and logical project paths are equivalent only through registered mappings,
   so fresh Story bindings survive relocation without borrowing a sibling session's transcript.
+  Optional `newRoots` policies provision only absent immediate-child project/worktree roots on Spark,
+  with an exclusive target, durable mapping and the same configuration lease as cutover. Never move an
+  existing checkout implicitly or use a local fallback when remote storage is unavailable. Capacity
+  guards check both the image and its physical backing disk. `preserveMigratedData` retains the
+  migrated corpus after migration ends; completion must not silently turn retention into deletion.
+  Detached project test services may be checkpointed with `bin/storage-processes.mjs park|resume PID`;
+  exact argv/environment/cwd stay in local 0600 private checkpoints, never logs/artifacts. Persistent
+  launchd services use their own service lifecycle; native sessions use the session maintenance flow.
   Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
   detach/reconnect durability with disposable fixtures before choosing a storage transport.
 - Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.

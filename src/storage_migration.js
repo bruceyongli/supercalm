@@ -9,7 +9,7 @@ import { validateLiveStorage, assertLiveStorage } from './live_storage.js';
 
 const exec = promisify(execFile);
 const worker = fileURLToPath(new URL('../scripts/storage-manifest.py', import.meta.url));
-const inside = (p, root) => p === root || p.startsWith(root + sep);
+const inside = (p, root) => p === root || p.startsWith(root === sep ? sep : root + sep);
 
 export async function durableJson(file, value) {
   const temp = file + '.' + randomUUID() + '.tmp';

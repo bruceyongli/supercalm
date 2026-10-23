@@ -35,6 +35,10 @@ try {
   await new Promise(r => setTimeout(r, 100));
   assert.notEqual(await readFile(heartbeat, 'utf8'), value, 'same process continues');
   assert.deepEqual(store.getSession('s_freeze'), before, 'no state or attention/activity clock writes');
+  await run('freeze');
+  await assert.rejects(exec(process.execPath, ['bin/storage-maintenance.mjs', 'thaw', 's_other'], { env: process.env, timeout: 25_000 }), /Unknown maintenance session/);
+  await exec(process.execPath, ['bin/storage-maintenance.mjs', 'thaw', 's_freeze'], { env: process.env, timeout: 25_000 });
+  assert.equal(JSON.parse(await readFile(join(process.env.AIOS_DATA, 'storage-maintenance.json'))).phase, 'complete');
   console.log('storage freeze: real SIGSTOP/SIGCONT, exact PID scope, draft snapshot, unchanged session row');
 } finally {
   try { agent.kill('SIGCONT'); agent.kill('SIGTERM'); } catch {}

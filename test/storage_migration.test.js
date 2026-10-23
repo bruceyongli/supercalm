@@ -35,6 +35,7 @@ try {
   }
   assert.deepEqual(parseOpenFiles('p7\0cwriter\0\nf2\0n/work/p/data\0\nf3\0n/work/prefix/no\0', ['/work/p']),
     [{ pid: 7, command: 'writer', descriptor: '2', path: '/work/p/data' }]);
+  assert.equal(parseOpenFiles('p7\0cwriter\0\nfcwd\0n/work/p\0', ['/'])[0].path, '/work/p');
   const configFile = join(root, 'config.json');
   await durableJson(configFile, { version: 1, id: 'fixture', mount, mappings: [{ source, target }] });
   const st = await lstat(source);

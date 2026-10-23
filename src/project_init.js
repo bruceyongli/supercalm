@@ -2,6 +2,8 @@ import { execFile } from 'node:child_process';
 import { mkdir, stat } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { isAbsolute, resolve } from 'node:path';
+import { provisionLiveStorageRoot } from './storage_provision.js';
+import { assertLiveStorage } from './live_storage.js';
 
 const exec = promisify(execFile);
 const GIT_TIMEOUT_MS = Number(process.env.AIOS_PROJECT_GIT_INIT_TIMEOUT_MS || 15_000);
@@ -25,6 +27,8 @@ export function normalizeProjectPath(value) {
 // users may add workspaces or non-Git folders. Only a directory created by this request is initialized.
 export async function prepareProjectDirectory(value, { gitBin = process.env.AIOS_GIT_BIN || 'git' } = {}) {
   const path = normalizeProjectPath(value);
+  const remoteCreated = await provisionLiveStorageRoot(path, 'project');
+  await assertLiveStorage(path);
   let existing = null;
   try {
     existing = await stat(path);
@@ -34,7 +38,7 @@ export async function prepareProjectDirectory(value, { gitBin = process.env.AIOS
     }
   }
 
-  if (existing) {
+  if (existing && !remoteCreated) {
     if (!existing.isDirectory()) {
       throw projectPathError('project path exists but is not a directory', 'project-path-not-directory');
     }
@@ -43,7 +47,7 @@ export async function prepareProjectDirectory(value, { gitBin = process.env.AIOS
 
   let firstCreated;
   try {
-    firstCreated = await mkdir(path, { recursive: true });
+    firstCreated = remoteCreated ? path : await mkdir(path, { recursive: true });
   } catch (error) {
     throw projectPathError(`could not create project folder: ${error.message || error}`, 'project-folder-create-failed', error);
   }
