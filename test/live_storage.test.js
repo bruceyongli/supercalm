@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const fixture = await realpath(await mkdtemp(join(tmpdir(), 'aios-live-storage-')));
 process.env.AIOS_DATA = join(fixture, 'data');
 const { validateLiveStorage, expectedStoragePath, isManagedStoragePath, assertLiveStorage, liveStorageConfig,
-  liveStorageStatus, storageMigrationProtected, sameStoragePath } = await import('../src/live_storage.js');
+  liveStorageStatus, storageMigrationProtected, sameStoragePath, logicalStoragePath } = await import('../src/live_storage.js');
 const mount = join(fixture, 'mounts', 'spark'), source = join(fixture, 'data', 'session-artifacts');
 const target = join(mount, 'bb1', 'artifacts'), statusFile = join(fixture, 'connection.json');
 const config = { version: 1, id: 'fixture-only', mount, statusFile, mappings: [{ source, target }] };
@@ -24,6 +24,7 @@ try {
   assert.throws(() => validateLiveStorage({ ...config, mappings: [config.mappings[0], config.mappings[0]] }), /Duplicate/);
   assert.throws(() => validateLiveStorage({ ...config, mappings: [{ source, target: join(fixture, 'elsewhere') }] }), /Unsafe/);
   assert.equal(expectedStoragePath(join(source, 's_test'), config), join(source, 's_test'), 'a copy plan does not relocate a live source');
+  assert.equal(logicalStoragePath(join(target, 's_test'), config), join(target, 's_test'), 'staged copies do not gain logical identity');
   await assertLiveStorage(source, config);
   assert.equal(await isManagedStoragePath(source, { config }), true);
   const moved = { ...config, mappings: [{ source, target, active: true }] };
@@ -31,6 +32,8 @@ try {
   await rm(source, { recursive: true });
   assert.throws(() => expectedStoragePath(source, moved), e => e.code === 'storage-unavailable', 'missing registered links fail closed');
   await symlink(target, source);
+  assert.equal(logicalStoragePath(join(target, 's_test'), moved), join(source, 's_test'));
+  assert.equal(logicalStoragePath(join(target + '-other', 's_test'), moved), join(target + '-other', 's_test'));
   assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_test'), config), true);
   assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_other'), config), false);
   assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_test'), null), false, 'only registered relocation equates native cwd');
@@ -63,6 +66,7 @@ try {
   assert.deepEqual(await cleanupSessionStorage('s_keep'), { removed: false, reason: 'storage-migration' });
   assert.equal(await readFile(join(target, 's_keep', 'evidence.txt'), 'utf8'), 'must survive a service restart');
   await unlink(source); await symlink(outside, source);
+  assert.throws(() => logicalStoragePath(join(target, 's_test'), moved), e => e.code === 'storage-unavailable');
   assert.equal(sameStoragePath(source, target, moved), false, 'replaced aliases cannot bind another conversation');
   assert.throws(() => expectedStoragePath(source, moved), e => e.code === 'storage-unavailable');
 } finally { await rm(fixture, { recursive: true, force: true }); }

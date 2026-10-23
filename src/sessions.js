@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate } from './storage_maintenance.js';
-import { sameStoragePath } from './live_storage.js';
+import { sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
@@ -580,6 +580,7 @@ async function sessionMentionsFile(s, requested, target) {
     String(requested || ''),
     normalize(String(requested || '')),
     target,
+    logicalStoragePath(target),
     target.startsWith('/private/tmp/') ? target.slice('/private'.length) : '',
   ].filter(Boolean))];
   const mentions = (text) => {
@@ -705,7 +706,9 @@ export async function resolveSessionFile(s, rawRequested) {
   }
   const managedStorage = sessionStoragePaths(s.id);
   for (const [scope, managedRoot] of [['session-artifact', managedStorage.artifacts], ['session-temp', managedStorage.tmp]]) {
-    if (pathInside(managedRoot, compared) && (!target || await sessionMentionsFile(s, requested, compared))) {
+    const physicalRoot = expectedStoragePath(managedRoot);
+    if ((pathInside(physicalRoot, compared) || !target && pathInside(managedRoot, compared))
+        && (!target || await sessionMentionsFile(s, requested, compared))) {
       return { target: compared, displayPath: requested, scope };
     }
   }

@@ -4,23 +4,29 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, writeFile, open } from 'node:fs/promises';
+import { mkdir, writeFile, open, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR, DB_PATH, TMUX } from '../src/config.js';
 import { durableJson, openFiles } from '../src/storage_migration.js';
 import { readStorageMaintenance, storageMaintenanceFile, storageRecoveryGate } from '../src/storage_maintenance.js';
 import { codexRolloutFiles, pickRolloutByUuid } from '../src/codex_rollouts.js';
 import { sameStoragePath } from '../src/live_storage.js';
+import { assertNativeHistorySession, assertNativeHistoryProcesses, parseNativeListeners } from '../src/storage_native_history_guard.js';
 
 const exec = promisify(execFile);
 const [operation, ...args] = process.argv.slice(2);
-const ids = args.filter(a => !a.startsWith('--native='));
+const ids = args.filter(a => !a.startsWith('--'));
+if (args.some(a => a.startsWith('--') && !a.startsWith('--native=') && !a.startsWith('--native-history-only='))) throw Error('Unknown maintenance option');
 const nativeIds = new Map(args.filter(a => a.startsWith('--native=')).map(a => {
   const m = a.match(/^--native=(s_[a-zA-Z0-9_-]+):([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/);
   if (!m || operation !== 'freeze' || !ids.includes(m[1])) throw Error('Invalid explicit native history');
   return [m[1], m[2]];
 }));
+const historyOnly = args.filter(a => a.startsWith('--native-history-only=')).map(a => a.slice('--native-history-only='.length));
+if (historyOnly.length && (operation !== 'freeze' || historyOnly.length !== 1 || ids.length !== 1
+    || historyOnly[0] !== ids[0] || !nativeIds.has(ids[0]))) throw Error('Native-history maintenance requires exactly one explicit session and native identity');
 if (!['freeze', 'park', 'thaw'].includes(operation) || (operation === 'freeze' && !ids.length)
     || ids.some(id => !/^s_[a-zA-Z0-9_-]+$/.test(id))) throw Error('Usage: storage-maintenance.mjs freeze SID... | park SID... | thaw');
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
@@ -37,6 +43,19 @@ function descendants(table, roots) {
   const selected = new Set(roots); let changed;
   do { changed = false; for (const p of table.values()) if (selected.has(p.parent) && !selected.has(p.pid)) { selected.add(p.pid); changed = true; } } while (changed);
   return [...selected].map(pid => table.get(pid)).filter(Boolean);
+}
+async function commandIdentities(family) {
+  const { stdout } = await exec('/bin/ps', ['-p', family.map(p => p.pid).join(','), '-o', 'pid=,uid=,comm='], { timeout: 10_000 });
+  return new Map(stdout.trim().split('\n').map(line => {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!m) throw Error('Cannot verify protected process identity');
+    return [Number(m[1]), { uid: Number(m[2]), executable: m[3] }];
+  }));
+}
+async function listeningProcesses(family) {
+  const result = await exec('/usr/sbin/lsof', ['-nP', '-a', '-p', family.map(p => p.pid).join(','), '-iTCP', '-sTCP:LISTEN', '-Fpn'],
+    { timeout: 10_000 }).catch(e => { if (e.code === 1 && !e.stderr?.trim()) return { stdout: '' }; throw e; });
+  return parseNativeListeners(result.stdout);
 }
 let job = readStorageMaintenance();
 async function save() { job.updatedAt = Date.now(); await durableJson(storageMaintenanceFile, job); }
@@ -68,8 +87,12 @@ try {
     if (ids.some(id => job?.sessions.some(s => s.id === id && s.phase !== 'complete'))) throw Error('A selected session already belongs to this maintenance job');
     const selected = ids.map(id => {
       const s = session(id);
-      if (!s || !['working', 'waiting'].includes(s.desired_status) || /\/proxy(?:\/|$)/.test(s.project_path || '')) throw Error('Session is not eligible: ' + id);
+      const nativeHistoryOnly = historyOnly.includes(id);
+      if (nativeHistoryOnly) assertNativeHistorySession(s, nativeIds.get(id), join(homedir(), 'proxy'));
+      if (!s || !['working', 'waiting'].includes(s.desired_status)
+        || /\/proxy(?:\/|$)/.test(s.project_path || '') && !nativeHistoryOnly) throw Error('Session is not eligible: ' + id);
       return { id, tmux: s.tmux, token: randomUUID(), phase: 'prepared',
+        ...(nativeHistoryOnly ? { nativeHistoryOnly: true } : {}),
         status: s.status, desired_status: s.desired_status, last_activity: s.last_activity,
         tool: s.tool, codex_uuid: s.codex_uuid, claude_transcript: s.claude_transcript,
         worktree_path: s.worktree_path, project_path: s.project_path };
@@ -82,7 +105,9 @@ try {
     if (owned.some(p => p.pid === process.pid)) throw Error('Cannot freeze this controller; use a detached controller for its own session');
     const backup = join(DATA_DIR, 'storage-maintenance-evidence', randomUUID());
     await mkdir(backup, { recursive: true, mode: 0o700 });
-    const nativeFiles = await openFiles([join(process.env.HOME, '.codex', 'sessions')]);
+    const nativeRoot = join(homedir(), '.codex', 'sessions');
+    const nativePhysical = await realpath(nativeRoot).catch(e => { if (e.code === 'ENOENT') return nativeRoot; throw e; });
+    const nativeFiles = await openFiles([...new Set([nativeRoot, nativePhysical])]);
     for (const s of selected) {
       const paneRoots = panes.filter(p => p[0] === s.tmux).map(p => Number(p[1]));
       s.rootPids = paneRoots;
@@ -120,6 +145,9 @@ try {
         if (row.type !== 'session_meta' || row.payload?.id !== uuid || !sameStoragePath(row.payload.cwd, s.worktree_path || s.project_path)) throw Error('Explicit native history belongs to another workspace');
         s.codex_uuid = uuid; s.explicitNativeIdentity = true;
       }
+      if (s.nativeHistoryOnly) assertNativeHistoryProcesses({ roots: paneRoots, family: descendants(table, paneRoots),
+        commands: await commandIdentities(descendants(table, paneRoots)), uid: process.getuid(), uuid: s.codex_uuid, openFiles: nativeFiles,
+        listeners: await listeningProcesses(descendants(table, paneRoots)) });
       s.screenBackup = join(backup, s.id + '.terminal.txt');
       await writeFile(s.screenBackup, screen, { mode: 0o600 });
     }
@@ -135,6 +163,11 @@ try {
     for (let round = 0; round < 4; round++) {
       const current = await processes();
       const family = descendants(current, roots);
+      if (historyOnly.length) {
+        if (family.some(p => table.get(p.pid)?.started !== p.started)) throw Error('Protected coding client process tree changed; run thaw before retrying');
+        assertNativeHistoryProcesses({ roots, family, commands: await commandIdentities(family), uid: process.getuid(), uuid: selected[0].codex_uuid,
+          listeners: await listeningProcesses(family) });
+      }
       const fresh = family.filter(p => !job.processes.some(q => q.pid === p.pid && q.started === p.started));
       if (!fresh.length) break;
       for (const p of fresh) {

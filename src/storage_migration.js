@@ -1,7 +1,7 @@
 // Operator-invoked storage cutover primitives. No database writes and no process termination.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { open, rename, symlink, lstat, readFile, writeFile, readlink, realpath, rm, mkdir } from 'node:fs/promises';
+import { open, rename, symlink, lstat, readFile, writeFile, readlink, realpath, rm, mkdir, readdir, chmod } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -157,8 +157,30 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   const held = await lstat(quarantine);
   if (!held.isDirectory() || held.ino !== original.ino || held.dev !== original.dev
       || await readlink(source) !== target) throw Error('Cutover identity changed; local copy retained');
-  await save({ state: 'reclaiming' });
+  await save({ state: 'reclaiming', reclamationPermissions: 'owner-rwx-directories-only' });
+  // Archived build/test outputs sometimes have owner-read-only directories.
+  // Only AFTER verification and the alias switch, make this exact redundant
+  // quarantine traversable/removable. Never follow symlinks or change live files.
+  let writableDirectories = 0;
+  async function prepareDuplicate(directory) {
+    const info = await lstat(directory);
+    if (!info.isDirectory() || info.dev !== original.dev) throw Error('Quarantine directory identity changed; retained');
+    if ((info.mode & 0o700) !== 0o700) {
+      if (info.uid !== process.getuid()) throw Error('Read-only quarantine directory has another owner; retained');
+      await chmod(directory, (info.mode & 0o7777) | 0o700);
+      writableDirectories++;
+    }
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) await prepareDuplicate(join(directory, entry.name));
+    }
+  }
+  await prepareDuplicate(quarantine);
+  await checkUnused([quarantine]);
+  const removable = await lstat(quarantine);
+  if (removable.ino !== original.ino || removable.dev !== original.dev || await readlink(source) !== target) {
+    throw Error('Reclamation identity changed; local duplicate retained');
+  }
   await rm(quarantine, { recursive: true, force: false, maxRetries: 2 });
-  await save({ state: 'complete', completedAt: Date.now(), reclaimedBytes: evidence.bytes, quarantine: null });
+  await save({ state: 'complete', completedAt: Date.now(), reclaimedBytes: evidence.bytes, quarantine: null, writableDuplicateDirectories: writableDirectories });
   return { source, target, files: evidence.files, bytes: evidence.bytes, ephemeralSockets: evidence.ephemeralSockets.length };
 }

@@ -8,6 +8,7 @@ import { renderMarkdown, escapeHtml } from '../web/common.js';
 import { isFileReference, localFilePath } from '../web/file-reference.js';
 import { archivedFile } from './artifact_archive.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
+import { logicalStoragePath, sameStoragePath } from './live_storage.js';
 
 db.exec(`CREATE TABLE IF NOT EXISTS file_render_grants (
   token TEXT PRIMARY KEY, session_id TEXT NOT NULL, entry_path TEXT NOT NULL,
@@ -25,6 +26,7 @@ const types = {
 };
 export function renderedFileMeta(sessionId, target, bytes = 0) {
   if (!/\.(?:html?|md|markdown|svg)$/i.test(target)) return {};
+  target = logicalStoragePath(target);
   let grant = db.prepare('SELECT token FROM file_render_grants WHERE session_id=? AND entry_path=?').get(sessionId, target);
   if (!grant) {
     const token = randomBytes(24).toString('hex');
@@ -42,7 +44,7 @@ export async function serveRenderedFile(req, res, { session, token, asset, resol
   // Re-check the original entry's authorization; a token never grants arbitrary
   // project access. Relative resources are limited to its real containing folder.
   const approved = await resolveFile(session, grant.entry_path);
-  if (!approved || approved.target !== grant.entry_path) return fail(403, 'Preview no longer authorized');
+  if (!approved || !sameStoragePath(approved.target, grant.entry_path)) return fail(403, 'Preview no longer authorized');
   let name;
   try { name = decodeURIComponent(asset); } catch { return fail(400, 'Invalid path'); }
   if (!name || name.includes('\\') || name.includes('\0') || name.split('/').some(p => !p || p.startsWith('.'))) return fail(403, 'Invalid preview path');

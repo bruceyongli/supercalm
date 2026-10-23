@@ -23,6 +23,8 @@ try {
   const before = store.getSession('s_freeze');
   const run = (action, extra = []) => exec(process.execPath, ['bin/storage-maintenance.mjs', action, ...(action === 'freeze' ? ['s_freeze'] : []), ...extra],
     { env: process.env, timeout: 25_000 });
+  await assert.rejects(run('freeze', ['--native-history-only=s_freeze']), /exactly one explicit session and native identity/);
+  await assert.rejects(run('freeze', ['--force']), /Unknown maintenance option/);
   await run('freeze');
   const value = await readFile(heartbeat, 'utf8');
   await new Promise(r => setTimeout(r, 150));
@@ -50,6 +52,8 @@ try {
     'explicit verified native identity supports real headers larger than one read chunk');
   await run('thaw');
   assert.deepEqual(store.getSession('s_freeze'), before);
+  await assert.rejects(run('freeze', [`--native=s_freeze:${native}`, '--native-history-only=s_freeze']), /explicitly selected idle coding session/,
+    'the special flag cannot become a general process-freeze bypass');
   console.log('storage freeze: real SIGSTOP/SIGCONT, exact PID scope, draft snapshot, unchanged session row');
 } finally {
   try { agent.kill('SIGCONT'); agent.kill('SIGTERM'); } catch {}

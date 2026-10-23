@@ -145,6 +145,26 @@ print(json.dumps(m.copy_tree(sys.argv[2],sys.argv[3],sys.argv[4])))`;
   assert.equal(JSON.parse(await readFile(configFile, 'utf8')).mappings[0].active, true);
   assert.deepEqual(states, ['switching', 'switched', 'reclaiming', 'complete']);
   assert.equal(journal.quarantine, null);
+  const readonlySource=join(root,'readonly-source'),readonlyTarget=join(mount,'readonly-copy');
+  await mkdir(join(readonlySource,'locked'),{recursive:true});await mkdir(join(readonlyTarget,'locked'),{recursive:true});
+  for(const directory of [readonlySource,readonlyTarget]) {
+    await writeFile(join(directory,'locked','report.txt'),'preserved read-only report',{mode:0o444});
+    await chmod(join(directory,'locked'),0o555);
+  }
+  // A symlink in the duplicate must not cause chmod in another tree.
+  const untouched=join(root,'not-a-duplicate');await mkdir(untouched);await chmod(untouched,0o555);
+  await symlink(untouched,join(readonlySource,'external'));await symlink(untouched,join(readonlyTarget,'external'));
+  await durableJson(configFile,{version:1,id:'fixture',mount,mappings:[{source:readonlySource,target:readonlyTarget}]});
+  const readonlyInfo=await lstat(readonlySource),readonlyEvidence=await verifyStoragePair(readonlySource,readonlyTarget);
+  const readonlyJournal={id:'readonly-fixture',sourceInode:readonlyInfo.ino,sourceDevice:readonlyInfo.dev};
+  await switchStorageRoot({source:readonlySource,target:readonlyTarget,configFile,journal:readonlyJournal,
+    save:async change=>Object.assign(readonlyJournal,change),evidence:readonlyEvidence,
+    checkUnused:async()=>{},checkMounted:async()=>{}});
+  assert.equal(readonlyJournal.state,'complete');assert.equal(readonlyJournal.writableDuplicateDirectories,1);
+  assert.equal((await lstat(join(readonlyTarget,'locked'))).mode&0o777,0o555,'live Spark permissions remain untouched');
+  assert.equal((await lstat(untouched)).mode&0o777,0o555,'never traverse an external symlink during duplicate reclamation');
+  assert.equal(await readFile(join(readonlySource,'locked','report.txt'),'utf8'),'preserved read-only report');
+  await chmod(join(readonlyTarget,'locked'),0o755);await chmod(untouched,0o755); // Own fixture cleanup only.
   if (process.platform === 'darwin' && process.getgroups().includes(12) && process.getgid() !== 12) {
     const a = join(root, 'groups-source'), b = join(root, 'groups-target');
     await mkdir(a); await mkdir(b); await writeFile(join(a, 'plain.txt'), 'same content'); await writeFile(join(b, 'plain.txt'), 'same content');

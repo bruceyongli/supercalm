@@ -100,12 +100,21 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
   fingerprints and no open source/target handles. A durable journal precedes alias activation; only
   the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.
+  Read-only duplicate directories gain owner permissions only after verification and alias switch;
+  permissions on live Spark files remain intact. File previews, render tokens and voice grounding
+  retain logical path identity only through intact registered mappings, never arbitrary symlinks.
   `bin/storage-maintenance.mjs freeze SID...|park SID...|thaw` is explicit operator maintenance, not Stop: snapshot
   terminals/native identity, fence input/launch/recovery/hooks/supervision, and SIGSTOP only the selected
   process families. Thaw identity-checks recorded PIDs; interactive TTYs use exact-conversation
   restart (SIGCONT alone can strand the CLI behind its job-control shell). Keep the fence until
   actual input readiness, and archive visible unsent drafts without submitting them.
-  Never freeze its own controller or the proxy.
+  Never freeze its own controller or the proxy fleet. Only with explicit operator approval,
+  `freeze SID --native-history-only=SID --native=SID:UUID` can pause one idle proxy-project
+  coding client for shared-history relocation. It must own that exact recorded conversation;
+  the process family must be only its shell, Codex and optional isolated stdio DevTools client,
+  with no browser/task/service children or public/service listeners (Codex's own loopback
+  ephemeral control socket is allowed). Recheck
+  this boundary before every signal; no proxy code, project storage, or fleet process is in scope.
   A pause does not release cwd/file descriptors: restart affected owners before a guarded cutover;
   neither a frozen process nor a successful copy authorizes deletion of an in-use local tree.
   Park/restart uses local nonce-bound handlers and verified exact native conversation IDs, never
