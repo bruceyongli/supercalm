@@ -82,7 +82,7 @@ try {
         assert.equal(await page.evaluate(() => window.statusNavigationSentinel), true, 'count navigation retains the current document');
         assert.equal(await page.locator('[data-status-result]').count(), 1);
         assert.equal(await blockedLink.getAttribute('aria-current'), 'page');
-        assert.match(await page.locator('[data-status-result]').textContent(), /SemaMorph.*57d ago[\s\S]*Model at capacity/);
+        assert.match(await page.locator('[data-status-result]').textContent(), /SemaMorph.*57d ago[\s\S]*model at capacity/i);
         assert.equal(await page.locator('[data-status-result]').getAttribute('href'), 'session?id=s_old_blocked');
         if (width === 390) {
           assert.equal(await page.locator('body').evaluate(el => el.classList.contains('dk-drawer')), false, 'navigation closes the phone drawer');

@@ -1,6 +1,6 @@
 import { stripAnsi } from './util.js';
 import { claudeTerminalFrame, claudeBackgroundWork, getClaudeLifecycle } from './claude_lifecycle.js';
-import { detectProviderIssue, providerIssueMessage } from './provider_status.js';
+import { detectProviderIssue, providerIssueMessage, providerIssueFromError } from './provider_status.js';
 
 // PURE terminal-pattern classifier — no store/sessions/server imports, so it is unit-testable without
 // booting the service. The poll-loop wiring (setClassifier) lives in detect.js, which re-exports this.
@@ -344,7 +344,8 @@ export function classify({ session, snap, idleMs, authGraceUntil, claudeActivity
     providerIssue,
   };
   const recentHook = hs && Date.now() - hs.ts < HOOK_TTL_MS;
-  if (recentHook && (hs.attention || hs.error)) return { status: hs.status, question: hs.question, authNeeded: hs.authNeeded };
+  if (recentHook && (hs.attention || hs.error)) return { status: hs.status, question: hs.question, authNeeded: hs.authNeeded,
+    ...(hs.error ? { providerIssue: providerIssueFromError(`${hs.error} ${hs.question || ''}`) } : {}) };
   // A completed Claude response can quote approval prompts or spinner glyphs. The live menu/footer
   // and typed hooks are authoritative; prose ABOVE an idle composer is not an actionable selector.
   if (!frame && PROMPT_RX.some((rx) => rx.test(tailStr))) return { status: 'waiting', question: questionFrom(text, session.tool === 'claude') };
@@ -357,7 +358,8 @@ export function classify({ session, snap, idleMs, authGraceUntil, claudeActivity
   const lifecycle = session.tool === 'claude' ? getClaudeLifecycle(session.id) : null;
   if ((lifecycle?.attention || lifecycle?.failure) && session.status === 'waiting') return {
     status: 'waiting', question: session.question || lifecycle.message || lifecycle.last_assistant_message || null,
-    ...(lifecycle.failure ? { authNeeded: /^(?:authentication_failed|cloud_credential_error)$/.test(lifecycle.failure) } : {}),
+    ...(lifecycle.failure ? { authNeeded: /^(?:authentication_failed|cloud_credential_error)$/.test(lifecycle.failure),
+      providerIssue: providerIssueFromError(`${lifecycle.failure} ${lifecycle.error_details || ''}`) } : {}),
   };
   const bg = claudeBackgroundWork(lifecycle);
   // A live native task count has no ten-minute inactivity limit: quiet acceptance runs can take

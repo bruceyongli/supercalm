@@ -8,6 +8,7 @@ import { rememberClaudeHook, normalizeClaudeHook } from './claude_lifecycle.js';
 import { claudeSettingsPath } from './hookcfg.js';
 import { flagOn } from './flags.js';
 import { claudeResumeId } from './claude_transcripts.js';
+import { providerIssueFromError } from './provider_status.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
@@ -84,6 +85,7 @@ function handle(tool, b, res) {
           noteAgentStatus(sid, r.status, r.question, { source: 'hook', activityBump: r.activity !== false,
             forceAttention: (event === 'Stop' && !!payload.last_assistant_message) || event === 'StopFailure' || !!r.attention,
             promptId: r.state.attention_id || payload.tool_use_id || payload.elicitation_id,
+            providerIssue: event === 'StopFailure' ? providerIssueFromError(`${payload.error} ${payload.error_details}`) : null,
             extra: { tool, event, notification_type: payload.notification_type } });
         }
       } else if (WAITING_EVENT.test(event)) {

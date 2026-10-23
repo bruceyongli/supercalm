@@ -1,12 +1,14 @@
 // Shared by desktop, phone/PWA, session header and browser identity. The CLI can remain alive while
 // its provider is blocked; don't project that as a dead session or a question waiting for an answer.
+import { providerIssueInfo } from './provider-issue.js';
 export function sessionIndicator(session = {}) {
   const issue = session.provider_issue;
-  if (['working', 'waiting'].includes(session.status) && issue?.code === 'capacity') {
-    if (issue.phase === 'blocked') return { state: 'error', label: 'Model at capacity',
-      detail: 'Blocked: model at capacity. Retry later or choose another model.', dot: 'error', color: '#f85149', blocked: true };
+  const info = providerIssueInfo(issue);
+  if (['working', 'waiting'].includes(session.status) && info) {
+    if (issue.phase === 'blocked') return { state: 'error', label: info.title,
+      detail: `Blocked: ${info.title[0].toLowerCase()}${info.title.slice(1)}. ${info.advice}`, dot: 'error', color: '#f85149', blocked: true };
     if (issue.phase === 'retrying') return { state: 'retrying', label: 'Retrying',
-      detail: 'Model at capacity — the CLI is retrying.', dot: 'warn pulse', color: '#d29922', blocked: false };
+      detail: info.message, dot: 'warn pulse', color: '#d29922', blocked: false };
   }
   const state = session.status || 'starting';
   const label = { working: 'Working', waiting: 'Waiting', starting: 'Starting', exited: 'Stopped', error: 'Failed' }[state] || state;

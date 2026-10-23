@@ -5,6 +5,7 @@ import { api, renderMarkdown, renderLinkedText } from './common.js';
 import { localFilePath, isFileReference } from './file-reference.js';
 import { unlockAudio } from './tts-player.js';
 import { requestStory, interruptedStoryRequest } from './story-request.js';
+import { providerIssue, providerIssueInfo, PROVIDER_CONTINUE_TEXT } from './provider-issue.js';
 
 const GLYPH = { you: '❯', sys: '○', work: '⌕', plan: '☑', note: '·', sub: '⑂', edit: '✎', fail: '✗', check: '✓', ship: '⬆', web: '⌾', report: '≡', ask: '?', stop: '⏹' };
 const COLOR = { you: '#58a6ff', sys: '#3a4453', work: '#8a95a5', plan: '#79b8ff', note: '#5c6675', sub: '#9aa7b8', edit: '#d9924e', fail: '#f2554d', check: '#4ecb6c', ship: '#2fd6be', report: '#b9c4d4', ask: '#e2b23e', stop: '#e2b23e' };
@@ -30,6 +31,8 @@ let historyError = '';
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
 let pendingQuestion = null; // terminal-only prompt projected by the API (not part of transcript/cache)
+let liveProviderIssue = null; // fresh live projection, never cached or merged into historical events
+let continueAttempt = null;
 let openSteps = new Set(); // indices with the steps expander open
 let learnedEvidence = new Set(); // event timestamps whose exception produced a saved project rule
 let learnedListenerWired = false;
@@ -364,7 +367,7 @@ function listenRowHtml(ev) {
 function evidenceResultHtml(ev) {
   // Reports and shipped results already explain themselves. Adding an inspector button there merely
   // renders the same prose twice; reserve the entry point for an exception or an actual verification.
-  if (!['fail', 'check'].includes(ev.kind)) return '';
+  if (!['fail', 'check'].includes(ev.kind) || ev.providerIssue) return '';
   const labels = {
     fail: ['Exception', 'Inspect what failed'],
     check: ['Check', 'Inspect verification'],
@@ -530,7 +533,9 @@ function calmEvents(source) {
 
 function feedList() {
   const pend = sendEchoes.filter((e) => e.state === 'pending').map((e) => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
-  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index })));
+  const latest = events.findLast(ev => ev.kind !== 'gap' && ev.kind !== 'sys');
+  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index })).filter(ev =>
+    !(liveProviderIssue && latest && evKey(ev) === evKey(latest) && !ev.indent && ev.providerIssue?.code === liveProviderIssue.code)));
   const liveAsk = pendingQuestion ? [{
     kind: 'ask', title: 'Needs your answer', ts: pendingQuestion.ts,
     body: pendingQuestion.body, options: pendingQuestion.options || [], _livePending: true,
@@ -625,8 +630,69 @@ function render() {
 function updateWorkingStatus() {
   const slot = panelEl?.querySelector('[data-story-status-slot]');
   if (!slot) return;
-  const html = renderWorking();
+  const html = renderProviderIssue() || renderWorking();
   if (slot._statusHtml !== html) { slot._statusHtml = html; slot.innerHTML = html; }
+}
+
+function providerContinueKey(issue = liveProviderIssue) {
+  return issue?.reportId ? `provider-${sid}-${issue.reportId}-${issue.code}` : null;
+}
+
+function renderProviderIssue() {
+  const info = providerIssueInfo(liveProviderIssue);
+  if (!info) return '';
+  const key = providerContinueKey();
+  const attempt = continueAttempt?.key === key ? continueAttempt : null;
+  const retrying = liveProviderIssue.phase === 'retrying';
+  const latest = events.findLast(ev => ev.kind !== 'gap' && ev.kind !== 'sys');
+  const nativeDetail = latest?.providerIssue?.code === liveProviderIssue.code && !latest.indent
+    && liveProviderIssue.code !== 'capacity' ? String(latest.body || '').slice(0, 600) : '';
+  return `<section class="story-provider-issue${retrying ? ' retrying' : ''}" data-story-provider-issue data-provider-code="${esc(liveProviderIssue.code)}" aria-label="Model status">
+    <div class="story-provider-copy" role="status"><strong>${esc(info.title)}</strong>
+      <span>${esc(retrying ? 'The CLI is retrying — no action needed yet.' : info.advice)}</span>
+      ${nativeDetail ? `<details class="story-provider-detail"><summary>Error details</summary><pre>${esc(nativeDetail)}</pre></details>` : ''}
+      ${attempt?.error ? `<span class="story-provider-error" role="alert">${esc(attempt.error)}</span>` : ''}
+      ${attempt?.accepted ? '<span>Continue sent to the session.</span>' : ''}
+    </div>
+    <div class="story-provider-actions">
+      ${info.retryable && key ? `<button type="button" data-story-continue ${attempt?.busy || attempt?.accepted ? 'disabled' : ''} title="Retry the current task with the same model; your draft stays intact">${attempt?.busy ? 'Sending…' : attempt?.accepted ? 'Sent' : 'Continue'}</button>` : ''}
+      ${liveProviderIssue.code === 'authentication' ? '<a href="auth">Sign in</a>' : ''}
+      ${!info.retryable && !retrying && liveProviderIssue.code !== 'authentication' ? '<button type="button" class="story-provider-terminal" data-story-terminal>Terminal</button>' : ''}
+    </div>
+  </section>`;
+}
+
+async function continueProviderTask() {
+  const key = providerContinueKey();
+  if (!key || !providerIssueInfo(liveProviderIssue)?.retryable || continueAttempt?.busy || continueAttempt?.accepted && continueAttempt.key === key) return;
+  const target = sid, generation = storyGeneration, issue = { ...liveProviderIssue }, lifetime = storyAbort.signal;
+  const controller = new AbortController(), signal = controller.signal;
+  const cancel = () => controller.abort();
+  lifetime.addEventListener('abort', cancel, { once: true });
+  const deadline = setTimeout(cancel, 30000); // retain the same receipt identity after a lost/slow response
+  const current = () => sid === target && storyGeneration === generation && !!panelEl;
+  const attempt = continueAttempt = { key, busy: true, error: '', accepted: false };
+  updateWorkingStatus();
+  try {
+    const response = await fetch(`api/session/${encodeURIComponent(target)}/input`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, signal,
+      body: JSON.stringify({ text: PROVIDER_CONTINUE_TEXT, source: 'text', client_message_id: key,
+        provider_retry: { code: issue.code, reportId: issue.reportId }, replace_pending: true }),
+    });
+    const result = await response.json();
+    if (!current()) return;
+    if (!response.ok || result.ok !== true) throw new Error(result.error || 'Continue was not acknowledged. Please try again.');
+    attempt.accepted = true;
+    noteComposerSend(PROVIDER_CONTINUE_TEXT);
+  } catch (error) {
+    if (!current()) return;
+    attempt.error = signal.aborted || error instanceof TypeError || error instanceof SyntaxError
+      ? 'Delivery could not be confirmed. Retry checks the same request without sending it twice.' : error.message;
+  } finally {
+    clearTimeout(deadline); lifetime.removeEventListener('abort', cancel);
+    attempt.busy = false;
+    if (current()) { updateWorkingStatus(); if (!panelEl.hidden) void refreshStory({ followUp: true }); }
+  }
 }
 
 export async function loadEarlierStory() {
@@ -864,11 +930,14 @@ async function refreshStoryNow({ quiet, flight }) {
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
     pendingQuestion = r.pendingQuestion || null;
+    liveProviderIssue = ['working', 'waiting'].includes(r.status) && providerIssue(r.providerIssue)
+      ? { ...providerIssue(r.providerIssue), reportId: r.providerIssue.reportId || null } : null;
     reconcileEchoes(); // pending sends whose transcript event just arrived flip to ✓ read
     // re-render when anything user-visible changes: count, answers landing, a cluster/fail meta update
     // on the last events (count alone left stale ✓/recovered states), the live status line changing,
     // or a composer echo's unread→read state moving.
     const sig = JSON.stringify(events) + ':' + working
+      + ':' + JSON.stringify(liveProviderIssue)
       + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig || !panelEl.querySelector('.story-feed')) { lastSig = sig; render(); }
@@ -900,6 +969,7 @@ export function destroyStoryView(sessionId) {
   persistScroll(); feedResizeObserver?.disconnect(); feedResizeObserver = null;
   liveUpdates?.close(); liveUpdates = null; pauseStoryRequests();
   storyGeneration++; panelEl = null; sid = null; catchup = null;
+  liveProviderIssue = null; continueAttempt = null;
   clearTimeout(feedPersistT);
 }
 
@@ -922,6 +992,8 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
     panel.addEventListener('click', (e) => {
       const b = e.target.closest('[data-story-listen]');
       if (b) onListenTap(b.dataset.evkey);
+      if (e.target.closest('[data-story-continue]')) void continueProviderTask();
+      if (e.target.closest('[data-story-terminal]')) window.dispatchEvent(new CustomEvent('aios:story-terminal', { detail: { sessionId: sid } }));
     });
   }
   if (!learnedListenerWired) {
@@ -935,7 +1007,7 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
+  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; liveProviderIssue = null; continueAttempt = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
   if (remounting) restoreScrollPreference();
   // Instant first paint from the cross-nav cache (hover-prefetched or last-visited), then refresh live.
   if (!showFull) {

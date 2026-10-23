@@ -26,7 +26,7 @@ import { assertAgyCliLoggedIn } from './auth/agy_cli.js';
 import { ensureAgyStatuslineHook } from './agy_statusline.js';
 import { cleanModelId, isNativeModel, modelDisplayLabel, modelSupportsFast, routeForModel, listProxyModels } from './model_catalog.js';
 import { projectSession, sessionStatusPayload } from './session_projection.js';
-import { providerIssue as readProviderIssue, providerIssueMessage } from './provider_status.js';
+import { providerIssue as readProviderIssue, providerIssueMessage, providerRetryMatches, detectProviderIssue } from './provider_status.js';
 import { generateSessionMap, getSessionMap, sessionMapOptions } from './session_map.js';
 import { getSessionSpace, ensureSessionSpace, sourceSliceFor, startSpaceBuilder, kickLabels } from './session_space.js';
 import { labelStats, setLabeling, labelConfig, setLabelConfig } from './session_labels.js';
@@ -2148,8 +2148,10 @@ async function pollOnce() {
     // DEGRADED marker (Phase 2, A8; session_errors.js — the same classifier the supervisor's episode
     // machinery uses): a RETRYABLE API wall (429/529/transient) needs TIME, not the operator — flag it
     // and the queue skips it until the screen recovers. billing/permission/auth stay visible (operator
-    // territory). Scanned only when the pane changed; written only on flip.
-    if (changed) {
+    // territory). Scanned only when the pane changed; written only on flip. Typed provider issues
+    // below own their metadata: stopped failures stay visible, explicit retries alone are degraded.
+    // Do not let the legacy scanner and applyStatus alternate 1/0 on every terminal repaint.
+    if (changed && !readProviderIssue(s.provider_issue) && !detectProviderIssue(snap, { tool: s.tool })) {
       const errLine = detectSessionError(snap.slice(-4000));
       const cls = errLine ? classifyErrorType(errLine) : null;
       const wantDegraded = errLine && ['rate_limit', 'overloaded', 'transient', 'generic'].includes(cls) ? 1 : 0;
@@ -2472,7 +2474,8 @@ function applyAuthNeeded(s) {
   const summary = reauthSummary(s);
   const question = reauthQuestion(s);
   const patch = {};
-  if (s.provider_issue) patch.provider_issue = null;
+  const issue = JSON.stringify({ code: 'authentication', phase: 'blocked' });
+  if (s.provider_issue !== issue) patch.provider_issue = issue;
   if (s.status !== 'waiting') patch.status = 'waiting';
   if (s.status !== 'waiting') patch.status_reason = 'auth-needed';
   if (s.summary !== summary) patch.summary = summary;
@@ -3743,7 +3746,7 @@ export async function deliverReply(sid, text, options = {}) {
     if (accepted.text !== text || accepted.source !== source) return { idempotencyConflict: true };
     return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
   }
-  const fingerprint = JSON.stringify([text, source, options.segments || null]);
+  const fingerprint = JSON.stringify([text, source, options.segments || null, options.providerRetry || null]);
   const pending = pendingOperatorInputs.get(key);
   if (pending) return pending.fingerprint === fingerprint ? pending.promise : { idempotencyConflict: true };
   // Publish before the first asynchronous pane check. Concurrent retries share both native delivery
@@ -3753,10 +3756,12 @@ export async function deliverReply(sid, text, options = {}) {
   return promise;
 }
 
-async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false, clientMessageId = null } = {}) {
+async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, segments = null, replacePendingDraft = false, clientMessageId = null, providerRetry = null } = {}) {
   const deliveryStarted = now();
   const s = store.getSession(sid);
   if (!s) return { missing: true };
+  const staleProviderRetry = () => providerRetry && !providerRetryMatches(store.getSession(sid), getLatestAttentionReport(sid), providerRetry);
+  if (staleProviderRetry()) return { providerIssueChanged: true };
   // graceful when the pane is gone (stopped/killed) — tell the caller to offer resume
   const presence = await sessionLiveness.probe(s.tmux);
   if (presence === 'unknown') throw sessionHealthError();
@@ -3772,6 +3777,9 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
     return { stopped: true };
   }
   const checkpoint = await projectCheckpoint(s).catch(() => null);
+  // The agent or another device may have progressed while liveness/checkpoint I/O was in flight.
+  // A stale warning must never enqueue an extra Continue into healthy work or a new question.
+  if (staleProviderRetry()) return { providerIssueChanged: true };
   const recordDelivery = (receipt) => {
     try {
       store.addEvent(sid, 'input-delivery', {
@@ -3836,6 +3844,10 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   if (b.client_message_id != null && (typeof b.client_message_id !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(b.client_message_id))) {
     return json(res, 400, { error: 'invalid client message identity' });
   }
+  if (b.provider_retry != null && (!b.client_message_id || !readProviderIssue({ ...b.provider_retry, phase: 'blocked' })
+      || !Number.isSafeInteger(b.provider_retry.reportId) || b.provider_retry.reportId <= 0)) {
+    return json(res, 400, { error: 'invalid provider retry identity' });
+  }
   const attachments = normalizeAttachmentMeta(b.attachments);
   const text = textWithAttachmentBlock(b.text, attachments);
   if (!text.trim()) return json(res, 400, { error: 'text required' });
@@ -3844,7 +3856,9 @@ route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
     attachments: attachments.length,
     replacePendingDraft: b.replace_pending === true,
     clientMessageId: b.client_message_id || null,
+    providerRetry: b.provider_retry || null,
   });
+  if (r.providerIssueChanged) return json(res, 409, { error: 'The session has moved on from this error. Story is refreshing; no extra message was sent.', reason: 'provider-issue-changed', inputBlocked: true });
   if (r.idempotencyConflict) return json(res, 409, { error: 'This send identity already belongs to a different message.', reason: 'idempotency-conflict', inputBlocked: true });
   if (r.stopped) return json(res, 409, { error: 'session has stopped — resume it to continue', stopped: true });
   if (r.inputBlocked) return json(res, 409, {

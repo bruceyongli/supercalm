@@ -36,6 +36,7 @@
 
 import { codexQuestionCall, questionMirror } from './codex_question.js';
 import { claudeQueuedUser, claudeSystemInput } from './claude_lifecycle.js';
+import { providerIssueFromError, providerIssueInfo } from './provider_status.js';
 
 const CLUSTER_WINDOW_MS = 90_000;   // same-class calls within 90s merge into one work block
 const GAP_MIN_MS = 10 * 60_000;     // idle > 10 min renders a gap divider
@@ -269,6 +270,11 @@ function atomsFromCodex(lines) {
       const t = p.type;
       if (t === 'user_message') pushYou(ts, p.message);
       else if (t === 'task_started') { turnId = p.turn_id || null; recentAssistant = []; }
+      else if (t === 'error' || t === 'stream_error') {
+        const text = typeof p.message === 'string' ? p.message : p.error?.message || p.error || '';
+        const issue = providerIssueFromError(text, { retrying: t === 'stream_error' && p.will_retry === true });
+        atoms.push({ ts, kind: 'fail', title: providerIssueInfo(issue).title, text: providerFailureText(text), providerIssue: issue });
+      }
       else if (t === 'agent_message') pushAssistant(ts, p.message, p.phase, 'event', p.id, p.turn_id || turnId);
       else if (t === 'item_completed' && p.item?.type === 'AgentMessage') {
         pushAssistant(ts, textOf(p.item.content), p.item.phase, 'item', p.item.id, p.turn_id || turnId);
@@ -470,8 +476,10 @@ function atomsFromClaude(lines) {
         : (Array.isArray(j.message.content) ? j.message.content : []);
       const reason = j.message.stop_reason;
       if (j.isApiErrorMessage) {
-        atoms.push({ ts, kind: 'fail', title: 'Claude could not complete its response',
-          text: claudeFailureSummary(textOf(content)), indent, messageId: j.message.id });
+        const text = textOf(content);
+        const issue = providerIssueFromError(text);
+        atoms.push({ ts, kind: 'fail', title: providerIssueInfo(issue).title,
+          text: providerFailureText(text), providerIssue: issue, indent, messageId: j.message.id });
         continue;
       }
       const messageId = j.message.id ? `${j.message.id}|${indent}` : null;
@@ -565,6 +573,14 @@ function atomsFromClaude(lines) {
   return atoms;
 }
 
+function providerFailureText(output) {
+  const text = typeof output === 'string' ? output : String(output?.message || output?.type || 'Provider returned an unknown error.');
+  return text.replace(/\bBearer\s+[^\s"',}]+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}/g, '[redacted]')
+    .replace(/((?:api[_-]?key|access_token|refresh_token|authorization)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi, '$1[redacted]')
+    .slice(0, 600);
+}
+
 function claudeFailureSummary(output) {
   const lines = deMd(output).split('\n').map(line => line.trim()).filter(Boolean);
   const blocked = lines.find(line => /^(?:Error: )?Blocked:.*followed by:/i.test(line));
@@ -600,7 +616,7 @@ function buildStory(atoms) {
       continue;
     }
     flush();
-    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, steps: a.steps, toolId: a.toolId, messageId: a.messageId, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, attachments: a.attachments, answered: a.answered, answeredWith: a.answeredWith, cancelled: a.cancelled, requiresResult: a.requiresResult, reportCandidate: a.reportCandidate });
+    out.push({ kind: a.kind, ts: a.ts, title: a.title, body: a.text, steps: a.steps, toolId: a.toolId, messageId: a.messageId, providerIssue: a.providerIssue, options: a.options, askId: a.askId, askMode: a.askMode, questionId: a.questionId, questionIndex: a.questionIndex, multiSelect: a.multiSelect, exitCode: a.exitCode, indent: a.indent, chips: a.chips, planItems: a.planItems, images: a.images, attachments: a.attachments, answered: a.answered, answeredWith: a.answeredWith, cancelled: a.cancelled, requiresResult: a.requiresResult, reportCandidate: a.reportCandidate });
   }
   flush();
 

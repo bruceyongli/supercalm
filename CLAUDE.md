@@ -271,14 +271,21 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
   `~/omni/docs/voice-integration.md`, `~/omni/docs/spark-testing-policy.md` and proxy routing guidance.
 
 ## Detection model (`detect.js`)
-Provider capacity is a typed `provider_issue`, separate from process lifecycle. A terminal-native
-"Selected model is at capacity" failure displays a red blocked indicator across the rail, dashboard,
-session header, browser identity and phone/PWA; the CLI remains alive. Explicit native retry output
+Provider failures are typed `provider_issue` values, separate from process lifecycle. Native capacity,
+usage-limit, overloaded/network, authentication, billing, access, context and invalid-model/request
+failures display a red blocked indicator across the rail, dashboard, session header, browser identity
+and phone/PWA; the CLI remains alive. Explicit native retry output
 displays Retrying without a new attention card. Parse only live output, not composer drafts, quoted
 fixtures or an older failure followed by healthy output. Persist one report per failure episode,
 preserve cross-device dismissal/activity clocks, and clear the warning on progress, a new native
 question, accepted input or relaunch. Never send keys, switch models or restart a session for this
-display feature. Capacity summaries are deterministic; a late LLM summary cannot overwrite them.
+display feature. Provider summaries are deterministic; a late LLM summary cannot overwrite them.
+Story projects fresh provider state outside its transcript/page cache, including terminal-only errors;
+typed native API failures stay in history, distinct from failed tools or quoted error fixtures.
+Its explicit Continue button uses `/input` and the normal acknowledged delivery path, with an
+idempotency key shared across devices and a report-id/code guard before delivery. Never enqueue from a
+stale error card, clear the web draft/attachments, silently switch models, or restart the CLI. Show
+corrective guidance instead of blind retries for auth/billing/access/context/model/request failures.
 Sidebar status counts are compact links to matching session lists. Use the same status predicate for
 the count and its destination; include older sessions and dismissed reports without restoring attention
 or advancing activity. Explicit status links survive phone reloads; ordinary phone Home stays unchanged.

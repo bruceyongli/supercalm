@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const assets = new Map(['views/health.js', 'health-storage.js', 'health-resources.js', 'common.js', 'markdown-inline.js', 'file-reference.js']
+const assets = new Map(['views/health.js', 'health-storage.js', 'health-resources.js', 'common.js', 'session-indicator.js', 'provider-issue.js', 'markdown-inline.js', 'file-reference.js']
   .map(name => [`/${name}`, readFileSync(new URL(`../web/${name}`, import.meta.url))]));
 const component = { label: 'Terminal log', path: '/private/fixture/logs/s_killed.log', exclusive_bytes: 4096, bytes: 4096 };
 const rows = [

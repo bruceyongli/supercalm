@@ -143,8 +143,9 @@ try {
   await hook('ElicitationResult', { elicitation_id: 'source-login', action: 'cancel' });
   assert.equal(store.getSession(id).status, 'working', 'cancelled native elicitation returns control to Claude, not an unanswered question');
   await hook('StopFailure', { error: 'overloaded', error_details: 'The provider is overloaded.' });
-  assert.equal(store.getSession(id).degraded, 1);
-  assert.match(store.getSession(id).question, /provider is overloaded/);
+  assert.equal(store.getSession(id).degraded, 0, 'a typed blocker remains visible; only an explicit native retry hides it from attention');
+  assert.deepEqual(JSON.parse(store.getSession(id).provider_issue), { code: 'overloaded', phase: 'blocked' });
+  assert.match(store.getSession(id).question, /Provider overloaded/);
   const priorBinding = store.getSession(id).claude_transcript;
   const stale = await post('claude', { session: id, event: 'Stop', sent_at: 1,
     native_session_id: '11111111-2222-3333-4444-555555555555',
@@ -189,7 +190,7 @@ try {
   console.log(JSON.stringify({ handler: 'POST /api/hook/claude', source: 'scripts/aios-claude-hook.sh',
     nativeSession: native, backgroundTasksPreserved: captured.background_tasks.length,
     foregroundStop: 'working', idleWithBackground: 'working', helperStop: 'parent unchanged',
-    permission: 'durable attention', finalReport: 'exact last_assistant_message', apiFailure: 'degraded',
+    permission: 'durable attention', finalReport: 'exact last_assistant_message', apiFailure: 'typed provider blocker',
     staleTranscriptRebind: 'rejected', repeatedStopAndIdle: 'no activity/attention',
     permissionContext: 'tool + command', dismissalDuringFormatting: 'retained', codexHooks: 'unchanged' }));
   cleanup();

@@ -16,7 +16,7 @@ const json = (res, body) => { res.writeHead(200, { 'content-type': 'application/
 const server = createServer((req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   if (req.method === 'POST') mutations.push(path);
-  if (path === '/aios/api/events') {
+  if (path === '/aios/api/events' || path.endsWith('/story/updates')) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     res.write(': ready\n\n'); streams.add(res); req.on('close', () => streams.delete(res)); return;
   }
@@ -72,6 +72,10 @@ try {
         assert.equal(await page.locator('[data-dk-row][data-sid="s_capacity"] .dk-status').textContent(), 'Model at capacity');
         assert.equal(await page.locator('[data-dk-card][data-sid="s_capacity"] .dk-card-kind').textContent(), 'BLOCKED');
         assert.equal(await page.evaluate(selector => originalDot === document.querySelector(selector), rail), true, 'live patches retain the status node');
+        update({ provider_issue: { code: 'billing', phase: 'blocked' } });
+        await page.waitForFunction(() => document.querySelector('[data-dk-row][data-sid="s_capacity"] .dk-status')?.textContent === 'Provider credits required');
+        assert.match(await page.locator('[data-dk-card][data-sid="s_capacity"]').innerText(), /credits or billing/);
+        assert.doesNotMatch(await page.locator('[data-dk-card][data-sid="s_capacity"]').innerText(), /capacity/i, 'other provider failures do not inherit capacity-only copy');
         update({ status: 'working', provider_issue: { code: 'capacity', phase: 'retrying' }, category: null, stage: 'executing' });
         await page.waitForFunction(() => document.querySelector('[data-dk-row][data-sid="s_capacity"] .dk-status')?.textContent === 'Retrying');
         assert.equal(await page.locator('[data-dk-card][data-sid="s_capacity"]').count(), 0, 'automatic retry removes the attention card');
@@ -81,7 +85,7 @@ try {
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
         if (width === 1440) {
           update({ status: 'waiting', provider_issue: { code: 'capacity', phase: 'blocked' } });
-          await page.goto(base + 'session?id=s_capacity', { waitUntil: 'domcontentloaded' });
+          await page.locator('[data-dk-sess][data-sid="s_capacity"]').click();
           await page.waitForFunction(() => document.querySelector('#s-status')?.textContent === 'Model at capacity');
           assert.equal(await page.locator('#s-status').evaluate(el => getComputedStyle(el).color), 'rgb(242, 85, 77)');
         }

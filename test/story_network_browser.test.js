@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFileSync } from 'node:fs';
 import { chromium, webkit } from 'playwright';
 
-const assets = new Map(['story-view.js', 'story-request.js', 'story-live.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
+const assets = new Map(['story-view.js', 'story-request.js', 'story-live.js', 'common.js', 'session-indicator.js', 'provider-issue.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 const states = new Map();
 const payload = (sid, revision, padding = '') => JSON.stringify({ ok: true, status: 'waiting', events: [

@@ -12,6 +12,7 @@ import { observeOnTheGoNeeds } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
 import { resourceLineHtml, mountSessionResources } from './session-resources.js';
 import { sessionIndicator, sessionsByStatus } from './session-indicator.js';
+import { providerIssueInfo } from './provider-issue.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -185,10 +186,11 @@ export function dismissedAttention() {
 // task/title, latest curated summary, and current question; do not pretend to know a deeper outcome
 // when those fields do not contain one.
 export function sessionAttentionPreview(s, { optionCount = 0 } = {}) {
+  const provider = providerIssueInfo(s?.provider_issue);
   if (sessionIndicator(s).blocked) return {
     state: 'Blocked', awaiting: true, request: cleanAttentionText(s.title || s.project || s.id, 180),
-    doing: '', outcome: 'The selected model is at capacity; work cannot continue.',
-    need: 'Retry later or choose another model.', actionSource: 'provider',
+    doing: '', outcome: `${provider.title}.`,
+    need: provider.advice, actionSource: 'provider',
     attentionMode: 'action', next: 'The session is still alive. Dismiss only clears this report.',
   };
   const status = String(s?.status || 'stopped');

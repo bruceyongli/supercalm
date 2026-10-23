@@ -9,7 +9,7 @@ import { readStoryPage, readStoryImage } from '../src/story_reader.js';
 
 const root = await mkdtemp(join(tmpdir(), 'aios-story-images-browser-'));
 const file = join(root, 'native.jsonl');
-const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
+const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'session-indicator.js', 'provider-issue.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 // A valid raster with padding models native screenshots without a generated/binary fixture in git.
 const png = Buffer.concat([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'), Buffer.alloc(400000)]);

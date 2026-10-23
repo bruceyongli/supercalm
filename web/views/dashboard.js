@@ -133,7 +133,7 @@ function renderInbox(home) {
     $('#dk-status-count').textContent = sessions.length;
     reconcile($('#dk-status-results'), sessions.length ? sessions.map(s => {
       const indicator = sessionIndicator(s);
-      const detail = indicator.blocked ? 'Model at capacity. Retry later or choose another model.' : s.summary || indicator.detail;
+      const detail = indicator.blocked ? indicator.detail : s.summary || indicator.detail;
       return { key: s.id, html: `<a class="dk-status-result" data-status-result data-sid="${esc(s.id)}" href="session?id=${esc(s.id)}">
         <i class="dk-dot ${indicator.dot}" role="img" aria-label="${esc(indicator.detail)}"></i>
         <span class="dk-status-result-body">

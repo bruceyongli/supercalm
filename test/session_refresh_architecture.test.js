@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { mock } from 'node:test';
+import { sessionIndicator } from '../web/session-indicator.js';
 
 const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
 
@@ -96,7 +97,8 @@ const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
   const shell = read('web/shell.js');
   const css = read('web/desktop.css');
   const dash = read('web/views/dashboard.js');
-  assert.match(shell, /s\.status === 'working' \? 'ok pulse'/, 'working rail dots use the slow pulse');
+  assert.match(shell, /sessionIndicator\(s\)\.dot/, 'rail dots use the shared status projection');
+  assert.equal(sessionIndicator({ status: 'working' }).dot, 'ok pulse', 'working rail dots use the slow pulse');
   assert.match(shell, /patchRailSession\(el, fresh\)/, 'sidebar activity patches retain the existing session row');
   assert.match(shell, /syncAttributes\(currentDot, nextDot\)/, 'sidebar status changes patch the connected dot instead of recreating it');
   assert.match(shell, /export async function refreshHome/, 'Needs you exposes an explicit server-truth refresh path');

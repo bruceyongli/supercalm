@@ -8,6 +8,8 @@ const assets = new Map([
   ['/story-view.js', readFileSync(new URL('web/story-view.js', root))],
   ['/story-request.js', readFileSync(new URL('web/story-request.js', root))],
   ['/common.js', readFileSync(new URL('web/common.js', root))],
+  ['/session-indicator.js', readFileSync(new URL('web/session-indicator.js', root))],
+  ['/provider-issue.js', readFileSync(new URL('web/provider-issue.js', root))],
   ['/markdown-inline.js', readFileSync(new URL('web/markdown-inline.js', root))],
   ['/file-reference.js', readFileSync(new URL('web/file-reference.js', root))],
   ['/tts-player.js', readFileSync(new URL('web/tts-player.js', root))],

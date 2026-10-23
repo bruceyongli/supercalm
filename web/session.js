@@ -3359,6 +3359,9 @@ function installFileTarget(target) {
 }
 
 window.addEventListener('aios:insert-reference', (e) => insertComposerReference(e.detail?.text || ''), { signal: _sig });
+window.addEventListener('aios:story-terminal', (e) => {
+  if (e.detail?.sessionId === id) setMainView('terminal');
+}, { signal: _sig });
 
 async function sendInput() {
   // Button disabled alone is not a lock: keyboard sends bypass it, and input/viewport/upload

@@ -107,6 +107,31 @@ try {
   assert.equal(onceTrace().filter(r => r.event === 'accepted').length, 2, 'an intentional new send of identical words is not suppressed');
   assert.equal((await send(onceId, onceText, { client_message_id: '../bad' })).status, 400);
   console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'five concurrent retries plus completed retry', requests: 6, accepted: 1, persisted: 1 }));
+  const { noteAgentStatus } = await import('../src/sessions.js');
+  const { PROVIDER_CONTINUE_TEXT } = await import('../web/provider-issue.js');
+  for (const family of ['codex', 'claude']) {
+    const sid = `s_provider_retry_${family}`;
+    const trace = await start(sid, 'ignore-first', family);
+    noteAgentStatus(sid, 'waiting', null, { source: 'poll', activityBump: false, providerIssue: { code: 'capacity', phase: 'blocked' } });
+    const story = await (await fetch(`http://127.0.0.1:${port}/api/session/${sid}/story`)).json();
+    assert.equal(story.providerIssue.code, 'capacity');
+    assert.ok(story.providerIssue.reportId);
+    const retry = { client_message_id: `provider-${sid}-${story.providerIssue.reportId}-capacity`,
+      provider_retry: { code: 'capacity', reportId: story.providerIssue.reportId }, replace_pending: true };
+    const results = await Promise.all([send(sid, PROVIDER_CONTINUE_TEXT, retry), send(sid, PROVIDER_CONTINUE_TEXT, retry)]);
+    assert.ok(results.every(r => r.status === 200), JSON.stringify(results));
+    assert.equal((await send(sid, PROVIDER_CONTINUE_TEXT, retry)).body.duplicate, true, 'a lost acknowledgement is replayed after the issue clears');
+    assert.deepEqual(trace().filter(r => r.event === 'accepted').map(r => r.text), [PROVIDER_CONTINUE_TEXT]);
+    assert.equal(store.getSession(sid).provider_issue, null);
+    assert.equal((await send(sid, PROVIDER_CONTINUE_TEXT, { ...retry, client_message_id: `${retry.client_message_id}-stale` })).body.reason,
+      'provider-issue-changed', 'a second device cannot retry a superseded failure');
+    noteAgentStatus(sid, 'waiting', null, { source: 'poll', activityBump: false, providerIssue: { code: 'billing', phase: 'blocked' } });
+    const denied = await send(sid, PROVIDER_CONTINUE_TEXT, { ...retry, client_message_id: `${retry.client_message_id}-billing` });
+    assert.equal(denied.status, 409, 'a stale capacity action never retries a new billing/auth problem');
+    assert.equal(trace().filter(r => r.event === 'accepted').length, 1);
+    console.log(JSON.stringify({ family, trace: 'Story live failure -> /input -> deliverReply -> private tmux -> native TUI accepted -> durable receipt',
+      reportId: story.providerIssue.reportId, text: PROVIDER_CONTINUE_TEXT, accepted: 1, duplicateRequests: 3, staleRequest: denied.body.reason, liveSessionsTouched: false }));
+  }
   const asyncId = 's_async_delivery';
   const asyncTrace = await start(asyncId, 'partial-paste', 'codex');
   const uuid = '12345678-1234-1234-1234-123456789abc';

@@ -18,6 +18,8 @@ import { refreshCodexQuestions, overlayCodexQuestions } from './codex_questions.
 import { claudeTerminalFrame } from './claude_lifecycle.js';
 import { createStoryUpdates } from './story_updates.js';
 import { bus } from './bus.js';
+import { providerIssue } from './provider_status.js';
+import { getLatestAttentionReport } from './attention_store.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -192,7 +194,7 @@ const storyUpdates = createStoryUpdates({ bus, resolve: async sid => {
   const source = await storySource(sid);
   if (!source) return null;
   const { s, file } = source;
-  return { file, state: [s.status, s.question, s.summary, file ? null : s.revision] };
+  return { file, state: [s.status, s.question, s.summary, s.provider_issue, file ? null : s.revision] };
 } });
 route('GET', '/api/session/:id/story/image', async (req, res, { id: sid }, url) => {
   try {
@@ -254,7 +256,13 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
         options: terminal?.options?.map((option) => ({ label: option.label })) || [],
       };
     }
-    json(res, 200, { ok: true, ...r, status: s?.status || null, liveStatus, pendingQuestion });
+    // Terminal-only model failures may never appear in the native transcript. Always project fresh
+    // durable state separately from paged/cached history. A report id binds Continue to THIS episode.
+    const current = getSession(sid);
+    const issue = !cursor && ['working', 'waiting'].includes(current?.status) ? providerIssue(current.provider_issue) : null;
+    const liveIssue = issue ? { ...issue, reportId: getLatestAttentionReport(sid)?.id || null } : null;
+    json(res, 200, { ok: true, ...r, status: current?.status || null, liveStatus,
+      pendingQuestion: liveIssue ? null : pendingQuestion, providerIssue: liveIssue });
   } catch (e) {
     json(res, e.code === 'STORY_CURSOR_INVALID' ? 409 : 500, { error: String(e.message || e).slice(0, 300), code: e.code });
   }

@@ -54,6 +54,9 @@ try {
     assert.match(projected.question, /Model at capacity/);
   }
   const home = await request('/api/phone/home');
+  const story = await request(`/api/session/${sid}/story`);
+  assert.deepEqual(story.providerIssue, { code: 'capacity', phase: 'blocked', reportId: home.sessions[0].last_key.id }, 'Story shows a terminal-only failure without needing a native transcript record');
+  assert.equal(story.pendingQuestion, null, 'a provider failure is not a question');
   assert.equal(home.counts.blocked, 1); assert.equal(home.counts.waiting, 0);
   assert.deepEqual(events.at(-1).provider_issue, { code: 'capacity', phase: 'blocked' }, 'live patch includes canonical warning');
   assert.equal(events.at(-1).source, 'poll');
@@ -73,6 +76,7 @@ try {
   assert.equal(retry.sessions[0].category, null, 'automatic retry does not ask the operator a question');
   observe('• Continuing the implementation\nWorking… (2s · esc to interrupt)');
   assert.equal((await request(`/api/session/${sid}?surface=phone`)).provider_issue, null, 'actual progress clears the warning');
+  assert.equal((await request(`/api/session/${sid}/story`)).providerIssue, null, 'fresh Story clears transient metadata outside its cached events');
   assert.equal(store.getSession(sid).model, 'gpt-test');
   assert.equal(store.getSession(sid).last_activity, before.last_activity);
 
