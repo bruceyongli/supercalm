@@ -38,16 +38,21 @@ if (operation === 'merge') {
   }
   console.log(JSON.stringify(await mergeStorageLog(entryFile)));
 } else if (operation === 'start') {
-  if (job) throw Error('An existing log handoff must be finished first');
+  if (job && !['starting', 'spooling'].includes(job.phase)) throw Error('An existing log handoff must be finished first');
   if (mapping.active) throw Error('The log root is already remote');
   const db = new DatabaseSync(DB_PATH, { readOnly: true });
   const sessions = db.prepare('select id,tmux from sessions').all(); db.close();
   const panes = (await exec(TMUX, ['list-panes', '-a', '-F', '#{session_name}|#{pane_id}|#{pane_pipe}'])).stdout.trim().split('\n').map(l => l.split('|'));
-  const handles = await openFiles([LOG_DIR]);
-  job = { version: 1, kind: 'storage-log-handoff', phase: 'starting', id: randomUUID(), entries: [], createdAt: Date.now() };
+  const handles = await openFiles([LOG_DIR, control]);
+  job ||= { version: 1, kind: 'storage-log-handoff', phase: 'starting', id: randomUUID(), entries: [], createdAt: Date.now() };
   for (const s of sessions) {
     const pane = panes.find(p => p[0] === s.tmux);
     if (!pane || pane[2] !== '1') continue;
+    const existing = job.entries.find(e => e.id === s.id);
+    if (existing) {
+      if (existing.pane !== pane[1]) throw Error('A terminal was restarted during log handoff; inspect its saved spool: ' + s.id);
+      continue;
+    }
     const path = join(LOG_DIR, s.id + '.log');
     if (!handles.some(h => h.path === path && h.command === 'cat' && h.descriptor === '1')) throw Error('Terminal tap ownership is not proven: ' + s.id);
     const spool = join(control, s.id + '.spool'), file = join(control, s.id + '.json');
@@ -56,7 +61,10 @@ if (operation === 'merge') {
     await durableJson(file, entry); job.entries.push({ id: s.id, pane: pane[1], file, spool });
   }
   await durableJson(journalFile, job);
-  for (const e of job.entries) await exec(TMUX, ['pipe-pane', '-t', e.pane, `exec cat >> ${shquote(e.spool)}`]);
+  for (const e of job.entries) {
+    if (handles.some(h => h.path === e.spool && h.command === 'cat' && h.descriptor === '1')) continue;
+    await exec(TMUX, ['pipe-pane', '-t', e.pane, `exec cat >> ${shquote(e.spool)}`]);
+  }
   job.phase = 'spooling'; await durableJson(journalFile, job);
   console.log(JSON.stringify({ spooling: job.entries.length, journal: journalFile, agentsRestarted: 0 }));
 } else if (operation === 'finish') {
@@ -76,7 +84,7 @@ if (operation === 'merge') {
       await mergeStorageLog(e.file);
       continue;
     }
-    const command = `${shquote(process.execPath)} ${shquote(fileURLToPath(import.meta.url))} merge ${shquote(e.file)} > ${shquote(e.file + '.receipt')} 2>&1 && exec cat >> ${shquote(entry.target)}`;
+    const command = `AIOS_DATA=${shquote(DATA_DIR)} ${shquote(process.execPath)} ${shquote(fileURLToPath(import.meta.url))} merge ${shquote(e.file)} > ${shquote(e.file + '.receipt')} 2>&1 && exec cat >> ${shquote(entry.target)}`;
     await exec(TMUX, ['pipe-pane', '-t', e.pane, command]);
   }
   console.log(JSON.stringify({ merging: job.entries.length, journal: journalFile, verifyReceiptsBeforeRestart: true }));
