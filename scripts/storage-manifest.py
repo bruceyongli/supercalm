@@ -117,7 +117,7 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
     group_changes = []
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_VERIFY_WORKERS", "8"))))
     pool = ThreadPoolExecutor(max_workers=workers)
-    content_cache, content_lock = {}, Lock()
+    content_cache, metadata_cache, content_lock = {}, {}, Lock()
     content_reads = 0
 
     def content_hash(path, before):
@@ -159,6 +159,30 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
                 future.set_exception(error)
             raise
 
+    def inode_metadata(path, before):
+        # Stored ACLs/xattrs, like file contents, belong to the inode rather than
+        # any one hardlink name. Every name still gets before/after identity checks.
+        key = tuple(signature(before)) if before.st_nlink > 1 and stat.S_ISREG(before.st_mode) else None
+        owner = True
+        if key is not None:
+            with content_lock:
+                future = metadata_cache.get(key)
+                if future is None:
+                    future = metadata_cache[key] = Future()
+                else:
+                    owner = False
+            if not owner:
+                return future.result()
+        try:
+            result = (attributes(path), acl(path))
+            if key is not None:
+                future.set_result(result)
+            return result
+        except BaseException as error:
+            if key is not None:
+                future.set_exception(error)
+            raise
+
     def record(path, relative):
         before = os.lstat(path)
         if before.st_dev != first.st_dev:
@@ -166,9 +190,9 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
         mode = before.st_mode
         if stat.S_ISSOCK(mode) and sockets:
             return before, None, None
-        attrs = attributes(path) if contents or not relative else []
+        attrs, stored_acl = inode_metadata(path, before) if contents or not relative else ([], "")
         meta = [relative, stat.S_IMODE(mode), before.st_uid, before.st_gid,
-                getattr(before, "st_flags", 0), attrs, acl(path) if contents or not relative else ""]
+                getattr(before, "st_flags", 0), attrs, stored_acl]
         normalized = (equivalent_groups or {}).get(before.st_gid)
         if contents and normalized is not None and normalized != before.st_gid:
             # An ordinary owner's copy may not assign a group the owner does not belong
