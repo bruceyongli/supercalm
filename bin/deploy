@@ -167,7 +167,18 @@ if ! printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/n
 fi
 
 echo "==> git push origin $BR (with tags)"
-git push origin "$BR" --follow-tags
+# An interrupted TLS handshake must not require another version bump/browser gate.
+# Retry only the same ordinary (never forced) push; authentication/ref conflicts still
+# fail the release after this small bound, before the running service is restarted.
+push_ok=0
+for push_attempt in 1 2 3; do
+  if git push origin "$BR" --follow-tags; then push_ok=1; break; fi
+  if [ "$push_attempt" -lt 3 ]; then
+    echo "==> push failed; retrying the same release ($push_attempt/3)" >&2
+    sleep "$push_attempt"
+  fi
+done
+if [ "$push_ok" != 1 ]; then echo "error: release push failed; service was not restarted" >&2; exit 1; fi
 
 if [ "$ON_HOST" = 1 ]; then
   # On host itself: the local checkout already has the pushed commit; just refresh deps + restart.
