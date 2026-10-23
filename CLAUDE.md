@@ -91,7 +91,12 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   shows volume and backing-disk headroom separately, and planned roots are not reported as migrated.
   Missing/replaced active aliases or unavailable storage fail closed; never recreate a local fallback.
   `retainDuringMigration` suspends managed cleanup of mapped paths while their originals are copied.
-  `bin/migrate-live-storage.mjs copy|verify` stages and checks data, retaining originals. `cutover`
+  `bin/migrate-live-storage.mjs copy|verify` stages and checks data, retaining originals. After a
+  completed staging pass, `reconcile` scans source ctimes/names to update changed entries without
+  restatting every unchanged destination; it NEVER substitutes for independent verification. Large
+  SHA-256 reads may reuse bounded local proofs only for the same device/inode/ctime/mtime/size/mode/
+  ownership/flags/link-count version; changed files are reread. Git observations disable optional
+  index refreshes/locks, which otherwise churn repository metadata during verification. `cutover`
   requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
   fingerprints and no open source/target handles. A durable journal precedes alias activation; only
   the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.

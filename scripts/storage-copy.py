@@ -61,7 +61,7 @@ def native_copy(source, target, metadata=False):
         raise OSError(ctypes.get_errno(), "Native copy failed", source)
 
 
-def copy_tree(source, target, revisions, allow_sockets=False):
+def copy_tree(source, target, revisions, allow_sockets=False, since=None):
     source, target, revisions = map(os.path.abspath, (source, target, revisions))
     if source == target or target.startswith(source + "/") or source.startswith(target + "/"):
         raise ValueError("Overlapping copy roots")
@@ -70,7 +70,9 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     if revisions.startswith(target + "/") or revisions.startswith(source + "/"):
         raise ValueError("Revisions must be outside both roots")
     device = os.lstat(source).st_dev
-    counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "sockets": 0, "unstableSources": []}
+    if since is not None and (since <= 0 or since > time.time()):
+        raise ValueError("Invalid completed-copy baseline")
+    counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "unchangedSinceBaseline": 0, "sockets": 0, "unstableSources": []}
     hardlinks = {}
     hardlink_lock = Lock()
     last_progress = time.monotonic()
@@ -94,6 +96,15 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         before = os.lstat(src)
         if before.st_dev != device:
             raise ValueError("Nested filesystem: " + rel)
+        unchanged = since is not None and max(before.st_mtime_ns, before.st_ctime_ns) < int(since * 1000000000)
+        if unchanged and stat.S_ISDIR(before.st_mode) and rel:
+            return before, None, sorted(os.listdir(src)), True
+        if unchanged and (stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)):
+            counts["files"] += 1; counts["unchangedSinceBaseline"] += 1
+            stable(src, rel, before, os.lstat(src)); progress()
+            return
+        if since is not None and os.path.realpath(os.path.dirname(dst)) != os.path.dirname(dst):
+            raise ValueError("Staging ancestor changed; refusing writes through a symlink: " + rel)
         try:
             previous = os.lstat(dst)
         except FileNotFoundError:
@@ -108,7 +119,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
             # The coordinator schedules children only after their parent exists.
             # Directory stat/mkdir operations must also overlap network latency;
             # doing them on the traversal thread serialized package-heavy trees.
-            return before, previous, names
+            return before, previous, names, False
         elif stat.S_ISSOCK(before.st_mode) and allow_sockets:
             counts["sockets"] += 1
             retain(dst, rel)
@@ -128,11 +139,11 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                     if not previous or previous.st_ino != first_info.st_ino or previous.st_dev != first_info.st_dev:
                         retain(dst, rel)
                         os.link(first, dst)
-                elif (previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
+                elif (since is None and previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
                       and before.st_size == previous.st_size and int(before.st_mtime) == int(previous.st_mtime)):
                     counts["quickChecked"] += 1
                     copy_metadata(src, dst, source_info=before, target_info=previous)
-                elif (previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
+                elif (since is None and previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
                       and os.readlink(src) == os.readlink(dst)):
                     copy_metadata(src, dst, source_info=before, target_info=previous)
                 else:
@@ -171,10 +182,15 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 print(json.dumps({"progress": counts}), flush=True)
                 last_progress = time.monotonic()
 
-    def finish_directory(src, dst, rel, before, previous):
+    def finish_directory(src, dst, rel, before, previous, unchanged=False):
+        if unchanged:
+            stable(src, rel, before, os.lstat(src)); progress()
+            return
+        if since is not None and os.path.realpath(dst) != dst:
+            raise ValueError("Staging directory changed before reconciliation: " + rel)
         for extra in set(os.listdir(dst)) - set(os.listdir(src)):
             retain(os.path.join(dst, extra), os.path.join(rel, extra))
-        copy_metadata(src, dst, force=previous is None or not rel,
+        copy_metadata(src, dst, force=since is not None or previous is None or not rel,
                       source_info=before, target_info=previous)
         stable(src, rel, before, os.lstat(src))
         progress()
@@ -190,8 +206,8 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 src, dst, rel = pending.pop(future)
                 result = future.result()
                 if result is not None:
-                    before, previous, names = result
-                    directories.append((src, dst, rel, before, previous))
+                    before, previous, names, unchanged = result
+                    directories.append((src, dst, rel, before, previous, unchanged))
                     for name in reversed(names):
                         jobs.appendleft((os.path.join(src, name), os.path.join(dst, name), os.path.join(rel, name)))
         finalized = deque()
@@ -210,7 +226,8 @@ if __name__ == "__main__":
     try:
         if sys.platform != "darwin":
             raise ValueError("Native storage copier requires macOS")
-        print(json.dumps(copy_tree(sys.argv[1], sys.argv[2], sys.argv[3], "--ephemeral-sockets" in sys.argv[4:])))
+        since = next((float(a.split("=", 1)[1]) for a in sys.argv[4:] if a.startswith("--since=")), None)
+        print(json.dumps(copy_tree(sys.argv[1], sys.argv[2], sys.argv[3], "--ephemeral-sockets" in sys.argv[4:], since)))
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

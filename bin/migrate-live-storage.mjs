@@ -11,8 +11,8 @@ import { validateLiveStorage } from '../src/live_storage.js';
 import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
-if (!['copy', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
-  throw new Error('Usage: migrate-live-storage.mjs copy|verify|cutover CONFIG SOURCE');
+if (!['copy', 'reconcile', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
+  throw new Error('Usage: migrate-live-storage.mjs copy|reconcile|verify|cutover CONFIG SOURCE');
 }
 const config = validateLiveStorage(JSON.parse(await readFile(configFile, 'utf8')));
 const source = resolve(sourceArg);
@@ -89,7 +89,11 @@ async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 
 try {
   {
     if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw new Error('Source identity changed; inspect journal before recovery');
-    if (operation === 'copy') {
+    if (operation === 'copy' || operation === 'reconcile') {
+      const incremental = operation === 'reconcile';
+      if (incremental && !['copied', 'staged-changing', 'verified'].includes(journal.state)) throw Error('Reconciliation requires a completed staging copy; run copy first');
+      const baseline = incremental ? (journal.copyBaselineAt || journal.createdAt) : Date.now();
+      if (!Number.isFinite(baseline) || baseline <= 0 || baseline > Date.now()) throw Error('Invalid completed-copy baseline');
       await save({ state: 'copying', error: null, pid: process.pid });
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
       // Native copyfile preserves ACL/xattrs/hardlinks without Apple's openrsync AppleDouble
@@ -97,10 +101,15 @@ try {
       const revisions = join(mount, 'migration-revisions', id, String(Date.now()));
       const args = [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, revisions];
       if (mapping.ephemeralSockets === true) args.push('--ephemeral-sockets');
+      // Only completed staging qualifies. Scan local source ctimes/names, then update
+      // changed entries; independent full source/destination verification STILL gates
+      // cutover. A modified/missing target cannot gain approval from this optimization.
+      if (incremental) args.push('--since=' + String((baseline - 1000) / 1000));
       const output = await command('python3', args, { collect: true });
       const result = JSON.parse(output.trim().split('\n').at(-1));
       const unstable = result.unstableSources || [];
-      await save({ state: unstable.length ? 'staged-changing' : 'copied', error: null, pid: null, unstableSources: unstable });
+      await save({ state: unstable.length ? 'staged-changing' : 'copied', error: null, pid: null, unstableSources: unstable,
+        copyBaselineAt: baseline, copiedAt: Date.now() });
       console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true, unstableSources: unstable }));
     } else {
       if (operation === 'cutover') await assertUnused([source, target]);
@@ -120,6 +129,6 @@ try {
     }
   }
 } catch (error) {
-  await save({ ...(operation === 'copy' ? { state: 'interrupted', pid: null } : {}), error: error.message });
+  await save({ ...(['copy', 'reconcile'].includes(operation) ? { state: 'interrupted', pid: null } : {}), error: error.message });
   throw error;
 } finally { if (!log.destroyed) await new Promise(resolve => log.end(resolve)); await configLease?.close(); await lease.close(); }
