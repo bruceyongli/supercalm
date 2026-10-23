@@ -13,8 +13,8 @@ import { readStorageMaintenance, storageMaintenanceFile } from '../src/storage_m
 
 const exec = promisify(execFile);
 const [operation, ...ids] = process.argv.slice(2);
-if (!['freeze', 'thaw'].includes(operation) || (operation === 'freeze' && !ids.length)
-    || ids.some(id => !/^s_[a-zA-Z0-9_-]+$/.test(id))) throw Error('Usage: storage-maintenance.mjs freeze SID... | thaw');
+if (!['freeze', 'park', 'thaw'].includes(operation) || (operation === 'freeze' && !ids.length)
+    || ids.some(id => !/^s_[a-zA-Z0-9_-]+$/.test(id))) throw Error('Usage: storage-maintenance.mjs freeze SID... | park SID... | thaw');
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
 function session(id) { return db.prepare('SELECT s.*,p.path AS project_path FROM sessions s LEFT JOIN projects p ON p.id=s.project_id WHERE s.id=?').get(id); }
 async function processes() {
@@ -32,9 +32,18 @@ function descendants(table, roots) {
 }
 let job = readStorageMaintenance();
 async function save() { job.updatedAt = Date.now(); await durableJson(storageMaintenanceFile, job); }
+async function request(s, action) {
+  const res = await fetch(`http://127.0.0.1:${process.env.AIOS_PORT || 8793}/api/session/${s.id}/storage-${action}`, {
+    method: 'POST', headers: { 'x-aios-maintenance-token': s.token }, signal: AbortSignal.timeout(120_000),
+  });
+  const body = await res.json();
+  if (!res.ok) throw Error(`${s.id} storage ${action}: ${body.error || res.status}`);
+  return body;
+}
 try {
   if (operation === 'freeze') {
-    if (job) throw Error('An unfinished maintenance journal exists; inspect/thaw it first');
+    if (job && !['frozen', 'freezing'].includes(job.phase)) throw Error('An unfinished maintenance transition exists; inspect/thaw it first');
+    if (ids.some(id => job?.sessions.some(s => s.id === id))) throw Error('A selected session already belongs to this maintenance job');
     const selected = ids.map(id => {
       const s = session(id);
       if (!s || !['working', 'waiting'].includes(s.desired_status) || /\/proxy(?:\/|$)/.test(s.project_path || '')) throw Error('Session is not eligible: ' + id);
@@ -54,7 +63,9 @@ try {
     const nativeFiles = await openFiles([join(process.env.HOME, '.codex', 'sessions')]);
     for (const s of selected) {
       const paneRoots = panes.filter(p => p[0] === s.tmux).map(p => Number(p[1]));
+      s.rootPids = paneRoots;
       const family = new Set(descendants(table, paneRoots).map(p => p.pid));
+      s.processIds = [...family];
       if (s.tool === 'codex' && !s.codex_uuid) {
         const found = [...new Set(nativeFiles.filter(f => family.has(f.pid)).map(f => f.path.match(/([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$/)?.[1]).filter(Boolean))];
         if (found.length === 1) s.codex_uuid = found[0];
@@ -63,7 +74,8 @@ try {
       s.screenBackup = join(backup, s.id + '.terminal.txt');
       await writeFile(s.screenBackup, screen, { mode: 0o600 });
     }
-    job = { version: 1, kind: 'live-storage-migration', id: randomUUID(), phase: 'freezing',
+    if (job) { job.sessions.push(...selected); job.phase = 'freezing'; }
+    else job = { version: 1, kind: 'live-storage-migration', id: randomUUID(), phase: 'freezing',
       blockLaunches: true, createdAt: Date.now(), sessions: selected, processes: [] };
     await save();
     // Freeze roots first, then re-inventory descendants. No newly forked writer escapes the fence.
@@ -78,17 +90,49 @@ try {
       }
       if (round === 3) throw Error('Process tree did not settle; originals are unchanged; run thaw');
     }
-    job.phase = 'frozen'; for (const s of job.sessions) s.phase = 'frozen'; await save();
+    job.phase = 'frozen';
+    for (const s of selected) {
+      s.phase = 'frozen';
+      s.processIds = descendants(new Map(job.processes.map(p => [p.pid, p])), s.rootPids).map(p => p.pid);
+    }
+    await save();
     console.log(JSON.stringify({ frozen: selected.map(s => s.id), processes: job.processes.length,
       journal: storageMaintenanceFile, originalsPreserved: true }));
+  } else if (operation === 'park') {
+    if (!job || !ids.length) throw Error('Select already-frozen sessions to park');
+    for (const sid of ids) {
+      const s = job.sessions.find(s => s.id === sid);
+      if (!s || !['frozen', 'parking'].includes(s.phase)) throw Error('Session is not frozen: ' + sid);
+      // Persist restart intent BEFORE the terminal can disappear. Thaw can recover an
+      // interruption between the server acknowledgement and the final parked checkpoint.
+      s.phase = 'parking'; await save();
+      await request(s, 'pause');
+      const table = await processes();
+      for (const p of job.processes.filter(p => s.processIds?.includes(p.pid))) {
+        if (table.get(p.pid)?.started !== p.started) continue;
+        try { process.kill(p.pid, 'SIGTERM'); process.kill(p.pid, 'SIGCONT'); }
+        catch (e) { if (e.code !== 'ESRCH') throw e; }
+      }
+      s.phase = 'parked'; await save();
+      console.log(JSON.stringify({ parked: sid, native: s.codex_uuid || s.claude_transcript, historyPreserved: true }));
+    }
   } else {
     if (!job) throw Error('No maintenance freeze to thaw');
+    const restarted = [];
+    for (const s of job.sessions.filter(s => ['parking', 'parked'].includes(s.phase))) {
+      const current = session(s.id);
+      if (current && ['working', 'waiting'].includes(current.desired_status) && !/^operator-/.test(current.status_reason || '')) {
+        await request(s, 'resume');
+        restarted.push(s.id);
+      }
+      s.phase = 'complete'; await save();
+    }
     const table = await processes();
     for (const p of job.processes) {
       if (p.wasStopped || table.get(p.pid)?.started !== p.started) continue;
       try { process.kill(p.pid, 'SIGCONT'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
     }
     job.phase = 'complete'; job.completedAt = Date.now(); for (const s of job.sessions) s.phase = 'complete'; await save();
-    console.log(JSON.stringify({ resumed: job.sessions.map(s => s.id), conversationsRestarted: false }));
+    console.log(JSON.stringify({ resumed: job.sessions.map(s => s.id), restartedWithExactHistory: restarted }));
   }
 } finally { db.close(); }

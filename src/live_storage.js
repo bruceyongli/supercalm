@@ -53,6 +53,14 @@ export function expectedStoragePath(path, config = liveStorageConfig()) {
   if (target !== entry.target) throw unavailable(new Error('Managed storage link does not match its registered destination'));
   return entry.target + logical.slice(entry.source.length);
 }
+// Native CLIs may record getcwd() (the physical mount path), while AIOS retains the
+// operator's logical path. Only an explicitly registered alias equates those identities.
+export function sameStoragePath(left, right, config = liveStorageConfig()) {
+  if (!left || !right) return false;
+  if (resolve(left) === resolve(right)) return true;
+  try { return expectedStoragePath(left, config) === expectedStoragePath(right, config); }
+  catch { return false; }
+}
 export function storageMigrationProtected(path, config = liveStorageConfig()) {
   return !!config?.retainDuringMigration && config.mappings.some(m => inside(resolve(path), m.source));
 }

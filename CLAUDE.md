@@ -95,11 +95,15 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
   fingerprints and no open source/target handles. A durable journal precedes alias activation; only
   the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.
-  `bin/storage-maintenance.mjs freeze SID...|thaw` is explicit operator maintenance, not Stop: snapshot
+  `bin/storage-maintenance.mjs freeze SID...|park SID...|thaw` is explicit operator maintenance, not Stop: snapshot
   terminals/native identity, fence input/launch/recovery/hooks/supervision, and SIGSTOP only the selected
   process families. Thaw identity-checks recorded PIDs. Never freeze its own controller or the proxy.
   A pause does not release cwd/file descriptors: restart affected owners before a guarded cutover;
   neither a frozen process nor a successful copy authorizes deletion of an in-use local tree.
+  Park/restart uses local nonce-bound handlers and verified exact native conversation IDs, never
+  a global latest-conversation fallback. Operator Stop/Kill wins; restart retains activity clocks.
+  Native physical cwd and logical project paths are equivalent only through registered mappings,
+  so fresh Story bindings survive relocation without borrowing a sibling session's transcript.
   Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
   detach/reconnect durability with disposable fixtures before choosing a storage transport.
 - Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.

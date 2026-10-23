@@ -29,7 +29,8 @@ if (journalRoot.startsWith(source + sep) || journalRoot.startsWith(mount + sep))
 await mkdir(journalRoot, { recursive: true, mode: 0o700 });
 const journalFile = join(journalRoot, id + '.json');
 // Kernel-owned lease, released on exit/reboot. Never unlink a lock inode.
-const lease = await open(join(journalRoot, id + '.lock'), 'a+', 0o600);
+async function acquireLease(name) {
+const lease = await open(join(journalRoot, name + '.lock'), 'a+', 0o600);
 await new Promise((yes, no) => {
   const child = spawn('python3', ['-c', 'import fcntl\nfcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)'],
     { stdio: ['ignore', 'ignore', 'ignore', lease.fd] });
@@ -37,6 +38,10 @@ await new Promise((yes, no) => {
   child.on('error', e => { clearTimeout(timer); no(e); });
   child.on('close', code => { clearTimeout(timer); code === 0 ? yes() : no(Error('Another transfer owns this source; originals retained')); });
 });
+return lease;
+}
+const lease = await acquireLease(id);
+let configLease = null;
 let journal;
 try { journal = JSON.parse(await readFile(journalFile, 'utf8')); }
 catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -85,7 +90,7 @@ try {
   {
     if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw new Error('Source identity changed; inspect journal before recovery');
     if (operation === 'copy') {
-      await save({ state: 'copying' });
+      await save({ state: 'copying', error: null, pid: process.pid });
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
       // Native copyfile preserves ACL/xattrs/hardlinks without Apple's openrsync AppleDouble
       // hardlink bug. Superseded staging entries stay on Spark, never silently deleted.
@@ -93,18 +98,21 @@ try {
       const args = [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, revisions];
       if (mapping.ephemeralSockets === true) args.push('--ephemeral-sockets');
       await command('python3', args);
-      await save({ state: 'copied' });
+      await save({ state: 'copied', error: null, pid: null });
       console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true }));
     } else {
       await assertUnused([source, target]);
       const verification = await verifyStoragePair(source, target, { ephemeralSockets: mapping.ephemeralSockets === true });
       await save({ state: 'verified', verifiedAt: Date.now(), verification });
       if (operation === 'cutover') {
+        // Integrity reads do not mutate shared configuration. Serialize only the actual
+        // alias transaction; a large verification must not stall unrelated cutovers.
+        configLease = await acquireLease('config');
         console.log(JSON.stringify(await switchStorageRoot({ source, target, configFile, journal, save, evidence: verification })));
       } else console.log(JSON.stringify({ verified: source, target, verification, sourceRetained: true }));
     }
   }
 } catch (error) {
-  await save({ error: error.message });
+  await save({ ...(operation === 'copy' ? { state: 'interrupted', pid: null } : {}), error: error.message });
   throw error;
-} finally { if (!log.destroyed) await new Promise(resolve => log.end(resolve)); await lease.close(); }
+} finally { if (!log.destroyed) await new Promise(resolve => log.end(resolve)); await configLease?.close(); await lease.close(); }

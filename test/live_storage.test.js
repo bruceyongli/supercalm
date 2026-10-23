@@ -6,7 +6,7 @@ import { join } from 'node:path';
 const fixture = await realpath(await mkdtemp(join(tmpdir(), 'aios-live-storage-')));
 process.env.AIOS_DATA = join(fixture, 'data');
 const { validateLiveStorage, expectedStoragePath, isManagedStoragePath, assertLiveStorage, liveStorageConfig,
-  liveStorageStatus, storageMigrationProtected } = await import('../src/live_storage.js');
+  liveStorageStatus, storageMigrationProtected, sameStoragePath } = await import('../src/live_storage.js');
 const mount = join(fixture, 'mounts', 'spark'), source = join(fixture, 'data', 'session-artifacts');
 const target = join(mount, 'bb1', 'artifacts'), statusFile = join(fixture, 'connection.json');
 const config = { version: 1, id: 'fixture-only', mount, statusFile, mappings: [{ source, target }] };
@@ -31,6 +31,9 @@ try {
   await rm(source, { recursive: true });
   assert.throws(() => expectedStoragePath(source, moved), e => e.code === 'storage-unavailable', 'missing registered links fail closed');
   await symlink(target, source);
+  assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_test'), config), true);
+  assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_other'), config), false);
+  assert.equal(sameStoragePath(join(source, 's_test'), join(target, 's_test'), null), false, 'only registered relocation equates native cwd');
   assert.equal(expectedStoragePath(join(source, 's_test'), config), join(target, 's_test'));
   assert.equal(await isManagedStoragePath(source, { config }), true);
   assert.equal(await isManagedStoragePath(join(source, 's_new', 'out.txt'), { config, allowMissing: true }), true);
@@ -60,6 +63,7 @@ try {
   assert.deepEqual(await cleanupSessionStorage('s_keep'), { removed: false, reason: 'storage-migration' });
   assert.equal(await readFile(join(target, 's_keep', 'evidence.txt'), 'utf8'), 'must survive a service restart');
   await unlink(source); await symlink(outside, source);
+  assert.equal(sameStoragePath(source, target, moved), false, 'replaced aliases cannot bind another conversation');
   assert.throws(() => expectedStoragePath(source, moved), e => e.code === 'storage-unavailable');
 } finally { await rm(fixture, { recursive: true, force: true }); }
 console.log('live_storage.test passed: explicit mapping, missing mount, stale connection and escape guards');

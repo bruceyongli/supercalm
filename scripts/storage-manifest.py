@@ -13,6 +13,8 @@ import os
 import stat
 import sys
 import fcntl
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 
 
 def encoded(value):
@@ -107,9 +109,41 @@ def manifest(root, contents=True, sockets=False):
     groups = {}
     counts = {"files": 0, "directories": 0, "links": 0, "bytes": 0}
     ipc = []
+    workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_VERIFY_WORKERS", "8"))))
+    pool = ThreadPoolExecutor(max_workers=workers)
 
-    def walk(path, relative):
+    def file_record(path, relative):
         before = os.lstat(path)
+        if before.st_dev != first.st_dev or not stat.S_ISREG(before.st_mode):
+            raise ValueError("File identity/type changed: " + relative)
+        meta = [relative, stat.S_IMODE(before.st_mode), before.st_uid, before.st_gid,
+                getattr(before, "st_flags", 0), attributes(path) if contents else [], acl(path) if contents else ""]
+        content = hashlib.sha256()
+        if contents:
+            descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, "rb", buffering=0) as stream:
+                if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
+                    fcntl.fcntl(stream.fileno(), 48, 1)
+                if signature(os.fstat(stream.fileno())) != signature(before):
+                    raise ValueError("File changed before read: " + relative)
+                while True:
+                    chunk = stream.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    content.update(chunk)
+        if signature(before) != signature(os.lstat(path)):
+            raise ValueError("File changed during verification: " + relative)
+        return before, encoded(["file", meta, before.st_size, content.hexdigest() if contents else ""])
+
+    def consume_file(relative, before, result):
+        fingerprint.update(encoded([relative, signature(before)]))
+        counts["files"] += 1; counts["bytes"] += before.st_size
+        if before.st_nlink > 1:
+            groups.setdefault((before.st_dev, before.st_ino), []).append(relative)
+        digest.update(result)
+
+    def walk(path, relative, before=None):
+        before = before or os.lstat(path)
         if before.st_dev != first.st_dev:
             raise ValueError("Nested filesystem: " + relative)
         fingerprint.update(encoded([relative, signature(before, not relative)]))
@@ -117,43 +151,45 @@ def manifest(root, contents=True, sockets=False):
         if stat.S_ISSOCK(mode) and sockets:
             ipc.append(relative)
             return
-        attrs = attributes(path)
+        attrs = attributes(path) if contents or not relative else []
         meta = [relative, stat.S_IMODE(mode), before.st_uid, before.st_gid,
-                getattr(before, "st_flags", 0), attrs, acl(path)]
+                getattr(before, "st_flags", 0), attrs, acl(path) if contents or not relative else ""]
+        if not relative:
+            fingerprint.update(encoded(["root-native-metadata", meta]))
         if stat.S_ISLNK(mode):
             counts["links"] += 1
             digest.update(encoded(["link", meta, os.readlink(path)]))
         elif stat.S_ISDIR(mode):
             counts["directories"] += 1
             digest.update(encoded(["directory", meta]))
-            for name in sorted(os.listdir(path)):
-                walk(os.path.join(path, name), os.path.join(relative, name))
-        elif stat.S_ISREG(mode):
-            counts["files"] += 1
-            counts["bytes"] += before.st_size
-            content = hashlib.sha256()
-            if contents:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(descriptor, "rb", buffering=0) as stream:
-                    if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
-                        fcntl.fcntl(stream.fileno(), 48, 1)  # F_NOCACHE: don't evict agents into swap.
-                    if signature(os.fstat(stream.fileno())) != signature(before):
-                        raise ValueError("File changed before read: " + relative)
-                    while True:
-                        chunk = stream.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        content.update(chunk)
-            if before.st_nlink > 1:
-                identity = (before.st_dev, before.st_ino)
-                groups.setdefault(identity, []).append(relative)
-            digest.update(encoded(["file", meta, before.st_size, content.hexdigest() if contents else ""]))
+            pending = deque()
+            def drain():
+                rel, future = pending.popleft()
+                info, record = future.result()
+                consume_file(rel, info, record)
+            with os.scandir(path) as entries:
+                children = sorted(entries, key=lambda entry: entry.name)
+            for entry in children:
+                child, rel = entry.path, os.path.join(relative, entry.name)
+                if entry.is_file(follow_symlinks=False):
+                    pending.append((rel, pool.submit(file_record, child, rel)))
+                    if len(pending) >= workers * 4:
+                        drain()
+                else:
+                    while pending:
+                        drain()
+                    walk(child, rel)
+            while pending:
+                drain()
         else:
             raise ValueError("Unsupported persistent entry: " + relative)
         if signature(before, not relative) != signature(os.lstat(path), not relative):
             raise ValueError("Tree changed during verification: " + relative)
 
-    walk(root, "")
+    try:
+        walk(root, "")
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
     # Preserve every hard-link relationship within this root; an external link's inode
     # number cannot be reproduced on a second filesystem.
     digest.update(encoded(["hardlinks", sorted(paths for paths in groups.values() if len(paths) > 1)]))

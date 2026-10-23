@@ -18,6 +18,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { expectedStoragePath } from './live_storage.js';
 
 export function claudeSlug(cwd) { return String(cwd || '').replace(/[/.]/g, '-'); }
 
@@ -73,17 +74,21 @@ export async function findClaudeLog(cwd, s, { claimed } = {}) {
     // file disappears. Retain the identity for recovery; Story can use the session's own message spine.
     return findRelocatedClaudeLog(bound);
   }
-  const dir = join(homedir(), '.claude', 'projects', claudeSlug(cwd));
-  let ents;
-  try { ents = await readdir(dir); } catch { return null; }
+  const paths = new Set([cwd]);
+  if (cwd) paths.add(expectedStoragePath(cwd));
   const cands = [];
-  for (const name of ents) {
-    if (!name.endsWith('.jsonl')) continue;
-    const p = join(dir, name);
-    try {
-      const st = await stat(p);
-      cands.push({ p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs || 0 });
-    } catch {}
+  for (const path of paths) {
+    const dir = join(homedir(), '.claude', 'projects', claudeSlug(path));
+    let ents;
+    try { ents = await readdir(dir); } catch { continue; }
+    for (const name of ents) {
+      if (!name.endsWith('.jsonl')) continue;
+      const p = join(dir, name);
+      try {
+        const st = await stat(p);
+        cands.push({ p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs || 0 });
+      } catch {}
+    }
   }
   return pickClaudeTranscript(cands, s, { claimed });
 }

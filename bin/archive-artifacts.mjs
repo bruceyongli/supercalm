@@ -11,6 +11,7 @@ import { archiveWorker, archiveRequest, validateArchiveLocation } from '../src/a
 import { transferArchive as transfer, sameArchive as same, restoreArchive } from '../src/archive_transfer.js';
 import { withSessionArchiveLock } from '../src/archive_lock.js';
 import { inactiveArchiveSession } from '../src/archive_session.js';
+import { isManagedStoragePath, storageMigrationProtected } from '../src/live_storage.js';
 
 const exec = promisify(execFile);
 const [operation, sessionId, name, host, remoteRoot] = process.argv.slice(2);
@@ -26,7 +27,8 @@ const worktreeFields = worktree ? { kind: 'worktree', repoPath: owner.project.pa
 // Apply the same namespace validation before even opening a source/destination.
 validateArchiveRecord({ sessionId, sourceRoot, ...worktreeFields, host: 'validation', remoteRoot: '/archive/validation/only/root', digest: '0'.repeat(64), bytes: 0, state: 'verified' });
 const parent = dirname(sourceRoot);
-if (await realpath(parent) !== parent) throw new Error('Artifact parent is a symlink');
+if (!await isManagedStoragePath(parent)) throw new Error('Artifact parent is an unregistered symlink');
+if (operation === 'evict' && storageMigrationProtected(sourceRoot)) throw new Error('Live storage migration is retaining this path; eviction is paused');
 await mkdir(archiveIndexRoot, { recursive: true, mode: 0o700 });
 const lock = join(archiveIndexRoot, `${archiveRecordId(sourceRoot)}.lock`);
 async function unopened(path) {

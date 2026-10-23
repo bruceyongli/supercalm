@@ -86,7 +86,13 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   await save({ state: 'switching', quarantine, verification: evidence });
   mapping.active = true;
   await durableJson(configFile, config);
-  await rename(source, quarantine);
+  try { await rename(source, quarantine); }
+  catch (error) {
+    mapping.active = false;
+    await durableJson(configFile, config);
+    await save({ state: 'verified', quarantine: null });
+    throw error;
+  }
   try { await symlink(target, source); }
   catch (error) {
     if (!await lstat(source).catch(() => null)) {

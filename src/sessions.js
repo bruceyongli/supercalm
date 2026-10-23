@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable } from './storage_maintenance.js';
+import { sameStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
@@ -1074,7 +1075,7 @@ async function findCodexSession(cwd) {
   for (const f of files.slice(0, 80)) {
     const head = await readHead(f).catch(() => '');
     const cm = head.match(/"cwd":\s*"([^"]+)"/);
-    if (cm && cm[1] === cwd) {
+    if (cm && sameStoragePath(cm[1], cwd)) {
       const im = head.match(/"id":\s*"([0-9a-fA-F-]{36})"/);
       if (im) return im[1];
     }
@@ -1403,12 +1404,13 @@ export function queueLaunch(args) {
 }
 
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
-async function resumeNow(sid, { force = false, waitForInput = false, preserveStatus = null, recoveryReason = 'resume' } = {}) {
+async function resumeNow(sid, { force = false, waitForInput = false, preserveStatus = null, recoveryReason = 'resume', maintenanceToken = null } = {}) {
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
   const recoveryCancelled = () => {
-    if (recoveryReason !== 'boot-recovery') return false;
+    if (recoveryReason !== 'boot-recovery' && recoveryReason !== 'storage-maintenance') return false;
+    if (recoveryReason === 'storage-maintenance' && storageMaintenanceFor(sid)?.token !== maintenanceToken) return true;
     const current = store.getSession(sid);
     return !current || current.tmux !== s.tmux || !['working', 'waiting'].includes(current.desired_status)
       || /^operator-/.test(current.status_reason || '');
@@ -1565,7 +1567,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     ended_at: null,
     exit_code: null,
     ...(durableStatus === 'waiting' ? {} : { question: null }),
-    ...(recoveryReason === 'boot-recovery' ? {} : { last_activity: now() }),
+    ...(['boot-recovery', 'storage-maintenance'].includes(recoveryReason) ? {} : { last_activity: now() }),
   });
   // Replace the registry generation so a poll that observed the intentional kill/recreate gap cannot
   // retire the new pane when its stale `has-session = false` result arrives. Keep terminal subscribers
@@ -1574,7 +1576,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   if (previousEntry) { previousEntry.tailRetired = true; stopTerminalTail(previousEntry); }
   reg.delete(sid);
   const resumedEntry = register(updated);
-  if (recoveryReason === 'boot-recovery' && durableStatus === 'waiting') resumedEntry.restoredWaitingSince = now();
+  if (['boot-recovery', 'storage-maintenance'].includes(recoveryReason) && durableStatus === 'waiting') resumedEntry.restoredWaitingSince = now();
   if (previousEntry) resumedEntry.subscribers = previousEntry.subscribers;
   watchTerminalTail(resumedEntry);
   // A resumed waiting session briefly renders its startup/loading screen before the old prompt. Keep
@@ -4260,6 +4262,53 @@ route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
   } catch (e) {
     json(res, e.status || 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
   }
+});
+
+// A local, nonce-bound controller may restart owners whose cwd/native log is being relocated.
+// This is deliberately not /stop: preserve durable intent, last_activity, question and dismissals.
+function authorizedStorageMaintenance(req, sid) {
+  const address = req.socket.remoteAddress;
+  const pending = storageMaintenanceFor(sid);
+  if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address)
+      || !pending?.token || req.headers['x-aios-maintenance-token'] !== pending.token) {
+    throw Object.assign(Error('A local storage maintenance controller is required'), { status: 403 });
+  }
+  const session = store.getSession(sid);
+  if (!session || !['working', 'waiting'].includes(session.desired_status)
+      || /^operator-/.test(session.status_reason || '')) {
+    throw Object.assign(Error('Newer operator intent cancelled maintenance recovery'), { status: 409 });
+  }
+  return { pending, session };
+}
+
+route('POST', '/api/session/:id/storage-pause', async (req, res, { id: sid }) => {
+  try {
+    const { pending, session } = authorizedStorageMaintenance(req, sid);
+    if (pending.tmux !== session.tmux || !['frozen', 'parking', 'parked'].includes(pending.phase)) throw Object.assign(Error('Maintenance identity changed'), { status: 409 });
+    if (session.tool === 'codex') {
+      const uuid = session.codex_uuid || pending.codex_uuid;
+      if (!uuid || (session.codex_uuid && pending.codex_uuid && session.codex_uuid !== pending.codex_uuid)
+          || !pickRolloutByUuid(await codexRolloutFiles(), uuid)) throw Error('Exact Codex history must be verified before pausing');
+      if (!session.codex_uuid) store.updateSession(sid, { codex_uuid: uuid });
+    } else if (session.tool === 'claude') {
+      if (!claudeResumeId(session.claude_transcript) || !await findClaudeLog(null, session)) throw Error('Exact Claude history must be verified before pausing');
+    } else throw Error('This tool has no exact native conversation recovery contract');
+    const entry = reg.get(sid); if (entry) entry.relaunching = true;
+    if (!await tmuxOk('kill-session', '-t', session.tmux) && await sessionLiveness.probe(session.tmux) !== 'missing') {
+      throw sessionHealthError();
+    }
+    store.addEvent(sid, 'storage-maintenance-pause', { native: session.codex_uuid || pending.codex_uuid || claudeResumeId(session.claude_transcript), activity_preserved: true });
+    json(res, 200, { ok: true, id: sid, history_preserved: true });
+  } catch (error) { json(res, error.status || 409, { error: error.message }); }
+});
+
+route('POST', '/api/session/:id/storage-resume', async (req, res, { id: sid }) => {
+  try {
+    const { pending, session } = authorizedStorageMaintenance(req, sid);
+    if (!['parking', 'parked'].includes(pending.phase)) throw Object.assign(Error('The storage controller has not completed cutover'), { status: 409 });
+    const resumed = await resume(sid, { maintenanceToken: pending.token, recoveryReason: 'storage-maintenance', preserveStatus: session.desired_status });
+    json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status });
+  } catch (error) { json(res, error.status || 409, { error: error.message }); }
 });
 
 // Change autonomy / effort / model on the fly. Live where the tool supports it

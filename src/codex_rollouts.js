@@ -9,6 +9,7 @@
 import { readdir, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { sameStoragePath } from './live_storage.js';
 
 const UUID_RX = /rollout-.*?-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
 
@@ -48,7 +49,7 @@ export async function findCodexLaunchRollout(files, { cwd, startedAt, task, clai
       const head = JSON.parse(lines[0]);
       const meta = head.payload || head;
       const time = Date.parse(meta.timestamp || head.timestamp);
-      if (head.type !== 'session_meta' || (meta.id || meta.session_id) !== uuid || meta.cwd !== cwd
+      if (head.type !== 'session_meta' || (meta.id || meta.session_id) !== uuid || !sameStoragePath(meta.cwd, cwd)
           || !Number.isFinite(time) || time < startedAt - 5000 || time > startedAt + 600_000
           || (meta.source && meta.source !== 'cli')
           || (meta.thread_source && meta.thread_source !== 'user')
