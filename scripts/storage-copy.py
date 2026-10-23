@@ -14,6 +14,9 @@ import time
 import uuid
 import runpy
 import fcntl
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from threading import Lock
 
 integrity = runpy.run_path(os.path.join(os.path.dirname(__file__), "storage-manifest.py"))
 
@@ -74,6 +77,10 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "sockets": 0}
     hardlinks = {}
     last_progress = time.monotonic()
+    progress_lock = Lock()
+    workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_COPY_WORKERS", "8"))))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    pending = deque()
 
     def retain(path, relative):
         if not os.path.lexists(path):
@@ -95,8 +102,22 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 retain(dst, rel)
             os.makedirs(dst, exist_ok=True)
             names = sorted(os.listdir(src))
+            children = []
             for name in names:
-                walk(os.path.join(src, name), os.path.join(dst, name), os.path.join(rel, name))
+                child = os.path.join(src, name)
+                info = os.lstat(child)
+                args = (child, os.path.join(dst, name), os.path.join(rel, name))
+                # Only ordinary single-link files run in parallel. Directory ordering and
+                # hardlink ownership remain on this thread; no concurrent target collision.
+                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                    future = pool.submit(walk, *args)
+                    children.append(future); pending.append(future)
+                    if len(pending) >= workers * 4:
+                        pending.popleft().result()
+                else:
+                    walk(*args)
+            for child in children:
+                child.result()
             for extra in set(os.listdir(dst)) - set(names):
                 retain(os.path.join(dst, extra), os.path.join(rel, extra))
             copy_metadata(src, dst)
@@ -134,11 +155,15 @@ def copy_tree(source, target, revisions, allow_sockets=False):
         if (before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
                 after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
             raise ValueError("Source changed while staging; retry after quiescing: " + rel)
-        if time.monotonic() - last_progress > 15:
-            print(json.dumps({"progress": counts}), flush=True)
-            last_progress = time.monotonic()
+        with progress_lock:
+            if time.monotonic() - last_progress > 15:
+                print(json.dumps({"progress": counts}), flush=True)
+                last_progress = time.monotonic()
 
-    walk(source, target, "")
+    try:
+        walk(source, target, "")
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
     return counts
 
 

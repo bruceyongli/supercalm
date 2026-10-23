@@ -17,7 +17,7 @@ if (!['copy', 'verify', 'cutover'].includes(operation) || !configFile || !source
 const config = validateLiveStorage(JSON.parse(await readFile(configFile, 'utf8')));
 const source = resolve(sourceArg);
 const mapping = config.mappings.find(m => m.source === source);
-if (!mapping || !source.startsWith('/Users/') || source.split('/').length < 5
+if (!mapping || !source.startsWith('/Users/') || source.split('/').length < 4
     || /\/proxy(?:\/|$)/.test(source) || /\.db(?:-|$)/.test(source)) throw new Error('Source is not an approved storage mapping');
 const mount = resolve(config.mount), target = resolve(mapping.target);
 if (!target.startsWith(mount + sep) || target.split('/').length < mount.split('/').length + 2) throw new Error('Destination is not a dedicated mounted-storage directory');
