@@ -21,7 +21,7 @@ const envelope = (type, target, result, t0) => ({
 export async function gitProbe(repoPath) {
   const t0 = Date.now();
   try {
-    const g = (...a) => run('git', ['-C', repoPath, ...a], { timeout: 8000 }).then((r) => r.stdout.trim());
+    const g = (...a) => run('git', ['-C', repoPath, ...a], { timeout: 8000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } }).then((r) => r.stdout.trim());
     const [sha, branch, status, lastCommit] = await Promise.all([g('rev-parse', 'HEAD'), g('rev-parse', '--abbrev-ref', 'HEAD'), g('status', '--porcelain'), g('log', '-1', '--format=%ct')]);
     return envelope('git', repoPath, { ok: true, sha, branch, dirty: status.length > 0, dirtyFiles: status ? status.split('\n').length : 0, lastCommitAt: Number(lastCommit) * 1000 || null }, t0);
   } catch (e) {

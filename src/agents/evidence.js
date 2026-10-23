@@ -66,7 +66,7 @@ export function tailStr(s, max = 2000) {
 function mkGit(cwd) {
   return async (args, max) => {
     try {
-      const r = await exec('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 6000, killSignal: 'SIGKILL' });
+      const r = await exec('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 6000, killSignal: 'SIGKILL', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
       return String(r.stdout || '').slice(0, max);
     } catch {
       return '';

@@ -68,6 +68,13 @@ export async function assertUnused(roots) {
 export async function storageManifest(root, { metadataOnly = false, ephemeralSockets = false, equivalentGroups = [], workerFile = worker } = {}) {
   const args = [workerFile, root];
   if (metadataOnly) args.push('--metadata-only');
+  else {
+    const cacheRoot = join(DATA_DIR, 'storage-hash-proofs');
+    if (inside(cacheRoot, resolve(root))) throw Error('Verification proof cache must remain outside the source');
+    await mkdir(cacheRoot, { recursive: true, mode: 0o700 });
+    const cacheId = createHash('sha256').update(resolve(root)).digest('hex');
+    args.push('--content-cache=' + join(cacheRoot, cacheId + '.json'));
+  }
   if (ephemeralSockets) args.push('--ephemeral-sockets');
   for (const group of equivalentGroups) {
     if (!Number.isInteger(group.from) || !Number.isInteger(group.to) || group.from < 0 || group.to < 0) throw Error('Invalid group equivalence');

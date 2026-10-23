@@ -118,7 +118,7 @@ function cleanProjectPath(path) {
 }
 
 async function git(cwd, args, { maxBuffer = 4_000_000, timeout = 5000 } = {}) {
-  const r = await execFileP('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer, timeout, killSignal: 'SIGKILL' });
+  const r = await execFileP('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer, timeout, killSignal: 'SIGKILL', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
   return String(r.stdout || '');
 }
 

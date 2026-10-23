@@ -13,6 +13,9 @@ import os
 import stat
 import sys
 import fcntl
+import re
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, Future
 from collections import deque
 from threading import Lock
@@ -105,7 +108,7 @@ def signature(info, is_root=False):
             getattr(info, "st_flags", 0), info.st_nlink]
 
 
-def manifest(root, contents=True, sockets=False, records=False, equivalent_groups=None):
+def manifest(root, contents=True, sockets=False, records=False, equivalent_groups=None, cache_file=None):
     root = os.path.abspath(root)
     first = os.lstat(root)
     if not stat.S_ISDIR(first.st_mode) or os.path.realpath(root) != root:
@@ -119,9 +122,50 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
     pool = ThreadPoolExecutor(max_workers=workers)
     content_cache, metadata_cache, content_lock = {}, {}, Lock()
     content_reads = 0
+    cache_hits = 0
+    large_hashes, cache_dirty = {}, False
+    last_cache_write = time.monotonic()
+    if cache_file and contents:
+        cache_file = os.path.abspath(cache_file)
+        if cache_file == root or cache_file.startswith(root + os.sep):
+            raise ValueError("Verification cache must be outside the inspected tree")
+        try:
+            fd = os.open(cache_file, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "r") as stream:
+                info = os.fstat(stream.fileno())
+                if info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 16 * 1024 * 1024:
+                    raise ValueError("Untrusted verification cache")
+                saved = json.load(stream)
+            if saved.get("version") == 1 and saved.get("root") == root:
+                large_hashes = {k: v for k, v in saved.get("hashes", {}).items()
+                                if isinstance(v, str) and re.fullmatch(r"[0-9a-f]{64}", v)}
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass  # No proof: perform a fresh independent content read.
+
+    def flush_cache(force=False):
+        nonlocal cache_dirty, last_cache_write
+        if not cache_file or not contents or not cache_dirty:
+            return
+        if not force and time.monotonic() - last_cache_write < 30:
+            return
+        with content_lock:
+            saved = dict(list(large_hashes.items())[-20000:])
+            cache_dirty = False
+        temporary = cache_file + "." + str(uuid.uuid4()) + ".tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"version": 1, "root": root, "hashes": saved}, stream)
+            stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, cache_file)
+        parent = os.open(os.path.dirname(cache_file), os.O_RDONLY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
+        last_cache_write = time.monotonic()
 
     def content_hash(path, before):
-        nonlocal content_reads
+        nonlocal content_reads, cache_hits, cache_dirty
         key = tuple(signature(before)) if before.st_nlink > 1 else None
         owner = True
         if key is not None:
@@ -135,22 +179,36 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
                 return future.result()
         try:
             content = hashlib.sha256()
+            # Only prior independent reads of this exact inode version qualify.
+            # Size/mtime alone are never enough: include device, inode, nanosecond
+            # ctime, ownership, permissions, flags and link count. Small files are
+            # always reread; the bounded local proof cache targets costly large reads.
+            persistent_key = ",".join(map(str, signature(before))) if cache_file and before.st_size >= 1024 * 1024 else None
+            with content_lock:
+                cached = large_hashes.get(persistent_key) if persistent_key else None
             descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(descriptor, "rb", buffering=0) as stream:
                 if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
                     fcntl.fcntl(stream.fileno(), 48, 1)
                 if signature(os.fstat(stream.fileno())) != signature(before):
                     raise ValueError("File changed before read: " + path)
-                while True:
-                    chunk = stream.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    content.update(chunk)
+                if cached is None:
+                    while True:
+                        chunk = stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        content.update(chunk)
                 if signature(os.fstat(stream.fileno())) != signature(before):
                     raise ValueError("File changed during read: " + path)
             with content_lock:
-                content_reads += 1
-            result = content.hexdigest()
+                if cached is None:
+                    content_reads += 1
+                else:
+                    cache_hits += 1
+            result = cached or content.hexdigest()
+            if persistent_key and cached is None:
+                with content_lock:
+                    large_hashes[persistent_key] = result; cache_dirty = True
             if key is not None:
                 future.set_result(result)
             return result
@@ -241,6 +299,7 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
         else:
             counts["links"] += 1
         digest.update(result)
+        flush_cache()
         if records:
             print(json.dumps({"path": relative, "digest": hashlib.sha256(result).hexdigest(),
                               "metadata": meta, "size": before.st_size if stat.S_ISREG(before.st_mode) else None}), flush=True)
@@ -266,11 +325,12 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
             drain()
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
+        flush_cache(force=True)
     # Preserve every hard-link relationship within this root; an external link's inode
     # number cannot be reproduced on a second filesystem.
     digest.update(encoded(["hardlinks", sorted(paths for paths in groups.values() if len(paths) > 1)]))
     return {"algorithm": "sha256", "digest": digest.hexdigest(), "fingerprint": fingerprint.hexdigest(),
-            **counts, "uniqueContentReads": content_reads, "ephemeralSockets": ipc,
+            **counts, "uniqueContentReads": content_reads, "largeContentCacheHits": cache_hits, "ephemeralSockets": ipc,
             "equivalentGroupChanges": group_changes,
             "scope": "contents,names,modes,ownership,file-flags,hardlinks,symlink-targets,ACLs,xattrs"}
 
@@ -278,12 +338,15 @@ def manifest(root, contents=True, sockets=False, records=False, equivalent_group
 if __name__ == "__main__":
     try:
         groups = {}
+        cache_file = None
         for option in sys.argv[2:]:
             if option.startswith("--equivalent-group="):
                 a, b = map(int, option.split("=", 1)[1].split(":"))
                 groups[a] = b
+            elif option.startswith("--content-cache="):
+                cache_file = option.split("=", 1)[1]
         print(json.dumps(manifest(sys.argv[1], "--metadata-only" not in sys.argv[2:],
-                                  "--ephemeral-sockets" in sys.argv[2:], "--records" in sys.argv[2:], groups)))
+                                  "--ephemeral-sockets" in sys.argv[2:], "--records" in sys.argv[2:], groups, cache_file)))
     except Exception as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)

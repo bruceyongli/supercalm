@@ -9,7 +9,9 @@ const exec = promisify(execFile);
 
 export async function gitOut(cwd, args, { maxBuffer = 2 * 1024 * 1024, timeout = 4500 } = {}) {
   try {
-    const r = await exec('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer, timeout, killSignal: 'SIGKILL' });
+    // Status/diff observations must not refresh the index or create transient locks.
+    // Required locks for actual worktree/add/commit operations are unaffected.
+    const r = await exec('git', ['-C', cwd, ...args], { encoding: 'utf8', maxBuffer, timeout, killSignal: 'SIGKILL', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
     return { text: String(r.stdout || '').trimEnd(), error: '' };
   } catch (e) {
     return { text: '', error: String(e.message || e) };

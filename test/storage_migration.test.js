@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, symlink, link, readlink, lstat, rm, chmod, chown, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, symlink, link, readlink, lstat, rm, chmod, chown, realpath, utimes } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
@@ -11,6 +11,20 @@ process.env.AIOS_DATA = join(root, 'control-data');
 const { storageManifest, verifyStoragePair, reuseStorageVerification, switchStorageRoot, durableJson, parseOpenFiles } = await import('../src/storage_migration.js');
 const source = join(root, 'original'), mount = join(root, 'mounts', 'spark'), target = join(mount, 'data', 'project');
 try {
+  const large = join(root, 'large'); await mkdir(large);
+  const largeFile = join(large, 'file'); await writeFile(largeFile, Buffer.alloc(2 * 1024 * 1024, 'a'));
+  const largeFirst = await storageManifest(large);
+  const largeAgain = await storageManifest(large);
+  assert.equal(largeFirst.uniqueContentReads, 1);
+  assert.equal(largeAgain.uniqueContentReads, 0);
+  assert.equal(largeAgain.largeContentCacheHits, 1);
+  assert.equal(largeAgain.digest, largeFirst.digest);
+  const largeInfo = await lstat(largeFile);
+  await writeFile(largeFile, Buffer.alloc(2 * 1024 * 1024, 'b'));
+  await utimes(largeFile, largeInfo.atime, largeInfo.mtime);
+  const largeChanged = await storageManifest(large);
+  assert.equal(largeChanged.uniqueContentReads, 1, 'same-size writes with restored mtime still invalidate the content proof through ctime');
+  assert.notEqual(largeChanged.digest, largeFirst.digest);
   await mkdir(source); await mkdir(target, { recursive: true });
   await writeFile(join(source, '中文.md'), 'persisted report\n');
   await chmod(join(source, '中文.md'), 0o600);

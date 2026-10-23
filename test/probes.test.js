@@ -1,23 +1,29 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, statSync, utimesSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 
 const { gitProbe, urlProbe } = await import('../src/agents/probes.js');
+const { gitOut } = await import('../src/git.js');
 
 // git probe: real repo truth with provenance
 const repo = mkdtempSync(join(tmpdir(), 'probe-repo-'));
 const g = (...a) => execFileSync('git', ['-C', repo, ...a], { encoding: 'utf8' }).trim();
 g('init', '-q', '-b', 'main'); g('config', 'user.email', 't@t'); g('config', 'user.name', 't');
 writeFileSync(join(repo, 'f'), 'x\n'); g('add', '.'); g('commit', '-qm', 'base');
+utimesSync(join(repo, 'f'), new Date(), new Date(Date.now() + 10000));
+const gitDirectoryClock = statSync(join(repo, '.git'), { bigint: true }).mtimeNs;
 let p = await gitProbe(repo);
 assert.equal(p.type, 'git');
 assert.equal(p.collector, 'system/probes@1');
 assert.equal(p.result.ok, true);
 assert.equal(p.result.sha, g('rev-parse', 'HEAD'), 'sha comes from git, not prose');
 assert.equal(p.result.dirty, false);
+assert.equal(statSync(join(repo, '.git'), { bigint: true }).mtimeNs, gitDirectoryClock, 'read-only probes do not churn index locks during storage verification');
+assert.equal((await gitOut(repo, ['status', '--porcelain'])).text, '');
+assert.equal(statSync(join(repo, '.git'), { bigint: true }).mtimeNs, gitDirectoryClock, 'shared Git observations are also non-mutating');
 writeFileSync(join(repo, 'f'), 'changed\n');
 p = await gitProbe(repo);
 assert.equal(p.result.dirty, true, 'dirty state is observed, not asserted');
@@ -36,4 +42,5 @@ assert.equal(u.result.bodyDigest, u2.result.bodyDigest, 'same body => same diges
 srv.close();
 assert.equal((await urlProbe('http://127.0.0.1:1/none', { timeoutMs: 500 })).result.ok, false, 'unreachable is an envelope');
 
+rmSync(repo, { recursive: true });
 console.log('probes: all assertions passed');
