@@ -12,6 +12,7 @@ import json
 import os
 import stat
 import sys
+import fcntl
 
 
 def encoded(value):
@@ -134,6 +135,8 @@ def manifest(root, contents=True, sockets=False):
             if contents:
                 descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
                 with os.fdopen(descriptor, "rb", buffering=0) as stream:
+                    if sys.platform == "darwin" and before.st_size >= 4 * 1024 * 1024:
+                        fcntl.fcntl(stream.fileno(), 48, 1)  # F_NOCACHE: don't evict agents into swap.
                     if signature(os.fstat(stream.fileno())) != signature(before):
                         raise ValueError("File changed before read: " + relative)
                     while True:

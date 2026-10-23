@@ -12,14 +12,51 @@ import stat
 import sys
 import time
 import uuid
+import runpy
+import fcntl
+
+integrity = runpy.run_path(os.path.join(os.path.dirname(__file__), "storage-manifest.py"))
+
+
+def same_metadata(source, target):
+    a, b = os.lstat(source), os.lstat(target)
+    # Older rsync staging has second-resolution times. Do not rewrite every unchanged
+    # inode merely to add sub-second precision; full integrity checks still cover all
+    # persistent permissions/ownership/flags/ACL/xattrs, including directory metadata.
+    fields = lambda info: (info.st_mode, info.st_uid, info.st_gid, getattr(info, "st_flags", 0))
+    return (fields(a) == fields(b)
+            and integrity["attributes"](source) == integrity["attributes"](target)
+            and integrity["acl"](source) == integrity["acl"](target))
+
+
+def copy_metadata(source, target):
+    if not same_metadata(source, target):
+        native_copy(source, target, metadata=True)
 
 libc = ctypes.CDLL(None, use_errno=True)
 libc.copyfile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_uint32]
 libc.copyfile.restype = ctypes.c_int
+libc.fcopyfile.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+libc.fcopyfile.restype = ctypes.c_int
 NOFOLLOW = (1 << 18) | (1 << 19)
 
 
 def native_copy(source, target, metadata=False):
+    info = os.lstat(source)
+    if not metadata and stat.S_ISREG(info.st_mode) and info.st_size >= 4 * 1024 * 1024:
+        src = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        dst = None
+        try:
+            dst = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            fcntl.fcntl(src, 48, 1)  # F_NOCACHE keeps a bulk copy from growing local swap.
+            fcntl.fcntl(dst, 48, 1)
+            if libc.fcopyfile(src, dst, None, 15) != 0:
+                raise OSError(ctypes.get_errno(), "Native streaming copy failed", source)
+        finally:
+            os.close(src)
+            if dst is not None:
+                os.close(dst)
+        return
     if libc.copyfile(os.fsencode(source), os.fsencode(target), None,
                      NOFOLLOW | (7 if metadata else 15)) != 0:
         raise OSError(ctypes.get_errno(), "Native copy failed", source)
@@ -62,7 +99,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 walk(os.path.join(src, name), os.path.join(dst, name), os.path.join(rel, name))
             for extra in set(os.listdir(dst)) - set(names):
                 retain(os.path.join(dst, extra), os.path.join(rel, extra))
-            native_copy(src, dst, metadata=True)
+            copy_metadata(src, dst)
         elif stat.S_ISSOCK(before.st_mode) and allow_sockets:
             counts["sockets"] += 1
             retain(dst, rel)
@@ -77,10 +114,10 @@ def copy_tree(source, target, revisions, allow_sockets=False):
             elif (previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
                   and before.st_size == previous.st_size and int(before.st_mtime) == int(previous.st_mtime)):
                 counts["quickChecked"] += 1
-                native_copy(src, dst, metadata=True)
+                copy_metadata(src, dst)
             elif (previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
                   and os.readlink(src) == os.readlink(dst)):
-                native_copy(src, dst, metadata=True)
+                copy_metadata(src, dst)
             else:
                 temporary = os.path.join(os.path.dirname(dst), ".aios-copy-" + str(uuid.uuid4()))
                 native_copy(src, temporary)
