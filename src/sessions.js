@@ -700,10 +700,8 @@ export async function resolveSessionFile(s, rawRequested) {
   // Only an explicitly absolute, evidenced path can cross the assigned-worktree boundary. The
   // same-project worktree and temp checks retain their existing narrow scopes.
   const compared = target || candidate;
-  const projectWorktree = await registeredProjectWorktreeContaining(s, compared);
-  if (projectWorktree && await sessionMentionsFile(s, requested, compared)) {
-    return { target: compared, displayPath: requested, scope: 'project-worktree' };
-  }
+  // Dedicated session outputs do not need a Git worktree inventory. On remote
+  // project storage that unrelated lookup can add seconds to every file click.
   const managedStorage = sessionStoragePaths(s.id);
   for (const [scope, managedRoot] of [['session-artifact', managedStorage.artifacts], ['session-temp', managedStorage.tmp]]) {
     const physicalRoot = expectedStoragePath(managedRoot);
@@ -711,6 +709,10 @@ export async function resolveSessionFile(s, rawRequested) {
         && (!target || await sessionMentionsFile(s, requested, compared))) {
       return { target: compared, displayPath: requested, scope };
     }
+  }
+  const projectWorktree = await registeredProjectWorktreeContaining(s, compared);
+  if (projectWorktree && await sessionMentionsFile(s, requested, compared)) {
+    return { target: compared, displayPath: requested, scope: 'project-worktree' };
   }
   const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, compared));
   if (inTemp) {
