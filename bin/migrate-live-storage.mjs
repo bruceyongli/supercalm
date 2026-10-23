@@ -54,20 +54,32 @@ const save = async changes => {
   await rename(journalFile + '.tmp', journalFile);
 };
 const log = createWriteStream(join(journalRoot, id + '.log'), { flags: 'a', mode: 0o600 });
+let logError = null, activeChild = null, loggedBytes = 0;
+log.on('error', error => {
+  logError = error;
+  // Journal/log failure (including local ENOSPC) must stop our copier, not orphan it.
+  activeChild?.kill('SIGTERM');
+});
 async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 } = {}) {
+  if (logError) throw Error('Migration log unavailable; originals retained: ' + logError.code);
   const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  activeChild = child;
   const chunks = []; let size = 0;
   for (const stream of [child.stdout, child.stderr]) stream.on('data', b => {
-    log.write(b);
+    if (!logError && loggedBytes < 1024 * 1024) {
+      const bounded = b.subarray(0, 1024 * 1024 - loggedBytes);
+      loggedBytes += bounded.length; log.write(bounded);
+    }
     if (collect) { size += b.length; if (size <= 2 * 1024 * 1024) chunks.push(b); }
   });
   const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
   try {
     const code = await new Promise((res, rej) => { child.once('error', rej); child.once('close', res); });
+    if (logError) throw Error('Migration log unavailable; copier stopped and originals retained: ' + logError.code);
     if (code !== 0) throw Object.assign(new Error(`${file} exited ${code}; data retained; inspect ${id}.log`), { exitCode: code });
     if (collect && size > 2 * 1024 * 1024) throw Error('Verification output exceeded its bound; source and destination retained');
     return Buffer.concat(chunks).toString();
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); activeChild = null; }
 }
 async function verify() {
   // Independent content hashes: Apple's openrsync checksum/AppleDouble dry-run is not the
@@ -99,4 +111,4 @@ try {
 } catch (error) {
   await save({ error: error.message });
   throw error;
-} finally { await new Promise(resolve => log.end(resolve)); await lease.close(); }
+} finally { if (!log.destroyed) await new Promise(resolve => log.end(resolve)); await lease.close(); }
