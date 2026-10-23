@@ -3,6 +3,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DATA_DIR } from './config.js';
+import { cleanAgentScreen } from './agent_input_ready.js';
+
+export function storageRecoveryGate(screen) {
+  const tail = cleanAgentScreen(screen).trimEnd().split('\n').slice(-20).join('\n');
+  if (/This conversation is open in another app/.test(tail) && /r retry\s+f fork\s+esc/.test(tail)) return 'conversation-in-use';
+  if (/1\. Try new model/.test(tail) && /2\. Use existing model/.test(tail) && /enter\/esc confirm/.test(tail)) return 'model-offer';
+  return null;
+}
 
 export const storageMaintenanceFile = join(DATA_DIR, 'storage-maintenance.json');
 export function readStorageMaintenance(file = storageMaintenanceFile) {

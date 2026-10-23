@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
-import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable } from './storage_maintenance.js';
+import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate } from './storage_maintenance.js';
 import { sameStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
@@ -4319,7 +4319,12 @@ route('POST', '/api/session/:id/storage-resume', async (req, res, { id: sid }) =
       && await sessionLiveness.probe(session.tmux) === 'alive' ? session
       : await resume(sid, { maintenanceToken: pending.token, recoveryReason: 'storage-maintenance', preserveStatus: session.desired_status });
     const inputReady = await waitForAgentInput(resumed.tmux);
-    json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status, input_ready: inputReady });
+    // A pre-existing native lock/model choice is not permission to fork a conversation
+    // or change models during a storage move. Restore that exact gate honestly.
+    const restoredGate = !inputReady && pending.originalInputGate
+      && storageRecoveryGate(await tmux('capture-pane', '-p', '-t', resumed.tmux)) === pending.originalInputGate
+      ? pending.originalInputGate : null;
+    json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status, input_ready: inputReady, restored_existing_gate: restoredGate });
   } catch (error) { json(res, error.status || 409, { error: error.message }); }
 });
 

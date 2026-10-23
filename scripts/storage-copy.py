@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 import fcntl
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, Future
 from collections import deque
 from threading import Lock
 
@@ -72,6 +72,7 @@ def copy_tree(source, target, revisions, allow_sockets=False):
     device = os.lstat(source).st_dev
     counts = {"files": 0, "copiedBytes": 0, "quickChecked": 0, "sockets": 0, "unstableSources": []}
     hardlinks = {}
+    hardlink_lock = Lock()
     last_progress = time.monotonic()
     progress_lock = Lock()
     workers = max(1, min(16, int(os.environ.get("AIOS_STORAGE_COPY_WORKERS", "8"))))
@@ -103,9 +104,11 @@ def copy_tree(source, target, revisions, allow_sockets=False):
                 child = os.path.join(src, name)
                 info = os.lstat(child)
                 args = (child, os.path.join(dst, name), os.path.join(rel, name))
-                # Only ordinary single-link files run in parallel. Directory ordering and
-                # hardlink ownership remain on this thread; no concurrent target collision.
-                if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                # Inodes with many names dominate pnpm trees. One worker owns copying
+                # an inode; its siblings await that exact target before linking to it.
+                # No work item waits for an owner queued behind it: ownership is taken
+                # inside the running worker, not while scheduling the directory.
+                if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
                     future = pool.submit(walk, *args)
                     children.append(future); pending.append(future)
                     if len(pending) >= workers * 4:
@@ -122,28 +125,41 @@ def copy_tree(source, target, revisions, allow_sockets=False):
             retain(dst, rel)
         elif stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode):
             identity = (before.st_dev, before.st_ino)
-            first = hardlinks.get(identity) if before.st_nlink > 1 and stat.S_ISREG(before.st_mode) else None
-            if first:
-                first_info = os.lstat(first)
-                if not previous or previous.st_ino != first_info.st_ino or previous.st_dev != first_info.st_dev:
-                    retain(dst, rel)
-                    os.link(first, dst)
-            elif (previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
-                  and before.st_size == previous.st_size and int(before.st_mtime) == int(previous.st_mtime)):
-                counts["quickChecked"] += 1
-                copy_metadata(src, dst)
-            elif (previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
-                  and os.readlink(src) == os.readlink(dst)):
-                copy_metadata(src, dst)
-            else:
-                temporary = os.path.join(os.path.dirname(dst), ".aios-copy-" + str(uuid.uuid4()))
-                native_copy(src, temporary)
-                retain(dst, rel)
-                os.rename(temporary, dst)
-                if stat.S_ISREG(before.st_mode):
-                    counts["copiedBytes"] += before.st_size
+            future, owner = None, True
             if before.st_nlink > 1 and stat.S_ISREG(before.st_mode):
-                hardlinks.setdefault(identity, dst)
+                with hardlink_lock:
+                    future = hardlinks.get(identity)
+                    if future is None:
+                        future = hardlinks[identity] = Future()
+                    else:
+                        owner = False
+            try:
+                if not owner:
+                    first = future.result()
+                    first_info = os.lstat(first)
+                    if not previous or previous.st_ino != first_info.st_ino or previous.st_dev != first_info.st_dev:
+                        retain(dst, rel)
+                        os.link(first, dst)
+                elif (previous and stat.S_ISREG(before.st_mode) and stat.S_ISREG(previous.st_mode)
+                      and before.st_size == previous.st_size and int(before.st_mtime) == int(previous.st_mtime)):
+                    counts["quickChecked"] += 1
+                    copy_metadata(src, dst)
+                elif (previous and stat.S_ISLNK(before.st_mode) and stat.S_ISLNK(previous.st_mode)
+                      and os.readlink(src) == os.readlink(dst)):
+                    copy_metadata(src, dst)
+                else:
+                    temporary = os.path.join(os.path.dirname(dst), ".aios-copy-" + str(uuid.uuid4()))
+                    native_copy(src, temporary)
+                    retain(dst, rel)
+                    os.rename(temporary, dst)
+                    if stat.S_ISREG(before.st_mode):
+                        counts["copiedBytes"] += before.st_size
+                if future and owner:
+                    future.set_result(dst)
+            except BaseException as error:
+                if future and owner:
+                    future.set_exception(error)
+                raise
             counts["files"] += 1
         else:
             raise ValueError("Unsupported persistent entry: " + rel)

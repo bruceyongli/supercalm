@@ -4,15 +4,23 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR, DB_PATH, TMUX } from '../src/config.js';
 import { durableJson, openFiles } from '../src/storage_migration.js';
-import { readStorageMaintenance, storageMaintenanceFile } from '../src/storage_maintenance.js';
+import { readStorageMaintenance, storageMaintenanceFile, storageRecoveryGate } from '../src/storage_maintenance.js';
+import { codexRolloutFiles, pickRolloutByUuid } from '../src/codex_rollouts.js';
+import { sameStoragePath } from '../src/live_storage.js';
 
 const exec = promisify(execFile);
-const [operation, ...ids] = process.argv.slice(2);
+const [operation, ...args] = process.argv.slice(2);
+const ids = args.filter(a => !a.startsWith('--native='));
+const nativeIds = new Map(args.filter(a => a.startsWith('--native=')).map(a => {
+  const m = a.match(/^--native=(s_[a-zA-Z0-9_-]+):([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})$/);
+  if (!m || operation !== 'freeze' || !ids.includes(m[1])) throw Error('Invalid explicit native history');
+  return [m[1], m[2]];
+}));
 if (!['freeze', 'park', 'thaw'].includes(operation) || (operation === 'freeze' && !ids.length)
     || ids.some(id => !/^s_[a-zA-Z0-9_-]+$/.test(id))) throw Error('Usage: storage-maintenance.mjs freeze SID... | park SID... | thaw');
 const db = new DatabaseSync(DB_PATH, { readOnly: true });
@@ -85,6 +93,19 @@ try {
         if (found.length === 1) s.codex_uuid = found[0];
       }
       const screen = (await exec(TMUX, ['capture-pane', '-p', '-e', '-t', s.tmux, '-S', '-10000'], { timeout: 8000, maxBuffer: 8 * 1024 * 1024 })).stdout;
+      s.originalInputGate = storageRecoveryGate(screen);
+      if (nativeIds.has(s.id)) {
+        const uuid = nativeIds.get(s.id);
+        if (s.tool !== 'codex' || s.codex_uuid && s.codex_uuid !== uuid) throw Error('Explicit native identity conflicts with the live binding');
+        const file = pickRolloutByUuid(await codexRolloutFiles(), uuid);
+        if (!file) throw Error('Explicit native history is missing');
+        const handle = await open(file, 'r');
+        let row;
+        try { const b = Buffer.alloc(16384); const r = await handle.read(b, 0, b.length, 0); row = JSON.parse(b.subarray(0, r.bytesRead).toString().split('\n')[0]); }
+        finally { await handle.close(); }
+        if (row.type !== 'session_meta' || row.payload?.id !== uuid || !sameStoragePath(row.payload.cwd, s.worktree_path || s.project_path)) throw Error('Explicit native history belongs to another workspace');
+        s.codex_uuid = uuid; s.explicitNativeIdentity = true;
+      }
       s.screenBackup = join(backup, s.id + '.terminal.txt');
       await writeFile(s.screenBackup, screen, { mode: 0o600 });
     }
@@ -139,7 +160,8 @@ try {
         s.phase = 'resuming'; await save();
         const result = await request(s, 'resume');
         s.resumedTmux = result.tmux; await save();
-        if (result.input_ready !== true) throw Error(`${s.id} is loading its exact conversation; maintenance remains fenced. Retry thaw to check readiness, not to send input.`);
+        if (result.input_ready !== true && !result.restored_existing_gate) throw Error(`${s.id} is loading its exact conversation; maintenance remains fenced. Retry thaw to check readiness, not to send input.`);
+        s.restoredExistingGate = result.restored_existing_gate || null;
         restarted.push(s.id);
       }
       s.phase = 'complete'; await save();

@@ -48,11 +48,22 @@ def racing(src,dst,metadata=False):
   with open(src,'a') as stream: stream.write(' changed')
 m.native_copy=racing
 print(json.dumps(m.copy_tree(sys.argv[2],sys.argv[3],sys.argv[4])))`;
-    const stagedResult = JSON.parse((await exec('python3', ['-c', script,
+    const stagedResult = JSON.parse((await exec('python3', ['-B', '-c', script,
       fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), changing, staged, join(root, 'changing-revisions')])).stdout);
     assert.deepEqual(stagedResult.unstableSources, ['a']);
     assert.equal(await readFile(join(staged, 'z'), 'utf8'), 'later file', 'a growing active transcript cannot starve later histories');
     await assert.rejects(verifyStoragePair(changing, staged), /differ/, 'staging never authorizes an unsafe cutover');
+    const linked = join(root, 'many-links'), linkedCopy = join(root, 'many-links-copy');
+    await mkdir(linked); await mkdir(linkedCopy);
+    await writeFile(join(linked, 'owner'), 'shared package bytes');
+    for (let n = 0; n < 120; n++) await link(join(linked, 'owner'), join(linked, 'link-' + n));
+    await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), linked, linkedCopy, join(root, 'link-revisions')]);
+    const linkedEvidence = await verifyStoragePair(linked, linkedCopy);
+    assert.equal(linkedEvidence.files, 121); assert.equal(linkedEvidence.uniqueContentReads, 1);
+    const originalCopyInode = (await lstat(join(linkedCopy, 'owner'))).ino;
+    await exec('python3', [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), linked, linkedCopy, join(root, 'link-revisions')]);
+    assert.equal((await lstat(join(linkedCopy, 'owner'))).ino, originalCopyInode, 'parallel reconciliation preserves a correct existing hardlink group');
+    await verifyStoragePair(linked, linkedCopy);
   }
   assert.deepEqual(parseOpenFiles('p7\0cwriter\0\nf2\0n/work/p/data\0\nf3\0n/work/prefix/no\0', ['/work/p']),
     [{ pid: 7, command: 'writer', descriptor: '2', path: '/work/p/data' }]);
