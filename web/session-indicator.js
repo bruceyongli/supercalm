@@ -14,3 +14,12 @@ export function sessionIndicator(session = {}) {
     dot: state === 'working' ? 'ok pulse' : state === 'waiting' ? 'warn' : state === 'error' ? 'error' : '',
     color: { working: '#3fb950', waiting: '#d29922', starting: '#58a6ff', error: '#f85149' }[state] || '#8b949e', blocked: false };
 }
+
+// Counters and their destinations must select exactly the same sessions. These are runtime filters,
+// not the attention inbox: age, unread state and report dismissal never hide a counted session.
+export function sessionsByStatus(sessions, status) {
+  return (sessions || []).filter(session => {
+    if (status === 'blocked') return sessionIndicator(session).blocked;
+    return ['waiting', 'working'].includes(status) && session.status === status && !sessionIndicator(session).blocked;
+  });
+}

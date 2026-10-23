@@ -9,7 +9,7 @@ import { startVoiceMode } from '../voicemode.js';
 import { setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from '../on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
 import { splitSessionRecency } from '../session-recency.js';
-import { sessionIndicator } from '../session-indicator.js';
+import { sessionIndicator, sessionsByStatus } from '../session-indicator.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
 // (a CLI installed + a credential) actually pass; otherwise it points at the wizard. Checked once
@@ -43,6 +43,8 @@ let olderNeedsExpanded = false;
 let unsub = null;
 let unsubOnTheGo = null;
 let host = null;
+let statusFilter = '';
+const STATUS_LABELS = { blocked: 'Blocked', waiting: 'Waiting', working: 'Working' };
 const choiceSelections = new Map(); // sid -> { reportKey, questions: Map<questionIndex, Set<optionIndex>> }
 
 const $ = (s) => host?.querySelector(s);
@@ -126,6 +128,23 @@ function reconcile(container, specs) {
 function renderInbox(home) {
   if (!host) return;
   setDashboardBrowserIdentity(home);
+  if (statusFilter) {
+    const sessions = sessionsByStatus(home.sessions, statusFilter);
+    $('#dk-status-count').textContent = sessions.length;
+    reconcile($('#dk-status-results'), sessions.length ? sessions.map(s => {
+      const indicator = sessionIndicator(s);
+      const detail = indicator.blocked ? 'Model at capacity. Retry later or choose another model.' : s.summary || indicator.detail;
+      return { key: s.id, html: `<a class="dk-status-result" data-status-result data-sid="${esc(s.id)}" href="session?id=${esc(s.id)}">
+        <i class="dk-dot ${indicator.dot}" role="img" aria-label="${esc(indicator.detail)}"></i>
+        <span class="dk-status-result-body">
+          <span class="dk-status-result-context">${esc(s.project || s.id)} · ${esc(s.tool || 'agent')} · ${fmtAgo(s.last_activity)} ago${s.dismissed ? ' · Report dismissed' : ''}</span>
+          <strong class="dk-status-result-title">${esc(fullTitle(s).replace(/^#+\s*/, ''))}</strong>
+          <span class="dk-status-result-detail">${esc(String(detail).slice(0, 240))}</span>
+        </span><span class="dk-status-result-arrow" aria-hidden="true">›</span>
+      </a>` };
+    }) : [{ key: 'empty', html: `<p class="dk-status-empty">No ${statusFilter} sessions.</p>` }]);
+    return;
+  }
   const cards = needsYou();
   const { recent: recentCards, older: olderCards } = splitSessionRecency(cards);
   const nc = $('#dk-needs-count');
@@ -387,10 +406,20 @@ function wireCards() {
   }
 }
 
-export function init(el) {
+export function init(el, params = {}) {
   host = el;
+  statusFilter = Object.hasOwn(STATUS_LABELS, params.status) ? params.status : '';
   stoppedExpanded = false;
   dismissedExpanded = false;
+  if (statusFilter) {
+    host.innerHTML = `<div class="dk-main">
+      <div class="dk-page-head dk-status-head"><h1>${STATUS_LABELS[statusFilter]} sessions <span class="dk-status-count" id="dk-status-count"></span></h1><a class="dk-status-back" href="./">All sessions</a></div>
+      <p class="dk-status-note">Includes older sessions and dismissed reports.</p>
+      <div id="dk-status-results"></div>
+    </div>`;
+    unsub = subscribeHome(renderInbox);
+    return;
+  }
   host.innerHTML = `
     <div class="dk-main">
       <section id="dk-inbox" data-dk-inbox>
@@ -471,5 +500,5 @@ export function init(el) {
 export function teardown() {
   try { unsub?.(); } catch {}
   try { unsubOnTheGo?.(); } catch {}
-  unsub = null; unsubOnTheGo = null; host = null; choiceSelections.clear();
+  unsub = null; unsubOnTheGo = null; host = null; statusFilter = ''; choiceSelections.clear();
 }

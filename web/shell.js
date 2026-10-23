@@ -11,7 +11,7 @@ import { attentionCopy, cleanAttentionText } from './attention-preview.js';
 import { observeOnTheGoNeeds } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
 import { resourceLineHtml, mountSessionResources } from './session-resources.js';
-import { sessionIndicator } from './session-indicator.js';
+import { sessionIndicator, sessionsByStatus } from './session-indicator.js';
 
 const AGENT_COLOR = { claude: '#d9924e', codex: '#9aa7b8', agy: '#79b8ff' };
 const $ = (s) => document.querySelector(s);
@@ -86,9 +86,9 @@ function recalcHome() {
     ...home,
     sessions,
     counts: {
-      waiting: sessions.filter((s) => s.status === 'waiting' && !sessionIndicator(s).blocked).length,
-      blocked: sessions.filter((s) => sessionIndicator(s).blocked).length,
-      working: sessions.filter((s) => s.status === 'working').length,
+      waiting: sessionsByStatus(sessions, 'waiting').length,
+      blocked: sessionsByStatus(sessions, 'blocked').length,
+      working: sessionsByStatus(sessions, 'working').length,
       live: sessions.filter((s) => ['starting', 'working', 'waiting'].includes(s.status)).length,
       dismissed: sessions.filter((s) => s.dismissed).length,
     },
@@ -242,6 +242,11 @@ function syncAttributes(current, next) {
   }
 }
 function patchRailSession(current, next) {
+  if (current.matches('[data-status-filter]') && next.matches('[data-status-filter]')) {
+    syncAttributes(current, next);
+    current.querySelector('[data-status-count]').textContent = next.querySelector('[data-status-count]').textContent;
+    return true; // retain keyboard focus while a live count changes
+  }
   if (!current.matches('[data-dk-sess]') || !next.matches('[data-dk-sess]')) return false;
   const currentDot = current.querySelector('.dk-sess-l1 > .dk-dot');
   const nextDot = next.querySelector('.dk-sess-l1 > .dk-dot');
@@ -294,11 +299,16 @@ function reconcileKeyed(container, specs) {
 function renderSide() {
   if (!$('#dk-counters')) return; // page without the shell mounted
   const c = home.counts || {};
-  $('#dk-counters').innerHTML = `
-    ${c.blocked ? `<span class="dk-cnt"><i class="dk-dot error"></i>${c.blocked} blocked</span>` : ''}
-    <span class="dk-cnt"><i class="dk-dot warn"></i>${c.waiting || 0} waiting</span>
-    <span class="dk-cnt"><i class="dk-dot ok"></i>${c.working || 0} working</span>
-    <span class="dk-cnt muted">${c.live || 0} live</span>`;
+  const onHome = /\/(?:aios\/)?(?:index\.html)?$/.test(location.pathname);
+  const activeFilter = onHome ? new URLSearchParams(location.search).get('status') : '';
+  reconcileKeyed($('#dk-counters'), ['blocked', 'waiting', 'working']
+    .filter(status => status !== 'blocked' || c.blocked || activeFilter === status)
+    .map(status => ({ key: status, html: `<a class="dk-cnt" data-status-filter="${status}" href="./?status=${status}"
+      ${activeFilter === status ? 'aria-current="page"' : ''} title="Show all ${status} sessions, including older sessions">
+      <i class="dk-dot ${status === 'blocked' ? 'error' : status === 'waiting' ? 'warn' : 'ok'}" aria-hidden="true"></i><span><b data-status-count>${c[status] || 0}</b> ${status}</span>
+    </a>` })));
+  const liveCount = $('#dk-live-count');
+  if (liveCount) liveCount.textContent = c.live || 0;
   const badge = $('#dk-inbox-badge');
   if (badge) { const needs = needsYou().length; badge.hidden = !needs; badge.textContent = needs; }
   const cur = new URLSearchParams(location.search).get('id');
@@ -606,7 +616,6 @@ export function mountShell({ onData: cb = null, activeNav = '' } = {}) {
   $('#dk-palette-q')?.addEventListener('input', renderPalette);
   $('#dk-palette')?.addEventListener('click', (e) => { if (e.target === $('#dk-palette')) closePalette(); });
   const cmdk = $('#dk-cmdk-row'); if (cmdk) cmdk.onclick = openPalette;
-  const counters = $('#dk-counters'); if (counters) counters.onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
   const sessPlus = $('#dk-sess-plus'); // the "+" on the Sessions nav opens the launcher (don't navigate)
   if (sessPlus) sessPlus.onclick = (e) => { e.preventDefault(); e.stopPropagation(); openLaunch(); };
   // Prefetch a session's story on hover so opening it paints instantly (delegated — the list re-renders).

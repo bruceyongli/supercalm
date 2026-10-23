@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
+import { sessionsByStatus } from '../web/session-indicator.js';
 import { detectProviderIssue, providerIssue, providerIssueMessage } from '../src/provider_status.js';
 import { classify, clearHookState } from '../src/detect_classify.js';
 import { sessionIndicator } from '../web/session-indicator.js';
@@ -53,4 +56,25 @@ assert.equal(sessionIndicator({ status: 'working', provider_issue: retrying }).l
 assert.equal(sessionIndicator({ status: 'waiting' }).dot, 'warn');
 assert.equal(sessionIndicator({ status: 'working' }).dot, 'ok pulse');
 assert.equal(sessionIndicator({ status: 'exited', provider_issue: blocked }).label, 'Stopped');
+const filterRows = [
+  { id: 'old-blocked', status: 'waiting', provider_issue: blocked, last_activity: 1, dismissed: true, unread: 0 },
+  { id: 'waiting', status: 'waiting' },
+  { id: 'retrying', status: 'working', provider_issue: retrying },
+  { id: 'stopped', status: 'exited', provider_issue: blocked },
+];
+assert.deepEqual(sessionsByStatus(filterRows, 'blocked').map(s => s.id), ['old-blocked']);
+assert.deepEqual(sessionsByStatus(filterRows, 'waiting').map(s => s.id), ['waiting']);
+assert.deepEqual(sessionsByStatus(filterRows, 'working').map(s => s.id), ['retrying']);
+assert.deepEqual(sessionsByStatus(filterRows, 'anything'), []);
+assert.equal(filterRows[0].dismissed, true, 'finding a blocked session never restores its report');
+const phoneEntry = readFileSync(new URL('../web/app.html', import.meta.url), 'utf8').match(/<script>([\s\S]*?)<\/script>/)[1];
+const phoneRedirect = search => {
+  let redirect;
+  runInNewContext(phoneEntry, { URLSearchParams, screen: { width: 390 }, innerWidth: 390,
+    location: { pathname: '/aios/', search, replace: path => { redirect = path; } } });
+  return redirect;
+};
+for (const status of ['blocked', 'waiting', 'working']) assert.equal(phoneRedirect(`?status=${status}`), undefined, 'explicit status deep links stay on their destination');
+assert.equal(phoneRedirect(''), '/aios/phone#home', 'ordinary phone/PWA home still uses the phone inbox');
+assert.equal(phoneRedirect('?status=invalid'), '/aios/phone#home', 'unknown filters do not change phone defaults');
 console.log('provider_status.test ok');

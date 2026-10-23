@@ -73,9 +73,13 @@ body.dk-collapsed .dk-expand { display: flex; }
 }
 .dk-wordmark { font-family: 'JetBrains Mono', monospace; font-weight: 800; font-size: 15px; color: #e9eef5; }
 .dk-sub { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; color: #5c6675; }
-.dk-counters { display: flex; gap: 12px; align-items: center; background: none; border: none; color: #8a95a5; font: inherit; font-size: 11.5px; padding: 2px 6px; cursor: pointer; text-align: left; }
-.dk-cnt { display: inline-flex; align-items: center; gap: 5px; }
-.dk-cnt.muted { color: #5c6675; }
+.dk-counters { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 0; }
+.dk-cnt { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; padding: 5px;
+  min-height: 30px; color: #8a95a5; font-size: 11px; line-height: 18px; white-space: nowrap; text-decoration: none; border-radius: 6px; }
+.dk-cnt b { color: #b9c4d4; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dk-cnt:hover, .dk-cnt[aria-current] { color: #d4dbe5; background: #18212d; }
+.dk-cnt:focus-visible { outline: 2px solid #58a6ff; outline-offset: 1px; }
+@media (pointer: coarse) { .dk-cnt { min-height: 44px; } }
 .dk-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; display: inline-block; background: #5c6675; }
 .dk-dot.ok { background: #4ecb6c; }
 .dk-dot.warn { background: #e2b23e; }
@@ -95,6 +99,8 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-badge { font-family: 'JetBrains Mono', monospace; font-size: 9.5px; font-weight: 800; border-radius: 999px; padding: 1px 7px; margin-left: auto; }
 .dk-badge.warn { background: rgba(226,178,62,.12); color: #e2b23e; border: 1px solid rgba(226,178,62,.4); }
 .dk-sec { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 1.5px; color: #5c6675; text-transform: uppercase; padding: 8px 6px 2px; }
+.dk-sessions-heading { display: flex; justify-content: space-between; align-items: center; }
+.dk-sessions-heading > span { letter-spacing: 0; font-variant-numeric: tabular-nums; }
 .dk-sessions { display: flex; flex-direction: column; gap: 3px; }
 .dk-older[hidden] { display: none; }
 .dk-older > summary {
@@ -181,6 +187,20 @@ body.session-page #view.dk-view > #session-root { height: 100%; }
 .dk-main > header .spacer { display: none; }
 .dk-page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 18px; }
 .dk-page-head h1 { font-family: 'IBM Plex Sans', sans-serif; font-size: 19px; font-weight: 600; letter-spacing: -0.01em; color: #e9eef5; margin: 0; display: flex; align-items: center; gap: 10px; }
+.dk-status-head { flex-wrap: wrap; }
+.dk-status-count { color: #8a95a5; font-size: 14px; font-variant-numeric: tabular-nums; }
+.dk-status-back { color: #8a95a5; font-size: 12px; text-decoration: none; white-space: nowrap; padding: 8px 0; }
+.dk-status-back:hover { color: #e9eef5; }
+.dk-status-note { color: #8a95a5; font-size: 12px; margin: 0 0 16px; }
+.dk-status-result { display: flex; gap: 12px; align-items: center; padding: 16px 2px; border-bottom: 1px solid #1d2632; text-decoration: none; }
+.dk-status-result:hover { background: #10151d; }
+.dk-status-result:focus-visible, .dk-status-back:focus-visible { outline: 2px solid #58a6ff; outline-offset: 3px; }
+.dk-status-result-body { flex: 1; display: grid; gap: 5px; }
+.dk-status-result-context { color: #8a95a5; font-size: 11px; }
+.dk-status-result-title { color: #e9eef5; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.dk-status-result-detail { color: #8a95a5; font-size: 12px; overflow-wrap: anywhere; }
+.dk-status-result-arrow { color: #5c6675; }
+.dk-status-empty { color: #8a95a5; padding: 24px 0; }
 .dk-page-actions { display: flex; align-items: center; gap: 8px; }
 .dk-refresh { background: none; border: 1px solid #303b4a; color: #9aa7b8; border-radius: 10px; padding: 7px 12px; font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .dk-refresh:hover { background: #131a24; color: #d4dbe5; }

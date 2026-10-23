@@ -279,6 +279,9 @@ fixtures or an older failure followed by healthy output. Persist one report per 
 preserve cross-device dismissal/activity clocks, and clear the warning on progress, a new native
 question, accepted input or relaunch. Never send keys, switch models or restart a session for this
 display feature. Capacity summaries are deterministic; a late LLM summary cannot overwrite them.
+Sidebar status counts are compact links to matching session lists. Use the same status predicate for
+the count and its destination; include older sessions and dismissed reports without restoring attention
+or advancing activity. Explicit status links survive phone reloads; ordinary phone Home stays unchanged.
 
 State per session: `starting → working ↔ waiting → exited`. Codex/agy retain hook-first (TTL),
 gate, prompt, active-output, bounded background-hold and idle detection. Claude uses a typed
