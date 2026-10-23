@@ -288,7 +288,7 @@ try {
   if (rep.stopped.total > cap && rep.stopped.shownCollapsed > cap) fails.push(`stopped list not capped: showing ${rep.stopped.shownCollapsed} of ${rep.stopped.total} (cap ${cap})`);
   if (rep.stopped.total > cap && !rep.stopped.hasExpander) fails.push(`stopped list has ${rep.stopped.total} but no "show all" expander`);
 
-  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, routeRace: rep.routeRace, steps: rep.steps, churn: rep.churn, actions: rep.actions, stopped: rep.stopped, pass: fails.length === 0 }, null, 2));
+  console.log(JSON.stringify({ loadEvents: loadCount, exceptions: exceptions.length, routeRace: rep.routeRace, steps: rep.steps, churn: rep.churn, actions: rep.actions, stopped: rep.stopped, failures: fails, pass: fails.length === 0 }, null, 2));
   if (fails.length) { console.error('\nSPA AUDIT FAIL:\n - ' + fails.join('\n - ')); process.exitCode = 1; }
   else console.log('\nSPA AUDIT PASS — one document, one persistent sidebar, no reloads, stopped list bounded, zero page exceptions.');
 } catch (e) {
