@@ -84,7 +84,7 @@ import {
 } from './session_storage.js';
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan, pendingComposerDraft } from './agent_input_ready.js';
 import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
-import { renderedFileMeta, serveRenderedFile } from './file_render.js';
+import { hasApprovedRenderedEntry, renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
 import { sweepScratchJobs } from './scratch_jobs.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
@@ -295,6 +295,7 @@ const SESSION_FILE_EVIDENCE_TAIL_BYTES = Math.max(
 );
 const SESSION_FILE_EVIDENCE_MS = 30 * 1000;
 const sessionTranscriptEvidenceCache = new Map();
+const sessionTranscriptEvidencePending = new Map();
 const sessionOperatedRootsCache = new Map();
 const sessionFullExecutionEvidenceCache = new Map();
 
@@ -372,27 +373,35 @@ function parseTranscriptExecutionEvidence(text, workdirs, writtenPaths) {
 }
 
 async function sessionTranscriptEvidence(s) {
-  const cached = sessionTranscriptEvidenceCache.get(s.id);
+  // Bind shared reads to this exact native conversation, not just the UI session.
+  const key = JSON.stringify([s.id, s.codex_uuid || '', s.claude_transcript || '']);
+  const cached = sessionTranscriptEvidenceCache.get(key);
   if (cached?.expires > Date.now()) return cached;
-  const evidence = {
-    expires: Date.now() + SESSION_FILE_EVIDENCE_MS,
-    texts: [],
-    files: [],
-    complete: true,
-    workdirs: [],
-    writtenPaths: [],
-  };
-  for (const transcript of await sessionTranscriptFiles(s)) {
-    try {
-      const transcriptStat = await stat(transcript);
-      const text = await readFileTail(transcript);
-      evidence.texts.push(text);
-      evidence.files.push(transcript);
-      if (transcriptStat.size > SESSION_FILE_EVIDENCE_TAIL_BYTES) evidence.complete = false;
-      parseTranscriptExecutionEvidence(text, evidence.workdirs, evidence.writtenPaths);
-    } catch {}
+  const pending = sessionTranscriptEvidencePending.get(key);
+  if (pending) return pending;
+  const loading = (async () => {
+    const evidence = { texts: [], files: [], complete: true, workdirs: [], writtenPaths: [] };
+    for (const transcript of await sessionTranscriptFiles(s)) {
+      try {
+        const transcriptStat = await stat(transcript);
+        const text = await readFileTail(transcript);
+        evidence.texts.push(text);
+        evidence.files.push(transcript);
+        if (transcriptStat.size > SESSION_FILE_EVIDENCE_TAIL_BYTES) evidence.complete = false;
+        parseTranscriptExecutionEvidence(text, evidence.workdirs, evidence.writtenPaths);
+      } catch {}
+    }
+    // Remote reads can outlast the TTL. Start it when the result is ready, not
+    // before I/O, so a completed slow read is not already expired on arrival.
+    evidence.expires = Date.now() + SESSION_FILE_EVIDENCE_MS;
+    return cacheSessionFileEvidence(sessionTranscriptEvidenceCache, key, evidence);
+  })();
+  sessionTranscriptEvidencePending.set(key, loading);
+  try {
+    return await loading;
+  } finally {
+    if (sessionTranscriptEvidencePending.get(key) === loading) sessionTranscriptEvidencePending.delete(key);
   }
-  return cacheSessionFileEvidence(sessionTranscriptEvidenceCache, s.id, evidence);
 }
 
 async function streamMentionsFile(file, mentions, overlap) {
@@ -576,6 +585,10 @@ async function relativeExternalFileMatch(s, requested) {
 async function sessionMentionsFile(s, requested, target) {
   const key = `${s.id}\0${target}`;
   if ((sessionFileGrants.get(key) || 0) > Date.now()) return true;
+  // Reuse a server-issued exact entry as durable mention evidence. This avoids
+  // rescanning remote history for a previously opened report after a restart;
+  // resolveSessionFile still checks today's project/artifact/realpath scope.
+  if (hasApprovedRenderedEntry(s.id, target)) return true;
   const needles = [...new Set([
     String(requested || ''),
     normalize(String(requested || '')),

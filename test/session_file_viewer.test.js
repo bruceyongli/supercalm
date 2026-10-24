@@ -48,10 +48,11 @@ const artifactRoot = join(scratch, 'artifacts');
 await mkdir(join(process.cwd(), 'test-results'), { recursive: true });
 const linkedParent = await mkdtemp(join(process.cwd(), 'test-results/session-file-worktree-'));
 const linkedRoot = join(linkedParent, 'linked');
-// Keep this standalone-repository fixture under a narrow home child so its authorization semantics
-// do not change when the suite itself is materialized below the host temp root. Temp artifacts are
-// intentionally governed by a separate exact-mention policy.
-const externalParent = await mkdtemp(join(homedir(), '.aios-session-file-external-'));
+// Keep this fixture in dedicated test storage outside the host temp root. Temp
+// artifacts intentionally have a separate exact-mention authorization policy.
+const testRoot = join(homedir(), '.local', 'share', 'aios', 'test-tmp');
+await mkdir(testRoot, { recursive: true });
+const externalParent = await mkdtemp(join(testRoot, 'session-file-external-'));
 const externalRoot = join(externalParent, 'standalone-repo');
 const otherRoot = join(externalParent, 'mentioned-only-repo');
 const writtenRoot = join(externalParent, 'written-output');

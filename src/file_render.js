@@ -24,6 +24,17 @@ const types = {
   '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf', '.otf': 'font/otf',
   '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.webm': 'video/webm',
 };
+
+// This is path-mention evidence, NOT file authorization. Only the exact entry
+// previously approved for this session qualifies; a rendered folder's relative
+// assets do not. Callers must still revalidate the current scope and realpath.
+export function hasApprovedRenderedEntry(sessionId, target) {
+  if (!sessionId || !isAbsolute(target || '')) return false;
+  const entry = logicalStoragePath(target);
+  return !!db.prepare('SELECT 1 FROM file_render_grants WHERE session_id=? AND entry_path=?')
+    .get(sessionId, entry);
+}
+
 export function renderedFileMeta(sessionId, target, bytes = 0) {
   if (!/\.(?:html?|md|markdown|svg)$/i.test(target)) return {};
   target = logicalStoragePath(target);
