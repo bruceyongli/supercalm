@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Explicit storage migration, never deployment. copy/verify retain originals; cutover requires
 // integrity verification (or explicit transfer-only consent retaining originals) and no open
-// source/target handles before switching an alias.
+// source/target writers before switching an alias. Only the original-retaining transfer path
+// permits positively identified read-only Spotlight indexers; reclamation stays strict-unused.
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, lstat, realpath, stat, open } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -9,7 +10,7 @@ import { join, dirname, resolve, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { validateLiveStorage } from '../src/live_storage.js';
-import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
+import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, assertTransferCutoverQuiesced, durableJson } from '../src/storage_migration.js';
 import { transferOnlyAuthorized, checkStorageTransfer } from '../src/storage_transfer_receipt.js';
 import { runStorageCopyPass } from '../src/storage_copy_baseline.js';
 
@@ -112,8 +113,9 @@ try {
       await stageCopy(operation === 'reconcile');
       console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true, unstableSources: journal.unstableSources }));
     } else {
-      if (operation === 'cutover') await assertUnused([source, target]);
       const transferOnly = transferOnlyAuthorized(config, journal);
+      const checkOwners = transferOnly ? assertTransferCutoverQuiesced : assertUnused;
+      if (operation === 'cutover') await checkOwners([source, target]);
       let verification;
       if (transferOnly) {
         // A background receipt cannot approve a live switch. Reconcile after the
@@ -121,7 +123,7 @@ try {
         if (operation === 'cutover' || !journal.copyReceipt || journal.error) {
           await stageCopy(true, { quiesced: operation === 'cutover' });
         }
-        if (operation === 'cutover') await assertUnused([source, target]);
+        if (operation === 'cutover') await checkOwners([source, target]);
         verification = await checkStorageTransfer(config, journal, { quiesced: operation === 'cutover' });
       } else {
       const options = {

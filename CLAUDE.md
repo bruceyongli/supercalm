@@ -106,6 +106,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   checks, skips full-tree verification, and ALWAYS retains the local original under `retainedOriginal`.
   It cannot authorize reclamation. Background staging must not hold unrelated sessions or new launches
   for its duration; pause affected owners only for the bounded final reconciliation/alias transaction.
+  Original-retaining transfer cutovers alone may tolerate read-only Spotlight file/directory handles,
+  with exact Apple executable, UID and stable PID/start identity checked around the handle inventory.
+  Writers, coding agents and unknown handles still block; full verification/reclamation remains strictly unused.
   Git inventory errors/timeouts are unknown state, never evidence that a worktree is absent. Launch/
   resume must retain existing or partially created worktrees and branches on failure; no force-remove
   or prune fallback. Match registered logical/physical paths and allow bounded remote-read latency.

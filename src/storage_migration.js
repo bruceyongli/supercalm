@@ -37,16 +37,20 @@ export async function durableJson(file, value) {
 }
 
 export function parseOpenFiles(output, roots) {
-  let pid, command, descriptor;
+  let pid, command, uid, descriptor, access, type;
   const found = [];
   for (const field0 of output.split('\0')) {
     const field = field0.replace(/^\n/, '');
-    if (field[0] === 'p') pid = Number(field.slice(1));
+    if (field[0] === 'p') { pid = Number(field.slice(1)); command = uid = descriptor = access = type = undefined; }
     else if (field[0] === 'c') command = field.slice(1);
-    else if (field[0] === 'f') descriptor = field.slice(1);
+    else if (field[0] === 'u') uid = /^\d+$/.test(field.slice(1)) ? Number(field.slice(1)) : undefined;
+    else if (field[0] === 'f') { descriptor = field.slice(1); access = type = undefined; }
+    else if (field[0] === 'a') access = field.slice(1);
+    else if (field[0] === 't') type = field.slice(1);
     else if (field[0] === 'n') {
       const path = field.slice(1);
-      if (roots.some(root => inside(path, root))) found.push({ pid, command, descriptor, path });
+      if (roots.some(root => inside(path, root))) found.push({ pid, command, descriptor, path,
+        ...(uid !== undefined ? { uid } : {}), ...(access !== undefined ? { access } : {}), ...(type !== undefined ? { type } : {}) });
     }
   }
   return found;
@@ -55,15 +59,60 @@ export function parseOpenFiles(output, roots) {
 export async function openFiles(roots) {
   // One bounded global inventory, not lsof +D statting millions of members. Include cwd,
   // mmap/text and read-only descriptors too: any old inode can defeat a transparent relocation.
-  const result = await exec('/usr/sbin/lsof', ['-nP', '-F0pcfn'], { timeout: 30_000, maxBuffer: 64 * 1024 * 1024 });
+  const result = await exec('/usr/sbin/lsof', ['-nP', '+c0', '-F0pcufatn'], { timeout: 30_000, maxBuffer: 64 * 1024 * 1024 });
   if (result.stderr.trim()) throw Error('Open-file inventory was incomplete; originals retained');
   return parseOpenFiles(result.stdout, roots);
 }
 
-export async function assertUnused(roots) {
-  const owners = await openFiles(roots);
-  if (owners.length) throw Object.assign(Error('Storage still has open handles; originals retained: '
+function storageInUse(owners) {
+  return Object.assign(Error('Storage still has open handles; originals retained: '
     + [...new Set(owners.map(p => p.pid + ':' + p.command))].slice(0, 12).join(', ')), { code: 'storage-in-use', owners });
+}
+
+export async function assertUnused(roots, { inventory = openFiles } = {}) {
+  const owners = await inventory(roots);
+  if (owners.length) throw storageInUse(owners);
+}
+
+const spotlightExecutable = '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared';
+
+export function parseStorageProcessIdentities(output) {
+  const identities = new Map();
+  for (const line of output.split('\n')) {
+    // LC_ALL=C makes lstart a fixed English date. comm is the executable path, not argv.
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(\/.*)$/);
+    if (match) identities.set(Number(match[1]), { pid: Number(match[1]), uid: Number(match[2]), started: match[3], executable: match[4] });
+  }
+  return identities;
+}
+
+async function storageProcessIdentities() {
+  const result = await exec('/bin/ps', ['-axo', 'pid=,uid=,lstart=,comm='],
+    { env: { ...process.env, LC_ALL: 'C' }, timeout: 8000, maxBuffer: 8 * 1024 * 1024 });
+  if (result.stderr.trim()) throw Error('Process identity inventory was incomplete; originals retained');
+  return parseStorageProcessIdentities(result.stdout);
+}
+
+export function isReadOnlySpotlightOwner(owner, before, after, { platform = process.platform, uid = process.getuid?.() } = {}) {
+  return platform === 'darwin' && Number.isSafeInteger(uid) && uid > 0
+    && Number.isSafeInteger(owner.pid) && owner.pid > 1 && owner.uid === uid
+    && owner.command === 'mdworker_shared' && /^\d+$/.test(owner.descriptor || '')
+    && owner.access === 'r' && ['REG', 'DIR'].includes(owner.type)
+    && before?.pid === owner.pid && after?.pid === owner.pid && before.uid === uid && after.uid === uid
+    && before.executable === spotlightExecutable && after.executable === spotlightExecutable
+    && typeof before.started === 'string' && before.started.length > 0 && before.started === after.started;
+}
+
+// ONLY the explicitly authorized transfer-only path may use this guard. The original inode
+// remains retained, so an identified read-only OS indexer can finish on it after the rename.
+// Default SHA cutover and every deletion/reclamation path continue to require zero handles.
+export async function assertTransferCutoverQuiesced(roots, { inventory = openFiles, processInventory = storageProcessIdentities } = {}) {
+  const before = await processInventory();
+  const owners = await inventory(roots);
+  const after = await processInventory();
+  const blocked = owners.filter(owner => !isReadOnlySpotlightOwner(owner, before.get(owner.pid), after.get(owner.pid)));
+  if (blocked.length) throw storageInUse(blocked);
+  return owners.map(owner => ({ ...owner, ...after.get(owner.pid) }));
 }
 
 export async function storageManifest(root, { metadataOnly = false, ephemeralSockets = false, equivalentGroups = [], workerFile = worker } = {}) {
@@ -113,23 +162,25 @@ export async function reuseStorageVerification(source, target, evidence, options
 }
 
 export async function switchStorageRoot({ source, target, configFile, journal, save,
-  evidence, checkUnused = assertUnused, verifyMetadata = storageManifest, checkMounted = assertLiveStorage }) {
+  evidence, checkUnused, verifyMetadata = storageManifest, checkMounted = assertLiveStorage }) {
   const config = validateLiveStorage(JSON.parse(await readFile(configFile, 'utf8')));
   const mapping = config.mappings.find(m => m.source === source && m.target === target);
   const transferOnly = evidence?.algorithm === 'transfer-receipt';
   if (!mapping || !(transferOnly || evidence?.digest) || source === dirname(source) || !inside(target, config.mount)) throw Error('Invalid cutover identity');
   if (transferOnly) await assertTransferReceipt(config, journal, evidence);
+  const checkOwners = checkUnused || (transferOnly ? assertTransferCutoverQuiesced : assertUnused);
   const options = { ephemeralSockets: mapping.ephemeralSockets === true, metadataOnly: true };
   if (evidence.implementationHash) options.workerFile = (await manifestSnapshot(evidence.implementationHash)).path;
   if (await realpath(source) !== source || await realpath(target) !== target) throw Error('Cutover roots must be physical directories');
   const original = await lstat(source);
   if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw Error('Source identity changed');
-  await checkUnused([source, target]);
+  const retainedReaders = await checkOwners([source, target]);
   if (!transferOnly && (await verifyMetadata(source, options)).fingerprint !== evidence.fingerprint) throw Error('Source changed after verification');
   const quarantine = join(dirname(source), '.aios-migrated-' + journal.id + '-' + randomUUID());
   if (await lstat(quarantine).catch(() => null)) throw Error('Quarantine already exists');
   // Durable intent precedes the rename. The app fails closed during the small alias gap.
-  await save({ state: 'switching', quarantine, verification: evidence });
+  await save({ state: 'switching', quarantine, verification: evidence,
+    ...(transferOnly ? { retainedReadOnlyIndexers: retainedReaders || [] } : {}) });
   mapping.active = true;
   await durableJson(configFile, config);
   try { await rename(source, quarantine); }
@@ -150,7 +201,7 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   }
   await save({ state: 'switched', switchedAt: Date.now() });
   await checkMounted(source, config);
-  await checkUnused([quarantine]);
+  const finalReaders = await checkOwners([quarantine]);
   if (transferOnly) {
     // No recursive reread and, crucially, no deletion based on a transfer receipt.
     // Preserve the exact original inode as a separately recorded recovery copy.
@@ -159,7 +210,8 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
         || await readlink(source) !== target) throw Error('Cutover identity changed; original retained');
     await save({ state: 'complete', completedAt: Date.now(), reclaimedBytes: 0, sourceRetained: true,
       retainedOriginal: { path: quarantine, inode: held.ino, device: held.dev,
-        reason: 'Operator skipped content verification; original retained for recovery' }, quarantine: null });
+        reason: 'Operator skipped content verification; original retained for recovery' }, quarantine: null,
+      retainedReadOnlyIndexers: finalReaders || [] });
     return { source, target, contentVerified: false, sourceRetained: true, retainedOriginal: quarantine };
   }
   if ((await verifyMetadata(quarantine, options)).fingerprint !== evidence.fingerprint) {
@@ -189,7 +241,7 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
     }
   }
   await prepareDuplicate(quarantine);
-  await checkUnused([quarantine]);
+  await checkOwners([quarantine]);
   const removable = await lstat(quarantine);
   if (removable.ino !== original.ino || removable.dev !== original.dev || await readlink(source) !== target) {
     throw Error('Reclamation identity changed; local duplicate retained');
