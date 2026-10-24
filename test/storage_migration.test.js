@@ -47,12 +47,13 @@ try {
     await writeFile(join(delta, 'added'), 'new');
     await rm(join(delta, 'removed'));
     const reconciled = JSON.parse((await exec('python3', [copier, delta, deltaCopy, join(root, 'delta-revisions'), '--since=' + baseline])).stdout.trim().split('\n').at(-1));
-    assert.ok(reconciled.unchangedSinceBaseline >= 1);
+    assert.ok(reconciled.quickChecked >= 1, 'changed namespace conservatively quick-checks old descendants');
     await verifyStoragePair(delta, deltaCopy);
     assert.equal(await readFile(join(root, 'delta-revisions', 'removed'), 'utf8'), 'retained revision');
     assert.equal(await readFile(join(deltaCopy, 'nested', 'edited'), 'utf8'), 'after!', 'ctime detects same-size edits with restored mtime');
+    const unchangedBaseline = Date.now() / 1000;
     await writeFile(join(deltaCopy, 'untouched'), 'CORRUPTED');
-    await exec('python3', [copier, delta, deltaCopy, join(root, 'delta-revisions'), '--since=' + baseline]);
+    await exec('python3', [copier, delta, deltaCopy, join(root, 'delta-revisions'), '--since=' + unchangedBaseline]);
     await assert.rejects(verifyStoragePair(delta, deltaCopy), /differ/, 'a source-only reconciliation never grants approval to an altered destination');
     const outside = join(root, 'outside'); await mkdir(outside);
     await writeFile(join(outside, 'edited'), 'must remain untouched');

@@ -67,7 +67,7 @@ const log = createWriteStream(join(journalRoot, id + '.log'), { flags: 'a', mode
 let logError = null;
 log.on('error', error => { logError = error; });
 async function stageCopy(incremental, { quiesced = false } = {}) {
-  return runStorageCopyPass({ journal, incremental, quiesced, save, copy: async ({ baseline }) => {
+  return runStorageCopyPass({ journal, incremental, quiesced, save, copy: async ({ baseline, coverage }) => {
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
       // Native copyfile preserves ACL/xattrs/hardlinks without Apple's openrsync AppleDouble
       // hardlink bug. Superseded staging entries stay on Spark, never silently deleted.
@@ -78,6 +78,8 @@ async function stageCopy(incremental, { quiesced = false } = {}) {
       // proof: default cutover still verifies contents; an explicit transfer-only
       // policy can skip rereads only while retaining the exact local original.
       if (incremental) args.push('--since=' + String((baseline - 1000) / 1000));
+      if (coverage) args.push('--covered-since=' + String((coverage.coveredSince - 1000) / 1000),
+        '--retry-paths=' + JSON.stringify(coverage.retryPaths));
       const output = await runStorageCopyCommand({ file: 'python3', args, collect: true,
         log, save, getLogError: () => logError, logName: id + '.log' });
       return JSON.parse(output.trim().split('\n').at(-1));

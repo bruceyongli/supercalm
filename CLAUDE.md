@@ -95,6 +95,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   completed staging pass, `reconcile` scans source ctimes/names to update changed entries without
   restatting every unchanged destination; it is not independent content verification. Large
   copies finalize directories bottom-up so retaining a removed child cannot race its finalizer.
+  A completed changing pass may supply a START-time reuse watermark only outside its uncertain
+  paths; uncertain subtrees and newly created/replaced destination ancestry must be checked again.
+  Directory timestamp churn is harmless only when its inode, persistent metadata and immediate
+  entry name/inode/type membership are unchanged; persistent namespace changes still block cutover.
   Positively missing/replaced source entries are unstable staging, not a completed quiesced transfer;
   unchanged-source destination errors and loss of the selected root still fail closed. Staging journals
   record the owned copier PID, exit signal and explicit termination reason without argv/environment;

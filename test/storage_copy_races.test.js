@@ -14,7 +14,7 @@ if (process.platform !== 'darwin') {
     fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url))],
   { env: { ...process.env, AIOS_STORAGE_COPY_WORKERS: '4' }, timeout: 30000, maxBuffer: 1024 * 1024 });
   const { cases, unstableResult } = JSON.parse(stdout.trim().split('\n').at(-1));
-  assert.equal(cases.length, 10);
+  assert.equal(cases.length, 26);
   assert.ok(unstableResult.unstableSources.length);
 
   // A successful background staging pass is not permission to switch storage.
@@ -30,5 +30,5 @@ if (process.platform !== 'darwin') {
     storageId: 'fixture', approvedAt: baseline, roots: [{ source: journal.source, target: journal.target,
       sourceInode: journal.sourceInode, sourceDevice: journal.sourceDevice }] } };
   await assert.rejects(checkStorageTransfer(config, journal, { quiesced: true }), /completed stable transfer receipt/);
-  console.log('storage_copy_races.test passed: 10 isolated producer/destination races; bottom-up finalization; originals/revisions retained; quiesced unstable receipt rejected');
+  console.log('storage_copy_races.test passed: 26 isolated producer/destination races; namespace churn, scoped coverage, ancestry, originals/revisions retained; quiesced unstable receipt rejected');
 }

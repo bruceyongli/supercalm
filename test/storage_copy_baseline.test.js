@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { runStorageCopyPass } from '../src/storage_copy_baseline.js';
+import { runStorageCopyPass, storageCopyCoverage } from '../src/storage_copy_baseline.js';
 
 const makeJournal = () => ({ state: 'copied', createdAt: 1000, copyBaselineAt: 2000, copiedAt: 2500 });
 function fixture(journal, { start = 10000, finish = 20000, copy } = {}) {
@@ -48,6 +48,42 @@ await runStorageCopyPass(unstable.options);
 assert.equal(unstable.journal.state, 'staged-changing');
 assert.equal(unstable.journal.copyBaselineAt, 2000, 'unstable pass retains its previous baseline');
 assert.equal(unstable.journal.copyReceipt.startedAt, 10000);
+
+const completeChanging = { ...makeJournal(), state: 'staged-changing', copiedAt: 20000,
+  unstableSources: ['idle/tmp'], error: 'A completed stable transfer receipt is required',
+  copyReceipt: { startedAt: 10000, completedAt: 20000, exitCode: 0, quiesced: true,
+    result: { files: 10, unstableSources: ['idle/tmp'] } } };
+const reused = fixture(structuredClone(completeChanging), { start: 22000, finish: 25000,
+  copy: async ({ baseline, coverage }) => {
+    assert.equal(baseline, 2000, 'global completed baseline is not rewritten by coverage');
+    assert.deepEqual(coverage, { coveredSince: 10000, retryPaths: ['idle/tmp'],
+      priorReceiptStartedAt: 10000, priorReceiptCompletedAt: 20000 });
+    assert.equal(reused.journal.copyReceipt.completedAt, 20000, 'prior receipt remains until new pass completes');
+    return { files: 10, unstableSources: [] };
+  } });
+await runStorageCopyPass(reused.options);
+assert.equal(reused.journal.copyBaselineAt, 22000);
+assert.equal(reused.journal.copyReceipt.incrementalCoverage.coveredSince, 10000);
+
+const interruptedCoverage = fixture(structuredClone(completeChanging), { start: 22000, finish: 25000,
+  copy: async ({ coverage }) => { assert.equal(coverage.coveredSince, 10000); throw Error('interrupted retry'); } });
+await assert.rejects(runStorageCopyPass(interruptedCoverage.options), /interrupted retry/);
+assert.equal(interruptedCoverage.journal.copyBaselineAt, 2000);
+assert.deepEqual(interruptedCoverage.journal.copyReceipt, completeChanging.copyReceipt);
+assert.deepEqual(interruptedCoverage.journal.unstableSources, ['idle/tmp']);
+
+for (const mutate of [
+  j => { j.state = 'copying'; }, j => { j.copyReceipt.exitCode = 1; },
+  j => { j.copyReceipt.quiesced = false; }, j => { j.copyReceipt.completedAt++; },
+  j => { j.copyReceipt.startedAt = 25000; }, j => { j.copyReceipt.startedAt = 1000; },
+  j => { j.copyReceipt.result.files = -1; }, j => { j.copyReceipt.result.unstableSources = ['different']; },
+  ...['', '..', '../elsewhere', '/absolute', 'a/../b', 'a/', 'a\0b', 'x'.repeat(40000)].map(path => j => {
+    j.unstableSources = [path]; j.copyReceipt.result.unstableSources = [path];
+  }),
+]) {
+  const bad = structuredClone(completeChanging); mutate(bad);
+  assert.equal(storageCopyCoverage(bad, 2000, 22000), null, 'incomplete/unsafe evidence cannot advance scoped coverage');
+}
 
 const failed = fixture(makeJournal(), { copy: async () => { throw Error('copy interrupted'); } });
 await assert.rejects(runStorageCopyPass(failed.options), /copy interrupted/);
