@@ -94,6 +94,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   `bin/migrate-live-storage.mjs copy|verify` stages and checks data, retaining originals. After a
   completed staging pass, `reconcile` scans source ctimes/names to update changed entries without
   restatting every unchanged destination; it is not independent content verification. Large
+  copies finalize directories bottom-up so retaining a removed child cannot race its finalizer.
+  Positively missing/replaced source entries are unstable staging, not a completed quiesced transfer;
+  unchanged-source destination errors and loss of the selected root still fail closed. Large
   SHA-256 reads may reuse bounded local proofs only for the same device/inode/ctime/mtime/size/mode/
   ownership/flags/link-count version; changed files are reread. Git observations disable optional
   index refreshes/locks, which otherwise churn repository metadata during verification. `cutover`

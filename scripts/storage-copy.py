@@ -16,6 +16,7 @@ import uuid
 import fcntl
 from concurrent.futures import ThreadPoolExecutor, Future, wait, FIRST_COMPLETED
 from collections import deque
+from itertools import groupby
 from threading import Lock
 
 def same_metadata(source, target, source_info=None, target_info=None):
@@ -82,6 +83,30 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
     pool = ThreadPoolExecutor(max_workers=workers)
     pending = {}
     directories = []
+    unstable_sources = set()
+
+    class SourceChanged(Exception):
+        pass
+
+    def unstable(rel):
+        with progress_lock:
+            if rel not in unstable_sources:
+                unstable_sources.add(rel)
+                counts["unstableSources"].append(rel)
+
+    def source_snapshot(src, rel, before=None):
+        try:
+            current = os.lstat(src)
+        except (FileNotFoundError, NotADirectoryError):
+            if not rel:
+                raise  # Losing the selected source root is never harmless churn.
+            raise SourceChanged(rel)
+        if before is not None and (before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode)) != (
+                current.st_dev, current.st_ino, stat.S_IFMT(current.st_mode)):
+            if not rel:
+                raise ValueError("Source root identity changed")
+            raise SourceChanged(rel)
+        return current
 
     def retain(path, relative):
         if not os.path.lexists(path):
@@ -93,8 +118,21 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
         os.rename(path, saved)
 
     def walk(src, dst, rel):
+        try:
+            before = source_snapshot(src, rel)
+            try:
+                return stage_entry(src, dst, rel, before)
+            except (FileNotFoundError, NotADirectoryError):
+                # Native copy errors do not distinguish a vanished source from a
+                # missing destination. Suppress only positively changed sources;
+                # stable-source target failures must still abort the staging pass.
+                source_snapshot(src, rel, before)
+                raise
+        except SourceChanged:
+            unstable(rel); progress()
+
+    def stage_entry(src, dst, rel, before):
         nonlocal last_progress
-        before = os.lstat(src)
         if before.st_dev != device:
             raise ValueError("Nested filesystem: " + rel)
         unchanged = since is not None and max(before.st_mtime_ns, before.st_ctime_ns) < int(since * 1000000000)
@@ -102,7 +140,7 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
             return before, None, sorted(os.listdir(src)), True
         if unchanged and (stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode)):
             counts["files"] += 1; counts["unchangedSinceBaseline"] += 1
-            stable(src, rel, before, os.lstat(src)); progress()
+            stable(src, rel, before, source_snapshot(src, rel, before)); progress()
             return
         if since is not None and os.path.realpath(os.path.dirname(dst)) != os.path.dirname(dst):
             raise ValueError("Staging ancestor changed; refusing writes through a symlink: " + rel)
@@ -157,13 +195,18 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
                 if future and owner:
                     future.set_result((dst, os.lstat(dst)))
             except BaseException as error:
+                if isinstance(error, (FileNotFoundError, NotADirectoryError)):
+                    try:
+                        source_snapshot(src, rel, before)
+                    except BaseException as changed:
+                        error = changed
                 if future and owner:
                     future.set_exception(error)
-                raise
+                raise error
             counts["files"] += 1
         else:
             raise ValueError("Unsupported persistent entry: " + rel)
-        after = os.lstat(src)
+        after = source_snapshot(src, rel, before)
         stable(src, rel, before, after)
         progress()
 
@@ -173,8 +216,7 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
             # Staging is not cutover. An active transcript must not prevent unrelated
             # later files from being copied. Record every changed path for a quiesced
             # reconciliation; independent stable verification still gates all removal.
-            with progress_lock:
-                counts["unstableSources"].append(rel)
+            unstable(rel)
 
     def progress():
         nonlocal last_progress
@@ -184,8 +226,19 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
                 last_progress = time.monotonic()
 
     def finish_directory(src, dst, rel, before, previous, unchanged=False):
+        try:
+            try:
+                return finalize_directory(src, dst, rel, before, previous, unchanged)
+            except (FileNotFoundError, NotADirectoryError):
+                source_snapshot(src, rel, before)
+                raise
+        except SourceChanged:
+            unstable(rel); progress()
+
+    def finalize_directory(src, dst, rel, before, previous, unchanged):
+        current = source_snapshot(src, rel, before)
         if unchanged:
-            stable(src, rel, before, os.lstat(src)); progress()
+            stable(src, rel, before, current); progress()
             return
         if since is not None and os.path.realpath(dst) != dst:
             raise ValueError("Staging directory changed before reconciliation: " + rel)
@@ -193,7 +246,7 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
             retain(os.path.join(dst, extra), os.path.join(rel, extra))
         copy_metadata(src, dst, force=since is not None or previous is None or not rel,
                       source_info=before, target_info=previous)
-        stable(src, rel, before, os.lstat(src))
+        stable(src, rel, before, source_snapshot(src, rel, before))
         progress()
 
     try:
@@ -211,13 +264,20 @@ def copy_tree(source, target, revisions, allow_sockets=False, since=None):
                     directories.append((src, dst, rel, before, previous, unchanged))
                     for name in reversed(names):
                         jobs.appendleft((os.path.join(src, name), os.path.join(dst, name), os.path.join(rel, name)))
-        finalized = deque()
-        for directory in directories:
-            finalized.append(pool.submit(finish_directory, *directory))
-            if len(finalized) >= workers * 4:
+        # A parent may retain a staged child whose active source was removed or
+        # renamed. Finish every descendant FIRST so no finalizer can still be
+        # using that child when the parent moves it into revisions. Sibling
+        # directories remain parallel; each depth is a strict completion barrier.
+        depth = lambda entry: entry[2].count(os.sep) + bool(entry[2])
+        directories.sort(key=depth, reverse=True)
+        for _, level in groupby(directories, key=depth):
+            finalized = deque()
+            for directory in level:
+                finalized.append(pool.submit(finish_directory, *directory))
+                if len(finalized) >= workers * 4:
+                    finalized.popleft().result()
+            while finalized:
                 finalized.popleft().result()
-        while finalized:
-            finalized.popleft().result()
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
     return counts
