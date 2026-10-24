@@ -75,6 +75,7 @@ export async function assertUnused(roots, { inventory = openFiles } = {}) {
 }
 
 const spotlightExecutable = '/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mdworker_shared';
+const smbMonitorExecutable = '/usr/libexec/mc_notifier';
 
 export function parseStorageProcessIdentities(output) {
   const identities = new Map();
@@ -103,16 +104,85 @@ export function isReadOnlySpotlightOwner(owner, before, after, { platform = proc
     && typeof before.started === 'string' && before.started.length > 0 && before.started === after.started;
 }
 
+// Apple's SMB client spawns this system monitor without changing cwd. It updates
+// network interfaces through /dev/nsmb*, not through that inherited directory.
+// https://github.com/apple-oss-distributions/SMBClient/blob/main/mc_notifier/main.m
+// https://github.com/apple-oss-distributions/SMBClient/blob/main/lib/smb/ctx.c
+export function isSmbMonitorCwdOwner(owner, before, after, handles, {
+  roots = [], trustedExecutable = false, platform = process.platform, uid = process.getuid?.(),
+} = {}) {
+  if (platform !== 'darwin' || !trustedExecutable || !Number.isSafeInteger(uid) || uid <= 0
+      || !Number.isSafeInteger(owner.pid) || owner.pid <= 1 || owner.uid !== uid
+      || owner.command !== 'mc_notifier' || owner.descriptor !== 'cwd' || owner.type !== 'DIR'
+      || typeof owner.path !== 'string' || !roots.some(root => inside(owner.path, root))
+      || before?.pid !== owner.pid || after?.pid !== owner.pid || before.uid !== uid || after.uid !== uid
+      || before.executable !== smbMonitorExecutable || after.executable !== smbMonitorExecutable
+      || typeof before.started !== 'string' || !before.started || before.started !== after.started
+      || !Array.isArray(handles) || handles.some(handle => handle.pid !== owner.pid || handle.uid !== uid
+        || handle.command !== 'mc_notifier')) return false;
+  const cwd = handles.filter(handle => handle.descriptor === 'cwd');
+  const numeric = handles.filter(handle => /^\d+$/.test(handle.descriptor || ''));
+  return cwd.length === 1 && cwd[0].type === 'DIR' && cwd[0].path === owner.path
+    && numeric.length === 1 && numeric[0].type === 'CHR' && numeric[0].access === 'u'
+    && /^\/dev\/nsmb[0-9a-f]*$/.test(numeric[0].path)
+    && handles.some(handle => handle.descriptor === 'txt' && handle.type === 'REG' && handle.path === smbMonitorExecutable)
+    && handles.every(handle => handle.descriptor === 'cwd' || handle.descriptor === 'txt' || handle === numeric[0])
+    && handles.filter(handle => roots.some(root => inside(handle.path, root)))
+      .every(handle => handle.descriptor === 'cwd' && handle.path === owner.path);
+}
+
+async function trustedSmbMonitorExecutable() {
+  const info = await lstat(smbMonitorExecutable);
+  if (!info.isFile() || info.uid !== 0 || (info.mode & 0o022)
+      || await realpath(smbMonitorExecutable) !== smbMonitorExecutable) return false;
+  try {
+    await exec('/usr/bin/codesign', ['--verify', '--strict', '-R=identifier "com.apple.mc_notifier" and anchor apple', smbMonitorExecutable],
+      { timeout: 8000, maxBuffer: 256 * 1024 });
+    return true;
+  } catch { return false; }
+}
+
+async function smbMonitorHandles(pid) {
+  const result = await exec('/usr/sbin/lsof', ['-nP', '+c0', '-a', '-p', String(pid), '-F0pcufatn'],
+    { timeout: 8000, maxBuffer: 2 * 1024 * 1024 });
+  if (result.stderr.trim()) throw Error('SMB monitor handle inventory was incomplete; originals retained');
+  return parseOpenFiles(result.stdout, ['/']);
+}
+
+async function directoryIdentity(path) {
+  const info = await lstat(path);
+  if (!info.isDirectory() || await realpath(path) !== path) throw Error('Inherited SMB directory changed; originals retained');
+  return { inode: info.ino, device: info.dev };
+}
+
 // ONLY the explicitly authorized transfer-only path may use this guard. The original inode
-// remains retained, so an identified read-only OS indexer can finish on it after the rename.
+// remains retained: read-only indexers and the signed SMB monitor's incidental cwd can keep it.
+// This is not a general cwd exception and never signals or restarts a system process.
 // Default SHA cutover and every deletion/reclamation path continue to require zero handles.
-export async function assertTransferCutoverQuiesced(roots, { inventory = openFiles, processInventory = storageProcessIdentities } = {}) {
+export async function assertTransferCutoverQuiesced(roots, { inventory = openFiles, processInventory = storageProcessIdentities,
+  monitorInventory = smbMonitorHandles, monitorExecutable = trustedSmbMonitorExecutable, inspectDirectory = directoryIdentity } = {}) {
   const before = await processInventory();
   const owners = await inventory(roots);
+  const monitors = new Map();
+  for (const owner of owners.filter(owner => owner.command === 'mc_notifier' && owner.descriptor === 'cwd')) {
+    if (monitors.has(owner.pid)) continue;
+    const first = await inspectDirectory(owner.path);
+    const trustedExecutable = await monitorExecutable();
+    const handles = await monitorInventory(owner.pid);
+    const last = await inspectDirectory(owner.path);
+    if (first.inode !== last.inode || first.device !== last.device) throw Error('Inherited SMB directory changed; originals retained');
+    monitors.set(owner.pid, { handles, trustedExecutable, cwdIdentity: last });
+  }
   const after = await processInventory();
-  const blocked = owners.filter(owner => !isReadOnlySpotlightOwner(owner, before.get(owner.pid), after.get(owner.pid)));
+  const isMonitor = owner => {
+    const monitor = monitors.get(owner.pid);
+    return monitor && isSmbMonitorCwdOwner(owner, before.get(owner.pid), after.get(owner.pid), monitor.handles,
+      { roots, trustedExecutable: monitor.trustedExecutable });
+  };
+  const blocked = owners.filter(owner => !isReadOnlySpotlightOwner(owner, before.get(owner.pid), after.get(owner.pid)) && !isMonitor(owner));
   if (blocked.length) throw storageInUse(blocked);
-  return owners.map(owner => ({ ...owner, ...after.get(owner.pid) }));
+  return owners.map(owner => ({ ...owner, ...after.get(owner.pid),
+    ...(isMonitor(owner) ? { retainedOwnerKind: 'smb-monitor-cwd', cwdIdentity: monitors.get(owner.pid).cwdIdentity } : {}) }));
 }
 
 export async function storageManifest(root, { metadataOnly = false, ephemeralSockets = false, equivalentGroups = [], workerFile = worker } = {}) {
@@ -180,7 +250,8 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   if (await lstat(quarantine).catch(() => null)) throw Error('Quarantine already exists');
   // Durable intent precedes the rename. The app fails closed during the small alias gap.
   await save({ state: 'switching', quarantine, verification: evidence,
-    ...(transferOnly ? { retainedReadOnlyIndexers: retainedReaders || [] } : {}) });
+    ...(transferOnly ? { retainedReadOnlyIndexers: (retainedReaders || []).filter(owner => !owner.retainedOwnerKind),
+      retainedSystemOwners: retainedReaders || [] } : {}) });
   mapping.active = true;
   await durableJson(configFile, config);
   try { await rename(source, quarantine); }
@@ -203,6 +274,15 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   await checkMounted(source, config);
   const finalReaders = await checkOwners([quarantine]);
   if (transferOnly) {
+    for (const owner of finalReaders || []) {
+      if (owner.retainedOwnerKind !== 'smb-monitor-cwd') continue;
+      const previous = retainedReaders?.find(before => before.pid === owner.pid && before.started === owner.started
+        && before.retainedOwnerKind === owner.retainedOwnerKind && inside(before.path, source));
+      if (!previous || owner.path !== quarantine + previous.path.slice(source.length)
+          || previous.cwdIdentity.inode !== owner.cwdIdentity.inode || previous.cwdIdentity.device !== owner.cwdIdentity.device) {
+        throw Error('Retained SMB monitor directory identity changed; original retained');
+      }
+    }
     // No recursive reread and, crucially, no deletion based on a transfer receipt.
     // Preserve the exact original inode as a separately recorded recovery copy.
     const held = await lstat(quarantine);
@@ -211,7 +291,8 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
     await save({ state: 'complete', completedAt: Date.now(), reclaimedBytes: 0, sourceRetained: true,
       retainedOriginal: { path: quarantine, inode: held.ino, device: held.dev,
         reason: 'Operator skipped content verification; original retained for recovery' }, quarantine: null,
-      retainedReadOnlyIndexers: finalReaders || [] });
+      retainedReadOnlyIndexers: (finalReaders || []).filter(owner => !owner.retainedOwnerKind),
+      retainedSystemOwners: finalReaders || [] });
     return { source, target, contentVerified: false, sourceRetained: true, retainedOriginal: quarantine };
   }
   if ((await verifyMetadata(quarantine, options)).fingerprint !== evidence.fingerprint) {

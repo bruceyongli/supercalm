@@ -21,7 +21,9 @@ async function check() {
       await mkdir(share, { mode: 0o500 }).catch(e => { if (e.code !== 'EEXIST') throw e; });
       const st = await lstat(share);
       if (!st.isDirectory() || (st.mode & 0o222)) throw new Error('Unmounted mountpoint must be a non-writable directory');
-      await exec(config.helper, ['mount', config.service, config.account, config.url, share], { timeout: 30000 });
+      // macOS may spawn a persistent SMB monitor with the helper's inherited cwd.
+      // Never pin an agent worktree or a future migration source from that daemon.
+      await exec(config.helper, ['mount', config.service, config.account, config.url, share], { timeout: 30000, cwd: '/' });
     }
     if (config.image) {
       if (!config.image.startsWith(share + '/') || !config.image.endsWith('.sparsebundle')) throw new Error('Image must reside on the configured Spark share');

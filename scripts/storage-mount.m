@@ -42,6 +42,10 @@ int main(int argc, const char *argv[]) {
     if (![op isEqualToString:@"mount"] || argc != 6) return 64;
     NSURL *url = [NSURL URLWithString:@(argv[4])];
     if (![url.scheme isEqualToString:@"smb"] || url.password.length) return 64;
+    NSURL *mountURL = [NSURL fileURLWithPath:@(argv[5]) isDirectory:YES];
+    // SMB's mc_notifier inherits cwd. Resolve the caller's mountpoint first, then
+    // give any persistent system helper a stable directory outside project data.
+    if (chdir("/") != 0) { fprintf(stderr, "Cannot select stable mount working directory\n"); return 1; }
     NSString *password = [[NSString alloc] initWithData:secret encoding:NSUTF8StringEncoding];
     NSMutableDictionary *openOptions = [@{(__bridge id)kNAUIOptionKey: (__bridge id)kNAUIOptionNoUI,
       (__bridge id)kNetFSForceNewSessionKey: @YES} mutableCopy];
@@ -49,7 +53,7 @@ int main(int argc, const char *argv[]) {
       (__bridge id)kNetFSMountFlagsKey: @(MNT_DONTBROWSE | MNT_NOSUID | MNT_NODEV)} mutableCopy];
     CFArrayRef mounted = NULL;
     int error = NetFSMountURLSync((__bridge CFURLRef)url,
-      (__bridge CFURLRef)[NSURL fileURLWithPath:@(argv[5]) isDirectory:YES],
+      (__bridge CFURLRef)mountURL,
       (__bridge CFStringRef)account, (__bridge CFStringRef)password,
       (__bridge CFMutableDictionaryRef)openOptions, (__bridge CFMutableDictionaryRef)mountOptions, &mounted);
     if (mounted) CFRelease(mounted);

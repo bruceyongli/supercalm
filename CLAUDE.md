@@ -111,6 +111,11 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   for its duration; pause affected owners only for the bounded final reconciliation/alias transaction.
   Original-retaining transfer cutovers alone may tolerate read-only Spotlight file/directory handles,
   with exact Apple executable, UID and stable PID/start identity checked around the handle inventory.
+  Apple's signed `mc_notifier` may retain only its incidental cwd directory: require its exact system
+  executable, stable process identity, characteristic `/dev/nsmb*` device and no other mapped-root handles.
+  Bind the cwd inode/device across the retained-original rename; never kill the SMB monitor, unmount
+  working storage or generalize this exception to other processes. Mount helpers start from `/` so future
+  monitors do not pin project directories. Neither exception authorizes original reclamation.
   Writers, coding agents and unknown handles still block; full verification/reclamation remains strictly unused.
   Git inventory errors/timeouts are unknown state, never evidence that a worktree is absent. Launch/
   resume must retain existing or partially created worktrees and branches on failure; no force-remove
