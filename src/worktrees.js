@@ -4,15 +4,16 @@
 // (AIOS_WORKTREE_ROOT || ~/.local/share/aios/worktrees) — never under the repo's gitignored data/,
 // which recursive scanners / `rm data` / repo-discovery would foul (gpt review).
 //
-// Built entirely on the fail-soft `gitOut` primitive (src/git.js); no direct throws from git errors.
+// Uses the fail-soft `gitOut` primitive (src/git.js); failed observations remain
+// explicit unknown states and never authorize replacing/removing an existing checkout.
 // Pure helpers (sanitize / branchFor / worktreePathFor / isSafeToRemove predicate inputs) are unit-tested.
 import { homedir } from 'node:os';
 import { join, resolve, dirname, basename, sep } from 'node:path';
-import { existsSync, realpathSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdir, lstat, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { gitOut } from './git.js';
-import { assertLiveStorage } from './live_storage.js';
+import { assertLiveStorage, sameStoragePath } from './live_storage.js';
 import { provisionLiveStorageRoot } from './storage_provision.js';
 
 // ---- pure path/name helpers -------------------------------------------------------------------
@@ -52,10 +53,11 @@ function assertUnderRoot(p) {
 }
 
 // ---- git-backed lifecycle ---------------------------------------------------------------------
-export async function isGitRepo(repoPath) {
+const READ_TIMEOUT_MS = 30000;
+export async function isGitRepo(repoPath, { runGit = gitOut } = {}) {
   if (!repoPath || !existsSync(repoPath)) return false;
-  const r = await gitOut(repoPath, ['rev-parse', '--is-inside-work-tree']);
-  return r.text.trim() === 'true';
+  const r = await runGit(repoPath, ['rev-parse', '--is-inside-work-tree'], { timeout: READ_TIMEOUT_MS });
+  return !r.error && r.text.trim() === 'true';
 }
 
 // Isolation is an operator-selected safety contract, not an optimization. If it is enabled,
@@ -79,26 +81,39 @@ export async function isolatedWorktreeForLaunch({ repoPath, sid, project, baseBr
 }
 
 // The repo's integration branch: origin/HEAD → main/master → current HEAD. Offline/no-origin safe.
-export async function defaultBranch(repoPath) {
-  const sym = await gitOut(repoPath, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD']);
+export async function defaultBranch(repoPath, { runGit = gitOut } = {}) {
+  const sym = await runGit(repoPath, ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'], { timeout: READ_TIMEOUT_MS });
   const m = sym.text.match(/refs\/remotes\/origin\/(.+)$/);
   if (m) return m[1].trim();
   for (const b of ['main', 'master']) {
-    const e = await gitOut(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`]);
+    const e = await runGit(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${b}`], { timeout: READ_TIMEOUT_MS });
     if (e.text.trim()) return b;
   }
-  const h = await gitOut(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const h = await runGit(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD'], { timeout: READ_TIMEOUT_MS });
   return h.text && h.text.trim() !== 'HEAD' ? h.text.trim() : 'main';
 }
 
-// Compare by REALPATH: `git worktree list` reports realpaths (e.g. /private/var on macOS) which may
-// differ from our chosen path through symlinks — a plain resolve() would miss the match.
-const realp = (p) => { try { return realpathSync(p); } catch { return resolve(p); } };
-export async function worktreeExists(repoPath, path) {
-  if (!existsSync(path)) return false;
-  const want = realp(path);
-  const r = await gitOut(repoPath, ['worktree', 'list', '--porcelain']);
-  return r.text.split('\n').some((l) => l.startsWith('worktree ') && realp(l.slice('worktree '.length).trim()) === want);
+const pathStat = path => lstat(path).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
+const diagnosticFailure = (message, code = 'worktree-inventory-unavailable') => Object.assign(new Error(message), { code, status: 503 });
+// Inventory failure means UNKNOWN, never absent. Git may publish a registered
+// logical path or its remote physical equivalent; both refer to the same checkout.
+export async function worktreeExists(repoPath, path, { runGit = gitOut } = {}) {
+  if (!await pathStat(path)) return false;
+  const want = await realpath(path);
+  const r = await runGit(repoPath, ['worktree', 'list', '--porcelain', '-z'], { timeout: READ_TIMEOUT_MS });
+  if (r.error) throw diagnosticFailure('Could not read the Git worktree inventory. Existing files were retained; retry when storage responds.');
+  const rows = r.text.split('\0').filter(line => line.startsWith('worktree '));
+  if (!rows.length) throw diagnosticFailure('Git returned an incomplete worktree inventory. Existing files were retained.');
+  const paths = rows.map(row => row.slice('worktree '.length)), logical = resolve(path);
+  // The common resume case needs no filesystem reads for the other sessions.
+  // Old/archived rows may be on slow/offline storage; exact inventory evidence wins.
+  if (paths.some(listed => resolve(listed) === logical || resolve(listed) === want)) return true;
+  if (paths.some(listed => sameStoragePath(listed, path))) return true;
+  for (const listed of paths) {
+    try { if (await realpath(listed) === want) return true; }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  return false;
 }
 
 // Per-repo single-flight so two concurrent launches on the same repo can't race `git worktree add`
@@ -112,49 +127,50 @@ function serialize(key, fn) {
 }
 
 // Create-or-reuse the session's worktree. Returns { path, branch, reused }. Concurrency-safe +
-// failure-atomic: a half-made worktree is force-removed + pruned before we surface the error.
-// Callers decide policy. The launch path fails closed when the isolation helper is enabled; direct
-// lifecycle callers can still handle failures differently.
-export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '', baseBranch = '' }) {
+// failure-preserving: a failed/slow Git command is never authority to remove a
+// checkout, branch or registration. Partial creations stay for safe retry/inspection.
+export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '', baseBranch = '' }, { runGit = gitOut } = {}) {
   return serialize(resolve(repoPath), async () => {
     await assertLiveStorage(repoPath);
-    if (!(await isGitRepo(repoPath))) throw new Error('not a git worktree: ' + repoPath);
+    if (!(await isGitRepo(repoPath, { runGit }))) throw new Error('Git could not confirm the project checkout; files were retained: ' + repoPath);
     const path = assertUnderRoot(desiredPath || worktreePathFor(project, sid));
     await provisionLiveStorageRoot(dirname(path), 'worktree');
     await assertLiveStorage(path);
     const branch = desiredBranch || branchFor(project, sid);
 
-    if (await worktreeExists(repoPath, path)) return { path, branch, reused: true }; // resume / re-launch
+    if (await worktreeExists(repoPath, path, { runGit })) return { path, branch, reused: true }; // resume / re-launch
+    if (await pathStat(path)) throw diagnosticFailure('The session checkout exists but Git did not confirm its registration. It was retained; inspect or repair its registration before retrying.', 'worktree-existing-unconfirmed');
 
     await mkdir(dirname(path), { recursive: true });
     // Resume-after-prune: the branch may already exist — attach it. Fresh: create it off the default branch.
-    const branchExists = !!(await gitOut(repoPath, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).text.trim();
+    // Unlike rev-parse, for-each-ref succeeds with empty output for a missing ref;
+    // an actual command failure can therefore never be mistaken for an absent branch.
+    const refs = await runGit(repoPath, ['for-each-ref', '--format=%(refname)', `refs/heads/${branch}`], { timeout: READ_TIMEOUT_MS });
+    if (refs.error) throw diagnosticFailure('Could not read the session branch. Existing files and refs were retained.');
+    const branchExists = refs.text.split('\n').includes(`refs/heads/${branch}`);
     let base = '';
     let baseCommit = '';
     if (!branchExists) {
-      base = baseBranch || await defaultBranch(repoPath);
-      const verified = await gitOut(repoPath, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`]);
+      base = baseBranch || await defaultBranch(repoPath, { runGit });
+      const verified = await runGit(repoPath, ['rev-parse', '--verify', '--quiet', `${base}^{commit}`], { timeout: READ_TIMEOUT_MS });
       baseCommit = verified.text.trim();
       if (verified.error || !baseCommit) throw new Error(`worktree base branch does not exist: ${base}`);
     }
     const addArgs = branchExists
       ? ['worktree', 'add', path, branch]
       : ['worktree', 'add', '-b', branch, path, baseCommit];
-    const r = await gitOut(repoPath, addArgs, { timeout: 30000 });
+    // Another process may have created the path since the inventory observation.
+    if (await pathStat(path)) throw diagnosticFailure('The worktree path appeared during creation. It was retained; retry to inspect it.', 'worktree-existing-unconfirmed');
+    const r = await runGit(repoPath, addArgs, { timeout: 60000 });
     if (r.error || !existsSync(path)) {
-      await gitOut(repoPath, ['worktree', 'remove', '--force', path], { timeout: 15000 }).catch(() => {});
-      await gitOut(repoPath, ['worktree', 'prune']).catch(() => {});
-      throw new Error('worktree add failed: ' + (r.error || 'path missing after add'));
+      throw new Error('worktree add failed; any existing or partial checkout and branch were retained: ' + (r.error || 'path missing after add'));
     }
     // Remember the branch the session forked from. Cleanup must compare against this release base,
     // not origin/HEAD, or a clean branch based on a production release branch appears "ahead" forever.
     if (!branchExists) {
-      const configured = await gitOut(repoPath, ['config', `branch.${branch}.aios-base`, base]);
+      const configured = await runGit(repoPath, ['config', `branch.${branch}.aios-base`, base], { timeout: READ_TIMEOUT_MS });
       if (configured.error) {
-        await gitOut(repoPath, ['worktree', 'remove', '--force', path], { timeout: 15000 }).catch(() => {});
-        await gitOut(repoPath, ['branch', '-D', branch]).catch(() => {});
-        await gitOut(repoPath, ['worktree', 'prune']).catch(() => {});
-        throw new Error('could not record worktree base branch: ' + configured.error);
+        throw new Error('could not record worktree base branch; checkout and branch were retained: ' + configured.error);
       }
     }
     return { path, branch, reused: false };

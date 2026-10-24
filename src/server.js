@@ -132,6 +132,7 @@ const FEATURE_MODULES = [
   './model_scan.js',
   './tool_updates.js',
   './product_health.js',
+  './storage_settings_routes.js',
   './integrations.js',
   './publisher.js',
   './deploy_breaker.js',

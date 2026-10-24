@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,6 +46,16 @@ try {
   assert.equal(existsSync(prepared.root), false);
   assert.equal(existsSync(prepared.artifacts), true, 'reported artifacts survive disposable scratch cleanup');
   await assert.rejects(() => prepareSessionStorage('../escape'), /invalid session id/);
+
+  // A missing migrated parent must fail before recursive mkdir can recreate it
+  // locally, even if the user is opening a brand-new session after a reboot.
+  const parent = join(process.env.AIOS_DATA, 'session-storage'), mount = join(fixture, 'mounts', 'remote');
+  await rm(parent, { recursive: true });
+  await writeFile(join(process.env.AIOS_DATA, 'live-storage.json'), JSON.stringify({ version: 1, id: 'fixture-only', mount,
+    mappings: [{ source: parent, target: join(mount, 'scratch'), active: true }] }));
+  await assert.rejects(prepareSessionStorage('s_offline'), e => e.code === 'storage-unavailable');
+  await assert.rejects(lstat(parent), { code: 'ENOENT' });
+  await assert.rejects(lstat(sessionStoragePaths('s_offline').artifacts), { code: 'ENOENT' });
 } finally {
   await rm(fixture, { recursive: true, force: true });
 }

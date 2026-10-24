@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Explicit storage migration, never deployment. copy/verify retain originals; cutover requires
-// native integrity verification and no open source/target handles before switching an alias.
+// integrity verification (or explicit transfer-only consent retaining originals) and no open
+// source/target handles before switching an alias.
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, lstat, realpath, stat, open } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
@@ -9,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { validateLiveStorage } from '../src/live_storage.js';
 import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
+import { transferOnlyAuthorized, checkStorageTransfer } from '../src/storage_transfer_receipt.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
 if (!['copy', 'reconcile', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
@@ -86,12 +88,8 @@ async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 
     return Buffer.concat(chunks).toString();
   } finally { clearTimeout(timer); activeChild = null; }
 }
-try {
-  {
-    if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw new Error('Source identity changed; inspect journal before recovery');
-    if (operation === 'copy' || operation === 'reconcile') {
-      const incremental = operation === 'reconcile';
-      if (incremental && !['copied', 'staged-changing', 'verified'].includes(journal.state)) throw Error('Reconciliation requires a completed staging copy; run copy first');
+async function stageCopy(incremental, { quiesced = false } = {}) {
+      if (incremental && !['copied', 'staged-changing', 'verified', 'transfer-checked'].includes(journal.state)) throw Error('Reconciliation requires a completed staging copy; run copy first');
       const baseline = incremental ? (journal.copyBaselineAt || journal.createdAt) : Date.now();
       if (!Number.isFinite(baseline) || baseline <= 0 || baseline > Date.now()) throw Error('Invalid completed-copy baseline');
       await save({ state: 'copying', error: null, pid: process.pid });
@@ -101,34 +99,54 @@ try {
       const revisions = join(mount, 'migration-revisions', id, String(Date.now()));
       const args = [fileURLToPath(new URL('../scripts/storage-copy.py', import.meta.url)), source, target, revisions];
       if (mapping.ephemeralSockets === true) args.push('--ephemeral-sockets');
-      // Only completed staging qualifies. Scan local source ctimes/names, then update
-      // changed entries; independent full source/destination verification STILL gates
-      // cutover. A modified/missing target cannot gain approval from this optimization.
+      // Only completed staging qualifies. A source-only reconcile is NOT an integrity
+      // proof: default cutover still verifies contents; an explicit transfer-only
+      // policy can skip rereads only while retaining the exact local original.
       if (incremental) args.push('--since=' + String((baseline - 1000) / 1000));
       const output = await command('python3', args, { collect: true });
       const result = JSON.parse(output.trim().split('\n').at(-1));
       const unstable = result.unstableSources || [];
+      const copiedAt = Date.now();
       await save({ state: unstable.length ? 'staged-changing' : 'copied', error: null, pid: null, unstableSources: unstable,
-        copyBaselineAt: baseline, copiedAt: Date.now() });
-      console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true, unstableSources: unstable }));
+        copyBaselineAt: baseline, copiedAt, copyReceipt: { completedAt: copiedAt, exitCode: 0, quiesced, result } });
+}
+try {
+  {
+    if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw new Error('Source identity changed; inspect journal before recovery');
+    if (operation === 'copy' || operation === 'reconcile') {
+      await stageCopy(operation === 'reconcile');
+      console.log(JSON.stringify({ copied: source, target, journal: journalFile, sourceRetained: true, unstableSources: journal.unstableSources }));
     } else {
       if (operation === 'cutover') await assertUnused([source, target]);
+      const transferOnly = transferOnlyAuthorized(config, journal);
+      let verification;
+      if (transferOnly) {
+        // A background receipt cannot approve a live switch. Reconcile after the
+        // final owner pause even when a preparation check already succeeded.
+        if (operation === 'cutover' || !journal.copyReceipt || journal.error) {
+          await stageCopy(true, { quiesced: operation === 'cutover' });
+        }
+        if (operation === 'cutover') await assertUnused([source, target]);
+        verification = await checkStorageTransfer(config, journal, { quiesced: operation === 'cutover' });
+      } else {
       const options = {
         ephemeralSockets: mapping.ephemeralSockets === true, equivalentGroups: mapping.equivalentGroups || [],
       };
       const reused = journal.state === 'verified'
         ? await reuseStorageVerification(source, target, journal.verification, options) : null;
-      const verification = reused || await verifyStoragePair(source, target, options);
-      await save({ state: 'verified', verifiedAt: Date.now(), verification, error: null });
+      verification = reused || await verifyStoragePair(source, target, options);
+      }
+      await save({ state: transferOnly ? 'transfer-checked' : 'verified', verifiedAt: transferOnly ? null : Date.now(), checkedAt: Date.now(), verification, error: null });
       if (operation === 'cutover') {
         // Integrity reads do not mutate shared configuration. Serialize only the actual
         // alias transaction; a large verification must not stall unrelated cutovers.
         configLease = await acquireLease('config');
         console.log(JSON.stringify(await switchStorageRoot({ source, target, configFile, journal, save, evidence: verification })));
-      } else console.log(JSON.stringify({ verified: source, target, verification, sourceRetained: true }));
+      } else console.log(JSON.stringify({ ...(transferOnly ? { transferChecked: source } : { verified: source }), target, verification, sourceRetained: true }));
     }
   }
 } catch (error) {
-  await save({ ...(['copy', 'reconcile'].includes(operation) ? { state: 'interrupted', pid: null } : {}), error: error.message });
+  await save({ ...(['copy', 'reconcile'].includes(operation) || journal.state === 'copying'
+    ? { state: 'interrupted', pid: null } : {}), error: error.message });
   throw error;
 } finally { if (!log.destroyed) await new Promise(resolve => log.end(resolve)); await configLease?.close(); await lease.close(); }

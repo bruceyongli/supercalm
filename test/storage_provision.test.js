@@ -38,6 +38,26 @@ try {
   await withStorageConfigLock(config, async () => {
     await assert.rejects(provisionLiveStorageRoot(join(parent, 'locked'), 'project', options), /being updated/);
   });
+  const beforePolicyChange = JSON.parse(await readFile(configFile, 'utf8'));
+  assert.equal(await provisionLiveStorageRoot(join(parent, 'local-policy-race'), 'project', {
+    ...options, withConfigLock: async (config, action) => withStorageConfigLock(config, async () => {
+      await durableJson(configFile, { ...beforePolicyChange, newRoots: [] });
+      return action();
+    }),
+  }), false, 'a concurrent Settings → Local wins over the pre-lock remote policy');
+  await assert.rejects(lstat(join(parent, 'local-policy-race')), { code: 'ENOENT' });
+  await assert.rejects(lstat(join(targetParent, 'local-policy-race')), { code: 'ENOENT' });
+  await durableJson(configFile, beforePolicyChange);
+  for (const kind of ['worktree', 'session', 'artifacts']) {
+    const sourceParent = join(root, `new-${kind}`), targetParent = join(mount, `new-${kind}`);
+    const current = JSON.parse(await readFile(configFile, 'utf8'));
+    await durableJson(configFile, { ...current, newRoots: [...current.newRoots, { kind, sourceParent, targetParent }] });
+    const path = join(sourceParent, 's_first');
+    assert.equal(await provisionLiveStorageRoot(path, kind, options), true, 'first-use managed parent can be absent');
+    assert.equal(await realpath(path), join(targetParent, 's_first'));
+    await writeFile(join(path, 'first.txt'), 'first write is remote');
+    assert.equal(await readFile(join(targetParent, 's_first', 'first.txt'), 'utf8'), 'first write is remote');
+  }
   assert.throws(() => validateLiveStorage({ ...config, newRoots: [{ ...config.newRoots[0], sourceParent: '/' }] }), /Unsafe/);
   await writeFile(join(process.env.AIOS_DATA, 'live-storage.json'), JSON.stringify({ configFile }));
   await writeFile(config.statusFile, JSON.stringify({ id: config.id, available: true, checkedAt: Date.now(),

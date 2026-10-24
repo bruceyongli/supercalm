@@ -2,8 +2,9 @@
 """macOS-native, restartable staging copy. Originals are NEVER removed.
 
 copyfile(3) preserves native metadata without openrsync's AppleDouble hardlink bug. Existing
-staged files use size/mtime quick-check; independent full integrity verification is mandatory
-before cutover. Replaced/extra staging entries are retained in a separate Spark revision tree.
+staged files use size/mtime quick-check. Default cutover independently verifies integrity;
+explicit operator transfer-only cutover instead retains the local original. Replaced/extra
+staging entries are retained in a separate Spark revision tree.
 """
 import ctypes
 import json

@@ -24,7 +24,7 @@ export function validateLiveStorage(config) {
   if (new Set(config.mappings.map(m => m.target)).size !== config.mappings.length) throw new Error('Duplicate storage destination');
   if (config.statusFile && (!config.statusFile.startsWith('/') || inside(config.statusFile, config.mount))) throw new Error('Storage status must remain local');
   for (const policy of config.newRoots || []) {
-    if (!['project', 'worktree'].includes(policy.kind) || !policy.sourceParent?.startsWith('/')
+    if (!['project', 'worktree', 'session', 'artifacts'].includes(policy.kind) || !policy.sourceParent?.startsWith('/')
         || resolve(policy.sourceParent) !== policy.sourceParent || policy.sourceParent.split('/').filter(Boolean).length < 2
         || !policy.targetParent?.startsWith(config.mount + '/') || resolve(policy.targetParent) !== policy.targetParent
         || inside(policy.sourceParent, config.mount) || inside(config.mount, policy.sourceParent) && policy.sourceParent !== homedir()

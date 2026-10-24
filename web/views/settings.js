@@ -6,6 +6,7 @@
 // sub-nav active state is captured and removeEventListener'd in teardown() so it leaks nothing on leave.
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml as esc } from '../common.js';
+import { mountStorageSettings } from '../settings-storage.js';
 
 const SETTINGS_CSS = `
     /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
@@ -101,7 +102,8 @@ const SETTINGS_CSS = `
     .st-form-row .st-inp { flex: 1; min-width: 150px; }
     .st-inp, .st-sel { background: #0b0f16; border: 1px solid #232c38; border-radius: 8px; color: #dde5ee; font-size: 12.5px; padding: 8px 10px; width: 100%; box-sizing: border-box; font-family: 'JetBrains Mono', ui-monospace, monospace; }
     .st-inp::placeholder { color: #3f4856; }
-    .st-sel { width: auto; }
+    /* Safari can paint a native select's long option outside its fitted flex box. */
+    .st-sel { width: auto; max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     /* provider-centric voice: two capability rows (Speaks/Hears) + collapsed fallbacks + a providers table */
     .vc2-row { border: 1px solid #1d2632; border-radius: 12px; padding: 12px 14px; margin-bottom: 10px; background: #0d1219; }
     .vc2-rowhead { font-size: 13.5px; color: #dde5ee; margin-bottom: 8px; }
@@ -132,6 +134,7 @@ const SETTINGS_CSS = `
 let host = null;
 let onScroll = null;
 let searchObserver = null;
+let teardownStorage = null;
 const $ = (s) => document.querySelector(s);
 
 function applySettingsSearch() {
@@ -618,7 +621,7 @@ export function init(el) {
   host.innerHTML = `
     <div class="st-wrap" data-st>
       <div class="st-head">
-        <div><h1>Settings</h1><p>Models, access, voice, and operator preferences in one place.</p></div>
+        <div><h1>Settings</h1><p>Models, access, voice, storage, and operator preferences.</p></div>
         <div class="st-search"><input type="search" data-st-search placeholder="Search settings…" autocomplete="off" aria-label="Search settings" /><button class="st-search-clear" data-st-clear type="button" title="Clear search" hidden>×</button></div>
       </div>
       <nav class="st-nav" data-st-nav>
@@ -626,6 +629,7 @@ export function init(el) {
         <a href="#st-providers">Models &amp; providers</a>
         <a href="#st-voice">Voice</a>
         <a href="#st-remote">Remote access</a>
+        <a href="#st-storage">Storage</a>
         <a href="#st-prefs">Preferences</a>
       </nav>
       <div class="st-body">
@@ -645,6 +649,10 @@ export function init(el) {
       <section class="st-sec" id="st-remote" data-st-remote data-search="tailscale phone url network expose">
         <h2>Remote access</h2>
         <div class="ob-card" id="st-remotecard">loading…</div>
+      </section>
+      <section class="st-sec" id="st-storage" data-st-storage data-search="disk local remote spark smb nas files folders migration keychain storage device">
+        <h2>Storage</h2>
+        <div id="st-storagecard"></div>
       </section>
       <section class="st-sec" id="st-prefs" data-st-prefs data-search="notifications autoplay quick keys voice rate interface">
         <h2>Preferences</h2>
@@ -682,9 +690,13 @@ export function init(el) {
   addEventListener('scroll', onScroll, { passive: true });
 
   loadAgents(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
+  teardownStorage?.();
+  teardownStorage = mountStorageSettings(host.querySelector('#st-storagecard'));
 }
 
 export function teardown() {
+  teardownStorage?.();
+  teardownStorage = null;
   if (onScroll) removeEventListener('scroll', onScroll);
   searchObserver?.disconnect();
   searchObserver = null;

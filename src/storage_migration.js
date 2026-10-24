@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { validateLiveStorage, assertLiveStorage } from './live_storage.js';
 import { DATA_DIR } from './config.js';
+import { assertTransferReceipt } from './storage_transfer_receipt.js';
 
 const exec = promisify(execFile);
 const worker = fileURLToPath(new URL('../scripts/storage-manifest.py', import.meta.url));
@@ -115,14 +116,16 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   evidence, checkUnused = assertUnused, verifyMetadata = storageManifest, checkMounted = assertLiveStorage }) {
   const config = validateLiveStorage(JSON.parse(await readFile(configFile, 'utf8')));
   const mapping = config.mappings.find(m => m.source === source && m.target === target);
-  if (!mapping || !evidence?.digest || source === dirname(source) || !inside(target, config.mount)) throw Error('Invalid cutover identity');
+  const transferOnly = evidence?.algorithm === 'transfer-receipt';
+  if (!mapping || !(transferOnly || evidence?.digest) || source === dirname(source) || !inside(target, config.mount)) throw Error('Invalid cutover identity');
+  if (transferOnly) await assertTransferReceipt(config, journal, evidence);
   const options = { ephemeralSockets: mapping.ephemeralSockets === true, metadataOnly: true };
   if (evidence.implementationHash) options.workerFile = (await manifestSnapshot(evidence.implementationHash)).path;
   if (await realpath(source) !== source || await realpath(target) !== target) throw Error('Cutover roots must be physical directories');
   const original = await lstat(source);
   if (!original.isDirectory() || original.ino !== journal.sourceInode || original.dev !== journal.sourceDevice) throw Error('Source identity changed');
   await checkUnused([source, target]);
-  if ((await verifyMetadata(source, options)).fingerprint !== evidence.fingerprint) throw Error('Source changed after verification');
+  if (!transferOnly && (await verifyMetadata(source, options)).fingerprint !== evidence.fingerprint) throw Error('Source changed after verification');
   const quarantine = join(dirname(source), '.aios-migrated-' + journal.id + '-' + randomUUID());
   if (await lstat(quarantine).catch(() => null)) throw Error('Quarantine already exists');
   // Durable intent precedes the rename. The app fails closed during the small alias gap.
@@ -133,7 +136,7 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
   catch (error) {
     mapping.active = false;
     await durableJson(configFile, config);
-    await save({ state: 'verified', quarantine: null });
+    await save({ state: transferOnly ? 'transfer-checked' : 'verified', quarantine: null });
     throw error;
   }
   try { await symlink(target, source); }
@@ -141,13 +144,24 @@ export async function switchStorageRoot({ source, target, configFile, journal, s
     if (!await lstat(source).catch(() => null)) {
       await rename(quarantine, source);
       mapping.active = false; await durableJson(configFile, config);
-      await save({ state: 'verified', quarantine: null });
+      await save({ state: transferOnly ? 'transfer-checked' : 'verified', quarantine: null });
     }
     throw error;
   }
   await save({ state: 'switched', switchedAt: Date.now() });
   await checkMounted(source, config);
   await checkUnused([quarantine]);
+  if (transferOnly) {
+    // No recursive reread and, crucially, no deletion based on a transfer receipt.
+    // Preserve the exact original inode as a separately recorded recovery copy.
+    const held = await lstat(quarantine);
+    if (!held.isDirectory() || held.ino !== original.ino || held.dev !== original.dev
+        || await readlink(source) !== target) throw Error('Cutover identity changed; original retained');
+    await save({ state: 'complete', completedAt: Date.now(), reclaimedBytes: 0, sourceRetained: true,
+      retainedOriginal: { path: quarantine, inode: held.ino, device: held.dev,
+        reason: 'Operator skipped content verification; original retained for recovery' }, quarantine: null });
+    return { source, target, contentVerified: false, sourceRetained: true, retainedOriginal: quarantine };
+  }
   if ((await verifyMetadata(quarantine, options)).fingerprint !== evidence.fingerprint) {
     throw Error('An old writer changed the retained local copy; do not remove it');
   }

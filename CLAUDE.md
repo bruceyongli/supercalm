@@ -93,13 +93,22 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   `retainDuringMigration` suspends managed cleanup of mapped paths while their originals are copied.
   `bin/migrate-live-storage.mjs copy|verify` stages and checks data, retaining originals. After a
   completed staging pass, `reconcile` scans source ctimes/names to update changed entries without
-  restatting every unchanged destination; it NEVER substitutes for independent verification. Large
+  restatting every unchanged destination; it is not independent content verification. Large
   SHA-256 reads may reuse bounded local proofs only for the same device/inode/ctime/mtime/size/mode/
   ownership/flags/link-count version; changed files are reread. Git observations disable optional
   index refreshes/locks, which otherwise churn repository metadata during verification. `cutover`
-  requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
+  by default requires independent SHA-256 plus native metadata/ACL/xattr/in-tree hardlink verification, stable
   fingerprints and no open source/target handles. A durable journal precedes alias activation; only
   the exact verified, unopened local quarantine is reclaimed. A copy alone is NOT a live cutover.
+  An explicit operator `migrationVerification` waiver may select `transfer-only` for exact original
+  source/target/inode/device identities. This records an honest `transfer-checked` receipt (never a
+  SHA/content proof), requires a fresh successful quiesced reconciliation plus mount/path/open-owner
+  checks, skips full-tree verification, and ALWAYS retains the local original under `retainedOriginal`.
+  It cannot authorize reclamation. Background staging must not hold unrelated sessions or new launches
+  for its duration; pause affected owners only for the bounded final reconciliation/alias transaction.
+  Git inventory errors/timeouts are unknown state, never evidence that a worktree is absent. Launch/
+  resume must retain existing or partially created worktrees and branches on failure; no force-remove
+  or prune fallback. Match registered logical/physical paths and allow bounded remote-read latency.
   Read-only duplicate directories gain owner permissions only after verification and alias switch;
   permissions on live Spark files remain intact. File previews, render tokens and voice grounding
   retain logical path identity only through intact registered mappings, never arbitrary symlinks.
@@ -128,6 +137,12 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   existing checkout implicitly or use a local fallback when remote storage is unavailable. Capacity
   guards check both the image and its physical backing disk. `preserveMigratedData` retains the
   migrated corpus after migration ends; completion must not silently turn retention into deletion.
+  Settings → Storage defaults to local on fresh installs and adopts an existing registered destination.
+  macOS remote setup uses SMB plus a dedicated APFS image and Keychain credentials; selecting a default
+  only provisions future absent roots, never moves existing files. Selection is locked during migration.
+  Disposable per-session remote scratch cleanup owns only explicitly provisioned session mappings,
+  requires mounted/unopened exact roots, and journals partial cleanup; migrated/manual/artifact roots
+  remain protected. Never serialize passwords into configs, browser storage, logs or command arguments.
   Detached project test services may be checkpointed with `bin/storage-processes.mjs park|resume PID`;
   exact argv/environment/cwd stay in local 0600 private checkpoints, never logs/artifacts. Persistent
   launchd services use their own service lifecycle; native sessions use the session maintenance flow.
