@@ -2,10 +2,18 @@
 // src/worktrees.js, the per-project `isolation` toggle round-trip (guards the positional _upsert edit),
 // the session worktree_path/branch schema, and the linked-worktree DB boot-guard decision logic.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, existsSync, statSync, realpathSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep, dirname, basename } from 'node:path';
+
+// Some agent launchers put TMPDIR beneath the live repository. The "non-Git"
+// fixture must not discover that ancestor and add a worktree to the real repo.
+const temporaryRootProbe = spawnSync('git', ['-C', tmpdir(), 'rev-parse', '--git-dir'], {
+  env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' }, timeout: 5000, encoding: 'utf8',
+});
+assert.ok(!temporaryRootProbe.error && Number.isInteger(temporaryRootProbe.status) && temporaryRootProbe.status !== 0,
+  'Run worktree lifecycle tests with TMPDIR outside any Git checkout (for example /private/tmp)');
 
 // A scratch DB dir BEFORE importing anything that opens store.js (project_helpers/store).
 process.env.AIOS_DATA = mkdtempSync(join(tmpdir(), 'wt-data-'));

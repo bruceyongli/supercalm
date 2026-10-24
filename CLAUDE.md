@@ -96,7 +96,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   restatting every unchanged destination; it is not independent content verification. Large
   copies finalize directories bottom-up so retaining a removed child cannot race its finalizer.
   Positively missing/replaced source entries are unstable staging, not a completed quiesced transfer;
-  unchanged-source destination errors and loss of the selected root still fail closed. Large
+  unchanged-source destination errors and loss of the selected root still fail closed. Staging journals
+  record the owned copier PID, exit signal and explicit termination reason without argv/environment;
+  an interrupted attempt never replaces the last completed copy receipt or advances its baseline. Large
   SHA-256 reads may reuse bounded local proofs only for the same device/inode/ctime/mtime/size/mode/
   ownership/flags/link-count version; changed files are reread. Git observations disable optional
   index refreshes/locks, which otherwise churn repository metadata during verification. `cutover`
@@ -119,7 +121,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   Writers, coding agents and unknown handles still block; full verification/reclamation remains strictly unused.
   Git inventory errors/timeouts are unknown state, never evidence that a worktree is absent. Launch/
   resume must retain existing or partially created worktrees and branches on failure; no force-remove
-  or prune fallback. Match registered logical/physical paths and allow bounded remote-read latency.
+  or prune fallback. Existing linked worktrees use bounded target-only common-directory and reciprocal
+  registration checks, not an enumeration of every unrelated worktree. Match registered logical/physical
+  paths; missing/conflicting evidence remains unknown, and availability errors retain typed 503 diagnostics.
   Read-only duplicate directories gain owner permissions only after verification and alias switch;
   permissions on live Spark files remain intact. File previews, render tokens and voice grounding
   retain logical path identity only through intact registered mappings, never arbitrary symlinks.

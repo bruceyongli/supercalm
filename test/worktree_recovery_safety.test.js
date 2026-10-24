@@ -18,25 +18,22 @@ try {
   const original = await ensureWorktree({ repoPath: repo, sid: 's_original', project });
   const important = join(original.path, 'uncommitted.txt'); await writeFile(important, 'never remove this work');
   const existing = { repoPath: repo, sid: 's_original', project, desiredPath: original.path, desiredBranch: original.branch };
-  const unreadableRow = join(root, 'symlink-loop'); await symlink(unreadableRow, unreadableRow);
-  assert.equal(await worktreeExists(repo, original.path, { runGit: async () => ({
-    text: `worktree ${unreadableRow}\0\0worktree ${original.path}\0\0`, error: '',
-  }) }), true, 'exact inventory match does not stat unrelated slow/broken worktree paths');
   let calls = [];
-  await assert.rejects(ensureWorktree(existing, { runGit: async (cwd, args, options) => {
+  assert.equal((await ensureWorktree(existing, { runGit: async (cwd, args, options) => {
     calls.push(args);
-    assert.ok(options.timeout >= 30000, 'remote diagnostics receive a bounded 30-second budget');
-    if (args[0] === 'worktree' && args[1] === 'list') return { text: '', error: 'timed out' };
+    assert.ok(options.timeout > 0 && options.timeout <= 30000, 'remote diagnostics share a bounded 30-second budget');
+    if (args[0] === 'worktree' && args[1] === 'list') return { text: '', error: 'unrelated registration timed out' };
     return gitOut(cwd, args, options);
-  } }), e => e.code === 'worktree-inventory-unavailable');
+  } })).reused, true, 'direct registration proof does not need the full inventory');
+  assert.equal(calls.some(a => a[0] === 'worktree' && a[1] === 'list'), false);
   assert.equal(await readFile(important, 'utf8'), 'never remove this work');
   assert.equal(calls.some(a => a[0] === 'worktree' && a[1] === 'add'), false); assert.equal(destructive(calls), false);
   calls = [];
   await assert.rejects(ensureWorktree(existing, { runGit: async (cwd, args, options) => {
     calls.push(args);
-    if (args[0] === 'worktree' && args[1] === 'list') return { text: `worktree ${repo}\0HEAD ${git(['rev-parse', 'HEAD'])}\0\0`, error: '' };
+    if (cwd === original.path) return { text: '', error: 'target Git metadata timed out' };
     return gitOut(cwd, args, options);
-  } }), e => e.code === 'worktree-existing-unconfirmed');
+  } }), e => e.code === 'worktree-registration-unavailable' && e.status === 503 && /target Git metadata timed out/.test(e.message));
   assert.equal(calls.some(a => a[0] === 'worktree' && a[1] === 'add'), false); assert.equal(destructive(calls), false);
 
   // The add succeeded on disk but the client received a timeout. The checkout,

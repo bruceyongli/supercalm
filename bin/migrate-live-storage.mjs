@@ -13,6 +13,7 @@ import { validateLiveStorage } from '../src/live_storage.js';
 import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, assertTransferCutoverQuiesced, durableJson } from '../src/storage_migration.js';
 import { transferOnlyAuthorized, checkStorageTransfer } from '../src/storage_transfer_receipt.js';
 import { runStorageCopyPass } from '../src/storage_copy_baseline.js';
+import { runStorageCopyCommand } from '../src/storage_copy_command.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
 if (!['copy', 'reconcile', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
@@ -63,33 +64,8 @@ const save = async changes => {
   await durableJson(journalFile, journal);
 };
 const log = createWriteStream(join(journalRoot, id + '.log'), { flags: 'a', mode: 0o600 });
-let logError = null, activeChild = null, loggedBytes = 0;
-log.on('error', error => {
-  logError = error;
-  // Journal/log failure (including local ENOSPC) must stop our copier, not orphan it.
-  activeChild?.kill('SIGTERM');
-});
-async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 } = {}) {
-  if (logError) throw Error('Migration log unavailable; originals retained: ' + logError.code);
-  const child = spawn(file, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  activeChild = child;
-  const chunks = []; let size = 0;
-  for (const stream of [child.stdout, child.stderr]) stream.on('data', b => {
-    if (!logError && loggedBytes < 1024 * 1024) {
-      const bounded = b.subarray(0, 1024 * 1024 - loggedBytes);
-      loggedBytes += bounded.length; log.write(bounded);
-    }
-    if (collect) { size += b.length; if (size <= 2 * 1024 * 1024) chunks.push(b); }
-  });
-  const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-  try {
-    const code = await new Promise((res, rej) => { child.once('error', rej); child.once('close', res); });
-    if (logError) throw Error('Migration log unavailable; copier stopped and originals retained: ' + logError.code);
-    if (code !== 0) throw Object.assign(new Error(`${file} exited ${code}; data retained; inspect ${id}.log`), { exitCode: code });
-    if (collect && size > 2 * 1024 * 1024) throw Error('Verification output exceeded its bound; source and destination retained');
-    return Buffer.concat(chunks).toString();
-  } finally { clearTimeout(timer); activeChild = null; }
-}
+let logError = null;
+log.on('error', error => { logError = error; });
 async function stageCopy(incremental, { quiesced = false } = {}) {
   return runStorageCopyPass({ journal, incremental, quiesced, save, copy: async ({ baseline }) => {
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
@@ -102,7 +78,8 @@ async function stageCopy(incremental, { quiesced = false } = {}) {
       // proof: default cutover still verifies contents; an explicit transfer-only
       // policy can skip rereads only while retaining the exact local original.
       if (incremental) args.push('--since=' + String((baseline - 1000) / 1000));
-      const output = await command('python3', args, { collect: true });
+      const output = await runStorageCopyCommand({ file: 'python3', args, collect: true,
+        log, save, getLogError: () => logError, logName: id + '.log' });
       return JSON.parse(output.trim().split('\n').at(-1));
   } });
 }

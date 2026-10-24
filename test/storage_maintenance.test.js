@@ -82,6 +82,24 @@ try {
   const checkpointEntry = { id: sid, token: 'branch-job-nonce', phase: 'parked', tool: 'codex', codex_uuid: uuid,
     tmux: 'fixture-branch', worktree_path: worktree.path, project_path: repo };
   job.sessions.push(checkpointEntry); await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
+  // Real resume/HTTP propagation: uncertain Git evidence is 503, never generic
+  // isolation-lost/409, and never reaches pane launch or changes native identity.
+  const marker = join(worktree.path, '.git'), markerText = await readFile(marker, 'utf8');
+  const backlink = join(markerText.trim().slice('gitdir: '.length), 'gitdir');
+  const backlinkText = await readFile(backlink, 'utf8');
+  try {
+    await writeFile(backlink, 'malformed\nbacklink\n');
+    const unavailable = await post(`/api/session/${sid}/storage-resume`, {}, checkpointEntry.token);
+    assert.equal(unavailable.status, 503); assert.equal(unavailable.body.code, 'worktree-existing-unconfirmed');
+    assert.match(unavailable.body.error, /malformed backlink/); assert.doesNotMatch(unavailable.body.error, /isolation-lost|shared checkout/);
+    await writeFile(backlink, backlinkText); await writeFile(marker, 'invalid Git marker\n');
+    const gitError = await post(`/api/session/${sid}/storage-resume`, {}, checkpointEntry.token);
+    assert.equal(gitError.status, 503); assert.equal(gitError.body.code, 'worktree-registration-unavailable');
+    assert.match(gitError.body.error, /fatal: invalid gitfile format/);
+    await assert.rejects(readFile(join(process.env.AIOS_DATA, 'launch', sid + '.sh')), { code: 'ENOENT' });
+    assert.equal(store.getSession(sid).codex_uuid, uuid); assert.equal(store.getSession(sid).last_activity, 1234);
+    assert.equal(store.getSession(sid).tmux, checkpointEntry.tmux);
+  } finally { await writeFile(marker, markerText); await writeFile(backlink, backlinkText); }
   const refused = await post(`/api/session/${sid}/storage-resume`, {}, checkpointEntry.token);
   assert.equal(refused.status, 409); assert.match(refused.body.error, /launch-contract mismatch/);
   checkpointEntry.branchCheckpoint = m.createStorageBranchCheckpoint(checkpointEntry, 'design/site-refresh-dark');

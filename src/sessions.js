@@ -1482,7 +1482,15 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     try {
       const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
       cwd = wt?.path;
-    } catch (e) { console.error('[aios] worktree resume reuse failed:', e?.message || e); }
+    } catch (e) {
+      console.error('[aios] worktree resume reuse failed:', e?.message || e);
+      // Unknown storage/Git evidence is an availability failure, not proof that
+      // isolation was lost. Keep its diagnostics and 503 through storage-resume.
+      if (e?.status === 503) {
+        store.addEvent(sid, 'resume-refused', { reason: e.code || 'worktree-unavailable', worktree_path: s.worktree_path });
+        throw e;
+      }
+    }
   }
   // FAIL CLOSED on lost isolation. This used to fall through to the shared checkout, which silently
   // dropped the deploy interlock: startPane derives `isolated = cwd !== project.path`, so a shared-tree
@@ -4343,7 +4351,7 @@ route('POST', '/api/session/:id/storage-resume', async (req, res, { id: sid }) =
       && storageRecoveryGate(await tmux('capture-pane', '-p', '-t', resumed.tmux)) === pending.originalInputGate
       ? pending.originalInputGate : null;
     json(res, 200, { ok: true, id: sid, tmux: resumed.tmux, status: resumed.status, input_ready: inputReady, restored_existing_gate: restoredGate });
-  } catch (error) { json(res, error.status || 409, { error: error.message }); }
+  } catch (error) { json(res, error.status || 409, { error: error.message, code: error.code }); }
 });
 
 // Change autonomy / effort / model on the fly. Live where the tool supports it
