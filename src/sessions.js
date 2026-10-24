@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
-import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate } from './storage_maintenance.js';
+import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate, storageBranchCheckpointAllows, storageBranchEvidenceValid } from './storage_maintenance.js';
 import { sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
@@ -1503,14 +1503,27 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   {
     const manifest = await readManifest(sid);
     let actualBranch = null;
-    if (cwd) { try { actualBranch = (await exec('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], { timeout: 8000 })).stdout.trim(); } catch {} }
+    if (cwd) { try { actualBranch = (await exec('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'],
+      { timeout: 30_000, killSignal: 'SIGKILL', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim(); } catch {} }
+    if (cwd && recoveryReason === 'storage-maintenance' && !actualBranch) {
+      throw Object.assign(Error('Maintenance resume could not verify the current worktree branch; files and conversation were retained.'), { code: 'worktree-branch-unavailable', status: 503 });
+    }
     const v = verifyResume(manifest, s, { branch: actualBranch });
+    const maintenance = storageMaintenanceFor(sid);
+    const branchPreserved = storageBranchCheckpointAllows({ manifest, verdict: v, pending: maintenance, session: s,
+      actualBranch, actualWorktreePath: cwd, projectPath: project?.path, maintenanceToken, recoveryReason, pathsEqual: sameStoragePath });
+    if (branchPreserved && !await storageBranchEvidenceValid(maintenance.branchCheckpoint)) {
+      throw Object.assign(Error('The recovered branch checkpoint evidence changed or is unavailable; maintenance recovery remains fenced.'),
+        { code: 'storage-branch-evidence-invalid', status: 409 });
+    }
     if (Object.keys(v.restore).length) {
       store.updateSession(sid, v.restore);
       store.addEvent(sid, 'manifest-restored', v.restore);
       console.log(`[aios] resume ${sid}: restored ${Object.keys(v.restore).join(', ')} from the launch manifest`);
     }
-    if (!v.ok && !force) {
+    if (branchPreserved) store.addEvent(sid, 'storage-maintenance-branch-preserved', { branch: actualBranch,
+      launched_branch: manifest.branch, source: maintenance.branchCheckpoint.source });
+    if (!v.ok && !force && !branchPreserved) {
       store.addEvent(sid, 'resume-refused', { mismatches: v.mismatches });
       const err = new Error('resume refused — launch-contract mismatch: ' + v.mismatches.join(' ; ') + ' (retry with force to override)');
       err.code = 'manifest-mismatch';

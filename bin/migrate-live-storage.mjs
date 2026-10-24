@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { validateLiveStorage } from '../src/live_storage.js';
 import { verifyStoragePair, reuseStorageVerification, switchStorageRoot, assertUnused, durableJson } from '../src/storage_migration.js';
 import { transferOnlyAuthorized, checkStorageTransfer } from '../src/storage_transfer_receipt.js';
+import { runStorageCopyPass } from '../src/storage_copy_baseline.js';
 
 const [operation, configFile, sourceArg] = process.argv.slice(2);
 if (!['copy', 'reconcile', 'verify', 'cutover'].includes(operation) || !configFile || !sourceArg) {
@@ -89,10 +90,7 @@ async function command(file, args, { collect = false, timeoutMs = 12 * 3600_000 
   } finally { clearTimeout(timer); activeChild = null; }
 }
 async function stageCopy(incremental, { quiesced = false } = {}) {
-      if (incremental && !['copied', 'staged-changing', 'verified', 'transfer-checked'].includes(journal.state)) throw Error('Reconciliation requires a completed staging copy; run copy first');
-      const baseline = incremental ? (journal.copyBaselineAt || journal.createdAt) : Date.now();
-      if (!Number.isFinite(baseline) || baseline <= 0 || baseline > Date.now()) throw Error('Invalid completed-copy baseline');
-      await save({ state: 'copying', error: null, pid: process.pid });
+  return runStorageCopyPass({ journal, incremental, quiesced, save, copy: async ({ baseline }) => {
       await mkdir(target, { recursive: true, mode: original.mode & 0o777 });
       // Native copyfile preserves ACL/xattrs/hardlinks without Apple's openrsync AppleDouble
       // hardlink bug. Superseded staging entries stay on Spark, never silently deleted.
@@ -104,11 +102,8 @@ async function stageCopy(incremental, { quiesced = false } = {}) {
       // policy can skip rereads only while retaining the exact local original.
       if (incremental) args.push('--since=' + String((baseline - 1000) / 1000));
       const output = await command('python3', args, { collect: true });
-      const result = JSON.parse(output.trim().split('\n').at(-1));
-      const unstable = result.unstableSources || [];
-      const copiedAt = Date.now();
-      await save({ state: unstable.length ? 'staged-changing' : 'copied', error: null, pid: null, unstableSources: unstable,
-        copyBaselineAt: baseline, copiedAt, copyReceipt: { completedAt: copiedAt, exitCode: 0, quiesced, result } });
+      return JSON.parse(output.trim().split('\n').at(-1));
+  } });
 }
 try {
   {

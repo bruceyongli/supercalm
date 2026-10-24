@@ -10,7 +10,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DATA_DIR, DB_PATH, TMUX } from '../src/config.js';
 import { durableJson, openFiles } from '../src/storage_migration.js';
-import { readStorageMaintenance, storageMaintenanceFile, storageRecoveryGate } from '../src/storage_maintenance.js';
+import { readStorageMaintenance, storageMaintenanceFile, storageRecoveryGate, createStorageBranchCheckpoint } from '../src/storage_maintenance.js';
 import { codexRolloutFiles, pickRolloutByUuid } from '../src/codex_rollouts.js';
 import { sameStoragePath } from '../src/live_storage.js';
 import { assertNativeHistorySession, assertNativeHistoryProcesses, parseNativeListeners } from '../src/storage_native_history_guard.js';
@@ -150,6 +150,11 @@ try {
         listeners: await listeningProcesses(descendants(table, paneRoots)) });
       s.screenBackup = join(backup, s.id + '.terminal.txt');
       await writeFile(s.screenBackup, screen, { mode: 0o600 });
+      if (s.worktree_path) {
+        const branch = (await exec('git', ['-C', s.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'],
+          { timeout: 30_000, killSignal: 'SIGKILL', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } })).stdout.trim();
+        s.branchCheckpoint = createStorageBranchCheckpoint(s, branch);
+      }
     }
     if (job) {
       job.sessions = [...job.sessions.filter(s => !ids.includes(s.id)), ...selected];

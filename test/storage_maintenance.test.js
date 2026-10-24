@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
+import { execFileSync } from 'node:child_process';
 const root = await mkdtemp(join(tmpdir(), 'aios-storage-maintenance-'));
 const probe = createServer(); await new Promise(r => probe.listen(0, '127.0.0.1', r));
 const port = probe.address().port; await new Promise(r => probe.close(r));
@@ -61,6 +62,35 @@ try {
   assert.equal(store.getSession(before.id).last_activity, before.last_activity);
   assert.equal(store.getSession(before.id).question, before.question);
   assert.match(await readFile(join(process.env.AIOS_DATA, 'launch', before.id + '.sh'), 'utf8'), new RegExp('resume[\\s\\S]*' + native));
+
+  // A real isolated worktree switched branches before maintenance. Only its
+  // nonce-bound pre-freeze checkpoint permits this branch-only birth-record drift.
+  const repo = join(root, 'git-project'); await mkdir(repo);
+  const git = args => execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8' }).trim();
+  git(['init', '-q', '-b', 'main']); git(['config', 'user.name', 'fixture']); git(['config', 'user.email', 'fixture@example.invalid']);
+  await writeFile(join(repo, 'source'), 'source'); git(['add', '.']); git(['commit', '-qm', 'initial']);
+  const gitProject = store.createProject({ id: 'p_branch_checkpoint', name: 'Branch fixture', path: repo });
+  const { ensureWorktree } = await import('../src/worktrees.js');
+  const { writeManifest } = await import('../src/launch_contract.js');
+  const sid = 's_branch_checkpoint', uuid = 'ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const worktree = await ensureWorktree({ repoPath: repo, sid, project: gitProject });
+  store.createSession({ id: sid, project_id: gitProject.id, tool: 'codex', tmux: 'fixture-branch', status: 'waiting' });
+  store.updateSession(sid, { desired_status: 'waiting', worktree_path: worktree.path, branch: worktree.branch, codex_uuid: uuid, last_activity: 1234 });
+  await writeFile(join(process.env.AIOS_CODEX_SESSIONS_DIR, `rollout-fixture-${uuid}.jsonl`), JSON.stringify({ type: 'session_meta', payload: { id: uuid, cwd: worktree.path } }) + '\n');
+  await writeManifest(sid, { tool: 'codex', worktree_path: worktree.path, cwd: worktree.path, project_path: repo, branch: worktree.branch });
+  execFileSync('git', ['-C', worktree.path, 'switch', '-qc', 'design/site-refresh-dark']);
+  const checkpointEntry = { id: sid, token: 'branch-job-nonce', phase: 'parked', tool: 'codex', codex_uuid: uuid,
+    tmux: 'fixture-branch', worktree_path: worktree.path, project_path: repo };
+  job.sessions.push(checkpointEntry); await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
+  const refused = await post(`/api/session/${sid}/storage-resume`, {}, checkpointEntry.token);
+  assert.equal(refused.status, 409); assert.match(refused.body.error, /launch-contract mismatch/);
+  checkpointEntry.branchCheckpoint = m.createStorageBranchCheckpoint(checkpointEntry, 'design/site-refresh-dark');
+  await writeFile(m.storageMaintenanceFile, JSON.stringify(job));
+  const kept = await post(`/api/session/${sid}/storage-resume`, {}, checkpointEntry.token);
+  assert.equal(kept.status, 200, JSON.stringify(kept));
+  assert.equal(store.getSession(sid).codex_uuid, uuid); assert.equal(store.getSession(sid).last_activity, 1234);
+  assert.equal(execFileSync('git', ['-C', worktree.path, 'branch', '--show-current'], { encoding: 'utf8' }).trim(), 'design/site-refresh-dark');
+  assert.match(await readFile(join(process.env.AIOS_DATA, 'launch', sid + '.sh'), 'utf8'), new RegExp('resume[\\s\\S]*' + uuid));
   // Explicit operator Kill is never fenced by migration and takes precedence over recovery.
   await api.killSession(before.id);
   assert.equal(store.getSession(before.id).desired_status, 'exited');

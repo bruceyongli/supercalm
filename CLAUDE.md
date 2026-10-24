@@ -128,6 +128,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   neither a frozen process nor a successful copy authorizes deletion of an in-use local tree.
   Park/restart uses local nonce-bound handlers and verified exact native conversation IDs, never
   a global latest-conversation fallback. Operator Stop/Kill wins; restart retains activity clocks.
+  Freeze checkpoints the actual branch for that exact session/native UUID/worktree. Only maintenance
+  resume may preserve a branch-only launch-manifest mismatch through that nonce-bound checkpoint;
+  recovered checkpoints require unchanged hashed pre-maintenance evidence. Never force resume,
+  switch branches, or waive tool/worktree/isolation identity checks to complete a storage move.
   Display-only native task teardown notices are not new work. Verification pins an immutable
   implementation and may reuse its full hash proof only if both source/target fingerprints match.
   Native physical cwd and logical project paths are equivalent only through registered mappings,
