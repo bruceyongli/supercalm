@@ -95,8 +95,8 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
     'currentFlight rejects a switched, replaced or cancelled view lifetime');
   const body = sv.slice(sv.indexOf('async function refreshStoryNow'), sv.indexOf('function pauseStoryRequests'));
   assert.ok(/const mySid\s*=\s*flight\.sid/.test(body), 'refreshStoryNow uses the captured session id (mySid) before the await');
-  assert.ok(/requestStory\(`api\/session\/\$\{mySid\}\/story`, \{ signal: flight\.signal \}/.test(body),
-    'the progressive Story request uses the captured mySid and its lifetime cancellation signal');
+  assert.ok(/requestStory\(`api\/session\/\$\{mySid\}\/story`, \{ signal: flight\.signal, sessionId: mySid \}/.test(body),
+    'the progressive Story request checks response ownership as well as its lifetime cancellation signal');
   assert.match(body, /if \(!currentFlight\(flight\)\) return/,
     'refreshStory discards responses outside the captured lifetime (no cross-session leak)');
   assert.ok(body.indexOf('if (!currentFlight(flight)) return') < body.indexOf('const incoming'),

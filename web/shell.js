@@ -375,11 +375,11 @@ export function prefetchStory(id) {
   if (!id || _prefetched.has(id)) return;
   _prefetched.add(id);
   api(`api/session/${id}/story`).then((r) => {
-    if (!r || !Array.isArray(r.events) || !r.events.length) return;
+    if (r?.sessionId !== id || !Array.isArray(r.events) || !r.events.length) return;
     const storySource = r.meta?.source || 'transcript';
-    const payload = JSON.stringify({ events: r.events, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
+    const payload = JSON.stringify({ sessionId: id, events: r.events, cursor: r.meta?.cursor || null, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
       storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story11_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v11)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story12_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v12)
   }).catch(() => _prefetched.delete(id));
 }
 

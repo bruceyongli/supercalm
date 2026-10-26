@@ -27,7 +27,7 @@ const server = createServer((req, res) => {
   if (path === '/aios/api/models/providers') return json(res, { providers: [] });
   if (path === '/aios/api/session/s_capacity') return json(res, { ...session,
     project: { id: 'p_fixture', name: 'SemaMorph' }, messages: [], events: [], composer_history: [] });
-  if (path === '/aios/api/session/s_capacity/story') return json(res, { events: [], status: session.status });
+  if (path === '/aios/api/session/s_capacity/story') return json(res, { sessionId: session.id, events: [], status: session.status });
   if (path.startsWith('/aios/api/')) return json(res, {});
   let name = path.replace(/^\/aios\/?/, '') || 'app.html';
   if (name === 'phone') name = 'phone.html';

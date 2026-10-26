@@ -25,6 +25,7 @@ let historyLoading = false;
 let refreshFlight = null;
 let storyGeneration = 0;
 let storyAbort = new AbortController();
+let mountSignal = null;
 let liveUpdates = null;
 let catchup = null;
 let historyError = '';
@@ -61,18 +62,28 @@ let storyVoiceClient = null;
 let sendEchoes = []; // {ts, text, state:'pending'|'read'} — bounded; read ones expire
 const readMarks = new Map(); // evKey(server 'you' event) -> true → renders the ✓ read chip
 const normText = (s) => String(s || '').replace(/\s+/g, ' ').trim();
-// Match a pending echo to an arriving server 'you' event: same text prefix (the server may append
-// the attachments note; the spine clips at 800 chars) and not earlier than the send (the consume
-// time is AT or AFTER the send — minus 20s of clock slack).
+// The full normalized request must match, not just its first 60 characters (distinct requests can
+// share an opening). Already-visible messages cannot acknowledge a NEW send. A stored fallback
+// receipt can merge the optimistic bubble, but only a native transcript marks it read.
 function reconcileEchoes() {
   if (!sendEchoes.length) return false;
   let changed = false;
   for (const e of sendEchoes) {
     if (e.state !== 'pending') continue;
-    const n = normText(e.text).slice(0, 60);
-    const hit = events.find((ev) => ev.kind === 'you' && (ev.ts || 0) >= e.ts - 20000 && !readMarks.has(evKey(ev))
-      && (normText(ev.body || ev.text).startsWith(n) || n.startsWith(normText(ev.body || ev.text).slice(0, 60))));
-    if (hit) { e.state = 'read'; readMarks.set(evKey(hit), true); changed = true; }
+    const n = normText(e.text);
+    const sentAt = e.retryReceiptAt || e.ts;
+    const previousMatch = e.matchedKey;
+    e.matchedKey = null;
+    const hit = events.filter(ev => ev.kind === 'you' && !ev.indent && (ev.ts || 0) >= sentAt - 20000
+      && (e.retryReceiptAt || !e.priorKeys.has(evKey(ev)) && !readMarks.has(evKey(ev)))
+      && (ev.clientMessageId && e.clientMessageId ? ev.clientMessageId === e.clientMessageId
+        : n && n === normText(ev.body || ev.text)))
+      .sort((a, b) => Math.abs(a.ts - sentAt) - Math.abs(b.ts - sentAt))[0];
+    if (hit) {
+      if (storySource === 'transcript') { e.state = 'read'; readMarks.set(evKey(hit), true); changed = true; }
+      else e.matchedKey = evKey(hit);
+    }
+    if (e.matchedKey !== previousMatch) changed = true;
   }
   const before = sendEchoes.length;
   sendEchoes = sendEchoes.filter((e) => e.state === 'pending' || Date.now() - e.ts < 600000).slice(-20);
@@ -81,9 +92,10 @@ function reconcileEchoes() {
 }
 // Called by session.js AT the send click (before the POST resolves) — the instant-echo entry
 // point. Returns the echo handle so a failed send (409 stopped / error) can cancel the ghost.
-export function noteComposerSend(text) {
-  if (!sid || !normText(text)) return null; // story not mounted / attachment-only send
-  const echo = { ts: Date.now(), text: String(text), state: 'pending' };
+export function noteComposerSend(text, { sessionId = sid, clientMessageId = null } = {}) {
+  if (!sid || sessionId !== sid || !panelEl?.isConnected || !normText(text)) return null;
+  const echo = { ts: Date.now(), text: String(text), state: 'pending', sessionId, generation: storyGeneration,
+    clientMessageId, priorKeys: new Set(events.filter(ev => ev.kind === 'you').map(evKey)) };
   sendEchoes.push(echo);
   if (sendEchoes.length > 20) sendEchoes = sendEchoes.slice(-20);
   render();
@@ -94,9 +106,17 @@ export function noteComposerSend(text) {
   return echo;
 }
 export function cancelComposerSend(echo) {
-  if (!echo) return;
+  if (!echo || echo.sessionId !== sid || echo.generation !== storyGeneration) return;
   sendEchoes = sendEchoes.filter((e) => e !== echo);
   render();
+}
+// A network-loss retry can refer to a send already visible before this click. Only the server's
+// idempotency receipt authorizes matching that prior event; an ordinary repeat is a NEW request.
+export function confirmComposerSend(echo, receipt) {
+  if (!echo || echo.sessionId !== sid || echo.generation !== storyGeneration || !receipt?.duplicate
+      || !Number.isFinite(receipt.message?.ts) || receipt.message.ts <= 0) return;
+  echo.retryReceiptAt = receipt.message.ts;
+  if (reconcileEchoes()) render();
 }
 
 // General atom key for the append-MERGE. Requirement: "those messages are already loaded, why clear them
@@ -166,10 +186,14 @@ function storyToLatest() {
 // v9: Claude native identities/stop reasons, specific tool descriptions and inspectable errors.
 // v10: Claude mid-turn human messages and live background shell status.
 // v11: exact upload paths retained on native and fallback Story events.
-export const STORY_CACHE_KEY = (id) => `aios_story11_${id}`;
+// v12: explicit owner checks; discard pre-isolation caches and raw Claude paste-wrapper bubbles.
+export const STORY_CACHE_KEY = (id) => `aios_story12_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
-function readStoryCache(id) { try { const s = sessionStorage.getItem(STORY_CACHE_KEY(id)); return s ? JSON.parse(s) : null; } catch { return null; } }
-function writeStoryCache(id, payload) { try { const s = JSON.stringify(payload); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
+function readStoryCache(id) {
+  try { const cached = JSON.parse(sessionStorage.getItem(STORY_CACHE_KEY(id))); return cached?.sessionId === id ? cached : null; }
+  catch { return null; }
+}
+function writeStoryCache(id, payload) { try { const s = JSON.stringify({ ...payload, sessionId: id }); if (s.length <= STORY_CACHE_MAX) sessionStorage.setItem(STORY_CACHE_KEY(id), s); } catch {} }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const STORY_VIDEO_EXT_RX = /\.(?:mp4|m4v|mov|webm|ogv)$/i;
@@ -532,9 +556,11 @@ function calmEvents(source) {
 }
 
 function feedList() {
-  const pend = sendEchoes.filter((e) => e.state === 'pending').map((e) => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
+  const pending = sendEchoes.filter(e => e.state === 'pending');
+  const stored = new Set(pending.map(e => e.matchedKey).filter(Boolean));
+  const pend = pending.filter(e => !e.matchedKey).map(e => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
   const latest = events.findLast(ev => ev.kind !== 'gap' && ev.kind !== 'sys');
-  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index })).filter(ev =>
+  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index, _echo: stored.has(evKey(ev)) })).filter(ev =>
     !(liveProviderIssue && latest && evKey(ev) === evKey(latest) && !ev.indent && ev.providerIssue?.code === liveProviderIssue.code)));
   const liveAsk = pendingQuestion ? [{
     kind: 'ask', title: 'Needs your answer', ts: pendingQuestion.ts,
@@ -672,6 +698,7 @@ async function continueProviderTask() {
   const deadline = setTimeout(cancel, 30000); // retain the same receipt identity after a lost/slow response
   const current = () => sid === target && storyGeneration === generation && !!panelEl;
   const attempt = continueAttempt = { key, busy: true, error: '', accepted: false };
+  const echo = noteComposerSend(PROVIDER_CONTINUE_TEXT, { sessionId: target, clientMessageId: key });
   updateWorkingStatus();
   try {
     const response = await fetch(`api/session/${encodeURIComponent(target)}/input`, {
@@ -683,9 +710,9 @@ async function continueProviderTask() {
     if (!current()) return;
     if (!response.ok || result.ok !== true) throw new Error(result.error || 'Continue was not acknowledged. Please try again.');
     attempt.accepted = true;
-    noteComposerSend(PROVIDER_CONTINUE_TEXT);
   } catch (error) {
     if (!current()) return;
+    cancelComposerSend(echo);
     attempt.error = signal.aborted || error instanceof TypeError || error instanceof SyntaxError
       ? 'Delivery could not be confirmed. Retry checks the same request without sending it twice.' : error.message;
   } finally {
@@ -702,7 +729,7 @@ export async function loadEarlierStory() {
   historyLoading = true; historyError = '';
   render();
   try {
-    const r = await requestStory(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`, { signal });
+    const r = await requestStory(`api/session/${mySid}/story?cursor=${encodeURIComponent(cursor)}`, { signal, sessionId: mySid });
     if (sid !== mySid || generation !== storyGeneration || signal.aborted || identity !== storyIdentity) return;
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
@@ -714,6 +741,7 @@ export async function loadEarlierStory() {
     historyCursor = r.meta?.cursor || null;
     trimmed = !!historyCursor;
     rounds++;
+    reconcileEchoes();
   } catch (error) {
     if (sid === mySid && generation === storyGeneration && !signal.aborted) historyError = 'Retry earlier conversation';
   } finally {
@@ -722,8 +750,11 @@ export async function loadEarlierStory() {
 }
 
 function wire() {
+  const owner = { sid, generation: storyGeneration, panel: panelEl };
+  const current = () => sid === owner.sid && storyGeneration === owner.generation && panelEl === owner.panel;
   for (const button of panelEl.querySelectorAll('[data-story-async-opt]')) {
     button.onclick = () => {
+      if (!current()) return;
       const call = button.dataset.call;
       if (asyncSending.has(call)) return;
       const group = events.filter(e => e.kind === 'ask' && e.askId === call);
@@ -740,7 +771,7 @@ function wire() {
       if (!group.some(q => q.multiSelect) && group.every(q => choices.get(q.questionIndex)?.size)) void sendAsyncChoices(call);
     };
   }
-  for (const button of panelEl.querySelectorAll('[data-story-async-send]')) button.onclick = () => void sendAsyncChoices(button.dataset.call);
+  for (const button of panelEl.querySelectorAll('[data-story-async-send]')) button.onclick = () => { if (current()) void sendAsyncChoices(button.dataset.call); };
   const latest = panelEl.querySelector('[data-story-latest]');
   if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
   // Both load-earlier paths anchor the viewport: content PREPENDS, so the scroll position is adjusted
@@ -769,21 +800,23 @@ function wire() {
   }
   for (const b of panelEl.querySelectorAll('[data-story-ask-opt]')) {
     b.onclick = async () => {
-      if (b.disabled) return;
+      if (!current() || b.disabled) return;
       b.disabled = true;
       const key = b.dataset.key || b.textContent.trim();
       const label = b.dataset.label || key;
       try {
-        await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: key, source: 'text' }) });
+        await api(`api/session/${owner.sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: key, source: 'text' }) });
+        if (!current()) return;
         if (b.dataset.askkey) answeredAsks.set(b.dataset.askkey, label); // sticky: survives the next SSE re-render
         if (pendingQuestion && b.dataset.askkey === askKey({ ts: pendingQuestion.ts, body: pendingQuestion.body })) pendingQuestion = null;
         b.closest('.story-ask-opts')?.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${label}" — session resumed` }));
-      } catch (e) { b.disabled = false; b.textContent = '⚠ ' + (e.message || e); }
+      } catch (e) { if (current()) { b.disabled = false; b.textContent = '⚠ ' + (e.message || e); } }
     };
   }
   for (const form of panelEl.querySelectorAll('[data-story-ask-reply]')) {
     form.onsubmit = async (event) => {
       event.preventDefault();
+      if (!current()) return;
       const input = form.querySelector('[data-story-ask-input]');
       const answer = input?.value.trim() || '';
       if (!answer) return input?.focus();
@@ -791,11 +824,13 @@ function wire() {
       const error = form.querySelector('[data-story-ask-error]');
       if (button) { button.disabled = true; button.textContent = 'Sending…'; }
       try {
-        await api(`api/session/${sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: answer, source: 'text' }) });
+        await api(`api/session/${owner.sid}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: answer, source: 'text' }) });
+        if (!current()) return;
         if (form.dataset.askkey) answeredAsks.set(form.dataset.askkey, answer);
         if (pendingQuestion && form.dataset.askkey === askKey({ ts: pendingQuestion.ts, body: pendingQuestion.body })) pendingQuestion = null;
         form.replaceWith(Object.assign(document.createElement('div'), { className: 'story-answered', textContent: `✓ answered "${answer}" — session resumed` }));
       } catch (e) {
+        if (!current()) return;
         if (button) { button.disabled = false; button.textContent = 'Reply'; }
         if (error) error.textContent = e.message || e;
       }
@@ -838,17 +873,18 @@ async function sendAsyncChoices(call) {
   const group = events.filter(e => e.kind === 'ask' && e.askId === call && !e.answered);
   const choices = asyncChoices.get(call);
   if (!group.length || !group.every(q => choices?.get(q.questionIndex)?.size)) return;
-  const mySid = sid;
+  const mySid = sid, generation = storyGeneration;
+  const current = () => sid === mySid && storyGeneration === generation;
   asyncSending.add(call); render();
   const answers = group.map(q => ({ ask_id: call, question_id: q.questionId, question: q.body,
     values: [...choices.get(q.questionIndex)].map(index => ({ key: q.options[index].key || '', label: q.options[index].label })) }));
   try {
     await api(`api/session/${mySid}/answers`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ answers }) });
-    if (sid !== mySid) return;
+    if (!current()) return;
     for (const [index, q] of group.entries()) answeredAsks.set(askKey(q), answers[index].values.map(v => v.label).join(', '));
   } catch (e) {
-    if (sid === mySid) asyncErrors.set(call, e.message || String(e));
-  } finally { asyncSending.delete(call); if (sid === mySid) render(); }
+    if (current()) asyncErrors.set(call, e.message || String(e));
+  } finally { if (current()) { asyncSending.delete(call); render(); } }
 }
 
 export async function refreshStory({ quiet = true, followUp = false } = {}) {
@@ -877,13 +913,14 @@ async function catchUpStory(flight) {
   // their reports. Walk bounded older pages only until the last displayed event, never the full log.
   while (catchup && currentFlight(flight)) {
     const gap = catchup;
-    const r = await requestStory(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: flight.signal });
+    const r = await requestStory(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: flight.signal, sessionId: flight.sid });
     if (!currentFlight(flight) || catchup !== gap) return;
     if (`${r.meta?.source || 'transcript'}|${r.meta?.file || ''}` !== storyIdentity) { catchup = null; return; }
     const older = r.events || [];
     const byKey = new Map(older.map(e => [evKey(e), e]));
     for (const e of events) byKey.set(evKey(e), e);
     events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    reconcileEchoes();
     const next = r.meta?.cursor;
     const reached = older.some(e => (e.ts || 0) <= gap.until) || !next || next === gap.cursor;
     if (rounds === 1) { historyCursor = next || null; trimmed = !!historyCursor; }
@@ -896,7 +933,7 @@ async function refreshStoryNow({ quiet, flight }) {
   const mySid = flight.sid; // capture: session/panel lifetime is fenced even across A → B → A
   try {
     // Live refresh always fetches ONLY the recent window, even after the operator loaded old pages.
-    const r = await requestStory(`api/session/${mySid}/story`, { signal: flight.signal });
+    const r = await requestStory(`api/session/${mySid}/story`, { signal: flight.signal, sessionId: mySid });
     // A fast session switch (switchSession) re-points `sid` + resets `events` while this fetch was in
     // flight. Applying this now-stale response would leak session A's atoms into session B's feed AND
     // write them to B's cache (operator report: a share/bb2 story rendered under the aios session's
@@ -938,7 +975,7 @@ async function refreshStoryNow({ quiet, flight }) {
     // or a composer echo's unread→read state moving.
     const sig = JSON.stringify(events) + ':' + working
       + ':' + JSON.stringify(liveProviderIssue)
-      + ':' + sendEchoes.map((e) => e.state === 'pending' ? 'p' : 'r').join('') + readMarks.size
+      + ':' + sendEchoes.map(e => `${e.state}:${e.matchedKey || ''}`).join('|') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig || !panelEl.querySelector('.story-feed')) { lastSig = sig; render(); }
     else updateWorkingStatus(); // elapsed timers must not repaint even a single history row
@@ -969,13 +1006,16 @@ export function destroyStoryView(sessionId) {
   persistScroll(); feedResizeObserver?.disconnect(); feedResizeObserver = null;
   liveUpdates?.close(); liveUpdates = null; pauseStoryRequests();
   storyGeneration++; panelEl = null; sid = null; catchup = null;
+  mountSignal = null;
   liveProviderIssue = null; continueAttempt = null;
   clearTimeout(feedPersistT);
 }
 
 export function initStoryView({ sessionId, panel, live = false, signal }) {
+  // A delayed dynamic import from an abandoned view must never claim the active singleton.
+  if (signal?.aborted || !sessionId || !panel?.isConnected) return Promise.resolve(false);
   const switching = sid !== sessionId;
-  const remounting = switching || panel !== panelEl;
+  const remounting = switching || panel !== panelEl || signal !== mountSignal;
   if (remounting) {
     persistScroll(); clearTimeout(feedPersistT);
     feedResizeObserver?.disconnect(); feedResizeObserver = null;
@@ -984,12 +1024,20 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
   if (switching) { asyncChoices.clear(); asyncSending.clear(); asyncErrors.clear(); }
   sid = sessionId;
   panelEl = panel;
+  mountSignal = signal;
+  if (remounting && signal) {
+    const generation = storyGeneration;
+    signal.addEventListener('abort', () => {
+      if (generation === storyGeneration && sid === sessionId) destroyStoryView(sessionId);
+    }, { once: true });
+  }
   // Listen controls use ONE delegated handler on the persistent panel (attached once per panel
   // element): in-place row repaints and wholesale re-renders never need onclick rebinding, and
   // unlockAudio still runs synchronously inside the tap gesture via onListenTap.
   if (panel && !panel._listenWired) {
     panel._listenWired = true;
     panel.addEventListener('click', (e) => {
+      if (panel !== panelEl) return;
       const b = e.target.closest('[data-story-listen]');
       if (b) onListenTap(b.dataset.evkey);
       if (e.target.closest('[data-story-continue]')) void continueProviderTask();
@@ -1007,10 +1055,10 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; pendingQuestion = null; liveProviderIssue = null; continueAttempt = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
+  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; working = false; liveStatus = null; trimmed = false; pendingQuestion = null; liveProviderIssue = null; continueAttempt = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
   if (remounting) restoreScrollPreference();
   // Instant first paint from the cross-nav cache (hover-prefetched or last-visited), then refresh live.
-  if (!showFull) {
+  if (remounting && !showFull) {
     const cached = readStoryCache(sid);
     if (cached && Array.isArray(cached.events) && cached.events.length) {
       events = cached.events; trimmed = !!cached.trimmed; working = !!cached.working; liveStatus = cached.liveStatus || null;

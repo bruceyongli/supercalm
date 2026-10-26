@@ -16,7 +16,7 @@ const server = createServer((req, res) => {
     requests.push(url.search);
     const n = Number(url.searchParams.get('cursor') || 3);
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, events: events(n), status: 'working', liveStatus: { verb: 'Working…', detail: `${++tick}s` },
+    res.end(JSON.stringify({ ok: true, sessionId: 's_paged', events: events(n), status: 'working', liveStatus: { verb: 'Working…', detail: `${++tick}s` },
       meta: { source: 'transcript', file: '/own.jsonl', trimmed: n > 1, cursor: n > 1 ? String(n - 1) : null } })); return;
   }
   res.writeHead(200, { 'content-type': 'text/html' });

@@ -48,6 +48,29 @@ assert.equal(parse([row(0, 'assistant', { content: 'String report.', stop_reason
 const user = parse([row(0, 'user', { content: [{ type: 'text', text: 'Fix the parser.' }, { type: 'text', text: 'Keep my reports.' }] })]);
 assert.equal(user.length, 1, 'one native operator message with multiple blocks is one bubble');
 assert.equal(user[0].body, 'Fix the parser.\n\nKeep my reports.');
+// Observed native paste envelope (including Claude's non-XML closing tag with an id).
+const pastedRequest = 'Make the new naming rule the default.\n\nUse GPT6.1 sol max as fallback. 中文请求。';
+const pastedAttachment = '/fixture/.aios/attachments/s_morph/1792986394924-pasted-1.txt';
+const pasted = `\n\n<pasted_content id="fe04">\n${pastedRequest}\n\nAttached files available locally to this coding CLI:\n1. pasted-1.txt (TXT, text/plain): ${pastedAttachment}\n\nOpen these paths directly when you need the uploaded content.\n</pasted_content id="fe04">\n`;
+for (const content of [pasted, [{ type: 'text', text: pasted }]]) {
+  const [event] = parse([row(0, 'user', { content }, { uuid: 'paste-user-1' })]);
+  assert.equal(event.body, pastedRequest, 'native paste plumbing is not part of the operator message');
+  assert.equal(event.messageId, 'paste-user-1', 'ordinary user messages retain their native identity');
+  assert.deepEqual(event.attachments, [{ name: 'pasted-1.txt', path: pastedAttachment }]);
+}
+const longRequest = 'Keep the entire request.\n\n' + 'Detailed requirement. '.repeat(300) + '\n\nAnd this last part.';
+assert.equal(parse([row(0, 'user', { content: `<pasted_content id="long">\n${longRequest}\n</pasted_content>` })])[0].body,
+  longRequest, 'a real long pasted request is not reduced to its final paragraph');
+const codexUser = value => JSON.stringify({ type: 'response_item', timestamp: new Date().toISOString(), payload: {
+  type: 'message', role: 'user', content: [{ type: 'input_text', text: value }] } });
+assert.equal(parse([codexUser(longRequest)])[0].body, longRequest, 'exact read matching also preserves long Codex requests');
+const codexLiteral = '<pasted_content id="literal">Example markup in a Codex request.</pasted_content>';
+assert.equal(parse([codexUser(codexLiteral)])[0].body, codexLiteral, 'Claude paste transport normalization never changes Codex literal text');
+for (const literal of ['Explain this: <pasted_content id="a">example</pasted_content>',
+  '```xml\n<pasted_content id="a">example</pasted_content>\n```',
+  '<pasted_content id="a">example</pasted_content id="b">']) {
+  assert.equal(parse([row(0, 'user', { content: literal })])[0].body, literal, 'quoted/mismatched markup is not a native envelope');
+}
 const queuedUser = row(3, 'attachment', undefined, { uuid: 'attachment-copy', attachment: {
   type: 'queued_command', prompt: 'Report when acceptance is done.', origin: { kind: 'human' },
   commandMode: 'prompt', humanTurn: true, source_uuid: 'operator-message', delivery_id: 'delivery-1',

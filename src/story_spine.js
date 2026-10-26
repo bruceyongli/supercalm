@@ -56,7 +56,7 @@ export function messageToEvent(m) {
     const images = extractAttachmentImages(text);
     const attachments = extractAttachments(text);
     const bare = text.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
-    const ev = { ts, kind: 'you', text: clip(bare || text, 800) };
+    const ev = { ts, kind: 'you', text: clip(bare || text, 800), clientMessageId: m.client_message_id || undefined };
     if (images.length) ev.images = images;
     if (attachments.length) ev.attachments = attachments;
     else if (!images.length && src.endsWith('+attachments')) ev.chips = ['attachments'];

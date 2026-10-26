@@ -42,7 +42,7 @@ const server = createServer(async (req, res) => {
       res.writeHead(503, { 'content-type': 'application/json' }); return res.end('{"error":"Transient network/server error"}');
     }
     const result = await readStoryPage({ file: files.get(sid), cursor });
-    const payload = { ok: true, events: result.events, status: 'working', meta: { ...result.meta, file: files.get(sid), source: 'transcript' } };
+    const payload = { ok: true, sessionId: sid, events: result.events, status: 'working', meta: { ...result.meta, file: files.get(sid), source: 'transcript' } };
     if (holdNext && !cursor) { holdNext = false; held = () => { json(res, payload); held = null; }; return; }
     return json(res, payload);
   }

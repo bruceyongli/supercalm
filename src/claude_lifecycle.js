@@ -79,6 +79,15 @@ export function claudeSystemInput(record) {
     || /^(?:task-notification|system)$/.test(record?.origin?.kind || '');
 }
 
+// Claude's bracketed-paste transport can wrap the WHOLE user turn, including AIOS's attachment
+// manifest. Its closing tag sometimes repeats id=... (not XML). Only unwrap a matched outer
+// envelope; inline examples, code fences and mismatched ids remain the operator's literal words.
+export function unwrapClaudePastedText(value) {
+  const raw = String(value || '');
+  const match = raw.trim().match(/^<pasted_content\s+id=(["'])([\w.-]+)\1>\s*([\s\S]*?)\s*<\/pasted_content(?:\s+id=(["'])([\w.-]+)\4)?>$/);
+  return match && (!match[5] || match[5] === match[2]) ? match[3] : raw;
+}
+
 // Keep the latest task snapshot through notifications. A later empty Stop snapshot retires it.
 // Restores use the recorded send time, not boot time, so an old completion never gets a fresh TTL.
 export function rememberClaudeHook(id, input) {

@@ -22,7 +22,7 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' }); res.flushHeaders();
     streams.add(res); req.on('close', () => streams.delete(res)); res.on('error', () => streams.delete(res)); return;
   }
-  if (path === `/aios/api/session/${sid}/story`) return json(res, { ok: true, events, status: session.status,
+  if (path === `/aios/api/session/${sid}/story`) return json(res, { ok: true, sessionId: sid, events, status: session.status,
     providerIssue: issue, pendingQuestion: null, meta: { source: 'transcript', file: '/fixture.jsonl' } });
   if (path === `/aios/api/session/${sid}/input`) {
     let raw = ''; for await (const chunk of req) raw += chunk;

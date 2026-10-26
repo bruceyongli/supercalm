@@ -30,7 +30,7 @@ const server = createServer((req, res) => {
   if (req.method !== 'GET') mutations.push({ method: req.method, path });
   if (path === '/aios/api/session/s_web_links_fixture') return json(res, session);
   if (path === '/aios/api/session/s_web_links_fixture/story') return json(res,
-    { ok: true, events: [{ kind: 'report', ts: 1700000000000, body }, ...uploadEvents], status: 'waiting', meta: {} });
+    { ok: true, sessionId: session.id, events: [{ kind: 'report', ts: 1700000000000, body }, ...uploadEvents], status: 'waiting', meta: {} });
   if (path === '/aios/api/session/s_web_links_fixture/file') {
     fileRequests.push(url.searchParams.get('path'));
     return json(res, { path: 'report.md', contentKind: 'text', viewUrl: '/aios/fixture-source.txt', downloadUrl: '/aios/fixture-source.txt' });

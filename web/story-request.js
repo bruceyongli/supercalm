@@ -1,6 +1,6 @@
 // Story is a read-only, potentially large JSON response. A total 20s fetch deadline killed
 // progressing mobile downloads; api() also masks JSON/body failures as {}, losing their retry.
-export async function requestStory(path, { signal, headerTimeoutMs = 60000,
+export async function requestStory(path, { signal, sessionId, headerTimeoutMs = 60000,
   idleTimeoutMs = 20000, maxDurationMs = 180000 } = {}) {
   const controller = new AbortController();
   const cancel = () => controller.abort(signal.reason);
@@ -29,6 +29,7 @@ export async function requestStory(path, { signal, headerTimeoutMs = 60000,
     }
     if (!response.ok) throw Object.assign(new Error(body?.error || `HTTP ${response.status}`), { status: response.status, code: body?.code });
     if (!Array.isArray(body?.events)) throw Object.assign(new Error('Story response was incomplete.'), { code: 'STORY_INCOMPLETE' });
+    if (sessionId && body.sessionId !== sessionId) throw Object.assign(new Error('Story session changed. Reconnecting…'), { code: 'STORY_SESSION_MISMATCH' });
     return body;
   } catch (error) {
     if (timedOut && !signal?.aborted) throw Object.assign(new Error('Story connection timed out.'), { code: 'STORY_TIMEOUT' });
@@ -41,7 +42,7 @@ export async function requestStory(path, { signal, headerTimeoutMs = 60000,
 }
 
 export function interruptedStoryRequest(error) {
-  return ['STORY_TIMEOUT', 'STORY_INCOMPLETE'].includes(error?.code)
+  return ['STORY_TIMEOUT', 'STORY_INCOMPLETE', 'STORY_SESSION_MISMATCH'].includes(error?.code)
     || ['AbortError', 'TimeoutError', 'TypeError'].includes(error?.name)
     || error?.status >= 500 || error?.status === 408 || error?.status === 429;
 }

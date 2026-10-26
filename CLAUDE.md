@@ -586,6 +586,16 @@ Story downloads use `story-request.js`: separate header/idle deadlines, renewed 
 plus an absolute bound. Never turn an aborted/truncated JSON body into an empty successful report.
 Transient failures retain the current feed/cache and return to the live controller's retry backoff;
 navigation/background cancellation stays silent, and returning to the app reconnects automatically.
+Story requires explicit session ownership on API responses and cached previews. Never select a native
+conversation by shared cwd, file size or recency: Claude uses its hook-bound path (or the exact relocated
+UUID); Codex uses its captured UUID or exclusive launch evidence. Until that identity exists, show only
+that session's stored message spine. Fence async view initialization, sends, answers and older-page
+responses by session AND mount generation, including A → B → A navigation. Invalidate caches when
+changing native message identity/normalization so old duplicated or misattributed bubbles cannot merge.
+Unwrap only Claude's matched outer `pasted_content` transport envelope before stripping attachment
+manifests; preserve real text, original upload paths and native user UUIDs. Reconcile optimistic sends
+against complete normalized text, never a short prefix/empty event or an already-visible prior send.
+Fallback rows merge by client message id but remain unread until the native transcript acknowledges them.
 The weak-network Story browser regression runs Chromium and WebKit (`playwright install chromium webkit`).
 Native transcript screenshots are lazy, session-scoped image references, never base64 inside Story JSON.
 Keep report text independent of image downloads and small enough for the recent-conversation cache.

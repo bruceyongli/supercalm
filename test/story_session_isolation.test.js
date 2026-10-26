@@ -24,10 +24,11 @@ const store = await import('../src/store.js');
 const { storyFor } = await import('../src/story_api.js');
 store.createProject({ id: 'p_story', name: 'Story isolation', path: projectPath });
 
-// A legacy row can still use the historical cwd heuristic.
+// Old rows need evidence too: sharing a project is not ownership of its newest transcript.
 store.createSession({ id: 's_legacy_story', project_id: 'p_story', tool: 'codex', tmux: 'legacy', status: 'exited' });
 const legacy = await storyFor('s_legacy_story');
-assert.equal(legacy.meta.file, oldFile, 'pre-queue legacy sessions retain cwd transcript lookup');
+assert.equal(legacy.meta.file, null, 'legacy Story never borrows an unclaimed sibling by cwd');
+assert.equal(legacy.sessionId, 's_legacy_story');
 
 // A fresh launch in the same project must never display that older session while UUID capture is pending.
 store.createSession({ id: 's_fresh_story', project_id: 'p_story', tool: 'codex', tmux: 'fresh', status: 'starting' });
@@ -35,6 +36,7 @@ store.addEvent('s_fresh_story', 'launch-queued', { task: 'fresh private task' })
 store.addMessage('s_fresh_story', 'in', 'task', 'fresh private task');
 const pending = await storyFor('s_fresh_story');
 assert.equal(pending.meta.source, 'fallback');
+assert.equal(pending.sessionId, 's_fresh_story');
 assert.equal(pending.meta.file, null, 'fresh unresolved Codex story refuses same-project cwd fallback');
 assert.ok(pending.events.some((e) => String(e.body || e.text || '').includes('fresh private task')), 'fallback contains only this session’s own captured spine');
 
@@ -45,6 +47,7 @@ const bound = await storyFor('s_fresh_story');
 assert.equal(bound.meta.source, 'transcript');
 assert.equal(bound.meta.file, ownFile, 'captured UUID selects the fresh session’s own rollout');
 assert.notEqual(bound.meta.file, oldFile);
+assert.equal(bound.sessionId, 's_fresh_story');
 
 // Real operator regression: queued launch, native Codex 0.160 record first appears after ~8s,
 // capture window misses it, the CLI finishes a report but Story keeps showing only input bubbles.

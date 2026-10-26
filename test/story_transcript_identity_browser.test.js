@@ -37,7 +37,7 @@ const server = createServer((req, res) => {
         { kind: 'you', ts: 1, body: 'OLDER SIBLING SECRET' },
         { kind: 'report', ts: 1.5, body: 'Episode finished — `out/ep01/final.mp4`.' },
       ], meta: { source: 'transcript', file: '/rollouts/older.jsonl' } };
-    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); return;
+    res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ...body, sessionId: 's_concurrent' })); return;
   }
   res.writeHead(200, { 'content-type': 'text/html' }); res.end(fixture);
 });

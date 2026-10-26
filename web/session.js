@@ -3386,7 +3386,7 @@ async function sendInput() {
     try {
       const story = await import('./story-view.js');
       requestScope.guard(requestToken);
-      echo = story.noteComposerSend?.(text);
+      echo = story.noteComposerSend?.(text, { sessionId: requestToken.id, clientMessageId });
     } catch {}
   }
   const cancelEcho = () => {
@@ -3408,7 +3408,9 @@ async function sendInput() {
       signal: requestToken.signal,
     });
     requestScope.guard(requestToken);
-    return { r, json: r.ok ? {} : await r.json().catch(() => ({})) };
+    const json = await r.json().catch(() => ({}));
+    requestScope.guard(requestToken);
+    return { r, json };
   };
   try {
     let result = await postInput();
@@ -3428,6 +3430,11 @@ async function sendInput() {
       cancelEcho();
       alert('Send failed: ' + (j.error || r.status));
     } else {
+      if (echo) {
+        const story = await import('./story-view.js');
+        requestScope.guard(requestToken);
+        story.confirmComposerSend?.(echo, j);
+      }
       acknowledgeComposerSend(clientMessageId);
       if (preservedTerminalDraft) rememberHistory(preservedTerminalDraft);
       pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft

@@ -12,7 +12,7 @@ const server = createServer((req, res) => {
   if (url.pathname.startsWith('/api/session/')) {
     const id = url.pathname.split('/')[3];
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, status: 'waiting', events: [
+    res.end(JSON.stringify({ ok: true, sessionId: id, status: 'waiting', events: [
       { kind: 'you', ts: 1, body: `Request for ${id}` },
       ...Array.from({ length: revision }, (_, i) => ({ kind: 'report', ts: i + 2,
         body: Array.from({ length: 16 }, (_, j) => `Report ${i}, paragraph ${j} for ${id}.`).join('\n\n') })),

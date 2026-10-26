@@ -1,9 +1,9 @@
 // Story view API (design handoff, phase 1): GET /api/session/:id/story returns the session's log
 // re-parsed as plain-language story events (src/story.js — the handoff's verified drop-in parser).
-// Locates the session's NATIVE transcript (not the tmux pipe log): codex rollout JSONL by cwd match,
-// claude project JSONL by cwd-slug + session time window. Cached by file mtime — a 200MB rollout is
+// Locates the session's exact NATIVE transcript (not the tmux pipe log or a same-project guess).
+// Cached by file mtime — a 200MB rollout is
 // only re-parsed when it actually grew. Parsing/large-file reads run in a bounded worker pool.
-import { stat, open } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { route, json, send } from './server.js';
 import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
 import { findClaudeLog } from './claude_transcripts.js';
@@ -97,22 +97,12 @@ async function rolloutFiles(force = false) {
 const DEFAULT_ROUNDS = 1; // instant first paint: one COMPLETED round (request → report; ?rounds=N for more)
 // Round semantics + trimming live in story.js (pure, testable): a round = an operator request whose
 // turn reached a completed report; in-flight requests ride along without counting.
-async function readHead(file, bytes = 4096) {
-  const fh = await open(file, 'r');
-  try {
-    const buf = Buffer.alloc(bytes);
-    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
-    return buf.slice(0, bytesRead).toString('utf8');
-  } finally { await fh.close(); }
-}
-
-// codex: locate this session's rollout. PREFER the UUID captured at launch (store.codex_uuid) — codex
-// names rollouts rollout-<ISO>-<uuid>.jsonl, so the UUID is the trailing filename component and matches
-// regardless of the rollout's recorded cwd (the operator's cwd-mismatch case, e.g. a sandboxed workspace
-// whose cwd ≠ the AIOS project path). FALL BACK to the newest rollout whose session_meta cwd matches the
-// project dir and whose lifetime overlaps the session (started_at .. ended_at|now); then the clean
-// fallback story upstream. Same walk as sessions.js findCodexSession.
-async function findCodexLog(cwd, s) {
+// An exact native UUID wins regardless of cwd. Missing bindings can be recovered only with launch
+// evidence (request, launch time, cwd and exclusive ownership), never a newest/largest-file guess.
+async function findCodexLog(s) {
+  // Legacy unbound rows lack the queued-launch contract. Do not repeatedly crawl native storage
+  // for them, and never fill that evidence gap with a same-cwd conversation.
+  if (!s?.codex_uuid && (!s?.id || !_freshQueuedLaunch.get(s.id))) return null;
   const bound = s?.codex_uuid && rolloutPaths.get(s.codex_uuid);
   if (bound) {
     try { await stat(bound); return bound; } catch { rolloutPaths.delete(s.codex_uuid); }
@@ -125,11 +115,7 @@ async function findCodexLog(cwd, s) {
     if (hit) { rolloutPaths.set(s.codex_uuid, hit); return hit; }
     return null; // an authoritative but missing UUID must never fall through to a sibling
   }
-  // A fresh queued launch has no safe cwd fallback: another Codex session in the same project can be
-  // newer and would disclose/merge that conversation before this launch captures its UUID. Show the
-  // session's own AIOS message spine until the authoritative rollout identity arrives. Pre-queue legacy
-  // rows retain cwd lookup for backward compatibility.
-  if (s?.id && _freshQueuedLaunch.get(s.id)) {
+  if (s?.id) {
     let recovered = await bindCodexLaunchTranscript(s.id, { files });
     // A file can appear just after the previous Story request. Refresh the shared inventory at
     // most once per second for unresolved launches, rather than hiding it behind a 30s cache miss.
@@ -138,53 +124,52 @@ async function findCodexLog(cwd, s) {
     }
     return recovered;
   }
-  // 2) cwd match (legacy path — sessions without a captured UUID, or whose workspace path lines up).
-  for (const f of files.slice(0, 120)) {
-    try {
-      const st = await stat(f);
-      if (s?.started_at && st.mtimeMs < s.started_at - 120e3) continue; // ended before this session began
-      const head = await readHead(f);
-      const cm = head.match(/"cwd":\s*"([^"]+)"/);
-      if (cm && cm[1] === cwd) return f;
-    } catch {}
-  }
   return null;
 }
 
-// claude transcript location lives in claude_transcripts.js (hook-bound path first, heuristic after —
-// see that module for the multi-session-per-cwd story-bleed this replaced).
+const nativeIdentity = s => `${s?.tool}|${s?.codex_uuid || ''}|${s?.claude_transcript || ''}`;
 
 async function storySource(sid) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const s = getSession(sid);
+    if (!s) return null;
+    const project = s.project_id ? getProject(s.project_id) : null;
+    const cwd = s.worktree_path || project?.path || null;
+    const file = s.tool === 'codex'
+      ? await findCodexLog(s)
+      : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid), allowHeuristic: false });
+    // Binding/recovery can finish during a filesystem read. Resolve again with the new identity.
+    if (nativeIdentity(s) === nativeIdentity(getSession(sid))) return { s, file };
+  }
   const s = getSession(sid);
-  if (!s) return null;
-  const project = s.project_id ? getProject(s.project_id) : null;
-  const cwd = s.tool === 'claude' ? s.worktree_path || project?.path || null : project?.path || null;
-  const file = s.tool === 'codex'
-    ? await findCodexLog(cwd, s)
-    : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid) });
-  return { s, file };
+  return s ? { s, file: null } : null;
+}
+
+function ownStory(sid) {
+  const events = fallbackStory(sid);
+  return { sessionId: sid, events, meta: { file: null, source: 'fallback', count: events.length,
+    note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
 }
 
 export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null } = {}) {
   const source = await storySource(sid);
   if (!source) return { error: 'no such session' };
   const { file } = source;
-  if (!file) {
-    const events = fallbackStory(sid);
-    return { events, meta: { file: null, source: 'fallback', count: events.length, note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
-  }
+  if (!file) return ownStory(sid);
   const st = await stat(file);
   const key = `${sid}|${full ? 'full' : 'r' + rounds}|${cursor || ''}`;
   const hit = cache.get(key);
-  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.size === st.size && hit.ino === st.ino) return { events: hit.events, meta: hit.meta };
+  if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
+  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.size === st.size && hit.ino === st.ino) return { sessionId: sid, events: hit.events, meta: hit.meta };
   const flightKey = `${key}|${file}|${st.ino}|${st.size}|${st.mtimeMs}`;
   if (inFlight.has(flightKey)) return inFlight.get(flightKey);
   const flight = readStoryPage({ file, rounds, full, cursor }).then(result => {
+    if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
     const { events } = result;
     const meta = { ...result.meta, file, mtimeMs: st.mtimeMs, source: 'transcript' };
     cache.set(key, { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, events, meta });
     if (cache.size > 120) cache.delete(cache.keys().next().value);
-    return { events, meta };
+    return { sessionId: sid, events, meta };
   }).finally(() => { inFlight.delete(flightKey); });
   inFlight.set(flightKey, flight);
   return flight;

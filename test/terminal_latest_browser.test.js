@@ -22,7 +22,7 @@ const server = createServer(async (req, res) => {
     return json(res, { ok: true });
   }
   if (path === '/aios/api/session/s_latest_fixture') return json(res, session);
-  if (path === '/aios/api/session/s_latest_fixture/story') return json(res, { events: [], meta: {} });
+  if (path === '/aios/api/session/s_latest_fixture/story') return json(res, { sessionId: session.id, events: [], meta: {} });
   if (path === '/aios/api/phone/home') return json(res, { sessions: [], counts: {} });
   if (path === '/aios/api/launch-options') return json(res, { projects: [], tools: [] });
   if (path === '/aios/api/version') return json(res, { version: 'test', channel: 'every' });

@@ -30,7 +30,7 @@ const server = createServer(async (req, res) => {
     }); return;
   }
   if (path === '/release') { const queued = pending; pending = []; queued.forEach(release => release()); return json(res, { ok: true }); }
-  if (path === '/aios/api/session/s_send_fixture/story') return json(res, { ok: true, events, status: 'working', meta: { source: 'transcript', file: '/fixture.jsonl' } });
+  if (path === '/aios/api/session/s_send_fixture/story') return json(res, { ok: true, sessionId: session.id, events, status: 'working', meta: { source: 'transcript', file: '/fixture.jsonl' } });
   if (path === '/aios/api/session/s_send_fixture') return json(res, session);
   if (path === '/aios/api/phone/home') return json(res, { sessions: [], counts: {} });
   if (path === '/aios/api/launch-options') return json(res, { projects: [], tools: [{ id: 'codex', models: [], efforts: ['high'], autonomies: ['full'] }] });
@@ -131,6 +131,9 @@ try {
     await page.waitForFunction(() => document.querySelector('#reply').value === '');
     assert.equal(deliveries.at(-1).client_message_id, lostId, 'network-loss retry after refresh uses the accepted send identity');
     assert.equal(events.filter(event => event.body === 'A lost HTTP response cannot duplicate my message.').length, 1);
+    await page.waitForFunction(() => !document.querySelector('[data-story-sendstate="pending"]'));
+    assert.equal(await page.locator('[data-kind="you"]').filter({ hasText: 'A lost HTTP response cannot duplicate my message.' }).count(), 1,
+      'an acknowledged duplicate retry reuses the already-visible receipt, without a new optimistic bubble');
     assert.deepEqual(errors, [], 'actual session mount has no uncaught browser errors');
     console.log(JSON.stringify({ width, scenario: 'tap/keyboard/input re-entry, receipt reconciliation, draft preservation and retry', firstSendRequests: 1, firstSendBubbles: 1 }));
     await page.close();

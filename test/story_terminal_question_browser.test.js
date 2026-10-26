@@ -46,7 +46,7 @@ const server = createServer(async (req, res) => {
     } : null;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({
-      ok: true, status: pendingQuestion ? 'waiting' : 'working', pendingQuestion,
+      ok: true, sessionId: 's_terminal_question', status: pendingQuestion ? 'waiting' : 'working', pendingQuestion,
       events: [{ kind: 'you', ts: 10, body: 'Build my project without losing this prompt.' }],
       meta: { source: 'fallback', file: null },
     }));

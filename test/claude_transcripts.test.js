@@ -80,6 +80,18 @@ writeFileSync(moved, '{}\n');
 assert.equal(await findRelocatedClaudeLog(`/missing/${uuid}.jsonl`, { root: dir }), moved,
   'a moved transcript can be recovered by exact UUID only');
 assert.equal(await findRelocatedClaudeLog('/missing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl', { root: dir }), null);
+const sharedCwd = '/fixture/shared-project';
+const nativeRoot = join(dir, 'projects');
+const siblingDir = join(nativeRoot, claudeSlug(sharedCwd));
+mkdirSync(siblingDir, { recursive: true });
+const unclaimedSibling = join(siblingDir, `${uuid}.jsonl`);
+writeFileSync(unclaimedSibling, '{"type":"user","message":{"content":"Another session’s private request"}}\n');
+assert.equal(await findClaudeLog(sharedCwd, {}, { root: nativeRoot }), unclaimedSibling,
+  'reproduces the old heuristic selecting an unclaimed sibling while hooks have not bound it yet');
+assert.equal(await findClaudeLog(sharedCwd, {}, { root: nativeRoot, allowHeuristic: false }), null,
+  'Story refuses that guess and uses only its own captured messages');
+assert.equal(await findClaudeLog(sharedCwd, { claude_transcript: unclaimedSibling }, { root: nativeRoot, allowHeuristic: false }), unclaimedSibling,
+  'the exact hook binding still makes the transcript available');
 rmSync(dir, { recursive: true, force: true });
 assert.equal(claudeSlug('/Users/bb1/aios'), '-Users-bb1-aios');
 
@@ -88,6 +100,7 @@ const read = (rel) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const storySrc = read('../src/story_api.js');
 assert.ok(storySrc.includes("from './claude_transcripts.js'"), 'story_api uses the shared locator');
 assert.ok(storySrc.includes('otherClaudeTranscripts(sid)'), 'story_api passes the sibling-claimed set');
+assert.ok(storySrc.includes('allowHeuristic: false'), 'Story disables heuristic ownership, without changing CLI resume selection');
 const hooksSrc = read('../src/hooks.js');
 assert.ok(hooksSrc.includes('claude_transcript') && hooksSrc.includes('transcript-bind'), 'hooks.js persists the bound transcript');
 assert.ok(hooksSrc.includes('CLAUDE_PROJECTS_ROOT'), 'hooks.js confines bindable paths to ~/.claude/projects');

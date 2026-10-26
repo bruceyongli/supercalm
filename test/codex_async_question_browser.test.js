@@ -23,7 +23,7 @@ const server = createServer(async (req, res) => {
   if (assets.has(path)) { res.writeHead(200, { 'content-type': 'text/javascript' }); return res.end(assets.get(path)); }
   if (path.endsWith('/story')) {
     res.writeHead(200, { 'content-type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, events: nativeEvents(), status: 'working', meta: { source: 'transcript', file: 'private-native.jsonl' } }));
+    return res.end(JSON.stringify({ ok: true, sessionId: 's_async_browser', events: nativeEvents(), status: 'working', meta: { source: 'transcript', file: 'private-native.jsonl' } }));
   }
   if (req.method === 'POST') {
     let raw = ''; for await (const chunk of req) raw += chunk;

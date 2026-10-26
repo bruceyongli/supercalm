@@ -66,19 +66,22 @@ export function pickClaudeTranscript(cands, s, { claimed } = {}) {
   return pool.slice().sort((a, b) => b.size - a.size)[0]?.p || null;
 }
 
-export async function findClaudeLog(cwd, s, { claimed } = {}) {
+export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(homedir(), '.claude', 'projects') } = {}) {
   const bound = s?.claude_transcript;
   if (bound) {
     try { if ((await stat(bound)).isFile()) return bound; } catch {}
     // An exact native binding never authorizes reading another same-directory conversation when its
     // file disappears. Retain the identity for recovery; Story can use the session's own message spine.
-    return findRelocatedClaudeLog(bound);
+    return findRelocatedClaudeLog(bound, { root });
   }
+  // Story is a conversation, not a recovery candidate list. A timestamp/cwd/size match cannot
+  // establish ownership when another conversation is still awaiting its first binding hook.
+  if (!allowHeuristic) return null;
   const paths = new Set([cwd]);
   if (cwd) paths.add(expectedStoragePath(cwd));
   const cands = [];
   for (const path of paths) {
-    const dir = join(homedir(), '.claude', 'projects', claudeSlug(path));
+    const dir = join(root, claudeSlug(path));
     let ents;
     try { ents = await readdir(dir); } catch { continue; }
     for (const name of ents) {

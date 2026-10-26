@@ -35,7 +35,7 @@
 // kinds: you | sys | work | plan | note | sub | edit | fail | check | ship | web | report | ask | stop | gap
 
 import { codexQuestionCall, questionMirror } from './codex_question.js';
-import { claudeQueuedUser, claudeSystemInput } from './claude_lifecycle.js';
+import { claudeQueuedUser, claudeSystemInput, unwrapClaudePastedText } from './claude_lifecycle.js';
 import { providerIssueFromError, providerIssueInfo } from './provider_status.js';
 
 const CLUSTER_WINDOW_MS = 90_000;   // same-class calls within 90s merge into one work block
@@ -150,9 +150,8 @@ function cleanUserText(raw) {
     t = t.split(/\n\s*\n/).filter((p) => !/^\s*\[SYSTEM NOTIFICATION/i.test(p)).join('\n\n').trim();
   }
   if (!t) return '';
-  // Compaction/continuation summaries are machine context, not conversation. The last-paragraph
-  // heuristic below would otherwise surface a QUOTED OLD MESSAGE from inside the summary as a fresh
-  // operator bubble (seen live: June "request failed 405" texts rendered unattributed in July stories).
+  // Compaction/continuation summaries are machine context, not conversation. Their quoted old
+  // messages must not resurface as new operator bubbles.
   if (/^\s*(This session is being continued from a previous conversation|<summary>|Caveat: the messages below were generated)/i.test(t)) return '';
   // Hook-injected feedback (Claude Code Stop / PreToolUse / PostToolUse / UserPromptSubmit / … hooks) is
   // delivered as a user-ROLE turn but is MACHINE content, not the operator — never render it as a "you"
@@ -171,19 +170,8 @@ function cleanUserText(raw) {
   t = t.replace(/\[Image:\s*(?:original\s+\d+x\d+|source:)[^\]]*\]/gi, '').trim();
   t = t.replace(/^\s*\[Image #\d+\]\s*/gim, '').trim();
   if (!t) return '';
-  // Only VERY long turns (thousands of chars) are context/scrollback echo with the real message as the
-  // last paragraph. A genuine multi-paragraph operator message (their side-nav + story requirements ran
-  // ~1.5k chars) must NOT be reduced to its last paragraph or clipped — operator report: "my message in
-  // the story was cut off." So the echo heuristic + the hard cap only kick in above a generous ceiling.
-  const CEIL = 4000;
-  if (t.length > CEIL) {
-    const paras = t.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-    for (let i = paras.length - 1; i >= 0; i--) {
-      const p = paras[i];
-      if (p.length >= 8 && !/^[<✻✳❯│└─\s]/.test(p) && !/^\(\d\)/.test(p)) { t = p; break; }
-    }
-  }
-  if (t.length > CEIL) t = t.slice(0, CEIL) + '…';
+  // Known native user turns are real requests, not captured terminal scrollback. Keeping the
+  // whole request also lets the browser reconcile its send exactly, rather than a shared prefix.
   return t;
 }
 
@@ -419,7 +407,7 @@ function atomsFromClaude(lines) {
     if (queued) {
       if (queued.id && userIds.has(queued.id)) continue;
       if (queued.id) userIds.add(queued.id);
-      const text = cleanUserText(queued.text);
+      const text = cleanUserText(unwrapClaudePastedText(queued.text));
       if (text) atoms.push({ ts: Date.parse(queued.timestamp) || ts, kind: 'you', text,
         messageId: queued.id, images: extractAttachmentImages(queued.text), attachments: extractAttachments(queued.text) });
       continue;
@@ -434,8 +422,8 @@ function atomsFromClaude(lines) {
         else {
           const images = extractAttachmentImages(c);
           const attachments = extractAttachments(c);
-          const text = cleanUserText(c);
-          if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined, attachments });
+          const text = cleanUserText(unwrapClaudePastedText(c));
+          if (text) atoms.push({ ts, kind: 'you', text, messageId: j.uuid, indent, images: images.length ? images : undefined, attachments });
           else attachImagesToYou(atoms, ts, images, indent, attachments); // upload-only turn → fold into the adjacent bubble
         }
       } else if (Array.isArray(c)) {
@@ -445,8 +433,8 @@ function atomsFromClaude(lines) {
           else {
             const images = extractAttachmentImages(userText);
             const attachments = extractAttachments(userText);
-            const text = cleanUserText(userText);
-            if (text) atoms.push({ ts, kind: 'you', text, indent, images: images.length ? images : undefined, attachments });
+            const text = cleanUserText(unwrapClaudePastedText(userText));
+            if (text) atoms.push({ ts, kind: 'you', text, messageId: j.uuid, indent, images: images.length ? images : undefined, attachments });
             else attachImagesToYou(atoms, ts, images, indent, attachments);
           }
         }

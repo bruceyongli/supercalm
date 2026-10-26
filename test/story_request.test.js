@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { requestStory, interruptedStoryRequest } from '../web/story-request.js';
 
-const body = JSON.stringify({ events: [{ kind: 'report', body: '项目更新：已解决。'.repeat(20) }], meta: {} });
+const body = JSON.stringify({ sessionId: 's_own', events: [{ kind: 'report', body: '项目更新：已解决。'.repeat(20) }], meta: {} });
 const server = createServer((req, res) => {
   res.setHeader('content-type', 'application/json');
   if (req.url === '/headers') return; // no response at all
@@ -39,6 +39,9 @@ try {
   }
   await assert.rejects(requestStory(base + '/missing', options), e => e.status === 404 && !interruptedStoryRequest(e));
   await assert.rejects(requestStory(base + '/cursor', options), e => e.code === 'STORY_CURSOR_INVALID');
+  assert.equal((await requestStory(base, { ...options, sessionId: 's_own' })).sessionId, 's_own');
+  await assert.rejects(requestStory(base, { ...options, sessionId: 's_other' }),
+    e => e.code === 'STORY_SESSION_MISMATCH' && interruptedStoryRequest(e), 'a response owned by another session never reaches the feed');
   const controller = new AbortController();
   const pending = requestStory(base + '/stalled', { ...options, signal: controller.signal });
   setTimeout(() => controller.abort(), 20);

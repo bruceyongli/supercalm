@@ -94,11 +94,11 @@ assert.equal(await findCodexLaunchRollout([duplicate], evidence), null, 'metadat
 
 // ---- source locks: the wiring the pure module can't observe (importing these boots their loops) ----
 const storyApi = readFileSync(new URL('../src/story_api.js', import.meta.url), 'utf8');
-// findCodexLog must consult the captured UUID BEFORE the cwd match.
+// findCodexLog must consult the captured UUID, never a shared-cwd guess.
 const iPick = storyApi.indexOf('pickRolloutByUuid(files, s.codex_uuid)');
-const iCwd = storyApi.indexOf("cm[1] === cwd");
 assert.ok(iPick > 0, 'story_api findCodexLog uses pickRolloutByUuid(files, s.codex_uuid)');
-assert.ok(iCwd > 0 && iPick < iCwd, 'UUID match runs before the cwd match (UUID is authoritative)');
+assert.ok(!storyApi.includes('cm[1] === cwd'), 'Story has no ownership-by-cwd fallback');
+assert.ok(iPick < storyApi.indexOf('await bindCodexLaunchTranscript(s.id'), 'native UUID precedes evidence-checked launch recovery');
 
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
 assert.ok(/const codexBefore = tool === 'codex' \? new Set\(await codexRolloutFiles\(\)/.test(sessions), 'launch snapshots the rollout set for codex');

@@ -46,7 +46,7 @@ const server = createServer(async (req, res) => {
   if (path === '/revise') { revised = true; res.writeHead(204); res.end(); return; }
   if (path === '/api/session/s_native/story') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, events: current(), status: phase === 'working' ? 'working' : 'waiting',
+    res.end(JSON.stringify({ ok: true, sessionId: 's_native', events: current(), status: phase === 'working' ? 'working' : 'waiting',
       meta: { source: 'transcript', file: '/fixture-native.jsonl', trimmed: false } })); return;
   }
   if (path === '/api/session/s_native/input' && req.method === 'POST') {

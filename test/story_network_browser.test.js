@@ -6,7 +6,7 @@ import { chromium, webkit } from 'playwright';
 const assets = new Map(['story-view.js', 'story-request.js', 'story-live.js', 'common.js', 'session-indicator.js', 'provider-issue.js', 'markdown-inline.js', 'file-reference.js', 'tts-player.js']
   .map(name => ['/' + name, readFileSync(new URL('../web/' + name, import.meta.url))]));
 const states = new Map();
-const payload = (sid, revision, padding = '') => JSON.stringify({ ok: true, status: 'waiting', events: [
+const payload = (sid, revision, padding = '') => JSON.stringify({ ok: true, sessionId: sid, status: 'waiting', events: [
   { kind: 'you', ts: 1, body: `Request for ${sid}` },
   { kind: 'report', ts: 2, messageId: `${sid}-report`, body: `Grounded report for ${sid}, revision ${revision}.\n\n项目更新：修复已完成。` },
 ], meta: { source: 'transcript', file: `${sid}.jsonl`, padding } });
@@ -68,11 +68,11 @@ try {
       assert.doesNotMatch((await page.evaluate(() => observedText)).join('\n'), /story unavailable|Fetch is aborted/i);
       // A later failed refresh must preserve the existing report DOM and cross-navigation cache.
       await page.evaluate(() => { window.savedReport=document.querySelector('[data-kind="report"]'); });
-      const cached = await page.evaluate(sid => sessionStorage.getItem('aios_story11_' + sid), sid);
+      const cached = await page.evaluate(sid => sessionStorage.getItem('aios_story12_' + sid), sid);
       s.drop = 1;
       assert.equal(await page.evaluate(() => story.refreshStory({ quiet: false })), false);
       assert.equal(await page.evaluate(() => savedReport === document.querySelector('[data-kind="report"]')), true);
-      assert.equal(await page.evaluate(sid => sessionStorage.getItem('aios_story11_' + sid), sid), cached);
+      assert.equal(await page.evaluate(sid => sessionStorage.getItem('aios_story12_' + sid), sid), cached);
       s.revision = 2; notify(sid, s);
       await page.waitForFunction(() => document.querySelector('[data-kind="report"]').textContent.includes('revision 2'), null, { timeout: 10000 }).catch(async error => {
         console.error(JSON.stringify({ engine, requests: s.requests, revision: s.revision, streams: s.streams.size, errors, body: await page.locator('#story').innerText() })); throw error;

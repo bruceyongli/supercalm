@@ -16,7 +16,7 @@ const server = createServer(async (req, res) => {
   if (path.includes('voice-report') || path.includes('/tts')) { legacyCalls++; res.writeHead(500); res.end(); return; }
   if (path === '/api/session/s_voice/story') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ status: 'waiting', events: [
+    res.end(JSON.stringify({ sessionId: 's_voice', status: 'waiting', events: [
       { kind: 'report', ts: 5, body: 'The previous round is finished.' },
       { kind: 'you', ts: 8, body: 'Improve the current voice report.' },
       { kind: 'report', ts: 10, body: 'The new voice answer now streams immediately. You can ask for details.' },
