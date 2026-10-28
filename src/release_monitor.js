@@ -12,6 +12,11 @@ import { db } from './store.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { now } from './util.js';
+import { realpathSync } from 'node:fs';
+import { join } from 'node:path';
+import { DATA_DIR, ROOT } from './config.js';
+import { applyMigrations, ensureColumn } from './migrations.js';
+import { releaseScripts } from './project_release_guard.js';
 import { route, json, readJson } from './server.js';
 import { assertCompleteReleaseSource } from './release_contract.js';
 
@@ -34,6 +39,15 @@ db.exec(`
     updated_at    TEXT
   )
 `);
+applyMigrations(db, [{
+  id: '0142_project_release_entry',
+  description: 'Command-scoped automatic permission for reviewed project release scripts',
+  up(conn) {
+    ensureColumn(conn, 'release_targets', 'auto_release', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(conn, 'release_targets', 'release_scripts', "TEXT NOT NULL DEFAULT '[]'");
+  },
+}]);
+const sameSource = (a, b) => { try { return realpathSync(a) === realpathSync(b); } catch { return a === b; } };
 
 const CHECK_DEBOUNCE = Number(process.env.AIOS_RELEASE_DEBOUNCE || 2); // consecutive bad checks before alerting
 const FETCH_TIMEOUT_MS = Number(process.env.AIOS_RELEASE_TIMEOUT_MS || 12000);
@@ -44,12 +58,12 @@ const MONITOR_ON = process.env.AIOS_RELEASE_MONITOR !== '0';
 const _get = db.prepare('SELECT * FROM release_targets WHERE project_id = ?');
 const _all = db.prepare('SELECT * FROM release_targets');
 const _upsert = db.prepare(`INSERT INTO release_targets
-  (project_id,enabled,live_url,expect,forbid,source_dir,source_branch,interval_sec,updated_at)
-  VALUES (?,?,?,?,?,?,?,?,?)
+  (project_id,enabled,live_url,expect,forbid,source_dir,source_branch,interval_sec,updated_at,auto_release,release_scripts)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(project_id) DO UPDATE SET
     enabled=excluded.enabled, live_url=excluded.live_url, expect=excluded.expect, forbid=excluded.forbid,
     source_dir=excluded.source_dir, source_branch=excluded.source_branch, interval_sec=excluded.interval_sec,
-    updated_at=excluded.updated_at`);
+    updated_at=excluded.updated_at, auto_release=excluded.auto_release, release_scripts=excluded.release_scripts`);
 const _status = db.prepare(`UPDATE release_targets SET last_status=?, last_detail=?, last_value=?, last_checked=?, fail_streak=?, alerted=? WHERE project_id=?`);
 
 export function getTarget(projectId) { return _get.get(projectId) || null; }
@@ -80,11 +94,15 @@ export function setTarget(projectId, patch = {}) {
     source_dir: patch.source_dir !== undefined ? String(patch.source_dir).trim().slice(0, 500) : cur.source_dir,
     source_branch: patch.source_branch !== undefined ? String(patch.source_branch).trim().slice(0, 200) : cur.source_branch,
     interval_sec: patch.interval_sec !== undefined ? clampInt(patch.interval_sec, cur.interval_sec) : cur.interval_sec,
+    auto_release: patch.auto_release !== undefined ? (patch.auto_release ? 1 : 0) : (cur.auto_release || 0),
+    release_scripts: releaseScripts(patch.release_scripts !== undefined ? patch.release_scripts : JSON.parse(cur.release_scripts || '[]')),
   };
   // http(s) only; reject anything else so the checker can't be pointed at a file:// or odd scheme.
   if (next.live_url && !/^https?:\/\//i.test(next.live_url)) throw new Error('live_url must be http(s)://');
   assertCompleteReleaseSource(next.source_dir, next.source_branch);
-  _upsert.run(projectId, next.enabled, next.live_url, next.expect, next.forbid, next.source_dir, next.source_branch, next.interval_sec, now());
+  if (next.auto_release && (!next.source_dir || !next.release_scripts.length)) throw new Error('auto_release requires a complete source contract and reviewed release_scripts');
+  if (next.auto_release && sameSource(store.getProject(projectId)?.path, ROOT)) throw new Error('AIOS itself uses bin/deploy, not a project package release entry');
+  _upsert.run(projectId, next.enabled, next.live_url, next.expect, next.forbid, next.source_dir, next.source_branch, next.interval_sec, now(), next.auto_release, JSON.stringify(next.release_scripts));
   return getTarget(projectId);
 }
 
@@ -168,7 +186,22 @@ async function tick() {
 }
 
 // ---- routes ----------------------------------------------------------------
-const view = (t, proj) => t ? { project_id: t.project_id, enabled: !!t.enabled, live_url: t.live_url, expect: t.expect, forbid: t.forbid, source_dir: t.source_dir, source_branch: t.source_branch, interval_sec: t.interval_sec, last_status: t.last_status || 'unknown', last_detail: t.last_detail || '', last_value: t.last_value || '', last_checked: t.last_checked || 0, project: proj ? { id: proj.id, name: proj.name } : null } : null;
+const view = (t, proj) => t ? { project_id: t.project_id, enabled: !!t.enabled, live_url: t.live_url, expect: t.expect, forbid: t.forbid, source_dir: t.source_dir, source_branch: t.source_branch, auto_release: !!t.auto_release, release_scripts: JSON.parse(t.release_scripts || '[]'), interval_sec: t.interval_sec, last_status: t.last_status || 'unknown', last_detail: t.last_detail || '', last_value: t.last_value || '', last_checked: t.last_checked || 0, project: proj ? { id: proj.id, name: proj.name } : null } : null;
+
+route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
+  const session = store.getSession(id);
+  const project = session?.project_id ? store.getProject(session.project_id) : null;
+  if (!session || !project) return json(res, 404, { error: 'no session project' });
+  const target = getTarget(project.id);
+  json(res, 200, { ok: true, context: {
+    session_id: id, project_id: project.id, project_path: project.path,
+    self_deploy: sameSource(project.path, ROOT),
+    auto_release: !!target?.auto_release,
+    source_dir: target?.source_dir || '', source_branch: target?.source_branch || '',
+    release_scripts: JSON.parse(target?.release_scripts || '[]'),
+    lock_dir: join(DATA_DIR, 'project-release-locks'),
+  } });
+});
 
 route('GET', '/api/project/:id/release', (req, res, { id }) => {
   const proj = store.getProject(id);

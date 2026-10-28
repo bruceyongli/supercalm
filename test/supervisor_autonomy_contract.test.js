@@ -238,6 +238,22 @@ function releaseCtx({
   assert.equal(x.events.at(-1)?.payload?.verdict, 'released', 'only GREEN emits released');
 }
 {
+  const x = releaseCtx({ ready: { ok: false, code: 'unsupported_target', error: 'native project release' } });
+  const result = await __lab.maybeAutoIntegrate(x.ctx, { mode: 'autopilot' }, { workFp: 'work-native', verifiedCandidateSha: 'candidate1234567890' });
+  assert.equal(result.active, false, 'native project workflow must not request AIOS autopublish approval');
+  assert.equal(x.notes.length, 0);
+}
+{
+  const row = { id: 'int_superseded', stage: 'SUPERSEDED', candidate_sha: 'old1234567890' };
+  const x = releaseCtx({ initial: { integrationId: row.id, integrationStage: 'HELD', releaseBlockedKey: 'old', releaseHeldNotifiedId: row.id }, integration: row });
+  assert.equal(await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState()), true);
+  assert.equal(x.ctx.getState().integrationId, null);
+  assert.equal(x.ctx.getState().releaseBlockedKey, null);
+  assert.equal(x.ctx.getState().releaseHeldNotifiedId, null);
+  assert.equal(x.events.at(-1)?.payload?.verdict, 'release_superseded');
+  assert.equal(x.notes.length, 0, 'old entry cleanup must not ask for another approval or claim a fresh release');
+}
+{
   const row = { id: 'int_held', stage: 'HELD', failure_code: 'served_identity_ambiguous' };
   const x = releaseCtx({ initial: { integrationId: row.id, integrationStage: 'VERIFYING' }, integration: row });
   await __lab.maybeMonitorIntegration(x.ctx, { mode: 'autopilot' }, x.ctx.getState());

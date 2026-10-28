@@ -2334,7 +2334,7 @@ async function maybeAutoIntegrate(ctx, cfg, { workFp = '', verifiedCandidateSha 
   const ready = ctx.integrationReadiness();
   // autoPublish OFF means there is intentionally no standing deployment delegation. Local verification is
   // still a valid final result; do not nag the operator to turn deployment on.
-  if (!ready?.ok && ready?.code === 'autopublish_off') return { active: false, reason: ready.code };
+  if (!ready?.ok && ['autopublish_off', 'unsupported_target'].includes(ready?.code)) return { active: false, reason: ready.code };
   if (!ready?.ok) {
     const key = `${ready?.code || 'not-ready'}|${workFp}`;
     const st = ctx.getState();
@@ -2404,6 +2404,12 @@ async function maybeMonitorIntegration(ctx, cfg, st) {
       ctx.notifyOperator('✓ Released and verified', clampLine(`${ctx.session()?.title || 'Session'} — ${String(row.candidate_sha || '').slice(0, 12)} is GREEN and serving through integration ${row.id}.`, 150));
       ctx.emit('review', { verdict: 'released', summary: `integration ${row.id} reached GREEN` });
     }
+    return true;
+  }
+  if (row.stage === 'SUPERSEDED') {
+    applySupervisorState(ctx, { integrationId: null, integrationStage: 'SUPERSEDED', releaseFinalizedId: row.id,
+      releaseFinalizedAt: now(), releaseFailure: null, releaseHeldNotifiedId: null, releaseBlockedKey: null });
+    ctx.emit('review', { verdict: 'release_superseded', summary: `integration ${row.id} is already covered by a later served release; no new deployment or approval needed` });
     return true;
   }
   if (row.stage === 'HELD') {

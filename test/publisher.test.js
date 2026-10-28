@@ -156,5 +156,36 @@ const greenF = await waitFor(iF.id, ['GREEN', 'HELD', 'REJECTED']);
 assert.equal(greenF.stage, 'GREEN', 'candidate is an ancestor of the served bump commit → GREEN (got ' + greenF.stage + '/' + greenF.failure_code + ')');
 clear(iF.id);
 
+// G) a manual retry shipped a candidate but an old HELD still occupies the queue. Retire it only after
+// a real health soak, never redeploy/roll back or pretend this was a newly gated GREEN.
+const envBefore = { AIOS_NO_DEPLOY: '1', AIOS_DEPLOY_SOURCE_DIR: '/worktree', AIOS_DEPLOY_BRANCH: 'task', KEEP: 'yes' };
+assert.deepEqual(P.publishEnvironment(envBefore, cF), { KEEP: 'yes', AIOS_DEPLOY_SHA: cF });
+assert.equal(envBefore.AIOS_NO_DEPLOY, '1', 'permission cleanup is child-scoped');
+const iG = approved(cF, 'cF');
+I.transition(iG.id, 'HELD', { fenceToken: iG.fence_token, patch: { failure_code: 'deploy_died_before_restart' } });
+const oldQueued = I.enqueue({ projectId: proj.id, candidateSha: cB });
+await P.reconcile({ servedSha: () => deployedF, selfRoot: repo, spawnDeploy: () => { throw new Error('must not deploy old work'); } });
+assert.equal(I.getIntegration(oldQueued.id).stage, 'SUPERSEDED', 'already-served queued candidate cannot redeploy');
+const doneG = await waitFor(iG.id, ['SUPERSEDED', 'HELD']);
+assert.equal(doneG.stage, 'SUPERSEDED', 'served mechanical hold retires after healthy probes');
+assert.equal(doneG.failure_code, null, 'stale failure cleared');
+assert.ok(I.eventsFor(iG.id).some(e => e.to_stage === 'VERIFYING'), 'history records the recovery, not a blind DB cleanup');
+
+// Other projects and substantive/operator holds are never auto-accepted.
+const iH = approved(cF, 'cF');
+I.transition(iH.id, 'HELD', { fenceToken: iH.fence_token, patch: { failure_code: 'protected_paths' } });
+await P.reconcilePublishedWork({ servedSha: () => deployedF, selfRoot: repo });
+assert.equal(I.getIntegration(iH.id).stage, 'HELD'); clear(iH.id);
+const otherQueued = I.enqueue({ projectId: proj.id, candidateSha: cF });
+await P.reconcilePublishedWork({ servedSha: () => deployedF, selfRoot: '/different/project' });
+assert.equal(I.getIntegration(otherQueued.id).stage, 'QUEUED'); clear(otherQueued.id);
+
+// An unserved candidate must not be cleared merely because a newer version exists.
+const cUnserved = candidateCommit('unserved', 'unserved.txt');
+const iUnserved = approved(cUnserved, 'unserved');
+I.transition(iUnserved.id, 'HELD', { fenceToken: iUnserved.fence_token, patch: { failure_code: 'deploy_died_before_restart' } });
+await P.reconcilePublishedWork({ servedSha: () => deployedF, selfRoot: repo });
+assert.equal(I.getIntegration(iUnserved.id).stage, 'HELD'); clear(iUnserved.id);
+
 assert.equal(I.occupiedBy(), null, 'pipeline free after all publisher runs');
 console.log('publisher.test: all assertions passed');

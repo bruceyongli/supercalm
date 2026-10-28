@@ -62,8 +62,10 @@ function deps(over = {}) {
   assert.equal(integrationReadiness(session.id, d).code, 'no_worktree');
 }
 {
-  const d = deps({ sameRepo: () => false });
+  const d = deps({ sameRepo: () => false, flags: { autoPublish: false } });
   assert.equal(integrationReadiness(session.id, d).code, 'unsupported_target');
+  assert.match(integrationReadiness(session.id, d).error, /release-context/);
+  assert.equal(d._enqueued.length, 0, 'external projects get their actual release path, not a misleading autopublish-off error');
 }
 {
   const d = deps({ responses: { 'status --porcelain@/repo/worktree': { text: ' M src/file.js', error: '' } } });

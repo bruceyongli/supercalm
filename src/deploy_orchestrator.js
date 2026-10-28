@@ -8,7 +8,7 @@ import * as store from './store.js';
 import { helperEnabled } from './project_helpers.js';
 import { breakerBlocks } from './deploy_breaker.js';
 import { driveGate } from './integrator.js';
-import { drivePublish, publishEnabled, watchdog } from './publisher.js';
+import { drivePublish, publishEnabled, watchdog, reconcilePublishedWork } from './publisher.js';
 
 const TICK_MS = Number(process.env.AIOS_DEPLOY_TICK_MS || 20000);
 let _busy = false;
@@ -24,6 +24,8 @@ export async function orchestrateOnce(deps = {}) {
     gate = driveGate,
     publish = drivePublish,
   } = deps;
+  if (_busy) return { skipped: 'busy' };
+  await reconcilePublishedWork(); // never launch an obsolete candidate already included in the running release
   if (_busy) return { skipped: 'busy' };
   if (I.occupiedBy()) return { skipped: 'occupied' };       // single-active (incl. a parked HELD blocking the queue)
   const q = I.nextQueued();

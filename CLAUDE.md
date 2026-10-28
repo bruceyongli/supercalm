@@ -20,6 +20,21 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   release through `bin/deploy`; do not ask for routine release confirmation again. Edit only the session
   worktree, integrate committed code, and verify the served version. Failed safety gates still require
   diagnosis and recovery, never silently bypassing them or reporting queued work as deployed.
+- **Native project release permission is separate from AIOS autopublish.** `/api/session/:id/integrate`
+  only deploys AIOS. Other projects keep their own reviewed release workflow. The operator-owned
+  `/api/project/:id/release` contract can enable `auto_release` with a source directory + branch and
+  `release_scripts: [{cwd: "relative/package", script: "deploy:frontend"}]`. Once authorized, the normal
+  package command runs without another routine confirmation, even in an already-running isolated
+  session. The command guard reads `/api/session/:id/release-context` live, verifies the exact clean
+  committed source belongs to the same project, and serializes that project's releases. Only the
+  child release command loses `AIOS_NO_DEPLOY`; the caller/server/other sessions remain unchanged.
+  Do not enable `auto_publish` for another project or globally unset isolation flags to unblock it.
+  An approved release checkout may be a designated worktree; never silently choose an old main branch.
+- After a later release covers an older AIOS candidate, queued entries become `SUPERSEDED`; mechanical
+  HELDs are retired after live-SHA ancestry + sustained DB health verification. Keep the audit trail.
+  Do not mark unverified work GREEN, bypass substantive holds, redeploy old queue entries or roll back
+  a newer release just to clear a stale status. A release guard's empty kernel-lock inode is intentional;
+  it is not an active lock and must not be unlinked while another process might own it.
 - Runs on **host** at `127.0.0.1:8793`. Primary URL **`https://host.your-tailnet.ts.net/aios`** (no port) via
   Tailscale Serve `--set-path=/aios` on 443; `:8793` still works as a fallback. The app is **path-aware**
   (`<base href="/aios/">` in the HTML + relative URLs + a server-side `/aios` prefix-strip in `server.js`),

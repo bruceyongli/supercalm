@@ -41,38 +41,39 @@ db.exec(`
 export const STAGES = [
   'QUEUED', 'PREPARING', 'CHECKING', 'APPROVED', 'PUBLISHING', 'MAIN_PUBLISHED', 'RESTART_REQUESTED',
   'VERIFYING', 'GREEN', 'REJECTED', 'ROLLING_BACK', 'ROLLBACK_PUBLISHED', 'ROLLBACK_RESTART_REQUESTED',
-  'ROLLBACK_VERIFYING', 'ROLLED_BACK', 'HELD',
+  'ROLLBACK_VERIFYING', 'ROLLED_BACK', 'HELD', 'SUPERSEDED',
 ];
 // Fully done — the queue is free again.
-export const TERMINAL = new Set(['GREEN', 'REJECTED', 'ROLLED_BACK']);
+export const TERMINAL = new Set(['GREEN', 'REJECTED', 'ROLLED_BACK', 'SUPERSEDED']);
 // The whole legal transition graph. An `from` not listed (a terminal) allows nothing.
 const NEXT = {
-  QUEUED: ['PREPARING', 'REJECTED', 'HELD'],
+  QUEUED: ['PREPARING', 'REJECTED', 'HELD', 'SUPERSEDED'],
   PREPARING: ['CHECKING', 'REJECTED', 'HELD'],
   CHECKING: ['APPROVED', 'REJECTED', 'HELD'],
   APPROVED: ['PUBLISHING', 'REJECTED', 'HELD'],
   PUBLISHING: ['MAIN_PUBLISHED', 'ROLLING_BACK', 'HELD'], // after publish there is no clean REJECT — roll back
   MAIN_PUBLISHED: ['RESTART_REQUESTED', 'ROLLING_BACK', 'HELD'],
   RESTART_REQUESTED: ['VERIFYING', 'ROLLING_BACK', 'HELD'],
-  VERIFYING: ['GREEN', 'ROLLING_BACK', 'HELD'],
+  VERIFYING: ['GREEN', 'ROLLING_BACK', 'HELD', 'SUPERSEDED'],
   ROLLING_BACK: ['ROLLBACK_PUBLISHED', 'HELD'],
   ROLLBACK_PUBLISHED: ['ROLLBACK_RESTART_REQUESTED', 'HELD'],
   ROLLBACK_RESTART_REQUESTED: ['ROLLBACK_VERIFYING', 'HELD'],
   ROLLBACK_VERIFYING: ['ROLLED_BACK', 'HELD'],
-  HELD: ['QUEUED', 'REJECTED', 'ROLLED_BACK'], // an operator resolves a hold: requeue, abandon, or accept a rollback
-  GREEN: [], REJECTED: [], ROLLED_BACK: [],
+  HELD: ['QUEUED', 'REJECTED', 'ROLLED_BACK', 'VERIFYING'], // VERIFYING is only for a mechanical hold superseded by a served release
+  GREEN: [], REJECTED: [], ROLLED_BACK: [], SUPERSEDED: [],
 };
 // A stage where a worker "owns" the pipeline (claimed, past QUEUED, not terminal, not parked). Used for the
 // single-active invariant. HELD is not active but still blocks the queue.
 const isActive = (stage) => !TERMINAL.has(stage) && stage !== 'QUEUED' && stage !== 'HELD';
 // Anything that occupies the pipeline: an active worker OR a parked hold. New work must wait for these.
 export function occupiedBy() {
-  return db.prepare(`SELECT * FROM integrations WHERE stage NOT IN ('QUEUED','GREEN','REJECTED','ROLLED_BACK') ORDER BY created_at LIMIT 1`).get() || null;
+  return db.prepare(`SELECT * FROM integrations WHERE stage NOT IN ('QUEUED','GREEN','REJECTED','ROLLED_BACK','SUPERSEDED') ORDER BY created_at LIMIT 1`).get() || null;
 }
 
 const _get = db.prepare('SELECT * FROM integrations WHERE id = ?');
 export const getIntegration = (id) => _get.get(id) || null;
 export const listIntegrations = (limit = 50) => db.prepare('SELECT * FROM integrations ORDER BY created_at DESC LIMIT ?').all(limit);
+export const pendingIntegrations = () => db.prepare("SELECT * FROM integrations WHERE stage IN ('QUEUED','HELD') ORDER BY created_at").all();
 export const eventsFor = (id) => db.prepare('SELECT * FROM integration_events WHERE integration_id = ? ORDER BY at, id').all(id);
 
 function record(intId, from, to, data) {
@@ -103,7 +104,7 @@ export function transition(intId, to, { fenceToken, data = null, patch = {} } = 
   if (!STAGES.includes(to)) throw new Error('unknown stage: ' + to);
   if (!(NEXT[cur.stage] || []).includes(to)) throw new Error(`illegal transition ${cur.stage} -> ${to}`);
   if (isActive(to)) {
-    const other = db.prepare(`SELECT id FROM integrations WHERE id != ? AND stage NOT IN ('QUEUED','GREEN','REJECTED','ROLLED_BACK')`).get(intId);
+    const other = db.prepare(`SELECT id FROM integrations WHERE id != ? AND stage NOT IN ('QUEUED','GREEN','REJECTED','ROLLED_BACK','SUPERSEDED')`).get(intId);
     if (other) throw new Error('single-active violated: ' + other.id + ' occupies the pipeline');
   }
   const cols = ['stage = ?', 'updated_at = ?'];

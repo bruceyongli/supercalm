@@ -55,12 +55,19 @@ function shaEq(a, b) { if (!a || !b) return false; return a === b || a.startsWit
 
 // The real deploy: a DETACHED, stdio-ignored exact-SHA `bin/deploy` that outlives our restart. Absolute
 // path (Node resolves a relative command against process.cwd, NOT opts.cwd — a classic footgun).
+export function publishEnvironment(env, candidateSha) {
+  const next = { ...env, AIOS_DEPLOY_SHA: candidateSha };
+  // A capability-approved publisher is not an agent's editing shell. Permission is command-local:
+  // never persist an unset flag or make the calling session deploy-capable.
+  for (const key of ['AIOS_NO_DEPLOY', 'AIOS_DEPLOY_SOURCE_DIR', 'AIOS_DEPLOY_BRANCH']) delete next[key];
+  return next;
+}
 function defaultSpawnDeploy(repoPath, candidateSha) {
   const child = spawn(join(repoPath, 'bin', 'deploy'), [], {
     cwd: repoPath,
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, AIOS_DEPLOY_SHA: candidateSha },
+    env: publishEnvironment(process.env, candidateSha),
   });
   // Spawn failures (ENOENT/EACCES — bin/deploy missing/unexecutable) arrive ASYNC on a detached child;
   // unhandled they throw uncaughtException — crashing the test harness (the publisher.test flake) and, on
@@ -114,7 +121,8 @@ async function candidateOnMain(repoPath, candidate) {
   } catch { return null; }
 }
 
-export async function watchdog() {
+export async function watchdog(opts = {}) {
+  await reconcilePublishedWork(opts);
   const occ = I.occupiedBy();
   if (!occ) return;
   const activeStuck = !['QUEUED', 'GREEN', 'REJECTED', 'ROLLED_BACK', 'HELD'].includes(occ.stage)
@@ -199,6 +207,9 @@ export async function drivePublish(integrationId, opts = {}) {
 // forward publish (→ GREEN) and the rollback (→ ROLLED_BACK).
 const FORWARD = { path: ['PUBLISHING', 'MAIN_PUBLISHED', 'RESTART_REQUESTED', 'VERIFYING'], verify: 'VERIFYING', success: 'GREEN', sha: (it) => it.candidate_sha, kind: 'forward' };
 const ROLLBACK = { path: ['ROLLING_BACK', 'ROLLBACK_PUBLISHED', 'ROLLBACK_RESTART_REQUESTED', 'ROLLBACK_VERIFYING'], verify: 'ROLLBACK_VERIFYING', success: 'ROLLED_BACK', sha: (it) => it.rollback_sha, kind: 'rollback' };
+// A later manual/retried release already contains an old candidate. Retire its queue entry after a
+// health soak, WITHOUT claiming its old gate ran again or blessing/rolling back the newer release.
+const SUPERSEDED = { ...FORWARD, success: 'SUPERSEDED', kind: 'superseded' };
 function episodeOf(stage) { if (FORWARD.path.includes(stage)) return FORWARD; if (ROLLBACK.path.includes(stage)) return ROLLBACK; return null; }
 
 // Walk an episode's linear path forward to its verify stage, one legal fenced step at a time (used when a
@@ -220,7 +231,7 @@ function walkTo(intId, targetStage, path) {
 // tested candidate, so served===candidate no longer holds. Verify instead that the candidate is an ANCESTOR
 // of the served HEAD — it is provably in the deployed history; the only delta is bin/version's package.json
 // bump. repoPath = the project repo; served = the running server's HEAD sha.
-let _ancCache = { expected: null, served: null, ok: false };
+let _ancCache = { repo: null, expected: null, served: null, ok: false };
 async function servedHasCandidate(repoPath, expected, served) {
   if (!expected || !served) return false;
   if (expected === served) return true;               // fast path (no-bump deploys / tests)
@@ -229,9 +240,9 @@ async function servedHasCandidate(repoPath, expected, served) {
   // changes on a restart, which bumps the fence + stops this loop), so verifyLoop must not fork a git
   // subprocess on EVERY probe — that slowed the loop enough to miss the deadline and spuriously roll back
   // (the second source of the publisher.test flake). Recompute only when either sha changes.
-  if (_ancCache.expected === expected && _ancCache.served === served) return _ancCache.ok;
+  if (_ancCache.repo === repoPath && _ancCache.expected === expected && _ancCache.served === served && _ancCache.ok) return true;
   const ok = !(await gitOut(repoPath, ['merge-base', '--is-ancestor', expected, served])).error;
-  _ancCache = { expected, served, ok };
+  _ancCache = { repo: repoPath, expected, served, ok };
   return ok;
 }
 const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path : null) || null;
@@ -241,6 +252,28 @@ const repoOf = (it) => (it?.project_id ? store.getProject(it.project_id)?.path :
 // 'stable' and the new-version toast fires even for "stable only" viewers (routine `bin/deploy` dev pushes
 // stay 'every'). LOCAL marker only — no public GitHub Release (that stays the maintainer's `bin/release`).
 const sameRepo = (a, b) => { if (!a || !b) return false; try { return realpathSync(a) === realpathSync(b); } catch { return a === b; } };
+
+export async function reconcilePublishedWork({ servedSha = defaultServed, selfRoot = ROOT } = {}) {
+  const served = servedSha();
+  if (!served) return;
+  for (const row of I.pendingIntegrations()) {
+    const held = row.stage === 'HELD' && MECHANICAL_STUCK.has(row.failure_code) && !row.rollback_sha;
+    if (row.stage !== 'QUEUED' && !held) continue;
+    const repo = repoOf(row);
+    // AIOS's running SHA says nothing about Elevate or any other project.
+    if (!sameRepo(repo, selfRoot) || !await servedHasCandidate(repo, row.candidate_sha, served)) continue;
+    const current = I.getIntegration(row.id);
+    if (current?.stage !== row.stage || current.fence_token !== row.fence_token || current.candidate_sha !== row.candidate_sha) continue;
+    const data = { alreadyServed: true, candidate: row.candidate_sha, served, previousFailure: row.failure_code, note: 'candidate is in running release history; do not redeploy an obsolete queue entry' };
+    if (held) {
+      const verifying = I.transition(row.id, 'VERIFYING', { fenceToken: row.fence_token,
+        patch: { failure_code: 'served_release_recovery', failure_detail: JSON.stringify(data), health_deadline: now() + WINDOW_MS }, data });
+      verifyLoop(row.id, { fenceToken: verifying.fence_token, servedSha, episode: SUPERSEDED });
+    } else {
+      I.transition(row.id, 'SUPERSEDED', { fenceToken: row.fence_token, patch: { failure_code: null, failure_detail: null }, data });
+    }
+  }
+}
 function blessStable(it) {
   // The release-channel toast (version-badge.js + data/release_channel.json + config.VERSION) is AIOS's OWN
   // release mechanism. Bless a stable release ONLY when this is AIOS deploying ITSELF — i.e. the integration's
@@ -276,7 +309,10 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawn
     I.recordProbe(intId, { bootId: BOOT_ID, servedSha: servedSha(), status: ok ? 'ok' : 'fail', detail });
     I.heartbeat(intId, fenceToken);
     consecutive = ok ? consecutive + 1 : 0;
-    if (consecutive >= SUCCESSES) { try { I.transition(intId, episode.success, { fenceToken, data: { probes: consecutive, detail, episode: episode.kind } }); blessStable(it); } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
+    if (consecutive >= SUCCESSES) { try {
+      I.transition(intId, episode.success, { fenceToken, patch: { failure_code: null, failure_detail: null }, data: { probes: consecutive, detail, episode: episode.kind, served: servedSha() } });
+      if (episode.kind !== 'superseded') blessStable(it);
+    } catch (e) { console.error('[aios] publisher ' + episode.success + ' failed:', e?.message || e); } return done(); }
     if (now() > it.health_deadline) { await onVerifyFail(intId, fenceToken, episode, { consecutive, detail, servedSha, spawnDeploy }); return done(); }
     const t = setTimeout(() => { tick().catch(() => done()); }, PROBE_MS);
     if (t.unref) t.unref();
@@ -285,6 +321,7 @@ export function verifyLoop(intId, { fenceToken, servedSha = defaultServed, spawn
 }
 
 async function onVerifyFail(intId, ft, episode, ctx) {
+  if (episode.kind === 'superseded') return safeHold(intId, ft, 'superseded_health_timeout', { detail: ctx.detail });
   if (episode.kind === 'rollback') return safeHold(intId, ft, 'rollback_health_timeout', { consecutive: ctx.consecutive, detail: ctx.detail });
   // Forward publish couldn't sustain health → forward-revert auto-rollback if the change is safe, else HELD.
   try { await startRollback(intId, ft, ctx); }
@@ -335,9 +372,10 @@ function scheduleTicker(opts) {
 // deploy took effect. Only touches the publish/rollback stages (gate = integrator.js).
 export async function reconcile(opts = {}) {
   const { servedSha = defaultServed, spawnDeploy = defaultSpawnDeploy } = opts;
+  await reconcilePublishedWork(opts);
   const it = I.occupiedBy();
   if (!it) return { integration: null };
-  const episode = episodeOf(it.stage);
+  const episode = it.stage === 'VERIFYING' && it.failure_code === 'served_release_recovery' ? SUPERSEDED : episodeOf(it.stage);
   if (!episode) return { integration: it, skipped: it.stage };
   const ft = it.fence_token;
 

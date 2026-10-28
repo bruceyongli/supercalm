@@ -61,7 +61,15 @@ deny() {
   exit 126
 }
 
-[ "${AIOS_NO_DEPLOY:-0}" = "1" ] && deny "this session is an isolated worktree and cannot deploy directly"
+if [ "${AIOS_NO_DEPLOY:-0}" = "1" ]; then
+  # The self-publisher flag must not permanently strand other projects. Consult the live, operator-owned
+  # source/script contract so already-running sessions gain the same entry without restarting their CLI.
+  # The helper checks the exact committed source and owns a per-project lease for the whole command.
+  if [ -n "${AIOS_SESSION_ID:-}" ] && [ "$direct_vendor" -eq 0 ]; then
+    PATH="$clean_path" exec node "$(dirname "$0")/../bin/project-release-guard.mjs" "$tool" "$real" "$@"
+  fi
+  deny "this session is an isolated worktree; use its configured project release entry (AIOS itself uses canonical bin/deploy)"
+fi
 
 source_dir="${AIOS_DEPLOY_SOURCE_DIR:-}"
 if [ -n "$source_dir" ]; then

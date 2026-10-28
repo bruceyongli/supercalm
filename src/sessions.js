@@ -166,6 +166,14 @@ jobs for 24 hours. Save durable results under AIOS_SESSION_ARTIFACTS before the 
 Detached workers or open files protect a job from cleanup. Do not create repeated untracked build
 copies in the session temp root; use this job runner, and reuse one working copy where possible.
 
+For an operator-authorized project release, use that project's reviewed release workflow without
+asking again for routine confirmation. GET $AIOS_URL/api/session/$AIOS_SESSION_ID/release-context
+gives the current approved source directory, branch and package scripts. The normal package command
+checks this live contract and obtains command-only permission even when AIOS_NO_DEPLOY=1; never unset
+that flag globally or request a different session merely to evade it. Commit and verify the intended
+source first. Do not deploy from an old branch, bypass repository gates, or change the release contract
+without operator authority. /integrate is AIOS-self-only, not a generic project publisher.
+
 Before starting memory-heavy local models, video/dataset batches or parallel browser tests, check
 GET $AIOS_URL/api/product/resources. If it is still sampling, wait for the result. Under warning or
 critical host pressure, defer new heavy work; do not retry in a tight loop. Run at most one heavy
@@ -1195,7 +1203,8 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   const storageEnv = Object.entries(sessionStorageEnv(sid)).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
   // canonical main checkout). This — not a filesystem sandbox — is the isolation interlock: full-autonomy
-  // agents run unsandboxed by operator policy. Integration is an operator-gated action.
+  // agents run unsandboxed by operator policy. Other projects' operator-authorized release contracts
+  // may grant child-command-only permission through the live command guard; never drop this flag globally.
   const noDeploy = isolated ? 'AIOS_NO_DEPLOY=1 ' : '';
   // Deploy-source contract (release_targets, set in the Projects UI): injected so both Claude's hook
   // and the cross-tool command wrappers can block a DIRECT deploy from the wrong tree/branch.
@@ -4088,7 +4097,7 @@ route('POST', '/api/project/:id/helpers', async (req, res, { id: pid }) => {
   // Honesty gate: autonomous deploy only works for Supercalm's own self-deploy today. Refuse enabling it
   // elsewhere instead of storing a flag the pipeline will always skip. Gate/isolation/monitor still work.
   if ((b.auto_publish || b.autoPublish) && !_selfDeployable(p.path)) {
-    return json(res, 400, { error: "autonomous deploy isn't available for this project yet — the pipeline can only self-deploy Supercalm's own checkout (it bin/deploys + health-verifies THIS service). Use the release-check monitor to catch stale deploys; the project's own agent still deploys it." });
+    return json(res, 400, { error: "auto_publish only self-deploys AIOS. For this project's own reviewed workflow, configure auto_release, source_dir, source_branch and release_scripts at /api/project/" + pid + "/release. The existing session can then run that command without another routine confirmation." });
   }
   json(res, 200, { ok: true, helpers: setHelpers(pid, b), deployable: _selfDeployable(p.path), isolation_gap: isolationGap(pid) });
 });

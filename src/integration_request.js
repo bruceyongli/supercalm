@@ -28,6 +28,10 @@ export function integrationReadiness(sessionId, deps = {}) {
   const s = getSession(sessionId);
   if (!s) return refusal('no_session', 'no such session', 404);
   if (!s.project_id) return refusal('no_project', 'session has no project');
+  const project = getProject(s.project_id);
+  if (!project || !same(project.path, root)) {
+    return refusal('unsupported_target', 'This endpoint only self-deploys AIOS. Use this project\'s reviewed release command and its configured source/script contract; do not enable AIOS autopublish or request a different coding session. Release entry: /api/session/' + sessionId + '/release-context');
+  }
   if (!enabled(s.project_id, 'autoPublish')) {
     return refusal('autopublish_off', 'autonomous deployment is not enabled for this project');
   }
@@ -36,10 +40,6 @@ export function integrationReadiness(sessionId, deps = {}) {
   }
   if (!s.branch || !s.worktree_path) {
     return refusal('no_worktree', 'session has no isolated worktree branch to integrate');
-  }
-  const project = getProject(s.project_id);
-  if (!project || !same(project.path, root)) {
-    return refusal('unsupported_target', "autonomous deployment currently supports only Supercalm's self-deploy pipeline");
   }
   return { ok: true, ready: true, session: s, project };
 }
