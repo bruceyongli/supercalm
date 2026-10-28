@@ -51,6 +51,7 @@ export function sessionStorageEnv(sessionId) {
     AIOS_SESSION_TMPDIR: paths.tmp,
     AIOS_SESSION_ARTIFACTS: paths.artifacts,
     AIOS_SCRATCH_RUN: join(ROOT, 'bin', 'scratch-run.mjs'),
+    AIOS_BUILD_RUN: join(ROOT, 'bin', 'build-run.mjs'),
     // Standard names cover Node, Python, shell utilities, browsers, and most test harnesses.
     // TMPDIR conventionally carries a trailing separator on macOS.
     TMPDIR: paths.tmp + sep,

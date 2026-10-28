@@ -87,6 +87,7 @@ import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
 import { hasApprovedRenderedEntry, renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
 import { sweepScratchJobs } from './scratch_jobs.js';
+import { sweepLocalBuildJobs } from './local_build_jobs.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
 import { createTerminalPipeRepair } from './terminal_pipe.js';
 import { refreshCodexQuestions, resolveCodexQuestion } from './codex_questions.js';
@@ -150,7 +151,16 @@ history when the task actually needs it. Disposable clones belong in $AIOS_SESSI
 must remove your own disposable clones/build copies after their last use rather than accumulating
 them until this long-running session ends. Check available disk space before large downloads/builds;
 if space is low, stop new bulk writes and report it. Never delete another session's files to make room.
-For disposable build/test/download jobs, use: node "$AIOS_SCRATCH_RUN" -- <command> <args>.
+For finite builds/packages, use: node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>.
+Replace dist with the actual relative output path; repeat --output for multiple outputs. Run from the
+repository root. The runner copies dirty/untracked source plus node_modules to local SSD, runs there,
+publishes declared outputs/logs back to AIOS_SESSION_ARTIFACTS, and deletes ALL local build inputs,
+dependencies and caches on success or failure. There is no persistent local build cache. Ignored inputs
+other than node_modules require --include (e.g. --include .env.production). Alternatively write outputs
+to $AIOS_BUILD_OUTPUT inside the build command. Do not deploy, edit source, or run watch/dev servers in
+this disposable snapshot; Git metadata is not copied. A pending transfer/active worker is not finalized:
+keep the only output copy until automatic recovery completes. Never clean another job yourself.
+For other disposable test/download jobs, use: node "$AIOS_SCRATCH_RUN" -- <command> <args>.
 It supplies a fresh job TMPDIR / AIOS_JOB_TMPDIR, cleans completed successful jobs, and retains failed
 jobs for 24 hours. Save durable results under AIOS_SESSION_ARTIFACTS before the command exits.
 Detached workers or open files protect a job from cleanup. Do not create repeated untracked build
@@ -4525,6 +4535,14 @@ async function boot() {
   }).catch(error => console.error('[aios] scratch job cleanup deferred:', error.message));
   setImmediate(cleanJobs);
   setInterval(cleanJobs, 5 * 60_000).unref();
+  const cleanBuilds = () => sweepLocalBuildJobs().then(results => {
+    for (const result of results) {
+      if (result.removed) console.log(`[aios] finalized local build ${result.id}`);
+      else if (result.error) console.error(`[aios] local build ${result.id} cleanup pending: ${result.error}`);
+    }
+  }).catch(error => console.error('[aios] local build recovery deferred:', error.message));
+  setImmediate(cleanBuilds);
+  setInterval(cleanBuilds, 60_000).unref();
   console.log('[aios] sessions ready');
 }
 export const sessionReady = boot();

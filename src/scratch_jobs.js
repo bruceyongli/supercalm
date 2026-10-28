@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { DATA_DIR } from './config.js';
 import { assertDiskHeadroom } from './disk_pressure.js';
 import { assertLiveStorage, isManagedStoragePath, storageMigrationProtected } from './live_storage.js';
+import { localBuildJobs } from './local_build_jobs.js';
 
 const exec = promisify(execFile);
 const recordsRoot = join(DATA_DIR, 'scratch-jobs');
@@ -92,7 +93,8 @@ export async function sweepScratchJobs() {
 }
 export async function sessionHasProtectedJobs(sessionId) {
   // Do not let whole-session cleanup bypass a job's liveness or failure-evidence retention.
-  return (await scratchJobs()).some(job => job.sessionId === sessionId);
+  return (await scratchJobs()).some(job => job.sessionId === sessionId)
+    || (await localBuildJobs()).some(job => job.sessionId === sessionId);
 }
 export async function runScratchJob(sessionId, command, args = []) {
   if (!command) throw new Error('A command is required');

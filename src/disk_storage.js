@@ -12,6 +12,7 @@ import { sessionStoragePaths } from './session_storage.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import * as store from './store.js';
 import { liveStorageStatus } from './live_storage.js';
+import { localBuildJobs, localBuildStorageRoot } from './local_build_jobs.js';
 
 const exec = promisify(execFile);
 export const isInside = (path, root) => path === root || path.startsWith(root + sep);
@@ -110,9 +111,14 @@ export function createStorageInventory({ projects = store.listProjects, sessions
     };
     // Specific ownership wins over shared storage roots.
     for (const s of ss) for (const c of storageComponents(s, byProject.get(s.project_id))) await add({ ...c, session_id: s.id, project_id: s.project_id, role: 'session' });
+    const sessionById = new Map(ss.map(s => [s.id, s]));
+    for (const job of await localBuildJobs()) await add({ path: job.path, base: localBuildStorageRoot(),
+      kind: 'local-build', label: 'Local build (automatic cleanup)', retained: true,
+      session_id: job.sessionId, project_id: sessionById.get(job.sessionId)?.project_id, role: 'session' });
     for (const p of ps) await add({ path: p.path, project_id: p.id, role: 'project' });
     for (const [label, path] of [['AIOS shared data / database', DATA_DIR], ['Unattributed worktrees', worktreeRoot()],
-      ['Claude CLI history', join(homedir(), '.claude', 'projects')], ['Codex CLI history', join(homedir(), '.codex', 'sessions')]]) await add({ label, path, role: 'shared' });
+      ['Claude CLI history', join(homedir(), '.claude', 'projects')], ['Codex CLI history', join(homedir(), '.codex', 'sessions')],
+      ['Disposable local builds', localBuildStorageRoot()]]) await add({ label, path, role: 'shared' });
     const rows = [...targets.values()];
     total = rows.length; scanned = 0;
     let next = 0;

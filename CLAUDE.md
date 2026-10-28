@@ -171,7 +171,25 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   launchd services use their own service lifecycle; native sessions use the session maintenance flow.
   Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
   detach/reconnect durability with disposable fixtures before choosing a storage transport.
-- Disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for build/test/download work.
+- Finite builds/packages: use `node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>`
+  (or `node "$AIOS_BUILD_RUN" ...`). Replace/repeat `--output` for the actual relative output paths;
+  commands can also write to `AIOS_BUILD_OUTPUT`. Source edits stay in the session worktree. The runner
+  snapshots dirty tracked/nonignored untracked files and installed `node_modules` onto local SSD;
+  ignored inputs such as `.env.production` or `.venv` require `--include`. Git metadata is deliberately
+  excluded: never deploy, edit source, or start watch/dev servers inside this disposable snapshot.
+  Copy required outputs and bounded logs to session artifacts before removing ALL local build data,
+  including dependency copies and tool caches. Success AND failure have zero local cache retention.
+  A transfer failure, live child or unknown open handle means NOT finalized: preserve the only output
+  copy, retry at boot/every minute, and delete only its exact registered unused job directory. Never
+  delete migrated originals or another session's files. Standard cache env vars are job-local; custom
+  tools must honor `AIOS_JOB_TMPDIR`/`AIOS_BUILD_OUTPUT`, not write caches directly under the user's home.
+  One local build at a time; default admission/monitoring budget 30 GiB and reserve 50 GiB. These are
+  application guards, not an OS filesystem quota. `AIOS_BUILD_MAX_BYTES`/`AIOS_BUILD_RESERVE_BYTES`
+  configure them; `AIOS_LOCAL_BUILD_ROOT` must resolve to the local home volume, not a remote alias.
+  Remote code/history/artifacts remain on the selected storage. SMB versus SSHFS does not change
+  physical network latency; never switch a live storage transport without isolated semantic/performance
+  evidence. SSH artifact archives and SMB/APFS live storage are distinct paths, not interchangeable mounts.
+- Other disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for test/download work.
   Each job gets its own TMPDIR / AIOS_JOB_TMPDIR; copy durable reports to AIOS_SESSION_ARTIFACTS
   before exit. Success is cleaned after its process group and open handles are gone; failures or
   interrupted wrappers retain evidence for 24 hours. The serial five-minute sweeper only owns tagged

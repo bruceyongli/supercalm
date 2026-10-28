@@ -32,6 +32,7 @@ try {
   assert.equal(env.TMP, prepared.tmp);
   assert.equal(env.TEMP, prepared.tmp);
   assert.equal(env.TMPDIR, prepared.tmp + '/');
+  assert.match(env.AIOS_BUILD_RUN, /\/bin\/build-run\.mjs$/);
 
   await writeFile(join(prepared.tmp, 'throwaway.txt'), 'temporary');
   await writeFile(join(prepared.artifacts, 'reported.txt'), 'durable evidence');
