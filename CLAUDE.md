@@ -578,7 +578,7 @@ same native UUID and complete matching text; never old history, automation or a 
 Confirmed queue admission returns HTTP 200 and clears the web composer immediately, without forcing
 consumption/interruption or resending. Actual unconfirmed drafts stay. Human `queued_command`
 attachments render once in Story/graph using original source identity/time; machine notifications do
-not become operator requests. Codex submission and notify protocols are unchanged.
+not become operator requests. Claude's paste dialect and notify protocols remain separate from Codex.
 Claude text sends use explicit bracketed paste so PTY chunk boundaries never split one request into
 a folded token plus trailing input. While folded, `paste again to expand` replaces the permission
 footer: recognize it as Claude composer evidence before pressing Enter. Claude may render ONE paste
@@ -588,6 +588,17 @@ text token. Wait for chip rendering to settle, match visible text against the re
 old/reused chips or image-only intermediate frames when the request includes text. Keep this dialect
 Claude-only; a rendering change is not proof of a human edit. A newly observed paste token
 is not a delivery receipt; still require the composer to advance or an exact native acknowledgement.
+
+Codex sends also use bracketed paste. A tall Codex 0.164 composer scrolls internally: its `›` remains
+at the top but only the request's suffix is visible. Recognize that settled, viewport-filling suffix
+only for the paste this transaction owns; never use it to infer an existing draft's hidden prefix.
+Raw typing/control keys or another programmatic send invalidate that ownership. Folded content must
+match its complete character count. Retrying an uncertain owned send presses Enter only, never pastes
+again. Native `history.jsonl` receipts require the exact UUID/text after a pre-send byte watermark;
+read at most 512KiB, never scan a session's full rollout. Persist uncertain send boundaries so manual
+Enter/lost HTTP responses can reconcile through `/input-receipt/:clientId`, including after refresh.
+The receipt endpoint never types into a CLI. Clear only the acknowledged web draft and its attachments,
+preserve newer edits, and never treat old matching text or a working-status change as proof of delivery.
 
 The terminal is **interactive on desktop**. xterm runs with `disableStdin:true` and its helper
 `<textarea>` is forced **read-only** — that is the ONLY reliable way to stop macOS **iCloud Passwords /

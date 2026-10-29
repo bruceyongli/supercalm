@@ -22,6 +22,8 @@ const render = (display = input) => process.stdout.write(mode === 'question'
     ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ ${foldedDisplay()}\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
     : folded && pasteNumber
       ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
+    : mode === 'codex-cropped' && input
+      ? `\x1b[2J\x1b[3;1H› ${input.split('\n').slice(-24).join('\r\n  ')}\r\n\r\n${footer}\r\n`
     : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
 process.stdin.setRawMode(true);
 process.stdin.setEncoding('utf8');
@@ -92,9 +94,11 @@ onInput(data => {
     else if (char === '\r' || char === '\n') {
       attempts++;
       appendFileSync(trace, JSON.stringify({ event: 'enter', attempts, input }) + '\n');
-      if (mode === 'ignore-all' || mode === 'claude-long-fail' || (mode === 'ignore-first' && attempts === 1)) continue;
+      if (mode === 'ignore-all' || mode === 'claude-long-fail' || (mode === 'ignore-first' && attempts === 1)
+          || (mode === 'manual-seventh' && attempts <= 6)) continue;
       if (input) {
         appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
+        if (family === 'codex' && nativeFile) appendFileSync(nativeFile, JSON.stringify({ session_id: nativeId, ts: Date.now() / 1000, text: input }) + '\n');
         if (mode === 'claude-queued' && nativeFile) {
           appendFileSync(nativeFile, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: nativeId, content: input }) + '\n');
           last = input; input = 'busy redraw, not a new operator draft';

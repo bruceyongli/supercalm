@@ -46,6 +46,8 @@ import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
+import { createCodexInputReceipt } from './codex_input_receipt.js';
+import { codexPaste, codexOwnedPaste } from './codex_composer.js';
 import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste, claudeOwnedPaste } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
@@ -897,10 +899,20 @@ export async function sendText(name, text, options = {}) {
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
 
+const terminalInputRevisions = new Map();
+function markRawInput(name) {
+  terminalInputRevisions.set(name, (terminalInputRevisions.get(name) || 0) + 1);
+}
+
 async function sendTextUnlocked(name, text, { requireOperatorTarget = false, menuAnswer = false, allowActive = false, replacePendingDraft = false, claudeTranscript = null, tool = null } = {}) {
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
-  // Claude-only evidence. Codex keeps its established TUI submit/retry protocol unchanged.
-  const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text) : null;
+  markRawInput(name); // another programmatic send also invalidates ownership of an older paste
+  const codexComposer = requireOperatorTarget && !menuAnswer && tool === 'codex';
+  const nativeId = codexComposer ? store.getSessionByTmux(name)?.codex_uuid : null;
+  const confirmSubmission = claudeTranscript ? await createClaudeInputReceipt(claudeTranscript, text)
+    : nativeId ? await createCodexInputReceipt(nativeId, text) : null;
+  const revision = terminalInputRevisions.get(name) || 0;
+  const inputUnchanged = () => (terminalInputRevisions.get(name) || 0) === revision;
   const claudeComposer = requireOperatorTarget && !menuAnswer && (tool === 'claude' || !!claudeTranscript);
   const draftMaxLines = claudeComposer ? 768 : 120;
   const draftFooterPattern = claudeComposer ? CLAUDE_COMPOSER_FOOTER : null;
@@ -909,6 +921,12 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   const readInputScreen = async () => claudeComposer
     ? normalizeClaudeInputScreen(await tmux('capture-pane', '-p', '-e', '-t', name, '-S', '-512'))
     : tmux('capture-pane', '-p', '-t', name);
+  const retainSubmission = (receipt, before) => ({ ...receipt, nativeCursor: confirmSubmission?.cursor,
+    retrySubmission: codexComposer && !receipt.accepted ? () => serializeAgentInput(name, () => submitAgentComposer({
+      text, before, initialDelayMs: 0, confirmSubmission, draftMaxLines, draftFooterPattern,
+      ownedPaste: codexOwnedPaste, inputUnchanged, readScreen: readInputScreen,
+      pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
+    })) : null });
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -953,10 +971,11 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     const receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: 0,
       confirmSubmission, draftMaxLines, draftFooterPattern, ownedPaste: claudeComposer ? claudeOwnedPaste : null,
+      inputUnchanged,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
-    return { ...receipt, submittedExisting: receipt.accepted };
+    return { ...retainSubmission(receipt, screen), submittedExisting: receipt.accepted };
   }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
@@ -976,19 +995,22 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
     // terminal typing) so this composed message isn't appended to it — that concatenation turned a
     // stray "/m" into a bogus "/m<msg>" slash command. Ctrl-U kills the line; it's a harmless no-op on
     // an empty input. (Skipped in the menu branch, where we just opened a fresh empty "Type something".)
+    if (!inputUnchanged()) return { accepted: false, reason: 'input-changed' };
     await exec(TMUX, ['send-keys', '-t', name, 'C-u'], X);
     await sleep(30);
   }
-  await exec(TMUX, ['send-keys', '-t', name, '-l', '--', claudeComposer ? claudePaste(text) : text], X);
+  if (!inputUnchanged()) return { accepted: false, reason: 'input-changed' };
+  await exec(TMUX, ['send-keys', '-t', name, '-l', '--', claudeComposer ? claudePaste(text) : codexComposer ? codexPaste(text) : text], X);
   let receipt = { accepted: true };
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
     receipt = await submitAgentComposer({
       text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
-      confirmSubmission, draftMaxLines, draftFooterPattern, ownedPaste: claudeComposer ? claudeOwnedPaste : null,
+      confirmSubmission, draftMaxLines, draftFooterPattern,
+      ownedPaste: claudeComposer ? claudeOwnedPaste : codexComposer ? codexOwnedPaste : null, inputUnchanged,
       readScreen: readInputScreen,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
     });
-    if (!receipt.accepted) return { ...receipt, replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '' };
+    if (!receipt.accepted) return { ...retainSubmission(receipt, screen), replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '' };
   } else {
     await sleep(SUBMIT_DELAY_MS);
     await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
@@ -1018,6 +1040,7 @@ const KEYMAP = {
 };
 export async function sendKey(name, key) {
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
+  markRawInput(name);
   const k = KEYMAP[String(key).toLowerCase()] || key;
   await exec(TMUX, ['send-keys', '-t', name, k], X);
 }
@@ -1029,6 +1052,7 @@ export async function sendKey(name, key) {
 // the delay in sendText() guards against.
 export async function sendRaw(name, data) {
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
+  markRawInput(name);
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', data], X);
 }
 
@@ -3810,6 +3834,31 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
 // fails. Post-send bookkeeping is best-effort: once the pane ACCEPTED the text, a store hiccup must
 // not re-announce the reply as failed — the caller would re-deliver it.
 const pendingOperatorInputs = new Map();
+const pendingSubmissionRetries = new Map();
+const deferredInputRow = store.db.prepare("SELECT ts, payload FROM events WHERE session_id=? AND type='input-unconfirmed' AND json_extract(payload,'$.clientMessageId')=? ORDER BY id DESC LIMIT 1");
+
+async function confirmDeferredReply(sid, clientMessageId, submission = null) {
+  const accepted = store.inputReceipt(sid, clientMessageId);
+  if (accepted) return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
+  const row = deferredInputRow.get(sid, clientMessageId);
+  if (!row) return null;
+  const pending = parsePayload(row), s = store.getSession(sid);
+  if (s?.tool !== 'codex' || !s.codex_uuid || s.codex_uuid !== pending.cursor?.nativeId) return { inputBlocked: true, reason: 'submit-unconfirmed' };
+  const read = await createCodexInputReceipt(s.codex_uuid, pending.text, pending.cursor);
+  if (!submission?.accepted && (!read || !await read())) return { inputBlocked: true, reason: 'submit-unconfirmed' };
+  // A concurrent poll/retry may have committed this same native acknowledgement while we read it.
+  const existing = store.inputReceipt(sid, clientMessageId);
+  if (existing) return { ok: true, duplicate: true, message: { id: existing.id, ts: existing.ts } };
+  const message = store.addMessage(sid, 'in', pending.source, pending.text, { clientMessageId });
+  pendingSubmissionRetries.delete(`${sid}|${clientMessageId}`);
+  store.addEvent(sid, 'input-delivery', { source: pending.source, accepted: true, verified: true,
+    receipt: submission?.receipt || (submission?.accepted ? 'codex-composer' : 'codex-native-history'), deferred: true, elapsed_ms: now() - row.ts });
+  // Native polling already owns the current work/question state. A late acknowledgement must not
+  // erase a newer question, bump an old session's activity, or send the user's request a second time.
+  bus.emit('changed');
+  return { ok: true, message, duplicate: true };
+}
+
 export async function deliverReply(sid, text, options = {}) {
   const clientMessageId = options.clientMessageId || null;
   if (!clientMessageId) return deliverReplyNow(sid, text, options); // existing voice/agent callers
@@ -3819,6 +3868,26 @@ export async function deliverReply(sid, text, options = {}) {
   if (accepted) {
     if (accepted.text !== text || accepted.source !== source) return { idempotencyConflict: true };
     return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
+  }
+  const deferred = deferredInputRow.get(sid, clientMessageId);
+  if (deferred) {
+    const prior = parsePayload(deferred);
+    if (prior.text !== text || prior.source !== source) return { idempotencyConflict: true };
+    const receipt = await confirmDeferredReply(sid, clientMessageId);
+    if (receipt?.ok) return receipt;
+    // A deliberate retry may press Enter again on our still-owned paste, never paste again. Raw
+    // edits/other sends invalidate that ownership. After restart only native acknowledgement counts.
+    const retry = pendingSubmissionRetries.get(key);
+    if (retry) {
+      const session = store.getSession(sid);
+      assertStorageSessionAvailable(sid);
+      const presence = session && await sessionLiveness.probe(session.tmux);
+      if (presence === 'missing' || !session) return { stopped: true };
+      if (presence === 'unknown') throw sessionHealthError();
+      const submission = await retry();
+      if (submission.accepted) return confirmDeferredReply(sid, clientMessageId, submission);
+    }
+    return receipt;
   }
   const fingerprint = JSON.stringify([text, source, options.segments || null, options.providerRetry || null]);
   const pending = pendingOperatorInputs.get(key);
@@ -3859,7 +3928,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
       store.addEvent(sid, 'input-delivery', {
         source, accepted: receipt?.accepted === true, verified: receipt?.verified === true,
         attempts: receipt?.attempts ?? null, reason: receipt?.reason || null,
-        ...(s.tool === 'claude' ? { receipt: receipt?.receipt || null, queued: !!receipt?.queued } : {}),
+        receipt: receipt?.receipt || null, queued: !!receipt?.queued,
         elapsed_ms: now() - deliveryStarted,
       });
     } catch {}
@@ -3891,6 +3960,13 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
       try { store.addEvent(sid, 'composer-draft-archived', { text: delivered.replacedDraft, displaced_by: source }); } catch {}
     }
     if (delivered?.accepted === false) {
+      if (clientMessageId && delivered.nativeCursor) {
+        store.addEvent(sid, 'input-unconfirmed', { clientMessageId, text, source, cursor: delivered.nativeCursor });
+        if (delivered.retrySubmission) {
+          pendingSubmissionRetries.set(`${sid}|${clientMessageId}`, delivered.retrySubmission);
+          if (pendingSubmissionRetries.size > 128) pendingSubmissionRetries.delete(pendingSubmissionRetries.keys().next().value);
+        }
+      }
       return { inputBlocked: true, reason: delivered.reason, pendingDraft: delivered.pendingDraft || '' };
     }
     replacedDraft = String(delivered?.replacedDraft || '').trim();
@@ -3911,6 +3987,14 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
   try { noteReply(sid); } catch {} // -> working, clear question/summary, reset idle timer, broadcast
   return { ok: true, replacedDraft: !!replacedDraft, message, queued };
 }
+
+// Read-only with respect to the agent: reconcile a previous send, never paste or press any key.
+route('GET', '/api/session/:id/input-receipt/:clientId', async (req, res, { id: sid, clientId }) => {
+  if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });
+  if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientId)) return json(res, 400, { error: 'invalid client message identity' });
+  const result = await confirmDeferredReply(sid, clientId);
+  json(res, 200, { accepted: !!result?.ok, pending: !!result?.inputBlocked || pendingOperatorInputs.has(`${sid}|${clientId}`), message: result?.message || null });
+});
 
 route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {
   if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });

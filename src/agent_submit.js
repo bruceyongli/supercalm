@@ -21,7 +21,7 @@ export async function submitAgentComposer({
   confirmSubmission = null,
   pause = sleep, clock = Date.now,
   initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3, draftMaxLines = 120,
-  draftFooterPattern = null, ownedPaste = null,
+  draftFooterPattern = null, ownedPaste = null, inputUnchanged = () => true,
 }) {
   const deadline = clock() + timeoutMs;
   const draftOptions = { requireFooter: true, maxLines: draftMaxLines, preserveWraps: true, expectedText: text, footerPattern: draftFooterPattern };
@@ -36,10 +36,11 @@ export async function submitAgentComposer({
   let pending = '';
   await pause(Math.max(0, initialDelayMs));
   do {
-    if (attempts > 0 && confirmSubmission) {
+    if (confirmSubmission) {
       const native = await confirmSubmission().catch(() => null);
       if (native) return { accepted: true, verified: true, attempts, ...native };
     }
+    if (!inputUnchanged()) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
     const screen = await readScreen();
     const draft = pendingComposerDraft(screen, draftOptions);
     if (!draft) { changedDraft = ''; changedCount = 0; }
@@ -50,7 +51,7 @@ export async function submitAgentComposer({
     // Large pastes may be folded by the CLI. Only a NEW paste token, introduced by this transaction,
     // counts; an old folded draft cannot authorize submitting somebody else's text.
     const newPaste = draft && (ownedPaste
-      ? ownedPaste({ draft, beforeDraft: beforeComposer, text })
+      ? ownedPaste({ draft, beforeDraft: beforeComposer, text, screen })
       : /^\[Pasted (?:text|content)[^\]]*\]$/i.test(draft.text) && draft.text !== beforeDraft);
     if (ownText || newPaste) {
       changedDraft = ''; changedCount = 0;
@@ -58,10 +59,11 @@ export async function submitAgentComposer({
       const current = withHint.text;
       stableCount = stableDraft === current ? stableCount + 1 : 1;
       stableDraft = current;
-      // Claude can paint images before the rest of a bracketed paste. Let its chip composition
-      // settle over two frames before the first Enter as well. Literal text/Codex stay unchanged.
+      // Claude chips and Codex's viewport-clipped suffix must settle over two frames. A complete
+      // literal echo already proves the whole paste; no additional rendering delay is needed.
       const settled = !ownedPaste || ownText || stableCount >= 2;
       if (settled && attempts < maxAttempts && (attempts === 0 || (stableCount >= 2 && clock() - lastEnter >= retryMs))) {
+        if (!inputUnchanged()) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
         await pressEnter();
         attempts++;
         lastEnter = clock();

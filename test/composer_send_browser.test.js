@@ -13,19 +13,41 @@ const session = { id: 's_send_fixture', tool: 'codex', toolLabel: 'Codex', statu
   autonomy: 'full', effort: 'high', model: 'gpt-6.1-sol', revision: 1, project: { name: 'Fixture', path: '/fixture' }, composer_history: [] };
 let pending = [], deliveries = [], events = [], blocked = false, replaceDraft = false, loseResponse = false;
 const accepted = new Map();
+const unconfirmed = new Map();
 const json = (res, value, status = 200) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(value)); };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
+  if (path.includes('/input-receipt/')) {
+    const id = path.split('/').at(-1);
+    return json(res, { accepted: accepted.has(id), pending: unconfirmed.has(id), message: accepted.get(id) || null });
+  }
+  if (path.endsWith('/upload')) {
+    for await (const chunk of req) {} // consume the fixture upload
+    const name = new URL(req.url, 'http://127.0.0.1').searchParams.get('name') || 'proof.txt';
+    return json(res, { attachment: { path: '/fixture/' + name, name, type: 'text/plain', size: 10 } });
+  }
+  if (path.endsWith('/key')) {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    if (JSON.parse(raw).key === 'enter') {
+      for (const [id, body] of unconfirmed) {
+        events.push({ kind: 'you', ts: Date.now(), body: body.text });
+        accepted.set(id, { id: events.length, ts: events.at(-1).ts });
+      }
+      unconfirmed.clear();
+    }
+    return json(res, { ok: true });
+  }
   if (path === '/aios/api/session/s_send_fixture/input') {
     let raw = ''; for await (const chunk of req) raw += chunk;
     const body = JSON.parse(raw); deliveries.push(body);
     if (accepted.has(body.client_message_id)) return json(res, { ok: true, message: accepted.get(body.client_message_id), duplicate: true });
     if (replaceDraft && !body.replace_pending) return json(res, { reason: 'pending-draft', pendingDraft: 'Native draft', inputBlocked: true }, 409);
     pending.push(() => {
-      if (blocked) return json(res, { inputBlocked: true, reason: 'submit-unconfirmed', error: 'Fixture could not confirm delivery.' }, 409);
+      if (blocked) { unconfirmed.set(body.client_message_id, body); return json(res, { inputBlocked: true, reason: 'submit-unconfirmed', error: 'Fixture could not confirm delivery.' }, 409); }
       events.push({ kind: 'you', ts: Date.now(), body: body.text });
       const message = { id: events.length, ts: events.at(-1).ts };
       accepted.set(body.client_message_id, message);
+      unconfirmed.delete(body.client_message_id);
       json(res, { ok: true, message });
     }); return;
   }
@@ -56,7 +78,7 @@ async function releasePending(page) {
 }
 try {
   for (const width of [1440, 820, 390]) {
-    deliveries = []; events = []; blocked = false; replaceDraft = false; accepted.clear();
+    deliveries = []; events = []; blocked = false; replaceDraft = false; accepted.clear(); unconfirmed.clear();
     const page = await browser.newPage({ viewport: { width, height: 900 }, hasTouch: width < 1000, isMobile: width < 600, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     page.on('dialog', dialog => dialog.dismiss());
@@ -126,14 +148,31 @@ try {
     const lostId = deliveries.at(-1).client_message_id;
     await page.reload(); // saved draft + send identity survive navigation after a lost response
     await page.locator('.story-feed').waitFor();
-    assert.equal(await page.locator('#reply').inputValue(), 'A lost HTTP response cannot duplicate my message.');
-    await page.locator('#send').click();
     await page.waitForFunction(() => document.querySelector('#reply').value === '');
-    assert.equal(deliveries.at(-1).client_message_id, lostId, 'network-loss retry after refresh uses the accepted send identity');
+    assert.equal(deliveries.at(-1).client_message_id, lostId, 'refresh reconciles the receipt without another POST');
     assert.equal(events.filter(event => event.body === 'A lost HTTP response cannot duplicate my message.').length, 1);
     await page.waitForFunction(() => !document.querySelector('[data-story-sendstate="pending"]'));
     assert.equal(await page.locator('[data-kind="you"]').filter({ hasText: 'A lost HTTP response cannot duplicate my message.' }).count(), 1,
       'an acknowledged duplicate retry reuses the already-visible receipt, without a new optimistic bubble');
+    blocked = true;
+    await page.locator('#reply').fill('A long request with attachments still belongs to this send. '.repeat(20));
+    await page.locator('#file-input').setInputFiles({ name: 'proof.txt', mimeType: 'text/plain', buffer: Buffer.from('Attachment proof') });
+    await page.waitForFunction(() => !document.querySelector('#send').disabled);
+    await page.locator('#send').click(); await releasePending(page);
+    await page.waitForFunction(() => !document.querySelector('#send').disabled);
+    assert.ok((await page.locator('#reply').inputValue()).length > 500);
+    const postsBeforeEnter = deliveries.length;
+    await page.evaluate(() => [...document.querySelectorAll('#keys button')].find(b => b.textContent === 'Enter').click());
+    await page.waitForFunction(() => document.querySelector('#reply').value === '');
+    assert.equal(await page.locator('#attachments').innerText(), '', 'manual Enter receipt consumes the submitted attachments too');
+    assert.equal(deliveries.length, postsBeforeEnter, 'receipt reconciliation never re-sends the message');
+    await page.locator('#reply').fill('An uncertain send must not erase a newer draft.');
+    await page.locator('#send').click(); await releasePending(page);
+    await page.waitForFunction(() => !document.querySelector('#send').disabled);
+    await page.locator('#reply').fill('My next message — keep this.');
+    await page.evaluate(() => [...document.querySelectorAll('#keys button')].find(b => b.textContent === 'Enter').click());
+    await page.waitForFunction(() => !sessionStorage.getItem('aios_pending_send_s_send_fixture'));
+    assert.equal(await page.locator('#reply').inputValue(), 'My next message — keep this.');
     assert.deepEqual(errors, [], 'actual session mount has no uncaught browser errors');
     console.log(JSON.stringify({ width, scenario: 'tap/keyboard/input re-entry, receipt reconciliation, draft preservation and retry', firstSendRequests: 1, firstSendBubbles: 1 }));
     await page.close();

@@ -2856,7 +2856,7 @@ try { pendingSendIdentity = JSON.parse(sessionStorage.getItem(SEND_ID_KEY) || 'n
 function composerSendIdentity(text, assets) {
   const fingerprint = JSON.stringify([text, assets.map(asset => [asset.path, asset.name, asset.type, asset.size])]);
   if (pendingSendIdentity?.fingerprint !== fingerprint || !/^[A-Za-z0-9_-]{8,128}$/.test(pendingSendIdentity?.id || '')) {
-    pendingSendIdentity = { id: randomClientId(), fingerprint };
+    pendingSendIdentity = { id: randomClientId(), fingerprint, at: Date.now() };
     try { sessionStorage.setItem(SEND_ID_KEY, JSON.stringify(pendingSendIdentity)); } catch {}
   }
   return pendingSendIdentity.id;
@@ -2866,6 +2866,52 @@ function acknowledgeComposerSend(clientMessageId) {
   pendingSendIdentity = null;
   try { sessionStorage.removeItem(SEND_ID_KEY); } catch {}
 }
+
+let receiptTimer = null, receiptCheckInFlight = false;
+function scheduleComposerReceipt(delay = 1500) {
+  clearTimeout(receiptTimer);
+  if (!_sig.aborted && pendingSendIdentity) receiptTimer = setTimeout(checkComposerReceipt, delay);
+}
+async function checkComposerReceipt() {
+  if (_sig.aborted || !pendingSendIdentity) return;
+  if (sendInFlight || receiptCheckInFlight) return scheduleComposerReceipt();
+  const identity = pendingSendIdentity, token = requestScope.capture();
+  receiptCheckInFlight = true;
+  try {
+    const response = await fetch(`api/session/${token.id}/input-receipt/${identity.id}`, { signal: token.signal });
+    if (!response.ok) { if (response.status >= 500) scheduleComposerReceipt(4000); return; }
+    const result = await response.json();
+    requestScope.guard(token);
+    if (pendingSendIdentity?.id !== identity.id) return;
+    if (!result.accepted) {
+      if (result.pending && !document.hidden) scheduleComposerReceipt(Date.now() - (identity.at || 0) < 30000 ? 1500 : 10000);
+      return;
+    }
+    const [text, assets] = JSON.parse(identity.fingerprint);
+    // Exact send identity, not "agent is working" or an old equal-looking Story bubble. A manual
+    // Terminal Enter or a lost HTTP acknowledgement can now finish this same composer transaction.
+    consumeComposerSend(identity.id, text, assets.map(([path]) => path), reply.value.trim() === text);
+  } catch (error) {
+    if (!isSessionAbort(error)) scheduleComposerReceipt(4000);
+  } finally { receiptCheckInFlight = false; }
+}
+function consumeComposerSend(clientMessageId, text, paths, clearText) {
+  acknowledgeComposerSend(clientMessageId);
+  pushHistory(text);
+  if (clearText) reply.value = '';
+  const sentPaths = new Set(paths);
+  attachments.filter(asset => sentPaths.has(asset.path)).forEach(cleanupAttachment);
+  attachments = attachments.filter(asset => !sentPaths.has(asset.path));
+  renderAttachments();
+  persistDraft();
+  showComposerNotice('');
+  updateSendState();
+  autoExpandReply();
+}
+_sig.addEventListener('abort', () => clearTimeout(receiptTimer), { once: true });
+window.addEventListener('focus', () => scheduleComposerReceipt(0), { signal: _sig });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleComposerReceipt(0); }, { signal: _sig });
+scheduleComposerReceipt(); // a saved send identity also reconciles after refresh/navigation
 
 function showComposerNotice(message) {
   const el = $('#composer-notice');
@@ -3435,17 +3481,10 @@ async function sendInput() {
         requestScope.guard(requestToken);
         story.confirmComposerSend?.(echo, j);
       }
-      acknowledgeComposerSend(clientMessageId);
       if (preservedTerminalDraft) rememberHistory(preservedTerminalDraft);
-      pushHistory(text); // record the sent message for ArrowUp recall + clear the saved draft
       // The operator can prepare the next message while this one is delivering. Only consume the
       // submitted draft/assets; a late response must not erase newly typed text or new attachments.
-      if (reply.value === draftAtSend) reply.value = '';
-      const sentIds = new Set(uploaded.map((asset) => asset.localId));
-      attachments.filter((asset) => sentIds.has(asset.localId)).forEach(cleanupAttachment);
-      attachments = attachments.filter((asset) => !sentIds.has(asset.localId));
-      renderAttachments();
-      persistDraft();
+      consumeComposerSend(clientMessageId, text, uploaded.map(asset => asset.path), reply.value === draftAtSend);
       // A displaced native draft is recoverable through the same per-session ↑/↓ history as sent
       // composer text. Do not turn that safety copy into a new visible draft or attention message.
       showComposerNotice('');
@@ -3456,6 +3495,7 @@ async function sendInput() {
     alert('Send failed: ' + e.message);
   } finally {
     sendInFlight = false;
+    scheduleComposerReceipt();
     if (requestScope.isCurrent(requestToken)) {
       updateSendState();
       autoExpandReply();
@@ -3843,7 +3883,8 @@ for (const [label, key] of KEYS) {
   b.className = 'btn ghost sm key-btn';
   b.textContent = label;
   b.onclick = () =>
-    api(`api/session/${id}/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) }).catch(() => {});
+    api(`api/session/${id}/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) })
+      .then(() => { if (key === 'enter') scheduleComposerReceipt(300); }).catch(() => {});
   keysBox.appendChild(b);
 }
 // caption (design): make it obvious these keys bypass the composer and go straight to the CLI TUI.

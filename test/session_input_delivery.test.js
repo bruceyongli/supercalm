@@ -26,6 +26,8 @@ process.env.AIOS_HOST = '127.0.0.1';
 process.env.AIOS_PORT = String(port);
 process.env.AIOS_SUBMIT_DELAY = '30';
 process.env.AIOS_CODEX_SESSIONS_DIR = join(scratch, 'codex');
+process.env.AIOS_CODEX_HISTORY_FILE = join(scratch, 'codex-history.jsonl');
+writeFileSync(process.env.AIOS_CODEX_HISTORY_FILE, '');
 mkdirSync(process.env.AIOS_CODEX_SESSIONS_DIR);
 delete process.env.AIOS_NO_LISTEN;
 
@@ -206,6 +208,40 @@ try {
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
   const queuedId = 's_claude_queued';
+  const cropId = 's_codex_cropped';
+  const cropTrace = await start(cropId, 'codex-cropped', 'codex');
+  const cropText = Array.from({ length: 70 }, (_, i) => `第${i}行 保留完整内容以及附件路径 /fixture/image-${i}.png`).join('\n');
+  const cropResponse = await send(cropId, cropText, { client_message_id: 'codex-crop-proof' });
+  assert.equal(cropResponse.status, 200, JSON.stringify(cropResponse.body));
+  assert.deepEqual(cropTrace().filter(r => r.event === 'accepted').map(r => r.text), [cropText]);
+  assert.equal(cropTrace().filter(r => r.event === 'paste').length, 1);
+  const manualId = 's_codex_manual';
+  const codexUuid = '11111111-2222-3333-4444-555555555555';
+  const manualTrace = await start(manualId, 'manual-seventh', 'codex', process.env.AIOS_CODEX_HISTORY_FILE, codexUuid);
+  store.updateSession(manualId, { codex_uuid: codexUuid });
+  const manualText = 'Deferred receipt must clear only this exact submitted message.';
+  const manualOptions = { client_message_id: 'codex-manual-proof' };
+  const uncertain = await send(manualId, manualText, manualOptions);
+  assert.equal(uncertain.status, 409);
+  const receiptUrl = `http://127.0.0.1:${port}/api/session/${manualId}/input-receipt/${manualOptions.client_message_id}`;
+  assert.equal((await (await fetch(receiptUrl)).json()).accepted, false);
+  assert.equal((await send(manualId, manualText, manualOptions)).status, 409, 'uncertain retry never re-pastes');
+  assert.equal(manualTrace().filter(r => r.event === 'paste').length, 1);
+  await fetch(`http://127.0.0.1:${port}/api/session/${manualId}/key`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key: 'enter' }),
+  });
+  let confirmed;
+  for (let i = 0; i < 30; i++) {
+    confirmed = await (await fetch(receiptUrl)).json();
+    if (confirmed.accepted) break;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  assert.equal(confirmed.accepted, true, JSON.stringify(confirmed));
+  assert.equal((await send(manualId, manualText, manualOptions)).body.duplicate, true);
+  assert.equal(manualTrace().filter(r => r.event === 'accepted').length, 1);
+  assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(manualId).n, 1);
+  console.log(JSON.stringify({ family: 'codex', handler: 'POST /input -> private tmux -> native history -> GET /input-receipt',
+    croppedPaste: { complete: true, accepted: 1 }, manualEnterRecovery: { accepted: true, duplicateSends: 0, storedReceipts: 1 } }));
   const foldedId = 's_claude_folded_paste';
   const foldedTrace = await start(foldedId, 'claude-folded-paste', 'claude');
   const longMessages = [
