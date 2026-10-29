@@ -47,8 +47,8 @@ import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
 import { createCodexInputReceipt } from './codex_input_receipt.js';
-import { codexPaste, codexOwnedPaste } from './codex_composer.js';
-import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste, claudeOwnedPaste } from './claude_composer.js';
+import { codexPaste } from './codex_composer.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste, claudePasteReady } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
 import { claudeDurableActivityAt } from './claude_activity_store.js';
@@ -85,7 +85,7 @@ import {
   sweepSessionStorage,
 } from './session_storage.js';
 import { agentInputReady, askMenuTypeDigit, operatorInputBlockMessage, operatorInputPlan, pendingComposerDraft } from './agent_input_ready.js';
-import { serializeAgentInput, submitAgentComposer } from './agent_submit.js';
+import { serializeAgentInput, createAgentSubmission } from './agent_submit.js';
 import { hasApprovedRenderedEntry, renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
 import { sweepScratchJobs } from './scratch_jobs.js';
@@ -930,12 +930,19 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   const readInputScreen = async () => claudeComposer
     ? normalizeClaudeInputScreen(await tmux('capture-pane', '-p', '-e', '-t', name, '-S', '-512'))
     : tmux('capture-pane', '-p', '-t', name);
-  const retainSubmission = (receipt, before) => ({ ...receipt, nativeCursor: confirmSubmission?.cursor,
-    retrySubmission: codexComposer && !receipt.accepted ? () => serializeAgentInput(name, () => submitAgentComposer({
-      text, before, initialDelayMs: 0, confirmSubmission, draftMaxLines, draftFooterPattern,
-      ownedPaste: codexOwnedPaste, inputUnchanged, readScreen: readInputScreen,
+  let submission = null;
+  const submit = () => {
+    submission ||= createAgentSubmission({
+      pasteCompleted: true, initialDelayMs: SUBMIT_DELAY_MS, confirmSubmission, draftFooterPattern,
+      inputUnchanged, readScreen: readInputScreen,
+      pasteReady: claudeComposer ? view => claudePasteReady(view, text) : undefined,
       pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
-    })) : null });
+    });
+    return submission();
+  };
+  const retainSubmission = receipt => ({ ...receipt, nativeCursor: confirmSubmission?.cursor,
+    retrySubmission: (codexComposer || claudeComposer) && !receipt.accepted && submission
+      ? () => serializeAgentInput(name, submission) : null });
   // If a multiple-choice menu is showing, first select "Type something" so the reply
   // is captured as a custom answer (pressing the digit opens its text field).
   let screen = '';
@@ -977,14 +984,8 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   if (inputTarget?.target === 'existing-draft') {
     // A prior attempt reached Claude's composer but its Enter did not land. Do not erase and retype the
     // same text; submit the settled native draft directly. This is delivery, not a duplicate message.
-    const receipt = await submitAgentComposer({
-      text, before: screen, initialDelayMs: 0,
-      confirmSubmission, draftMaxLines, draftFooterPattern, ownedPaste: claudeComposer ? claudeOwnedPaste : null,
-      inputUnchanged,
-      readScreen: readInputScreen,
-      pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
-    });
-    return { ...retainSubmission(receipt, screen), submittedExisting: receipt.accepted };
+    const receipt = await submit();
+    return { ...retainSubmission(receipt), submittedExisting: receipt.accepted };
   }
   const digit = askMenuTypeDigit(screen);
   if (digit) {
@@ -1012,14 +1013,8 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', claudeComposer ? claudePaste(text) : codexComposer ? codexPaste(text) : text], X);
   let receipt = { accepted: true };
   if (requireOperatorTarget && !digit && !menuAnswer && !String(text).trimStart().startsWith('/')) {
-    receipt = await submitAgentComposer({
-      text, before: screen, initialDelayMs: SUBMIT_DELAY_MS,
-      confirmSubmission, draftMaxLines, draftFooterPattern,
-      ownedPaste: claudeComposer ? claudeOwnedPaste : codexComposer ? codexOwnedPaste : null, inputUnchanged,
-      readScreen: readInputScreen,
-      pressEnter: () => exec(TMUX, ['send-keys', '-t', name, 'Enter'], X),
-    });
-    if (!receipt.accepted) return { ...retainSubmission(receipt, screen), replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '' };
+    receipt = await submit();
+    if (!receipt.accepted) return { ...retainSubmission(receipt), replacedDraft: inputTarget?.target === 'replace-draft' ? inputTarget.draft : '' };
   } else {
     await sleep(SUBMIT_DELAY_MS);
     await exec(TMUX, ['send-keys', '-t', name, 'Enter'], X);
@@ -3853,20 +3848,25 @@ async function confirmDeferredReply(sid, clientMessageId, submission = null) {
   const row = deferredInputRow.get(sid, clientMessageId);
   if (!row) return null;
   const pending = parsePayload(row), s = store.getSession(sid);
-  if (s?.tool !== 'codex' || !s.codex_uuid || s.codex_uuid !== pending.cursor?.nativeId) return { inputBlocked: true, reason: 'submit-unconfirmed' };
-  const read = await createCodexInputReceipt(s.codex_uuid, pending.text, pending.cursor);
-  if (!submission?.accepted && (!read || !await read())) return { inputBlocked: true, reason: 'submit-unconfirmed' };
+  const read = s?.tool === 'codex' && s.codex_uuid === pending.cursor?.nativeId
+    ? await createCodexInputReceipt(s.codex_uuid, pending.text, pending.cursor)
+    : s?.tool === 'claude' && pending.cursor?.provider === 'claude'
+      ? await createClaudeInputReceipt(s.claude_transcript, pending.text, pending.cursor) : null;
+  if (!read) return { inputBlocked: true, reason: 'submit-unconfirmed' };
+  const native = submission?.accepted ? submission : await read();
+  if (!native) return { inputBlocked: true, reason: 'submit-unconfirmed' };
   // A concurrent poll/retry may have committed this same native acknowledgement while we read it.
   const existing = store.inputReceipt(sid, clientMessageId);
   if (existing) return { ok: true, duplicate: true, message: { id: existing.id, ts: existing.ts } };
   const message = store.addMessage(sid, 'in', pending.source, pending.text, { clientMessageId });
   pendingSubmissionRetries.delete(`${sid}|${clientMessageId}`);
   store.addEvent(sid, 'input-delivery', { source: pending.source, accepted: true, verified: true,
-    receipt: submission?.receipt || (submission?.accepted ? 'codex-composer' : 'codex-native-history'), deferred: true, elapsed_ms: now() - row.ts });
+    receipt: native.receipt, queued: !!native.queued, phase: 'accepted',
+    trace: submission?.trace || [], deferred: true, elapsed_ms: now() - row.ts });
   // Native polling already owns the current work/question state. A late acknowledgement must not
   // erase a newer question, bump an old session's activity, or send the user's request a second time.
   bus.emit('changed');
-  return { ok: true, message, duplicate: true };
+  return { ok: true, message, duplicate: true, queued: !!native.queued };
 }
 
 export async function deliverReply(sid, text, options = {}) {
@@ -3939,6 +3939,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
         source, accepted: receipt?.accepted === true, verified: receipt?.verified === true,
         attempts: receipt?.attempts ?? null, reason: receipt?.reason || null,
         receipt: receipt?.receipt || null, queued: !!receipt?.queued,
+        phase: receipt?.phase || null, trace: receipt?.trace || [],
         elapsed_ms: now() - deliveryStarted,
       });
     } catch {}

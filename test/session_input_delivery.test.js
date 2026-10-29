@@ -105,7 +105,8 @@ try {
   const conflict = await send(onceId, 'Changed content may not reuse an accepted identity.', onceKey);
   assert.equal(conflict.status, 409);
   assert.equal(conflict.body.reason, 'idempotency-conflict');
-  assert.equal((await send(onceId, onceText, { client_message_id: 'send-new-fixture' })).status, 200);
+  const intentional = await send(onceId, onceText, { client_message_id: 'send-new-fixture' });
+  assert.equal(intentional.status, 200, JSON.stringify(intentional.body));
   assert.equal(onceTrace().filter(r => r.event === 'accepted').length, 2, 'an intentional new send of identical words is not suppressed');
   assert.equal((await send(onceId, onceText, { client_message_id: '../bad' })).status, 400);
   console.log(JSON.stringify({ handler: 'POST /api/session/:id/input', scenario: 'five concurrent retries plus completed retry', requests: 6, accepted: 1, persisted: 1 }));
@@ -135,8 +136,8 @@ try {
       reportId: story.providerIssue.reportId, text: PROVIDER_CONTINUE_TEXT, accepted: 1, duplicateRequests: 3, staleRequest: denied.body.reason, liveSessionsTouched: false }));
   }
   const asyncId = 's_async_delivery';
-  const asyncTrace = await start(asyncId, 'partial-paste', 'codex');
   const uuid = '12345678-1234-1234-1234-123456789abc';
+  const asyncTrace = await start(asyncId, 'partial-paste', 'codex', process.env.AIOS_CODEX_HISTORY_FILE, uuid);
   store.updateSession(asyncId, { status: 'working', codex_uuid: uuid });
   const nativeFile = join(process.env.AIOS_CODEX_SESSIONS_DIR, `rollout-test-${uuid}.jsonl`);
   const ask = { type: 'function_call', name: 'request_user_input_async', call_id: 'call_async_delivery',
@@ -208,6 +209,23 @@ try {
     console.log(JSON.stringify({ family, handler: 'POST /api/session/:id/input', http: response.status, enters: 2, accepted: 1, persisted: 1 }));
   }
   const queuedId = 's_claude_queued';
+  for (const family of ['codex', 'claude']) {
+    const sid = `s_${family}_presentation`;
+    const trace = await start(sid, 'presentation-mismatch', family);
+    const text = '请按设计实现◔图标，不要显示文字“查看”。\n• 保留这个项目的目标。\n\n'
+      + 'Attached files available locally to this coding CLI:\n1. 截图 01.06.00.png (PNG, image/png): /fixture/截图 01.06.00.png';
+    const options = { client_message_id: `unicode-manifest-${family}` };
+    const response = await send(sid, text, options);
+    assert.equal(response.status, 200, JSON.stringify(response.body));
+    assert.deepEqual(trace().filter(r => r.event === 'accepted').map(r => r.text), [text]);
+    assert.equal(trace().filter(r => r.event === 'enter').length, 1);
+    assert.equal((await send(sid, text, options)).body.duplicate, true);
+    assert.equal(trace().filter(r => r.event === 'paste').length, 1, 'retry cannot repeat the transport');
+    const event = JSON.parse(store.db.prepare("SELECT payload FROM events WHERE session_id=? AND type='input-delivery' ORDER BY id DESC LIMIT 1").get(sid).payload);
+    assert.deepEqual(event.trace.map(t => t.phase), ['submitted', 'accepted']);
+    console.log(JSON.stringify({ family, handler: 'POST /input', displayedTextMatches: false,
+      exactPayloadAccepted: true, enters: 1, pastes: 1, trace: event.trace }));
+  }
   const cropId = 's_codex_cropped';
   const cropTrace = await start(cropId, 'codex-cropped', 'codex');
   const cropText = Array.from({ length: 70 }, (_, i) => `第${i}行 保留完整内容以及附件路径 /fixture/image-${i}.png`).join('\n');
@@ -215,12 +233,15 @@ try {
   assert.equal(cropResponse.status, 200, JSON.stringify(cropResponse.body));
   assert.deepEqual(cropTrace().filter(r => r.event === 'accepted').map(r => r.text), [cropText]);
   assert.equal(cropTrace().filter(r => r.event === 'paste').length, 1);
-  const manualId = 's_codex_manual';
+  for (const family of ['codex', 'claude']) {
+  const manualId = `s_${family}_manual`;
   const codexUuid = '11111111-2222-3333-4444-555555555555';
-  const manualTrace = await start(manualId, 'manual-seventh', 'codex', process.env.AIOS_CODEX_HISTORY_FILE, codexUuid);
-  store.updateSession(manualId, { codex_uuid: codexUuid });
+  const receiptFile = family === 'codex' ? process.env.AIOS_CODEX_HISTORY_FILE : join(scratch, `${codexUuid}.jsonl`);
+  if (family === 'claude') writeFileSync(receiptFile, '');
+  const manualTrace = await start(manualId, 'manual-seventh', family, receiptFile, codexUuid);
+  store.updateSession(manualId, family === 'codex' ? { codex_uuid: codexUuid } : { claude_transcript: receiptFile });
   const manualText = 'Deferred receipt must clear only this exact submitted message.';
-  const manualOptions = { client_message_id: 'codex-manual-proof' };
+  const manualOptions = { client_message_id: `${family}-manual-proof` };
   const uncertain = await send(manualId, manualText, manualOptions);
   assert.equal(uncertain.status, 409);
   const receiptUrl = `http://127.0.0.1:${port}/api/session/${manualId}/input-receipt/${manualOptions.client_message_id}`;
@@ -240,8 +261,9 @@ try {
   assert.equal((await send(manualId, manualText, manualOptions)).body.duplicate, true);
   assert.equal(manualTrace().filter(r => r.event === 'accepted').length, 1);
   assert.equal(store.db.prepare("SELECT count(*) n FROM messages WHERE session_id=? AND direction='in'").get(manualId).n, 1);
-  console.log(JSON.stringify({ family: 'codex', handler: 'POST /input -> private tmux -> native history -> GET /input-receipt',
+  console.log(JSON.stringify({ family, handler: 'POST /input -> private tmux -> native history -> GET /input-receipt',
     croppedPaste: { complete: true, accepted: 1 }, manualEnterRecovery: { accepted: true, duplicateSends: 0, storedReceipts: 1 } }));
+  }
   const foldedId = 's_claude_folded_paste';
   const foldedTrace = await start(foldedId, 'claude-folded-paste', 'claude');
   const longMessages = [

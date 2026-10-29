@@ -20,17 +20,19 @@ export function claudeInputRecordReceipt(row, { text, nativeId }) {
   return null;
 }
 
-export async function createClaudeInputReceipt(file, text) {
+export async function createClaudeInputReceipt(file, text, cursor = null) {
   const nativeId = claudeResumeId(file);
   if (!file || !nativeId) return null;
-  let identity, offset;
-  try {
+  if (cursor && (cursor.provider !== 'claude' || cursor.nativeId !== nativeId)) return null;
+  let identity = cursor?.identity, offset = cursor?.offset;
+  if (!cursor) try {
     const handle = await open(file, 'r');
     try { const st = await handle.stat(); identity = `${st.dev}:${st.ino}`; offset = st.size; }
     finally { await handle.close(); }
   } catch { return null; }
+  if (!Number.isSafeInteger(offset) || offset < 0) return null;
   let found = null;
-  return async () => {
+  const receipt = async () => {
     if (found) return found;
     const handle = await open(file, 'r').catch(() => null);
     if (!handle) return null;
@@ -51,4 +53,6 @@ export async function createClaudeInputReceipt(file, text) {
       return found;
     } finally { await handle.close(); }
   };
+  receipt.cursor = { provider: 'claude', nativeId, identity, offset };
+  return receipt;
 }

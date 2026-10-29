@@ -1,149 +1,105 @@
 import assert from 'node:assert/strict';
-import { submitAgentComposer, serializeAgentInput } from '../src/agent_submit.js';
+import { createAgentSubmission, serializeAgentInput, observeComposer } from '../src/agent_submit.js';
 import { agentInputReady, operatorInputPlan, pendingComposerDraft } from '../src/agent_input_ready.js';
 import { deliverVoiceFeedback } from '../src/voice_delivery.js';
-import { CLAUDE_COMPOSER_FOOTER, normalizeClaudeInputScreen, claudeOwnedPaste } from '../src/claude_composer.js';
+import { CLAUDE_COMPOSER_FOOTER, claudePasteReady } from '../src/claude_composer.js';
 
-const idle = '› Ask Codex to do anything\n\nGPT-6-Astra xhigh · /tmp/test';
-const draft = text => `› ${text}\n\nGPT-6-Astra xhigh · /tmp/test`;
-const accepted = text => `› ${text}\n\n• Working (esc to interrupt)\n\n${idle}`;
+const idle = '› Ask Codex to do anything\n\nGPT-6.1-Sol max · /fixture';
+const draft = text => `› ${text}\n\nGPT-6.1-Sol max · /fixture`;
 for (const hint of ['Ask Codex to do anything', 'Improve documentation in @filename']) {
   const screen = idle.replace('Ask Codex to do anything', hint);
   assert.equal(agentInputReady(screen), true);
   assert.equal(pendingComposerDraft(screen), null);
   assert.deepEqual(operatorInputPlan(screen, 'fix it'), { ready: true, target: 'composer' });
 }
-assert.equal(pendingComposerDraft(accepted('fix it')), null, 'submitted transcript text is not a pending draft');
-assert.equal(pendingComposerDraft('❯ prior request\n\n❯\n  bypass permissions on'), null, 'empty Claude composer bounds the search');
-
-async function run({ screen, onEnter = () => {}, text = 'fix it', before = idle, timeoutMs = 2400, draftFooterPattern = null, ownedPaste = null }) {
+async function run({ screen, timeoutMs = 2400, ...options }) {
   let t = 0;
   const enters = [];
-  const result = await submitAgentComposer({
-    text, before, timeoutMs, draftFooterPattern, ownedPaste,
-    clock: () => t,
-    pause: async ms => { t += ms; },
+  const submit = createAgentSubmission({
+    pasteCompleted: true, timeoutMs,
+    clock: () => t, pause: async ms => { t += ms; },
     readScreen: async () => screen({ time: t, enters: enters.length }),
-    pressEnter: async () => { enters.push(t); onEnter(enters.length); },
+    pressEnter: async () => { enters.push(t); },
+    ...options,
   });
-  return { result, enters, elapsed: t };
+  return { result: await submit(), enters, submit };
 }
+let r = await run({ screen: ({ enters }) => enters ? idle : draft('fix it') });
+assert.equal(r.result.accepted, true); assert.equal(r.enters.length, 1);
+assert.deepEqual(r.result.trace.map(t => t.phase), ['submitted', 'accepted']);
+assert.equal((await r.submit()).accepted, true);
+assert.equal(r.enters.length, 1, 'reusing a completed transaction cannot send twice');
 
-let r = await run({ screen: ({ enters }) => enters ? accepted('fix it') : draft('fix it') });
-assert.equal(r.result.accepted, true);
-assert.equal(r.result.verified, true);
-assert.equal(r.enters.length, 1, 'ordinary sends need one Enter');
-
-r = await run({ screen: ({ time, enters }) => time < 900 ? idle : enters >= 2 ? accepted('fix it') : draft('fix it') });
-assert.equal(r.result.accepted, true);
-assert.equal(r.enters.length, 2, 'an ignored Enter is retried without repasting');
-assert.ok(r.enters[0] >= 900, 'wait for the actual pasted draft rather than submitting a stale screen');
-assert.ok(r.enters[1] - r.enters[0] >= 800, 'a retained draft must settle before another Enter');
-
-const multiline = 'where is the map html for each codebase, I want to inspect visually,\n\nDo you think better model will result a better reconstruction? Should we try gpt6-sol and deepseek-flash-next in parallel to do a side by side comparison of the 4 models?';
-r = await run({ text: multiline, screen: ({ time, enters }) => enters ? idle : draft(time < 1000 ? multiline.slice(0, time < 600 ? 25 : 166) : multiline) });
-assert.equal(r.result.accepted, true, 'incremental multiline paste echoes are not input-changed');
-assert.equal(r.enters.length, 1);
-assert.ok(r.enters[0] >= 1000, 'do not press Enter until the entire multiline request has arrived');
-const attachments = 'Check both screenshots.\n\nAttached files available locally to this coding CLI:\n1. screenshot.png (PNG, image/png): /project/attachments/screenshot.png\n2. other.png (PNG, image/png): /project/attachments/other.png\n\nOpen these paths directly when you need the uploaded content.';
-const halfPainted = attachments.replace('2. other.png (PNG, image/png): /project/attachments/other.png', '1. screenshot.png (PNG, image/png): /project/attachments/screenshot.png');
-r = await run({ text: attachments, screen: ({ time, enters }) => enters ? idle : draft(time < 640 ? halfPainted : attachments) });
-assert.equal(r.result.accepted, true, 'duplicated rows in a transient repaint are not a different human draft');
-assert.equal(r.enters.length, 1);
-assert.ok(r.enters[0] >= 640, 'never submit the half-painted attachment manifest');
-r = await run({ screen: ({ time, enters }) => enters ? (time < 700 ? draft('fix it stale repaint') : accepted('fix it')) : draft('fix it') });
-assert.equal(r.result.accepted, true, 'an in-flight post-Enter redraw also settles before input-changed');
-assert.equal(r.enters.length, 1, 'do not submit a temporarily mismatching redraw');
-r = await run({ text: 'Please compare these models:\ngpt-6-astra and gpt-6-sol\nThen explain the result.', screen: ({ enters }) => enters ? idle : draft('Please compare these models:\ngpt-6-astra and gpt-6-sol\nThen explain the result.') });
-assert.equal(r.result.accepted, true, 'model mentions in a multiline request are not the live footer');
-r = await run({ text: multiline, screen: () => draft(multiline.slice(0, 90)) });
-assert.equal(r.result.reason, 'submit-unconfirmed', 'an incomplete paste never becomes a false success');
-assert.equal(r.enters.length, 0, 'never submit just a prefix');
-r = await run({ text: 'inspect https://example.test/longpath', screen: ({ time, enters }) => enters ? idle : draft(time < 1000 ? 'inspect https://example.\ntest/long' : 'inspect https://example.test/longpath') });
-assert.equal(r.result.accepted, true, 'partial echoes also tolerate native line wrapping');
-assert.ok(r.enters[0] >= 1000);
-
-r = await run({ screen: () => draft('fix it') });
-assert.equal(r.result.accepted, false);
+// The payload was written as a complete bracketed paste. Presentation differences may NOT veto
+// Enter, including the incident's Chinese wide-character wrapping, quotes, icons and path manifest.
+for (const display of [
+  '一些icon比如◔，请按设计实现。\nAttached files:\n/fixture/截图 01.06.00.png',
+  '只剩下视口内的后半段', '[Pasted Content 9000 chars]', 'first row\n• quoted bullet\n› quoted prompt\nlast row',
+  'Chinese 你\n好 emoji 🧪\n分割的URL https://exa\nmple.test/long', 'temporarily duplicated stale rows',
+]) {
+  r = await run({ screen: ({ enters }) => enters ? idle : draft(display) });
+  assert.equal(r.result.accepted, true, display);
+  assert.equal(r.enters.length, 1);
+  assert.equal(r.enters[0], 320, 'complete transport write, not reconstructed pixels, authorizes submit');
+}
+r = await run({ screen: ({ enters }) => enters >= 2 ? idle : draft('wrapped/clipped view') });
+assert.equal(r.result.accepted, true); assert.equal(r.enters.length, 2);
+assert.ok(r.enters[1] - r.enters[0] >= 800);
+r = await run({ screen: () => draft('request'), pasteCompleted: false });
+assert.equal(r.enters.length, 0, 'unowned/partial writes cannot authorize submission');
+assert.equal(r.result.reason, 'paste-unowned');
+r = await run({ screen: () => draft('request') });
+assert.equal(r.result.accepted, false); assert.equal(r.enters.length, 3);
 assert.equal(r.result.reason, 'submit-unconfirmed');
-assert.equal(r.enters.length, 3, 'bounded recovery never loops forever');
-assert.equal(r.result.pendingDraft, 'fix it');
-
-r = await run({ screen: ({ enters }) => draft(enters ? 'a different human draft' : 'fix it') });
-assert.equal(r.result.reason, 'input-changed');
-assert.equal(r.enters.length, 1, 'never submits a changed human draft');
-
 r = await run({ screen: () => idle });
+assert.equal(r.result.accepted, false, 'unchanged idle screen is never a receipt');
+assert.equal(r.enters.length, 1, 'even delayed rendering gets its first ordered Enter, but no empty retry');
+r = await run({ screen: () => 'Loading session…' });
+assert.equal(r.enters.length, 1, 'complete write is not held hostage to screen capture');
 assert.equal(r.result.accepted, false);
-assert.equal(r.enters.length, 0, 'no fake receipt when the paste never appears');
-
-r = await run({ screen: ({ enters }) => enters ? 'Loading session…' : draft('fix it') });
-assert.equal(r.result.reason, 'submit-unconfirmed');
-assert.equal(r.enters.length, 1, 'unknown/loading screens do not authorize more Enter presses');
-
-r = await run({ screen: ({ enters }) => enters ? accepted('long request') : draft('[Pasted text #1 +32 lines]'), text: 'long request' });
-assert.equal(r.result.accepted, true, 'a new folded paste token is an observable draft');
-r = await run({ before: draft('[Pasted text #1 +32 lines]'), screen: () => draft('[Pasted text #1 +32 lines]'), text: 'another request' });
-assert.equal(r.enters.length, 0, 'an existing folded paste is never blindly submitted');
-
-// Actual Claude 2.1.29x replaces its ordinary permissions footer during a paste.
-// The old matcher sees no composer and makes zero Enter attempts for five seconds.
-const foldedClaude = `${'─'.repeat(60)}\n❯ [Pasted text #7 +2 lines]\n${'─'.repeat(60)}\n  paste again to expand          new task? /clear to save 902.9k tokens`;
-const claudeIdle = `❯\n  bypass permissions on (shift+tab to cycle)`;
-const emptyPasteHint = `${'─'.repeat(60)}\n❯\n${'─'.repeat(60)}\n  paste again to expand`;
-const chipScreen = text => `${'─'.repeat(60)}\n❯ ${text}\n${'─'.repeat(60)}\n  paste again to expand                   ✓ Update`;
-const composite = '[Image #14] [Image #15][Pasted text #16 +4 lines]';
-const claudePasteOptions = { before: claudeIdle, draftFooterPattern: CLAUDE_COMPOSER_FOOTER, ownedPaste: claudeOwnedPaste };
-r = await run({ ...claudePasteOptions, text: attachments,
-  screen: ({ enters }) => enters ? emptyPasteHint : chipScreen(composite) });
-assert.equal(r.result.accepted, true, 'screenshot: image chips plus folded text are our paste, not input-changed');
+for (const screen of [
+  'Choose a recovery path:\n› 1. Resume from summary\n  2. Resume full session as-is\nEnter to confirm',
+  'Folder access\nTrust this folder?\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit',
+  'Delete files? (y/n)',
+]) {
+  r = await run({ screen: () => screen });
+  assert.equal(r.enters.length, 0, 'never blindly confirm a modal which replaced the composer');
+}
+let changed = false;
+r = await run({ screen: ({ enters }) => { changed = enters > 0; return draft(changed ? 'new human draft' : 'our draft'); },
+  inputUnchanged: () => !changed });
+assert.equal(r.result.reason, 'input-changed'); assert.equal(r.enters.length, 1);
+assert.equal((await r.submit()).reason, 'input-changed', 'an invalidated lease cannot be revived by retry');
+r = await run({ screen: () => draft('request'), inputUnchanged: () => false });
+assert.equal(r.enters.length, 0);
+let native = false;
+r = await run({ screen: ({ enters }) => { native = enters > 0; return 'redraw unrelated to contents'; },
+  confirmSubmission: async () => native ? { receipt: 'native-queue', queued: true } : null });
+assert.equal(r.result.accepted, true); assert.equal(r.result.queued, true);
 assert.equal(r.enters.length, 1);
-assert.ok(r.enters[0] >= 480, 'folded chip composition settles before Enter');
-r = await run({ ...claudePasteOptions, text: attachments,
-  screen: ({ time, enters }) => enters ? emptyPasteHint : chipScreen(time < 1200 ? '[Image #14] [Image #15]' : composite) });
-assert.equal(r.result.accepted, true, 'slow image expansion waits for the text chip instead of aborting');
-assert.ok(r.enters[0] >= 1200, 'do not submit an image-only intermediate frame');
-r = await run({ ...claudePasteOptions, text: attachments,
-  screen: ({ enters }) => enters >= 2 ? emptyPasteHint : chipScreen(composite) });
-assert.equal(r.result.accepted, true);
-assert.equal(r.enters.length, 2, 'ignored Enter is retried, not the image paste');
-r = await run({ ...claudePasteOptions, text: attachments, screen: () => chipScreen(composite) });
-assert.equal(r.result.accepted, false, 'a chip is not a delivery receipt');
-assert.equal(r.enters.length, 3, 'folded inputs still bound Enter retries');
-r = await run({ ...claudePasteOptions, before: chipScreen(composite), text: attachments, screen: () => chipScreen(composite) });
-assert.equal(r.enters.length, 0, 'old composite drafts are never submitted as the new message');
-r = await run({ ...claudePasteOptions, text: attachments,
-  screen: ({ enters }) => chipScreen(enters ? 'A different human request' : composite) });
-assert.equal(r.result.reason, 'input-changed');
-assert.equal(r.enters.length, 1, 'a genuine edit after Enter is not submitted or repasted');
-r = await run({ before: idle, text: attachments, screen: () => draft(composite) });
-assert.equal(r.enters.length, 0, 'Claude composite dialect never broadens Codex input recognition');
-r = await run({ before: claudeIdle, screen: () => foldedClaude, text: multiline });
-assert.equal(r.enters.length, 0, 'generic/Codex behavior has not been broadened');
-r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
-  screen: ({ enters }) => normalizeClaudeInputScreen(enters ? claudeIdle : foldedClaude) });
-assert.equal(r.result.accepted, true, 'Claude paste hint is a valid live composer footer');
+r = await run({ screen: ({ enters }) => enters ? idle : draft('request'), confirmSubmission: async () => null });
+assert.equal(r.result.accepted, true, 'native image transformations/history-disabled modes retain verified composer-clear receipts');
+assert.equal(r.result.receipt, 'composer-cleared');
 assert.equal(r.enters.length, 1);
-r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
-  screen: ({ enters }) => enters ? emptyPasteHint : foldedClaude });
-assert.equal(r.result.accepted, true, 'Claude may retain the paste hint after Enter clears the composer');
-assert.equal(r.enters.length, 1, 'cleared paste is not submitted twice without a transcript receipt');
-r = await run({ before: foldedClaude, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER, screen: () => foldedClaude });
-assert.equal(r.enters.length, 0, 'an old hidden paste cannot authorize a fresh submission');
-r = await run({ before: claudeIdle, text: multiline, draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
-  screen: () => `Prior report quoted:\n${foldedClaude}\n${claudeIdle}` });
-assert.equal(r.enters.length, 0, 'a quoted paste above the current empty composer is not new input');
+r = await run({ screen: () => draft('already accepted'), inputUnchanged: () => false,
+  confirmSubmission: async () => ({ receipt: 'native-manual-enter' }) });
+assert.equal(r.result.accepted, true); assert.equal(r.enters.length, 0, 'manual Enter wins before a stale lease');
+let keyMayHaveLanded = false;
+r = await run({ screen: () => draft('request'),
+  pressEnter: async () => { keyMayHaveLanded = true; throw new Error('tmux timed out'); },
+  confirmSubmission: async () => keyMayHaveLanded ? { receipt: 'native-after-timeout' } : null });
+assert.equal(r.result.accepted, true, 'a transport timeout reconciles acknowledgement without a fresh paste');
+assert.equal(r.result.attempts, 1);
 
-const long = Array.from({ length: 35 }, (_, i) => `request line ${i}`).join('\n');
-r = await run({ text: long, screen: ({ enters }) => enters ? idle : draft(long) });
-assert.equal(r.result.accepted, true, 'tall wrapped composers are supported during verification');
-r = await run({ text: 'check https://example.test/averylongpath', screen: ({ enters }) => enters ? idle : draft('check https://example.test/avery\nlongpath') });
-assert.equal(r.result.accepted, true, 'soft wraps within a URL do not look like a different human draft');
-r = await run({ text: 'fix it', screen: () => draft('fixit') });
-assert.equal(r.result.accepted, false, 'meaningful spaces are not discarded when comparing drafts');
-const quoted = 'Review this terminal report:\n• First finding\n› an example prompt\nThen fix the issue.';
-r = await run({ text: quoted, screen: ({ enters }) => enters ? idle : draft(quoted) });
-assert.equal(r.result.accepted, true, 'quoted terminal bullets and prompts inside an owned paste are valid text');
+// Claude-specific asynchronous image processing is a readiness adapter, not text reconstruction.
+const claudeIdle = '❯\n  paste again to expand';
+const chips = display => `❯ ${display}\n  paste again to expand`;
+r = await run({ draftFooterPattern: CLAUDE_COMPOSER_FOOTER,
+  pasteReady: view => claudePasteReady(view, 'Review /fixture/a.png and /fixture/b.png'),
+  screen: ({ time, enters }) => enters ? claudeIdle : chips(time < 1200 ? '[Image #1][Image #2]' : '[Image #1][Image #2][Pasted text #3 +4 lines]') });
+assert.equal(r.result.accepted, true); assert.equal(r.enters.length, 1);
+assert.ok(r.enters[0] >= 1200, 'do not submit images before their associated text');
+assert.deepEqual(observeComposer('no composer'), { kind: 'unknown' });
 
 const order = [];
 let release;
@@ -151,12 +107,11 @@ const gate = new Promise(resolve => { release = resolve; });
 const first = serializeAgentInput('same-pane', async () => { order.push('first-start'); await gate; order.push('first-end'); });
 const second = serializeAgentInput('same-pane', async () => { order.push('second'); });
 await serializeAgentInput('other-pane', async () => { order.push('other'); });
-assert.deepEqual(order, ['first-start', 'other'], 'different sessions remain independent');
-release();
-await Promise.all([first, second]);
-assert.deepEqual(order, ['first-start', 'other', 'first-end', 'second'], 'one pane has ordered send transactions');
+assert.deepEqual(order, ['first-start', 'other']);
+release(); await Promise.all([first, second]);
+assert.deepEqual(order, ['first-start', 'other', 'first-end', 'second']);
 await assert.rejects(serializeAgentInput('same-pane', async () => { throw new Error('send failed'); }));
-assert.equal(await serializeAgentInput('same-pane', async () => 'next'), 'next', 'a failed send releases the queue');
+assert.equal(await serializeAgentInput('same-pane', async () => 'next'), 'next');
 for (const reason of ['submit-unconfirmed', 'input-changed']) {
   let calls = 0;
   const response = await deliverVoiceFeedback({
@@ -164,9 +119,7 @@ for (const reason of ['submit-unconfirmed', 'input-changed']) {
     getSession: () => ({ status: 'waiting' }), answeredElsewhere: () => false,
     deliverReply: async () => { calls++; return { inputBlocked: true, reason }; },
   });
-  assert.equal(response.sent, false);
-  assert.equal(response.retry, true);
-  assert.equal(calls, 1, 'voice must not repaste after a bounded uncertain submit');
+  assert.equal(response.sent, false); assert.equal(response.retry, true); assert.equal(calls, 1);
   assert.doesNotMatch(response.say, /Moving on|safe agent input box/);
 }
-console.log('agent_submit: passed');
+console.log('agent_submit: transaction ownership, native receipt, Enter-only retry, modal/raw edit fencing and Claude adapter passed');

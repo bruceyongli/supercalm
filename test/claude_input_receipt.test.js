@@ -20,6 +20,9 @@ try {
   assert.equal(await readReceipt(), null, 'a partial native write is not submission');
   await appendFile(file, line.slice(-5));
   assert.deepEqual(await readReceipt(), { queued: true, receipt: 'claude-native-queue' });
+  const recovered = await createClaudeInputReceipt(file, text, readReceipt.cursor);
+  assert.deepEqual(await recovered(), { queued: true, receipt: 'claude-native-queue' }, 'acknowledgement survives refresh/restart');
+  assert.equal(await createClaudeInputReceipt(file, text, { ...readReceipt.cursor, nativeId: 'another' }), null);
   assert.equal(claudeInputRecordReceipt({ ...queued, sessionId: 'another' }, { text, nativeId }), null);
   assert.equal(claudeInputRecordReceipt({ ...queued, operation: 'remove' }, { text, nativeId }), null);
   assert.equal(claudeInputRecordReceipt({ ...queued, origin: { kind: 'task-notification' } }, { text, nativeId }), null,
@@ -33,7 +36,7 @@ try {
   // Regression: a queued message is accepted even if the CLI is busy and its repaint leaves a
   // stale/mismatched composer. Wait for native evidence, never paste/Enter somebody else's draft.
   let now = 0, enters = 0;
-  const result = await submitAgentComposer({ text, before: '❯\nbypass permissions on',
+  const result = await submitAgentComposer({ pasteCompleted: true,
     clock: () => now, pause: async ms => { now += ms; },
     readScreen: async () => `❯ ${enters ? 'a stale busy repaint' : text}\nbypass permissions on`,
     pressEnter: async () => { enters++; },

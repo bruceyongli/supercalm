@@ -22,6 +22,8 @@ const render = (display = input) => process.stdout.write(mode === 'question'
     ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ ${foldedDisplay()}\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
     : folded && pasteNumber
       ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
+    : mode === 'presentation-mismatch' && input
+      ? `\x1b[2J\x1b[3;1H${marker} 渲染被裁切，路径发生折行，特殊字符显示不同\r\n  只有最后一段 /fixture/图\r\n  片.png\r\n${footer}\r\n`
     : mode === 'codex-cropped' && input
       ? `\x1b[2J\x1b[3;1H› ${input.split('\n').slice(-24).join('\r\n  ')}\r\n\r\n${footer}\r\n`
     : `\x1b[2J\x1b[${mode === 'claude-long-ghost' || mode === 'claude-ghost' ? 1 : Math.max(1, (process.stdout.rows || 30) - 12)};1H${last ? `${marker} ${last}\r\n• Completed\r\n\r\n` : ''}${marker} ${display || hint}\r\n\r\n${footer}\r\n`);
@@ -64,6 +66,7 @@ if (mode === 'partial-paste' || mode === 'redraw-paste') {
       if (partialTimer) { appendFileSync(trace, JSON.stringify({ event: 'premature', input }) + '\n'); return; }
       if (mode === 'redraw-paste' && ++attempts === 1) return;
       appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
+      if (family === 'codex' && nativeFile) appendFileSync(nativeFile, JSON.stringify({ session_id: nativeId, ts: Date.now() / 1000, text: input }) + '\n');
       last = input; input = ''; render(); return;
     }
     if (mode === 'redraw-paste') {
@@ -99,8 +102,8 @@ onInput(data => {
       if (input) {
         appendFileSync(trace, JSON.stringify({ event: 'accepted', text: input }) + '\n');
         if (family === 'codex' && nativeFile) appendFileSync(nativeFile, JSON.stringify({ session_id: nativeId, ts: Date.now() / 1000, text: input }) + '\n');
+        if (family === 'claude' && nativeFile) appendFileSync(nativeFile, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: nativeId, content: input }) + '\n');
         if (mode === 'claude-queued' && nativeFile) {
-          appendFileSync(nativeFile, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: nativeId, content: input }) + '\n');
           last = input; input = 'busy redraw, not a new operator draft';
           render(); return;
         }

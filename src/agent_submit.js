@@ -1,8 +1,9 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import { operatorInputDisposition, pendingComposerDraft, pendingDraftMatches } from './agent_input_ready.js';
+import { cleanAgentScreen, codexComposerPlaceholder } from './agent_input_ready.js';
+import { terminalQuestionPrompt } from './detect_classify.js';
 
-// Keep complete clear/paste/submit transactions from different senders from interleaving. Raw human
-// terminal typing is deliberately not queued: the confirmation loop detects a changed draft instead.
+// One owner for clear/paste/submit. Raw terminal input is not queued; its revision invalidates
+// this owner's lease. A retry retains the SAME transaction and can never repeat its paste.
 const sends = new Map();
 export async function serializeAgentInput(pane, operation) {
   const previous = sends.get(pane) || Promise.resolve();
@@ -13,87 +14,97 @@ export async function serializeAgentInput(pane, operation) {
   finally { if (sends.get(pane) === settled) sends.delete(pane); }
 }
 
-// tmux accepting a key is not a delivery receipt. First observe our text in the live composer, then
-// submit it and observe that composer clear/advance. An ignored Enter gets an Enter-only retry, never
-// a second paste. Unknown or changed inputs are left alone; callers must retain the unsent message.
-export async function submitAgentComposer({
-  text, before = '', readScreen, pressEnter,
-  confirmSubmission = null,
-  pause = sleep, clock = Date.now,
-  initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3, draftMaxLines = 120,
-  draftFooterPattern = null, ownedPaste = null, inputUnchanged = () => true,
-}) {
-  const deadline = clock() + timeoutMs;
-  const draftOptions = { requireFooter: true, maxLines: draftMaxLines, preserveWraps: true, expectedText: text, footerPattern: draftFooterPattern };
-  const beforeComposer = pendingComposerDraft(before, draftOptions);
-  const beforeDraft = beforeComposer?.text || '';
-  let observed = false;
-  let attempts = 0;
-  let lastEnter = -Infinity;
-  let stableDraft = '';
-  let stableCount = 0;
-  let changedDraft = '', changedAt = 0, changedCount = 0;
-  let pending = '';
-  await pause(Math.max(0, initialDelayMs));
-  do {
-    if (confirmSubmission) {
-      const native = await confirmSubmission().catch(() => null);
-      if (native) return { accepted: true, verified: true, attempts, ...native };
-    }
-    if (!inputUnchanged()) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
-    const screen = await readScreen();
-    const draft = pendingComposerDraft(screen, draftOptions);
-    if (!draft) { changedDraft = ''; changedCount = 0; }
-    // Explicitly sending a phrase which is also a CLI hint is still valid operator input.
-    const withHint = draft || pendingComposerDraft(screen, { ...draftOptions, includePlaceholders: true });
-    pending = draft?.text || '';
-    const ownText = pendingDraftMatches(withHint?.text, text, withHint?.lines);
-    // Large pastes may be folded by the CLI. Only a NEW paste token, introduced by this transaction,
-    // counts; an old folded draft cannot authorize submitting somebody else's text.
-    const newPaste = draft && (ownedPaste
-      ? ownedPaste({ draft, beforeDraft: beforeComposer, text, screen })
-      : /^\[Pasted (?:text|content)[^\]]*\]$/i.test(draft.text) && draft.text !== beforeDraft);
-    if (ownText || newPaste) {
-      changedDraft = ''; changedCount = 0;
-      observed = true;
-      const current = withHint.text;
-      stableCount = stableDraft === current ? stableCount + 1 : 1;
-      stableDraft = current;
-      // Claude chips and Codex's viewport-clipped suffix must settle over two frames. A complete
-      // literal echo already proves the whole paste; no additional rendering delay is needed.
-      const settled = !ownedPaste || ownText || stableCount >= 2;
-      if (settled && attempts < maxAttempts && (attempts === 0 || (stableCount >= 2 && clock() - lastEnter >= retryMs))) {
-        if (!inputUnchanged()) return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
-        await pressEnter();
-        attempts++;
-        lastEnter = clock();
-        stableCount = 0;
-      }
-    } else if (draft) {
-      // Slow/multiline pastes appear a few characters at a time. Their first
-      // frame is not somebody else's edited draft: wait until our complete text
-      // is visible. Never press Enter on the partial prefix itself.
-      const pasteInProgress = !observed && attempts === 0
-        && pendingDraftMatches(draft.text, text, draft.lines, { prefix: true });
-      // A redraw can still show the pre-paste draft briefly. Wait for our text instead of pressing
-      // Enter on it, but stop if a genuinely different new input settles.
-      if (!pasteInProgress && (observed || draft.text !== beforeDraft)) {
-        // capture-pane can catch a TUI midway through repainting a multiline composer: old rows
-        // temporarily duplicate attachment lines or leave a stale suffix. An unmatched FRAME
-        // isn't an edited draft. Require it to settle before aborting; never press Enter on it.
-        if (changedDraft !== draft.text) { changedDraft = draft.text; changedAt = clock(); changedCount = 1; }
-        else changedCount++;
-        stableCount = 0;
-        if (changedCount >= 2 && clock() - changedAt >= 480 && ((!confirmSubmission && !ownedPaste) || clock() >= deadline)) {
-          return { accepted: false, reason: 'input-changed', pendingDraft: pending, attempts };
-        }
-      } else { changedDraft = ''; changedCount = 0; }
-    } else if (observed && attempts > 0) {
-      const state = operatorInputDisposition(screen, { allowActive: true, menuAnswer: true, draftFooterPattern });
-      if (state.ready) return { accepted: true, verified: true, attempts };
-    }
-    if (clock() >= deadline) break;
-    await pause(Math.min(160, deadline - clock()));
-  } while (clock() <= deadline);
-  return { accepted: false, reason: 'submit-unconfirmed', pendingDraft: pending, attempts };
+// Observe structure, NOT a reconstruction of the submitted text. Wide characters, quoted prompts,
+// folded pastes and viewport clipping are presentation, not transport acknowledgement.
+export function observeComposer(screen, { draftFooterPattern = null } = {}) {
+  const lines = cleanAgentScreen(screen).trimEnd().split('\n');
+  const footer = draftFooterPattern || /^\s*(?:gpt-[\w.-]+|\d+% context left|.*\bbypass permissions|.*\bshift\+tab)/i;
+  const end = lines.findLastIndex(line => footer.test(line));
+  if (end < 0 || end < lines.length - 6) return { kind: 'unknown' };
+  const start = lines.findLastIndex((line, i) => i < end && /^\s*[›❯](?:\s|$)/.test(line));
+  if (start < 0) return { kind: 'unknown' };
+  const content = [lines[start].replace(/^\s*[›❯]\s?/, ''), ...lines.slice(start + 1, end)]
+    .filter(line => !/^\s*[─━═╌╍┄┅┈┉⎯_-]{8,}\s*$/.test(line)).join('\n').trim();
+  const empty = !content || codexComposerPlaceholder(content) || /^(?:Ask Claude|Try ["“])/.test(content);
+  return { kind: empty ? 'empty' : 'draft', text: content };
 }
+
+// Create ONLY after the complete bracketed paste write succeeds (or an exact existing draft was
+// positively identified). Ownership authorizes the first Enter; screen matching does not. Native
+// history/queue acknowledgement takes priority. The compatibility receipt is a positively seen
+// nonempty composer clearing and remaining empty for two observations after Enter (some CLI modes
+// don't persist history, or transform image paths into attachments in their native transcript).
+export function createAgentSubmission({
+  readScreen, pressEnter, confirmSubmission = null, inputUnchanged = () => true,
+  pasteCompleted = false, pasteReady = () => true, draftFooterPattern = null,
+  pause = sleep, clock = Date.now, initialDelayMs = 320, timeoutMs = 5000, retryMs = 800, maxAttempts = 3,
+}) {
+  let phase = 'pasted', attempts = 0, lastEnter = -Infinity, observed = false, receipt = null;
+  let lastDraft = '', submittedDraft = '', stableCount = 0, emptyCount = 0;
+  const trace = [];
+  const transition = next => {
+    phase = next;
+    if (trace.length === 32) trace.shift();
+    trace.push({ phase, at: clock(), attempts });
+  };
+  const result = (extra = {}) => ({ accepted: phase === 'accepted', verified: phase === 'accepted',
+    phase, attempts, trace: trace.slice(), ...extra });
+  return async function submit() {
+    if (receipt) return result(receipt);
+    let deadline = clock() + timeoutMs;
+    const attemptLimit = attempts + maxAttempts;
+    await pause(attempts ? 0 : Math.max(0, initialDelayMs));
+    do {
+      const native = await confirmSubmission?.().catch(() => null);
+      if (native) { receipt = native; transition('accepted'); return result(native); }
+      if (!pasteCompleted) return result({ reason: 'paste-unowned' });
+      if (!inputUnchanged() || phase === 'interrupted') {
+        transition('interrupted'); return result({ reason: 'input-changed' });
+      }
+      const screen = await readScreen().catch(() => '');
+      if (!inputUnchanged()) { transition('interrupted'); return result({ reason: 'input-changed' }); }
+      const view = observeComposer(screen, { draftFooterPattern });
+      // Do not select a new permission/recovery prompt which replaced the composer. Quoted choices
+      // within a live composer aren't a modal. A native receipt above still wins after manual Enter.
+      if (terminalQuestionPrompt(screen)
+          || /(?:^|\n)\s*enter continue\s*[·•]\s*esc quit\s*$/i.test(screen.trim())) {
+        transition('interrupted'); return result({ reason: 'input-unavailable' });
+      }
+      if (view.kind === 'draft') {
+        observed = true; emptyCount = 0;
+        stableCount = lastDraft === view.text ? stableCount + 1 : 1;
+        lastDraft = view.text;
+      } else {
+        stableCount = 0;
+        emptyCount = view.kind === 'empty' ? emptyCount + 1 : 0;
+      }
+      if (observed && attempts && emptyCount >= 2) {
+        receipt = { receipt: 'composer-cleared' }; transition('accepted'); return result(receipt);
+      }
+      // Claude can asynchronously expand images before adding the associated text. Its adapter
+      // waits only for that known processing state, not for a byte-for-byte rendering of the input.
+      const ready = pasteReady(view);
+      const first = attempts === 0;
+      const retry = view.kind === 'draft' && (!submittedDraft || view.text === submittedDraft)
+        && stableCount >= 2 && clock() - lastEnter >= retryMs;
+      if (ready && attempts < attemptLimit && (first || retry)) {
+        if (!inputUnchanged()) { transition('interrupted'); return result({ reason: 'input-changed' }); }
+        // Record before awaiting: a transport error is uncertain, never permission to re-paste.
+        attempts++; lastEnter = clock(); submittedDraft = view.kind === 'draft' ? view.text : '';
+        transition('submitted');
+        // A timed-out tmux command may already have delivered its key. Reconcile the same
+        // transaction/receipt; throwing into the HTTP retry path would risk a second paste.
+        await pressEnter().catch(() => {});
+        // Capturing a pane or reading history on remote storage may consume the initial budget.
+        // Always give the first actual submit its own acknowledgement window.
+        if (first) deadline = Math.max(deadline, clock() + timeoutMs);
+        stableCount = 0; emptyCount = 0;
+      }
+      if (clock() >= deadline) break;
+      await pause(Math.min(160, deadline - clock()));
+    } while (clock() <= deadline);
+    return result({ reason: 'submit-unconfirmed', pendingDraft: lastDraft });
+  };
+}
+
+export const submitAgentComposer = options => createAgentSubmission(options)();

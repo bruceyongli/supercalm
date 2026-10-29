@@ -249,6 +249,15 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
 2. **Submit delay.** Agent TUIs absorb an `Enter` sent immediately after pasted text. `sendText()`
    pauses `SUBMIT_DELAY_MS` (~320ms) before Enter so the composer registers the text and submits.
    Do not send `Ctrl-C` to "clear" before input — a second Ctrl-C on an empty composer quits codex.
+   Submission is a transport-owned transaction (`createAgentSubmission`), not text reconstructed
+   from terminal pixels. Only create it after a complete bracketed paste or an identified exact
+   existing draft; its first Enter must not depend on wrapping, clipping, chips or Unicode rendering.
+   Keep the per-pane lease/revision fence, one paste, bounded Enter-only retries and native receipts.
+   Claude's image expansion is a narrow readiness adapter, not another full-text matching loop.
+   Prefer exact new native history/queue acknowledgement; the compatibility receipt requires the
+   owned nonempty composer to clear on two consecutive reads after Enter. An unchanged empty screen
+   or a paste chip is never success. Persist original receipt cursors for both CLI families so refresh/manual Enter can clear
+   only the matching web draft without re-sending. GET receipt checks never type into a terminal.
 3. **SSE resilience.** SSE responses MUST have an `'error'` handler; an abrupt client disconnect
    emits an async EPIPE/ECONNRESET that otherwise crashes the process. There are also global
    `uncaughtException`/`unhandledRejection` guards — an "OS" daemon must not die from one stray error.

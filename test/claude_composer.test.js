@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { operatorInputPlan, agentInputReady } from '../src/agent_input_ready.js';
-import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudeOwnedPaste } from '../src/claude_composer.js';
+import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePasteReady } from '../src/claude_composer.js';
 
 const footer = '⏵⏵ bypass permissions on (shift+tab to cycle)';
 const empty = `❯\n${footer}`;
@@ -30,38 +30,12 @@ assert.equal(operatorInputPlan(normalizeClaudeInputScreen(colored), 'different r
 const report = `\x1b[2mImportant report text\x1b[22m\n${ghost}`;
 assert.ok(normalizeClaudeInputScreen(report).includes('Important report text'), 'dim report content outside the composer is retained');
 
-const owned = (display, text, before = '') => claudeOwnedPaste({
-  draft: { text: display.replace(/\n/g, ' '), lines: display.split('\n') },
-  beforeDraft: { text: before.replace(/\n/g, ' '), lines: before.split('\n') }, text,
-});
-for (const display of [
-  '[Image #14] [Image #15][Pasted text #16 +4 lines]',
-  '[Pasted text #16 +4 lines] [Image #14] [Image #15]',
-  '[Image #14]\n[Image #15][Pasted text #16 +4 li\nnes]',
-  '[Image #14] [Image #15][Pasted text #16 +4 lines][Pasted content #17 +2 lines]',
-]) assert.equal(owned(display, 'Compare /tmp/first.png /tmp/second.png and explain the differences.'), true, display);
-const mixedChips = '[Image #14] [Image #15][Pasted text #16 +4 lines]';
-for (let width = 16; width <= 120; width++) {
-  const wrapped = mixedChips.match(new RegExp(`.{1,${width}}`, 'g')).map(line => line.trim()).join('\n');
-  assert.equal(owned(wrapped, 'Review /tmp/a.png /tmp/b.png'), true, `chip wrapping at ${width} columns`);
-  assert.equal(owned(wrapped, 'Review /tmp/a.png /tmp/b.png', mixedChips), false, `old chips at ${width} columns`);
+for (const text of ['[Image #1][Pasted text #2 +4 lines]', '文字、\n路径/fixture/a.png', '[Pasted Content 3000 chars]']) {
+  assert.equal(claudePasteReady({ kind: 'draft', text }, 'Review /fixture/a.png'), true);
 }
-assert.equal(owned('[Pasted text #1 +20 lines]', 'Long request'), true);
-assert.equal(owned('[Image #1] [Image #2]', '/tmp/a.png /tmp/b.jpg'), true, 'an actual image-only send');
-assert.equal(owned('[Image #1] Explain this', '/tmp/a.png Explain this'), true, 'short unfolded text with an image chip');
-assert.equal(owned('[Image #1] Explain this', '"/tmp/a screenshot.png" Explain this'), true, 'quoted image paths with spaces');
-assert.equal(owned('[Image #1][Image #2][Pasted text #3 +4 lines]',
-  'Please compare.\n\nAttached files available locally to this coding CLI:\n1. Screenshot 1.png (PNG, image/png): /tmp/Screenshot 1.png\n2. 第二张截图.png (PNG, image/png): /tmp/第二张 截图.png'), true,
-  'real upload manifest paths can contain spaces and Unicode');
-assert.equal(owned('Explain [Image #1] please', 'Explain /tmp/a.png please'), true);
-assert.equal(owned('Start [Pasted text #1 +4 lines] finish', 'Start with a detailed discussion and finish'), true);
-assert.equal(owned('[Image #1] [Image #2]', '/tmp/a.png /tmp/b.jpg Please review these'), false, 'images arrived before the text');
-assert.equal(owned('[Image #1] [Pasted text #2 +4 lines]', 'Plain text without an image'), false);
-assert.equal(owned('[Pasted text #1 +4 lines] unrelated draft', 'Expected request'), false);
-assert.equal(owned('[Pasted text #1 +4 lines]', 'Discuss [Pasted text #1 +4 lines] syntax'), false, 'literal quoted chips are not ownership proof');
-assert.equal(owned('[Image #1] [Pasted text #2 +4 lines]', '/tmp/a.png Explain this', '[Image #1]'), false, 'old chips mixed into a new draft are not owned');
-assert.equal(owned('[Image #1][Image #1][Pasted text #2 +4 lines]', '/tmp/a.png /tmp/b.png Explain'), false, 'duplicated repaint chips must settle');
-assert.equal(owned('[Image #1][Pasted text #2 +4 lines]', '/tmp/a.png Explain', '[Image #1][Pasted text #2 +4 li\nnes]'), false, 'wrapped old chips remain old');
+assert.equal(claudePasteReady({ kind: 'draft', text: '[Image #1]' }, '/fixture/a.png'), true);
+assert.equal(claudePasteReady({ kind: 'draft', text: '[Image #1]' }, 'Review /fixture/a.png'), false);
+assert.equal(claudePasteReady({ kind: 'draft', text: '[Ima\nge #1]' }, 'Review /fixture/a.png'), false);
 
 for (const clears of [true, false]) {
   let t = 0, keys = 0, reads = 0;
