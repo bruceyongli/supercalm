@@ -36,9 +36,8 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
 }
 
 // ---- Issue 2: the sidebar shows stopped sessions, not just live -------------------------------------
-// Stopped sessions belong in the PAGE BODY (desktop.js #dk-rows), NOT the side nav rail (operator
-// correction: "put stopped in the side menu instead of in the session page" — wrong surface). The rail
-// stays a lean live-only quick-nav.
+// Standalone stopped sessions belong in the PAGE BODY. A live family's stopped parent/helpers are
+// reachable in context, but the shared renderer must not add a global stopped bucket to the rail.
 {
   const shell = read('shell.js');
   const rs = shell.indexOf('function renderSide()');
@@ -49,10 +48,11 @@ const read = (p) => readFileSync(new URL('../web/' + p, import.meta.url), 'utf8'
   const desk = read('desktop.js');
   const ri = desk.indexOf('function renderInbox');
   assert.ok(ri > 0, 'renderInbox exists');
-  const inbox = desk.slice(ri, ri + 7000);
-  assert.ok(/!== 'working'/.test(inbox) && /!== 'waiting'/.test(inbox), 'renderInbox keeps a stopped bucket for the page body');
-  assert.ok(/STOPPED/.test(inbox), 'renderInbox renders a STOPPED section in the page body (#dk-rows)');
-  assert.ok(/dk-rows/.test(inbox), 'the STOPPED section targets the page-body #dk-rows list');
+  assert.ok(/renderGroupedSessionList\(\$\('#dk-rows'\), all,[\s\S]{0,100}mode: 'dashboard'/.test(desk), 'page-body rows use the shared family renderer in dashboard mode');
+  const groups = read('session-groups.js');
+  assert.ok(/const stopped = all\.filter\(f => !f\.live\.length\)/.test(groups), 'the renderer retains a stopped-family bucket');
+  assert.ok(/if \(mode !== 'rail' && stopped\.length\)[\s\S]{0,200}STOPPED/.test(groups), 'only the page body gets the global STOPPED section');
+  assert.ok(/stoppedExpanded \? stopped : stopped\.slice\(0, 10\)/.test(groups), 'stopped families stay bounded with explicit expansion');
 }
 
 // ONE unified sidebar width: both shells derive from a single --rail-width token so the dashboard and

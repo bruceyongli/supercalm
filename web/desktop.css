@@ -147,6 +147,37 @@ body.dk-collapsed .dk-expand { display: flex; }
 .dk-res-value { font-family:'JetBrains Mono',monospace; font-size:10px; color:#a5b1c2; }
 .dk-res-metric.is-stale .dk-res-value { text-decoration:underline dotted #687585; text-underline-offset:3px; }
 .dk-empty-side { color: #3a4453; font-size: 12px; padding: 6px 9px; }
+/* Explicit agent families reuse the original rows, including harness, age and all resource values. */
+.dk-agent-group { min-width: 0; }
+.dk-agent-helpers > summary, .dk-agent-stopped > summary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px; list-style: none;
+  padding: 7px 9px; min-height: 34px; color: #8b98a9; font-size: 11px; cursor: pointer;
+}
+.dk-agent-helpers > summary::-webkit-details-marker, .dk-agent-stopped > summary::-webkit-details-marker { display: none; }
+.dk-agent-helpers > summary::before, .dk-agent-stopped > summary::before { content: '▸'; color: #8793a3; }
+.dk-agent-helpers[open] > summary::before, .dk-agent-stopped[open] > summary::before { content: '▾'; }
+.dk-agent-helpers > summary:hover, .dk-agent-stopped > summary:hover { color: #d3dce9; }
+.dk-agent-helpers > summary:focus-visible, .dk-agent-stopped > summary:focus-visible { outline: 2px solid #58a6ff; outline-offset: -2px; border-radius: 5px; }
+.dk-agent-helpers { margin-left: 8px; }
+.dk-agent-children { margin-left: 7px; padding-left: 4px; border-left: 1px solid #293340; }
+.dk-agent-stopped { margin-left: 7px; }
+.dk-agent-stopped[hidden] { display: none; }
+.dk-agent-stopped > summary { color: #8793a3; }
+.dk-helper-alerts { display: inline-flex; gap: 7px; flex-wrap: wrap; margin-left: auto; }
+[data-helper-needs] { color: #e2b23e; }
+[data-helper-blocked] { color: #ff817a; }
+.dk-helper-alerts > :empty { display: none; }
+.dk-agent-children .dk-sess-l2 { flex-wrap: wrap; gap: 2px 6px; }
+.dk-agent-children .dk-sess-res { min-width: 176px; }
+.dk-agent-children .dk-sess-proj { max-width: 100%; }
+.dk-agent-children .dk-sess { padding-left: 6px; padding-right: 6px; }
+.dk-parent-context { color: #8793a3; font-size: 11px; display: flex; gap: 5px; align-items: baseline; min-width: 0; margin: 2px 0 5px; }
+.dk-parent-context a { color: #9bb8d3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-parent-link { color: #8aa9c6; font-size: 11px; white-space: nowrap; }
+@media (pointer: coarse) {
+  .dk-agent-helpers > summary, .dk-agent-stopped > summary { min-height: 44px; }
+  .dk-parent-context a { display: inline-flex; align-items: center; min-height: 44px; }
+}
 .dk-foot { margin-top: auto; display: flex; gap: 8px; align-items: center; font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #5c6675; padding: 8px 6px 2px; }
 .dk-version { border: 0; background: none; color: inherit; font: inherit; padding: 4px 0; cursor: pointer; border-radius: 5px; }
 .dk-version:hover, .dk-version:focus-visible { color: #9aa7b8; outline: none; text-decoration: underline; text-underline-offset: 3px; }

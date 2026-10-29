@@ -129,15 +129,24 @@ route('POST', '/api/attention/:id/restore', async (req, res, { id: sid }) => {
 route('GET', '/api/phone/home', async (req, res) => {
   const unread = unreadBySession();
   const dismissals = new Map(listAttentionDismissals().map((d) => [d.session_id, d]));
+  // Parent context cannot disappear at the recent-120 boundary. UNION (not UNION ALL) makes legacy
+  // cycles finite; this is database metadata only, never a transcript read or activity-clock update.
   const rows = db.prepare(`
-    WITH recent AS (
+    WITH RECURSIVE recent AS (
       SELECT id FROM sessions ORDER BY last_activity DESC LIMIT 120
+    ), visible(id) AS (
+      SELECT id FROM sessions
+      WHERE id IN (SELECT id FROM recent)
+         OR status IN ('starting', 'working', 'waiting')
+         OR EXISTS (SELECT 1 FROM attention_dismissals d WHERE d.session_id = sessions.id)
+      UNION
+      SELECT s.parent_session_id FROM sessions s JOIN visible v ON s.id = v.id
+      WHERE s.parent_session_id IS NOT NULL
     )
-    SELECT s.id, s.project_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.structured_question, s.provider_issue, s.last_activity, s.started_at, s.revision, p.name AS project
+    SELECT s.id, s.project_id, s.parent_session_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.structured_question, s.provider_issue, s.last_activity, s.started_at, s.revision, p.name AS project
     FROM sessions s
     LEFT JOIN projects p ON p.id = s.project_id
-    WHERE s.id IN (SELECT id FROM recent)
-       OR EXISTS (SELECT 1 FROM attention_dismissals d WHERE d.session_id = s.id)
+    WHERE s.id IN (SELECT id FROM visible)
     ORDER BY s.last_activity DESC`).all();
   const sessions = rows.map((s) => {
     const u = unread.get(s.id);

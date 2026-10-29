@@ -1,4 +1,17 @@
 export const SESSION_TITLE_MAX = 90;
+export const CHILD_TITLE_MAX = 48;
+
+// A helper's short display name is not its task. Keep the full instructions in the launch message.
+// Older callers may omit a name; do not fail a useful launch just for display metadata.
+export function childSessionTitle(name, task) {
+  const explicit = typeof name === 'string' ? cleanSessionTitle(name.replace(/_+/g, ' '), { max: CHILD_TITLE_MAX }) : '';
+  if (explicit) return explicit;
+  const lines = String(task || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const labeled = lines.find(line => /^(?:task|role|name|任务|分工|名称)\s*[:：]/i.test(line));
+  const fallback = (labeled || lines[0] || 'Helper').replace(/^(?:task|role|name|任务|分工|名称)\s*[:：]\s*/i, '');
+  const short = cleanSessionTitle(fallback, { max: CHILD_TITLE_MAX });
+  return short.length === CHILD_TITLE_MAX && /\s/.test(short) ? short.replace(/\s+\S*$/, '') : short;
+}
 
 export function cleanSessionTitle(title, { max = SESSION_TITLE_MAX } = {}) {
   return String(title || '')

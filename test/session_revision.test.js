@@ -10,6 +10,7 @@ const { projectSession, sessionStatusPayload } = await import('../src/session_pr
 const first = projectSession(store.createSession({
   id: 's_revision',
   project_id: null,
+  parent_session_id: 's_parent',
   tool: 'codex',
   tmux: 'tmux-revision',
   status: 'starting',
@@ -30,6 +31,7 @@ assert.equal(event.previousStatus, 'starting');
 assert.equal(event.ts, 42);
 assert.equal(event.desired_status, 'working');
 assert.equal(event.runtime_status, 'running');
+assert.equal(event.parent_session_id, 's_parent', 'live SSE retains explicit ownership, not only full snapshots');
 
 const beforeHeartbeatRevision = store.getSession('s_revision').revision;
 assert.equal(store.touchSessionRuntime('s_revision', 'test-boot', 99), true);

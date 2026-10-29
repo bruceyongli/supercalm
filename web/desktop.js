@@ -7,10 +7,11 @@ import { startVoiceMode } from './voicemode.js';
 import { subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from './attention-options.js';
 import { sessionIndicator } from './session-indicator.js';
+import { renderGroupedSessionList, parentContextHtml } from './session-groups.js';
+import { relatedSessionOrder } from './session-family.js';
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
 const $ = (s) => document.querySelector(s);
-const STOPPED_SHOWN = 10; // how many stopped sessions to show before the "show all N" toggle
 let stoppedExpanded = false; // persists across SSE re-renders so the list doesn't collapse under the user
 let dismissedExpanded = false;
 const choiceSelections = new Map();
@@ -59,7 +60,7 @@ function choicesHtml(s, questions) {
 }
 
 function renderInbox(home) {
-  const cards = needsYou();
+  const cards = relatedSessionOrder(needsYou(), home.sessions || []);
   const nc = $('#dk-needs-count');
   nc.hidden = !cards.length;
   nc.textContent = cards.length;
@@ -77,6 +78,7 @@ function renderInbox(home) {
         <span class="dk-card-context">${esc(s.project || s.id)} · ${esc(s.tool || 'agent')}</span>
         <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
+      ${parentContextHtml(s, home.sessions || [])}
       <a class="dk-card-title" href="session?id=${esc(s.id)}">${esc(preview.request || s.title || shortTitle(s))}</a>
       ${preview.outcome ? `<p class="dk-card-outcome"><span aria-hidden="true">${outcomeMark}</span>${esc(preview.outcome)}</p>` : ''}
       ${showNext ? `<div class="dk-card-next"><span aria-hidden="true">→</span><b>${esc(preview.need)}</b></div>` : ''}
@@ -108,8 +110,6 @@ function renderInbox(home) {
   // Sessions list lives HERE in the page body (not the side rail): live sessions first, then a muted
   // STOPPED section (operator: stopped sessions belong on the page, not crammed into the nav rail).
   const all = home.sessions || [];
-  const live = all.filter((s) => s.status === 'working' || s.status === 'waiting');
-  const stopped = all.filter((s) => s.status !== 'working' && s.status !== 'waiting');
   const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}">
       <i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i>${agentChip(s.tool)}
@@ -120,14 +120,8 @@ function renderInbox(home) {
     </a>`;
   // Bound the stopped list — showing all N (117, or 1000 later) is unreasonable. Show the most-recent few
   // with a "show all N" toggle (collapsed by default; state kept in the module so SSE re-renders don't reset it).
-  const shownStopped = stoppedExpanded ? stopped : stopped.slice(0, STOPPED_SHOWN);
-  const stoppedToggle = stopped.length > STOPPED_SHOWN
-    ? `<button class="dk-show-more" data-dk-stopped-toggle>${stoppedExpanded ? 'show fewer' : `show all ${stopped.length} stopped`}</button>`
-    : '';
-  $('#dk-rows').innerHTML = live.map(row).join('')
-    + (stopped.length ? `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>${shownStopped.map(row).join('')}${stoppedToggle}` : '');
-  const tog = $('[data-dk-stopped-toggle]');
-  if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
+  renderGroupedSessionList($('#dk-rows'), all, { rowSpec: s => ({ html: row(s) }), mode: 'dashboard', stoppedExpanded,
+    onStoppedToggle: () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); } });
   wireCards();
   for (const session of cards) ensureOptionQuestions(session, () => renderInbox(getHome()));
 }

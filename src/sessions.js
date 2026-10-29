@@ -62,7 +62,7 @@ import { wikiMcpToken } from './mcp.js';
 import { helperEnabled, getHelpers, setHelpers } from './project_helpers.js';
 import { deployContract } from './release_monitor.js';
 import { chatJson } from './llm.js';
-import { cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
+import { childSessionTitle, cleanSessionTitle, fallbackSessionTitle, titleContext } from './session_title.js';
 import { gitOut } from './git.js';
 import { ensureWorktree, isolatedWorktreeForLaunch, removeWorktree } from './worktrees.js';
 import { isolationResumeBlocked } from './resume_policy.js';
@@ -142,6 +142,15 @@ set temporary_project=true for an isolated disposable test. AIOS owns and automa
 temporary project and its managed folder when its sessions finish. After collecting a child result,
 POST $AIOS_URL/api/session/<child-id>/kill so its lifecycle is complete. Do not leave test-project
 cleanup for the operator.
+
+Give every helper a short, user-readable name describing its specific job, in the operator's language:
+2–5 words or about 4–12 Chinese characters, e.g. "Mobile layout review", "Login regression", "手机端验收".
+Do not use agent numbers, UUIDs, model names, or internal snake_case identifiers as the display name.
+For /child, send {"name":"short job name","task":"complete instructions"}; name is separate from task.
+For the generic /api/session endpoint, use agent_name with parent_session_id (or the parent header).
+For native CLI helpers, use the supported name/description field and the same readable name in reports.
+Report helper results back to the initiating agent; do not turn routine internal coordination into
+duplicate operator questions. This naming rule does not grant permission to spawn additional agents.
 
 All disposable files, QA screenshots, downloads, and test output must go under $AIOS_SESSION_TMPDIR.
 Anything the operator needs to open after the session belongs under $AIOS_SESSION_ARTIFACTS instead.
@@ -1257,7 +1266,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   }
 }
 
-function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null }) {
+function reserveLaunch({ project, tool, task, effort = null, autonomy = null, model = null, fastMode = false, orchestration = null, parentSessionId = null, agentName = null }) {
   assertStorageLaunchAvailable();
   if (!TOOLS[tool]) throw new Error('unknown tool: ' + tool);
   assertDiskHeadroom(project?.path);
@@ -1274,7 +1283,7 @@ function reserveLaunch({ project, tool, task, effort = null, autonomy = null, mo
     parent_session_id: parentSessionId || null,
     tool,
     tmux: paneName,
-    title: task ? task.slice(0, 100) : '(interactive)',
+    title: parentSessionId ? childSessionTitle(agentName, task) : task ? task.slice(0, 100) : '(interactive)',
     status: 'starting',
     autonomy,
     effort,
@@ -3300,6 +3309,7 @@ route('POST', '/api/session/:id/child', async (req, res, { id: parentId }) => {
       task: b.task ? String(b.task) : null,
       ...settings,
       parentSessionId: parentId,
+      agentName: b.name || b.agent_name || b.title,
     });
     store.addEvent(parentId, 'child-session-created', { child_session_id: child.id, project_id: project.id, temporary_project: project.lifecycle === 'temporary' });
     json(res, 202, decorate(child));
@@ -3360,7 +3370,7 @@ route('POST', '/api/session', async (req, res) => {
   }
   const settings = launchSettings(b, tool);
   try {
-    const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, ...settings, parentSessionId: parent?.id || null });
+    const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, ...settings, parentSessionId: parent?.id || null, agentName: b.agent_name || b.title });
     json(res, 202, decorate(s));
   } catch (e) {
     if (createdTemporaryProject) await cleanupTemporaryProject(createdTemporaryProject.id).catch(() => {});

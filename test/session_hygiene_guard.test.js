@@ -41,6 +41,10 @@ assert.match(sessions, /\/api\/session\/:id\/child/,
   'AIOS exposes one parent-owned child-session endpoint');
 assert.match(sessions, /temporary_project=true[\s\S]*automatically removes/,
   'every launched agent receives the temporary-project cleanup contract');
+assert.match(sessions, /short, user-readable name[\s\S]*"name":"short job name","task":"complete instructions"/,
+  'helpers receive a specific, short human name separate from their full task');
+assert.match(sessions, /native CLI helpers[\s\S]*does not grant permission to spawn/,
+  'native helper naming does not grant additional delegation authority');
 assert.match(sessions, /lifecycle: parent \? 'temporary' : 'persistent'/,
   'fallback generic session launches from agent curl cannot create permanent list clutter');
 assert.match(sessions, /AIOS_SESSION_TMPDIR[\s\S]*AIOS_SESSION_ARTIFACTS/,

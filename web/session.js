@@ -1,6 +1,6 @@
 import { $, api, escapeHtml, wireMic, registerSW, isInteracting, setSessionBrowserIdentity, renderMarkdown } from './common.js';
 import { initAgentPanel } from './agents/host.js';
-import { getLaunchOptions, mountShell, subscribeSessionEvents, upsertSession } from './shell.js';
+import { getHome, getLaunchOptions, mountShell, subscribeSessionEvents, upsertSession } from './shell.js';
 import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
@@ -1874,6 +1874,7 @@ function renderHeaderTitle(s) {
   el.innerHTML = `
     <span class="session-title-wrap">
       <b>${escapeHtml(s.project?.name || '(adhoc)')}</b>
+      ${s.parent_session_id && s.parent_session_id !== s.id ? `<a class="session-parent-link" href="session?id=${escapeHtml(s.parent_session_id)}" title="${escapeHtml(getHome().sessions?.find(parent => parent.id === s.parent_session_id)?.title || 'Return to the parent agent')}">↑ Parent agent</a>` : ''}
       <span class="session-title-value" id="session-title-value" role="button" tabindex="0" title="Rename session">${escapeHtml(s.title || '')}</span>
     </span>`;
   // Design match: no visible rename/AI-title icon buttons in the header — the title itself is

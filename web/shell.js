@@ -9,7 +9,7 @@ import { isStaleSessionPatch, mergeSessionPatch, mergeSessionSnapshot } from './
 import { groupedModelOptions } from './model-select.js';
 import { attentionCopy, cleanAttentionText } from './attention-preview.js';
 import { observeOnTheGoNeeds } from './on-the-go.js';
-import { splitSessionRecency } from './session-recency.js';
+import { renderGroupedSessionList } from './session-groups.js';
 import { resourceLineHtml, mountSessionResources } from './session-resources.js';
 import { sessionIndicator, sessionsByStatus } from './session-indicator.js';
 import { providerIssueInfo } from './provider-issue.js';
@@ -314,30 +314,19 @@ function renderSide() {
   const badge = $('#dk-inbox-badge');
   if (badge) { const needs = needsYou().length; badge.hidden = !needs; badge.textContent = needs; }
   const cur = new URLSearchParams(location.search).get('id');
-  // The rail lists only LIVE sessions (working/waiting) — a lean quick-nav. Stopped/parked sessions are
-  // browsed on the dashboard page body (desktop.js #dk-rows), not stuffed into the nav rail.
-  const live = (home.sessions || []).filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
+  // Live tasks own the rail. Their parent remains reachable even if it stopped, and stopped helpers
+  // stay in a collapsed subgroup. Unrelated stopped sessions remain on the dashboard only.
   // Rail rows (operator, 2026-07-16): the dot IS the status — no Working/Waiting words; the freed
   // width goes to the title (flex) and a right-aligned last-activity age (the triage signal the rail
   // lacked: waiting 30s and waiting 2h are different urgencies).
-  const { recent, older } = splitSessionRecency(live);
   const railSpec = (s) => ({ key: s.id, html: `
     <a class="dk-sess${s.id === cur ? ' active' : ''}" href="session?id=${esc(s.id)}" data-dk-sess data-sid="${esc(s.id)}">
       <span class="dk-sess-l1"><i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i><b>${esc(railTitle(s))}</b>${agentChip(s.tool)}<span class="dk-sess-age">${fmtAgo(s.last_activity)}</span></span>
       <span class="dk-sess-l2">${s.project ? `<span class="dk-sess-proj" title="${esc(s.project)}">${esc(s.project)}</span>` : ''}${resourceLineHtml()}</span>
     </a>` });
-  const specs = recent.map(railSpec);
-  if (older.length) specs.push({ key: '__older', html: `<details class="dk-older dk-older-rail" id="dk-older-side">
-    <summary>Older sessions <span data-older-count></span></summary>
-    <div class="dk-sessions" data-older-rows></div>
-  </details>` });
-  if (!live.length) specs.push({ key: '__empty', html: '<div class="dk-empty-side">no live sessions</div>' });
-  reconcileKeyed($('#dk-sessions'), specs);
-  const olderGroup = $('#dk-older-side');
-  if (olderGroup) {
-    olderGroup.querySelector('[data-older-count]').textContent = older.length;
-    reconcileKeyed(olderGroup.querySelector('[data-older-rows]'), older.map(railSpec));
-  } // Keep the details node connected so SSE patches never close it or reset status-dot animations.
+  renderGroupedSessionList($('#dk-sessions'), home.sessions || [], {
+    rowSpec: railSpec, patchRow: patchRailSession, mode: 'rail', activeId: cur,
+  });
   railResources?.refresh();
   // Footer = the important stuff only (operator): the running build (version, was the hostname) + the
   // REAL auth mode (fetched below; the old chip was a hardcoded green "proxy" dot). The wall clock is

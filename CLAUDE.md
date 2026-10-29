@@ -74,6 +74,18 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   share a two-process `du` limit with Health. Exclude shared project source, deduplicate nested scopes,
   show unknown/stale honestly, and never trigger a full storage inventory from the rail. Needs You keeps
   its actionable descriptions; resource sampling never advances activity or attention clocks.
+- Session families use only durable `parent_session_id`, never matching project names, titles or
+  timestamps. Home includes live sessions and the exact ancestors of its bounded recent history.
+  The rail/dashboard keep the original rows (harness, age, project and per-session CPU/RAM/Disk),
+  with collapsed helpers and a separate stopped-helper disclosure; stopped is not proof of success.
+  Group recency may reflect current child work but must not rewrite the parent's activity clock.
+  Keep keyed rows, resource value nodes, dot animation and disclosure state across SSE and moves.
+  Needs You retains every distinct report and its original reply/answer/dismiss target, marks its
+  parent source and places related reports together. Similar text alone is not a deduplication key.
+  Child launches accept a short human-readable `name` (`agent_name` on the generic session API),
+  stored as the title separately from the full task message. Instruct native helpers to use the same
+  naming convention without granting delegation authority or inventing separate AIOS sessions.
+  Existing titles/history remain unchanged; legacy callers without names keep a bounded fallback.
 - Storage tiers: agents and live SQLite stay on the local host. `bin/archive-artifacts.mjs` copies
   an explicitly selected artifact subdirectory to SSH storage (e.g. Spark), verifies SHA-256 contents,
   permissions and symlink targets, and registers its location before an explicit `evict`. Eviction

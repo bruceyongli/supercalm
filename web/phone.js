@@ -19,12 +19,15 @@ import { attentionCopy } from './attention-preview.js';
 import { observeOnTheGoNeeds, onTheGoState, setOnTheGoVoiceAdapter, setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from './on-the-go.js';
 import { splitSessionRecency } from './session-recency.js';
 import { sessionIndicator } from './session-indicator.js';
+import { sessionFamilies, isLiveSession, needsSessionAttention, relatedSessionOrder, parentSessionLabel } from './session-family.js';
 
 registerSW();
 
 const app = document.getElementById('app');
 const choiceSelections = new Map();
 const submittingChoices = new Set();
+const helperGroups = new Set();
+try { for (const key of JSON.parse(localStorage.getItem('aios.phone-helper-groups') || '[]')) if (typeof key === 'string') helperGroups.add(key); } catch {}
 
 // ---- state -------------------------------------------------------------------------------------
 const S = {
@@ -500,8 +503,7 @@ function render() {
 function renderHome() {
   const sessions = S.home?.sessions || [];
   const counts = S.home?.counts || { waiting: 0, working: 0, live: 0 };
-  const live = sessions.filter((s) => ['working', 'waiting'].includes(s.status) && !s.parked);
-  const needs = phoneNeeds();
+  const needs = relatedSessionOrder(phoneNeeds(), sessions);
   const dismissed = sessions.filter((s) => s.dismissed)
     .sort((a, b) => Number(b.dismissed_at || 0) - Number(a.dismissed_at || 0));
   const stale = sessions.filter((s) => !s.dismissed && (s.parked || (s.status === 'waiting' && Date.now() - s.last_activity > 48 * 3600e3)) && !needs.includes(s));
@@ -546,6 +548,7 @@ function renderHome() {
         ${isPlaying ? '<span class="reading-ind">▶ reading</span>' : ''}
         <span class="needtime">${ago(s.last_activity)}</span>
       </div>
+      ${s.parent_session_id && s.parent_session_id !== s.id ? `<div class="ph-parent-context">Helper for <a href="session?id=${esc(s.parent_session_id)}" data-parent-session>${esc(parentSessionLabel(s, sessions))}</a></div>` : ''}
       <div class="needrequest">${esc(preview.request)}</div>
       ${preview.outcome ? `<div class="needoutcome"><span aria-hidden="true" style="color:${bColor}">${outcomeMark}</span><p>${esc(preview.outcome)}</p></div>` : ''}
       ${showNext ? `<div class="neednext"><span aria-hidden="true">→</span><b>${esc(preview.need)}</b></div>` : ''}
@@ -579,11 +582,24 @@ function renderHome() {
       <span class="sessstatus" style="color:${sessionIndicator(s).color}">${sessionIndicator(s).label}</span>
       <span class="sesstime">${ago(s.last_activity)}</span>
     </button>`;
-  const { recent: recentLive, older: olderLive } = splitSessionRecency(live.filter((s) => !needs.includes(s) && !s.dismissed));
-  const rows = recentLive.map(sessRow).join('');
+  const families = sessionFamilies(sessions);
+  const familyRow = family => {
+    if (!family.helpers.length) return sessRow(family.root);
+    const open = helperGroups.has(family.id), stoppedKey = `stopped:${family.id}`;
+    const active = family.helpers.filter(isLiveSession), inactive = family.helpers.filter(s => !isLiveSession(s));
+    const blocked = family.helpers.filter(s => sessionIndicator(s).blocked).length;
+    const attention = family.helpers.filter(s => needsSessionAttention(s) && !sessionIndicator(s).blocked).length;
+    return `<section class="ph-agent-group" data-agent-family="${esc(family.id)}">${sessRow(family.root)}
+      <button class="ph-helper-toggle" data-helper-toggle="${esc(family.id)}" aria-expanded="${open}" aria-controls="ph-helpers-${esc(family.id)}"><span aria-hidden="true">${open ? '▾' : '▸'}</span> ${family.helpers.length} ${family.helpers.length === 1 ? 'helper' : 'helpers'}${attention ? `<span class="ph-helper-needs">${attention} needs you</span>` : ''}${blocked ? `<span class="ph-helper-blocked">${blocked} blocked</span>` : ''}</button>
+      <div class="ph-helper-rows" id="ph-helpers-${esc(family.id)}" ${open ? '' : 'hidden'}>${open ? active.map(sessRow).join('') : ''}
+        ${open && inactive.length ? `<button class="ph-helper-toggle" data-helper-toggle="${esc(stoppedKey)}" aria-expanded="${helperGroups.has(stoppedKey)}">${helperGroups.has(stoppedKey) ? '▾' : '▸'} Stopped helpers · ${inactive.length}</button>${helperGroups.has(stoppedKey) ? inactive.map(sessRow).join('') : ''}` : ''}
+      </div></section>`;
+  };
+  const { recent: recentLive, older: olderLive } = splitSessionRecency(families.filter(f => f.live.some(s => !s.parked && !needs.includes(s) && !s.dismissed)));
+  const rows = recentLive.map(familyRow).join('');
   // Every session, not just the live ones (operator: the mobile view must reach ALL sessions).
-  const others = sessions.filter((s) => !['working', 'waiting'].includes(s.status));
-  const otherRows = others.map(sessRow).join('');
+  const others = families.filter(f => !f.live.length);
+  const otherRows = others.map(familyRow).join('');
 
   return `
   <div class="screen">
@@ -631,7 +647,7 @@ function renderHome() {
         <button class="ph-older-toggle" id="toggle-older-sessions" aria-expanded="${S.olderSessionsOpen}" aria-controls="ph-older-sessions">
           <span aria-hidden="true">${S.olderSessionsOpen ? '▾' : '▸'}</span> Older sessions <span class="cnt">${olderLive.length}</span>
         </button>
-        <div class="ph-older-rows" id="ph-older-sessions" ${S.olderSessionsOpen ? '' : 'hidden'}>${S.olderSessionsOpen ? olderLive.map(sessRow).join('') : ''}</div>
+        <div class="ph-older-rows" id="ph-older-sessions" ${S.olderSessionsOpen ? '' : 'hidden'}>${S.olderSessionsOpen ? olderLive.map(familyRow).join('') : ''}</div>
       </section>` : ''}
       <div class="sec-label" style="padding-top:12px">SYSTEM</div>
       <nav class="ph-sysnav">
@@ -819,6 +835,13 @@ function mountPanels() {
 
 // ---- wiring (event delegation after each render) ---------------------------------------------------
 function wire() {
+  for (const toggle of app.querySelectorAll('[data-helper-toggle]')) toggle.addEventListener('click', () => {
+    const key = toggle.dataset.helperToggle;
+    helperGroups.has(key) ? helperGroups.delete(key) : helperGroups.add(key);
+    try { localStorage.setItem('aios.phone-helper-groups', JSON.stringify([...helperGroups].slice(-256))); } catch {}
+    render();
+  });
+  for (const link of app.querySelectorAll('[data-parent-session]')) link.addEventListener('click', event => event.stopPropagation());
   $('#toggle-older-needs')?.addEventListener('click', () => { S.olderNeedsOpen = !S.olderNeedsOpen; render(); });
   $('#toggle-older-sessions')?.addEventListener('click', () => { S.olderSessionsOpen = !S.olderSessionsOpen; render(); });
   // home

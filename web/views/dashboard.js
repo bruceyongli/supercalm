@@ -10,6 +10,8 @@ import { setVoiceUpdateStyle, subscribeOnTheGo, toggleOnTheGo } from '../on-the-
 import { answersPayload, attentionReportKey, ensureOptionQuestions, getOptionQuestions } from '../attention-options.js';
 import { splitSessionRecency } from '../session-recency.js';
 import { sessionIndicator, sessionsByStatus } from '../session-indicator.js';
+import { renderGroupedSessionList, parentContextHtml } from '../session-groups.js';
+import { relatedSessionOrder } from '../session-family.js';
 
 // The empty-inbox hero's setup line is HONEST: "setup complete" only when the onboarding gates
 // (a CLI installed + a credential) actually pass; otherwise it points at the wizard. Checked once
@@ -36,7 +38,6 @@ function paintSetupLine(el) {
 }
 
 const BADGE = { action: ['ACTION', '#f2554d'], decision: ['DECISION', '#e2b23e'], review: ['REVIEW', '#4ecb6c'] };
-const STOPPED_SHOWN = 10;
 let stoppedExpanded = false;
 let dismissedExpanded = false;
 let olderNeedsExpanded = false;
@@ -145,7 +146,7 @@ function renderInbox(home) {
     }) : [{ key: 'empty', html: `<p class="dk-status-empty">No ${statusFilter} sessions.</p>` }]);
     return;
   }
-  const cards = needsYou();
+  const cards = relatedSessionOrder(needsYou(), home.sessions || []);
   const { recent: recentCards, older: olderCards } = splitSessionRecency(cards);
   const nc = $('#dk-needs-count');
   if (nc) { nc.hidden = !cards.length; nc.textContent = cards.length; }
@@ -164,6 +165,7 @@ function renderInbox(home) {
         <span class="dk-card-context">${esc(s.project || s.id)} · ${esc(s.tool || 'agent')}</span>
         <span class="dk-card-meta">${fmtAgo(s.last_activity)} ago</span>
       </div>
+      ${parentContextHtml(s, home.sessions || [])}
       <a class="dk-card-title" href="session?id=${esc(s.id)}">${esc(preview.request || fullTitle(s))}</a>
       ${preview.outcome ? `<p class="dk-card-outcome"><span aria-hidden="true">${outcomeMark}</span>${esc(preview.outcome)}</p>` : ''}
       ${showNext ? `<div class="dk-card-next"><span aria-hidden="true">→</span><b>${esc(preview.need)}</b></div>` : ''}
@@ -226,8 +228,6 @@ function renderInbox(home) {
     })));
   }
   const all = home.sessions || [];
-  const live = all.filter((s) => ['starting', 'working', 'waiting'].includes(s.status));
-  const stopped = all.filter((s) => !['starting', 'working', 'waiting'].includes(s.status));
   const row = (s) => `
     <a class="dk-row" href="session?id=${esc(s.id)}" data-dk-row data-sid="${esc(s.id)}">
       <i class="dk-dot ${sessionIndicator(s).dot}" role="img" aria-label="${esc(sessionIndicator(s).detail)}" title="${esc(sessionIndicator(s).detail)}"></i>${agentChip(s.tool)}
@@ -236,28 +236,9 @@ function renderInbox(home) {
       <span class="dk-status ${sessionIndicator(s).state}">${sessionIndicator(s).label}</span>
       <span class="dk-age">${fmtAgo(s.last_activity)}</span>
     </a>`;
-  const shownStopped = stoppedExpanded ? stopped : stopped.slice(0, STOPPED_SHOWN);
-  const stoppedToggle = stopped.length > STOPPED_SHOWN
-    ? `<button class="dk-show-more" data-dk-stopped-toggle>${stoppedExpanded ? 'show fewer' : `show all ${stopped.length} stopped`}</button>` : '';
   const rowsEl = $('#dk-rows');
-  const { recent: recentLive, older: olderLive } = splitSessionRecency(live);
-  const rowSpecs = recentLive.map((s) => ({ key: `row:${s.id}`, html: row(s) }));
-  if (olderLive.length) rowSpecs.push({ key: 'older:live', html: `<details class="dk-older" id="dk-older-live">
-    <summary>Older sessions <span data-older-count></span></summary><div data-older-rows></div>
-  </details>` });
-  if (stopped.length) {
-    rowSpecs.push({ key: 'stopped:header', html: `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.length}</div>` });
-    rowSpecs.push(...shownStopped.map((s) => ({ key: `row:${s.id}`, html: row(s) })));
-    if (stoppedToggle) rowSpecs.push({ key: 'stopped:toggle', html: stoppedToggle });
-  }
-  if (rowsEl) reconcile(rowsEl, rowSpecs);
-  const olderLiveGroup = $('#dk-older-live');
-  if (olderLiveGroup) {
-    olderLiveGroup.querySelector('[data-older-count]').textContent = olderLive.length;
-    reconcile(olderLiveGroup.querySelector('[data-older-rows]'), olderLive.map(s => ({ key: `row:${s.id}`, html: row(s) })));
-  }
-  const tog = $('[data-dk-stopped-toggle]');
-  if (tog) tog.onclick = () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); };
+  renderGroupedSessionList(rowsEl, all, { rowSpec: s => ({ html: row(s) }), mode: 'dashboard', stoppedExpanded,
+    onStoppedToggle: () => { stoppedExpanded = !stoppedExpanded; renderInbox(getHome()); } });
   wireCards();
   for (const session of [...recentCards, ...(olderNeedsExpanded ? olderCards : [])]) ensureOptionQuestions(session, () => renderInbox(getHome()));
 }
