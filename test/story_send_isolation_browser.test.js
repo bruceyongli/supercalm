@@ -149,6 +149,20 @@ try {
       assert.match(await page.locator('#story').innerText(), /FRESH A GENERATION/);
       assert.doesNotMatch(await page.locator('#story').innerText(), /OBSOLETE A GENERATION/);
 
+      // A suspended phone can have an old gap to fill. Its blocked history response must not
+      // monopolize the recent-report flight when another instruction finishes meanwhile.
+      a.cursor = 'gap'; a.holdOlder = true;
+      a.older = [{ kind: 'report', ts: 3, body: 'FRESH A GENERATION' }];
+      a.events = [{ kind: 'you', ts: 100, body: 'New request during reconnect' }, { kind: 'report', ts: 101, body: 'First new result' }];
+      await page.evaluate(() => { window.gapRefresh = story.refreshStory(); }); await waitHeld();
+      a.cursor = null;
+      a.events = [{ kind: 'you', ts: 200, body: 'Another request' }, { kind: 'report', ts: 201, body: 'Newest result bypasses old history' }];
+      await page.evaluate(() => { void story.refreshStory({ followUp: true }); });
+      await page.waitForFunction(() => document.querySelector('#story').textContent.includes('Newest result bypasses old history'), null, { timeout: 5000 });
+      held.shift()(); await page.evaluate(() => gapRefresh);
+      assert.match(await page.locator('#story').innerText(), /First new result/);
+      assert.match(await page.locator('#story').innerText(), /Newest result bypasses old history/);
+
       a.cursor = 'previous'; a.holdOlder = true; a.older = [{ kind: 'report', ts: 0, body: 'OLD A PAGE SECRET' }];
       await page.evaluate(() => story.refreshStory());
       await page.evaluate(() => { window.older = story.loadEarlierStory(); }); await waitHeld();

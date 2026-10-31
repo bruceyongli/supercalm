@@ -629,6 +629,14 @@ read at most 512KiB, never scan a session's full rollout. Persist uncertain send
 Enter/lost HTTP responses can reconcile through `/input-receipt/:clientId`, including after refresh.
 The receipt endpoint never types into a CLI. Clear only the acknowledged web draft and its attachments,
 preserve newer edits, and never treat old matching text or a working-status change as proof of delivery.
+Browser sends bound BOTH response headers and JSON bodies to 15 seconds; a lost/incomplete reply is
+unknown, never automatic permission to POST again. Recover through a bounded read-only receipt GET
+using the same persisted client identity. Keep genuinely unsent drafts and newer edits. A successful
+native submission immediately shows Sent/Queued, independently of the larger Story download;
+only an exact transcript match shows Read. Repeated retries reuse one optimistic bubble. Acceptance
+prioritizes a fresh recent-Story request over a pre-send stalled read. Background gap paging has its
+own bounded lane and must never block subsequent live reports. Test stalled/partial HTTP bodies and
+lost notifications with the actual versioned SPA in Chromium AND mobile/tablet WebKit.
 
 The terminal is **interactive on desktop**. xterm runs with `disableStdin:true` and its helper
 `<textarea>` is forced **read-only** — that is the ONLY reliable way to stop macOS **iCloud Passwords /

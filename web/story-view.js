@@ -28,6 +28,7 @@ let storyAbort = new AbortController();
 let mountSignal = null;
 let liveUpdates = null;
 let catchup = null;
+let catchupFlight = null;
 let historyError = '';
 let working = false; // live session status — drives the calming "working" animation at the foot
 let liveStatus = null; // the CLI's OWN status line while working: {verb, detail, bg} (e.g. Roosting… · 1m 57s · ↓ 6.8k tokens)
@@ -55,9 +56,9 @@ let explainingSession = null; // the shared Voice Assistant owns playback and co
 let storyVoiceClient = null;
 
 // Composer echoes — a send appears in the story INSTANTLY (optimistic 'you' bubble) with a read
-// lifecycle: '⏳ queued · unread' while it sits in the agent's input queue, '✓ read' once the CLI
-// transcript (the story's primary source) contains it — transcript arrival IS the agent consuming
-// the message, so the flip is true "the agent has read this", not merely "the server stored it".
+// lifecycle: Sending / Checking until a submission receipt, Sent / Queued immediately on receipt,
+// and Read only once the CLI transcript contains it. A slow Story download cannot undo delivery
+// acknowledgement, and a stored row alone never claims the agent consumed the message.
 // Module state (openSteps rule: survives the wholesale innerHTML re-render every SSE tick).
 let sendEchoes = []; // {ts, text, state:'pending'|'read'} — bounded; read ones expire
 const readMarks = new Map(); // evKey(server 'you' event) -> true → renders the ✓ read chip
@@ -71,7 +72,7 @@ function reconcileEchoes() {
   for (const e of sendEchoes) {
     if (e.state !== 'pending') continue;
     const n = normText(e.text);
-    const sentAt = e.retryReceiptAt || e.ts;
+    const sentAt = e.acceptedAt || e.ts;
     const previousMatch = e.matchedKey;
     e.matchedKey = null;
     const hit = events.filter(ev => ev.kind === 'you' && !ev.indent && (ev.ts || 0) >= sentAt - 20000
@@ -94,6 +95,8 @@ function reconcileEchoes() {
 // point. Returns the echo handle so a failed send (409 stopped / error) can cancel the ghost.
 export function noteComposerSend(text, { sessionId = sid, clientMessageId = null } = {}) {
   if (!sid || sessionId !== sid || !panelEl?.isConnected || !normText(text)) return null;
+  const prior = clientMessageId && sendEchoes.find(e => e.clientMessageId === clientMessageId);
+  if (prior) { prior.delivery = null; render(); storyToLatest(); return prior; }
   const echo = { ts: Date.now(), text: String(text), state: 'pending', sessionId, generation: storyGeneration,
     clientMessageId, priorKeys: new Set(events.filter(ev => ev.kind === 'you').map(evKey)) };
   sendEchoes.push(echo);
@@ -110,13 +113,29 @@ export function cancelComposerSend(echo) {
   sendEchoes = sendEchoes.filter((e) => e !== echo);
   render();
 }
-// A network-loss retry can refer to a send already visible before this click. Only the server's
-// idempotency receipt authorizes matching that prior event; an ordinary repeat is a NEW request.
+// Show submission independently of transcript progress. A network-loss retry can refer to an event
+// already visible before this click; only its idempotency receipt authorizes matching that prior event.
 export function confirmComposerSend(echo, receipt) {
-  if (!echo || echo.sessionId !== sid || echo.generation !== storyGeneration || !receipt?.duplicate
-      || !Number.isFinite(receipt.message?.ts) || receipt.message.ts <= 0) return;
-  echo.retryReceiptAt = receipt.message.ts;
-  if (reconcileEchoes()) render();
+  if (!echo || echo.sessionId !== sid || echo.generation !== storyGeneration
+      || !(receipt?.ok || receipt?.accepted || receipt?.duplicate)) return;
+  echo.delivery = receipt.queued ? 'queued' : 'sent';
+  if (Number.isFinite(receipt.message?.ts) && receipt.message.ts > 0) {
+    echo.acceptedAt = receipt.message.ts; // server clock, even if the phone's clock is skewed
+    if (receipt.duplicate) echo.retryReceiptAt = receipt.message.ts;
+  }
+  reconcileEchoes(); render();
+  // An old in-flight Story download must not hide a reply to this newly accepted instruction.
+  // Retain displayed history, cancel only obsolete reads, and fetch the recent window now.
+  void refreshStory({ priority: true });
+}
+export function confirmComposerReceipt(clientMessageId, receipt) {
+  const echo = sendEchoes.find(e => e.clientMessageId === clientMessageId);
+  if (echo) confirmComposerSend(echo, receipt);
+  else void refreshStory({ priority: true });
+}
+export function uncertainComposerSend(echo) {
+  if (!echo || echo.sessionId !== sid || echo.generation !== storyGeneration) return;
+  echo.delivery = 'checking'; render();
 }
 
 // General atom key for the append-MERGE. Requirement: "those messages are already loaded, why clear them
@@ -475,11 +494,11 @@ function eventHtml(ev, i, previewVideo = false) {
         ${ev.meta ? `<span class="story-meta${metaCls}">${esc(ev.meta)}</span>` : ''}
         <span class="story-ts">${fmtClock(ev.ts)}</span>
       </div>`;
-  // Send-state chip on the operator's own messages from THIS page view: pending echo → unread/queued,
-  // reconciled transcript event → ✓ read. Historical bubbles (no local echo) stay chip-free.
-  const sendState = ev.kind !== 'you' ? null : (ev._echo ? 'pending' : (readMarks.has(evKey(ev)) ? 'read' : null));
+  // Delivery and native reading are separate. Historical bubbles (no local echo) stay chip-free.
+  const sendState = ev.kind !== 'you' ? null : (ev._echo ? (ev._delivery || 'pending') : (readMarks.has(evKey(ev)) ? 'read' : null));
+  const sendLabel = { pending: 'Sending…', checking: 'Checking delivery…', sent: '✓ sent · syncing report', queued: '✓ queued', read: '✓ read' };
   const stateChip = sendState
-    ? `<span class="story-sendstate ${sendState}" data-story-sendstate="${sendState}">${sendState === 'pending' ? (working ? '⏳ queued · unread' : '⏳ delivering…') : '✓ read'}</span>`
+    ? `<span class="story-sendstate ${sendState}" data-story-sendstate="${sendState}">${sendLabel[sendState]}</span>`
     : '';
   const inner = `
     ${head}
@@ -557,10 +576,10 @@ function calmEvents(source) {
 
 function feedList() {
   const pending = sendEchoes.filter(e => e.state === 'pending');
-  const stored = new Set(pending.map(e => e.matchedKey).filter(Boolean));
-  const pend = pending.filter(e => !e.matchedKey).map(e => ({ kind: 'you', ts: e.ts, body: e.text, _echo: true }));
+  const stored = new Map(pending.filter(e => e.matchedKey).map(e => [e.matchedKey, e]));
+  const pend = pending.filter(e => !e.matchedKey).map(e => ({ kind: 'you', ts: e.acceptedAt || e.ts, body: e.text, _echo: true, _delivery: e.delivery }));
   const latest = events.findLast(ev => ev.kind !== 'gap' && ev.kind !== 'sys');
-  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index, _echo: stored.has(evKey(ev)) })).filter(ev =>
+  const base = calmEvents(events.map((ev, index) => ({ ...ev, _sourceIndex: index, _echo: stored.has(evKey(ev)), _delivery: stored.get(evKey(ev))?.delivery })).filter(ev =>
     !(liveProviderIssue && latest && evKey(ev) === evKey(latest) && !ev.indent && ev.providerIssue?.code === liveProviderIssue.code)));
   const liveAsk = pendingQuestion ? [{
     kind: 'ask', title: 'Needs your answer', ts: pendingQuestion.ts,
@@ -887,8 +906,9 @@ async function sendAsyncChoices(call) {
   } finally { if (current()) { asyncSending.delete(call); render(); } }
 }
 
-export async function refreshStory({ quiet = true, followUp = false } = {}) {
+export async function refreshStory({ quiet = true, followUp = false, priority = false } = {}) {
   if (!sid || !panelEl) return;
+  if (priority) pauseStoryRequests();
   if (refreshFlight?.sid === sid && refreshFlight.generation === storyGeneration) {
     if (followUp) refreshFlight.again = true; // invalidations arriving during a slow mobile fetch are not lost
     return refreshFlight.promise;
@@ -911,7 +931,7 @@ const currentFlight = flight => flight.sid === sid && flight.generation === stor
 async function catchUpStory(flight) {
   // Reconnects may span several completed exchanges. The ordinary recent window alone would skip
   // their reports. Walk bounded older pages only until the last displayed event, never the full log.
-  while (catchup && currentFlight(flight)) {
+  for (let pages = 0; pages < 3 && catchup && currentFlight(flight); pages++) {
     const gap = catchup;
     const r = await requestStory(`api/session/${flight.sid}/story?cursor=${encodeURIComponent(gap.cursor)}`, { signal: flight.signal, sessionId: flight.sid });
     if (!currentFlight(flight) || catchup !== gap) return;
@@ -927,6 +947,16 @@ async function catchUpStory(flight) {
     catchup = reached ? null : { ...gap, cursor: next };
     render();
   }
+}
+
+function startStoryCatchup(flight) {
+  if (!catchup || catchupFlight || !currentFlight(flight)) return;
+  // History fills a gap on a separate, bounded lane. A slow old page must never hold the
+  // latest-report single flight (and all subsequent SSE invalidations) hostage for minutes.
+  const task = catchUpStory(flight).catch(error => {
+    if (currentFlight(flight) && error.code === 'STORY_CURSOR_INVALID') catchup = null;
+  }).finally(() => { if (catchupFlight === task) catchupFlight = null; });
+  catchupFlight = task;
 }
 
 async function refreshStoryNow({ quiet, flight }) {
@@ -975,13 +1005,13 @@ async function refreshStoryNow({ quiet, flight }) {
     // or a composer echo's unread→read state moving.
     const sig = JSON.stringify(events) + ':' + working
       + ':' + JSON.stringify(liveProviderIssue)
-      + ':' + sendEchoes.map(e => `${e.state}:${e.matchedKey || ''}`).join('|') + readMarks.size
+      + ':' + sendEchoes.map(e => `${e.state}:${e.delivery || ''}:${e.matchedKey || ''}`).join('|') + readMarks.size
       + ':' + (pendingQuestion ? `${pendingQuestion.ts}|${pendingQuestion.body}|${(pendingQuestion.options || []).map((o) => o.label).join('|')}` : '');
     if (sig !== lastSig || !panelEl.querySelector('.story-feed')) { lastSig = sig; render(); }
     else updateWorkingStatus(); // elapsed timers must not repaint even a single history row
     // Cache only the recent response, never all of the history the user chose to load.
     if (!showFull) writeStoryCache(mySid, { events: incoming, trimmed: !!r.meta?.trimmed, cursor: r.meta?.cursor || null, working, liveStatus, storySource, storyIdentity });
-    await catchUpStory(flight);
+    startStoryCatchup(flight);
     return true;
   } catch (e) {
     if (currentFlight(flight) && e.code === 'STORY_CURSOR_INVALID') catchup = null;
@@ -994,7 +1024,7 @@ async function refreshStoryNow({ quiet, flight }) {
 }
 
 function pauseStoryRequests() {
-  storyAbort.abort(); storyAbort = new AbortController(); refreshFlight = null; historyLoading = false;
+  storyAbort.abort(); storyAbort = new AbortController(); refreshFlight = null; catchupFlight = null; historyLoading = false;
 }
 export function setStoryActive(active) {
   if (active) restoreFeedScroll();

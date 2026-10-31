@@ -3030,6 +3030,8 @@ body.map-expanded-open { overflow: hidden; }
 .story-sendstate { display: inline-block; margin-top: 6px; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; font-weight: 700; border-radius: 999px; padding: 1px 9px; border: 1px solid; }
 .story-sendstate.pending { color: #e2b23e; border-color: rgba(226,178,62,.35); background: rgba(226,178,62,.08); }
 .story-sendstate.read { color: #4ecb6c; border-color: rgba(78,203,108,.3); background: rgba(78,203,108,.07); }
+.story-sendstate.sent, .story-sendstate.queued { color: #9aa7b8; border-color: rgba(154,167,184,.3); background: rgba(154,167,184,.05); }
+.story-sendstate.checking { color: #e2b23e; border-color: rgba(226,178,62,.35); background: rgba(226,178,62,.08); }
 /* "Listen to this report" pills — fixed-size states (no layout shift between idle/loading/playing,
    which would move content under the restored scroll position). 28px min-height for touch.
    The row may wrap on a narrow screen now that guided / quick / read-all are distinct. */

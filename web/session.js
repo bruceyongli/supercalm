@@ -5,6 +5,7 @@ import { navigate } from './navigation.js';
 import { stopAllPlayback as stopStoryVoice } from './tts-player.js'; // stop report narration on leave/switch (module-singleton audio)
 import { isStaleSessionPatch, mergeSessionPatch } from './session-state.js';
 import { createSessionRequestScope, isSessionAbort } from './session-request-scope.js';
+import { requestInputJson } from './input-request.js';
 import { cleanFileReference, localFilePath, isFileReference } from './file-reference.js';
 import { terminalFileReferences, installTerminalLinkTaps } from './terminal-file-links.js';
 import { fitTerminalGrid } from './terminal-layout.js';
@@ -2879,21 +2880,23 @@ async function checkComposerReceipt() {
   const identity = pendingSendIdentity, token = requestScope.capture();
   receiptCheckInFlight = true;
   try {
-    const response = await fetch(`api/session/${token.id}/input-receipt/${identity.id}`, { signal: token.signal });
+    const { response, json: result } = await requestInputJson(`api/session/${token.id}/input-receipt/${identity.id}`, { signal: token.signal, timeoutMs: 8000 });
     if (!response.ok) { if (response.status >= 500) scheduleComposerReceipt(4000); return; }
-    const result = await response.json();
     requestScope.guard(token);
     if (pendingSendIdentity?.id !== identity.id) return;
     if (!result.accepted) {
-      if (result.pending && !document.hidden) scheduleComposerReceipt(Date.now() - (identity.at || 0) < 30000 ? 1500 : 10000);
+      // A POST can still be in transit when the first GET arrives. Absence is not rejection.
+      const age = Date.now() - (identity.at || 0);
+      if (!document.hidden && (result.pending || age < 180000)) scheduleComposerReceipt(age < 30000 ? 1500 : 10000);
       return;
     }
     const [text, assets] = JSON.parse(identity.fingerprint);
     // Exact send identity, not "agent is working" or an old equal-looking Story bubble. A manual
     // Terminal Enter or a lost HTTP acknowledgement can now finish this same composer transaction.
+    storyClient?.confirmComposerReceipt?.(identity.id, { ...result, duplicate: true });
     consumeComposerSend(identity.id, text, assets.map(([path]) => path), reply.value.trim() === text);
   } catch (error) {
-    if (!isSessionAbort(error)) scheduleComposerReceipt(4000);
+    if (requestScope.isCurrent(token)) scheduleComposerReceipt(4000);
   } finally { receiptCheckInFlight = false; }
 }
 function consumeComposerSend(clientMessageId, text, paths, clearText) {
@@ -2911,6 +2914,7 @@ function consumeComposerSend(clientMessageId, text, paths, clearText) {
 }
 _sig.addEventListener('abort', () => clearTimeout(receiptTimer), { once: true });
 window.addEventListener('focus', () => scheduleComposerReceipt(0), { signal: _sig });
+window.addEventListener('online', () => scheduleComposerReceipt(0), { signal: _sig });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleComposerReceipt(0); }, { signal: _sig });
 scheduleComposerReceipt(); // a saved send identity also reconciles after refresh/navigation
 
@@ -3412,7 +3416,7 @@ window.addEventListener('aios:story-terminal', (e) => {
 
 async function sendInput() {
   // Button disabled alone is not a lock: keyboard sends bypass it, and input/viewport/upload
-  // updates used to re-enable it during delivery. Claim synchronously, before even the Story import.
+  // updates used to re-enable it during delivery. Claim synchronously before doing any async work.
   if (sendInFlight) return;
   const text = reply.value.trim();
   const draftAtSend = reply.value;
@@ -3429,20 +3433,14 @@ async function sendInput() {
   // story NOW with an unread chip, flips to ✓ read when the agent's transcript contains it
   // (story-view.js reconciles), and is cancelled if the send actually fails.
   let echo = null;
-  if (text && storyInited) {
-    try {
-      const story = await import('./story-view.js');
-      requestScope.guard(requestToken);
-      echo = story.noteComposerSend?.(text, { sessionId: requestToken.id, clientMessageId });
-    } catch {}
-  }
+  if (text && storyInited) echo = storyClient?.noteComposerSend?.(text, { sessionId: requestToken.id, clientMessageId });
   const cancelEcho = () => {
     if (echo && requestScope.isCurrent(requestToken)) {
-      import('./story-view.js').then((m) => m.cancelComposerSend?.(echo)).catch(() => {});
+      storyClient?.cancelComposerSend?.(echo);
     }
   };
   const postInput = async (replacePending = false) => {
-    const r = await fetch(`api/session/${requestToken.id}/input`, {
+    const { response: r, json } = await requestInputJson(`api/session/${requestToken.id}/input`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3454,8 +3452,6 @@ async function sendInput() {
       }),
       signal: requestToken.signal,
     });
-    requestScope.guard(requestToken);
-    const json = await r.json().catch(() => ({}));
     requestScope.guard(requestToken);
     return { r, json };
   };
@@ -3469,6 +3465,9 @@ async function sendInput() {
       result = await postInput(true);
     }
     const { r, json: j } = result;
+    if (r.status >= 500 || r.status === 408 || r.status === 429) {
+      throw new Error(j.error || `Delivery connection returned HTTP ${r.status}.`);
+    }
     if (r.status === 409) {
       cancelEcho();
       if (j.inputBlocked || j.busy) showComposerNotice(j.error || 'The agent did not accept the message. Your draft was kept.');
@@ -3477,11 +3476,8 @@ async function sendInput() {
       cancelEcho();
       alert('Send failed: ' + (j.error || r.status));
     } else {
-      if (echo) {
-        const story = await import('./story-view.js');
-        requestScope.guard(requestToken);
-        story.confirmComposerSend?.(echo, j);
-      }
+      if (j.ok !== true) throw new Error('Delivery acknowledgement was incomplete.');
+      if (echo) storyClient?.confirmComposerSend?.(echo, j);
       if (preservedTerminalDraft) rememberHistory(preservedTerminalDraft);
       // The operator can prepare the next message while this one is delivering. Only consume the
       // submitted draft/assets; a late response must not erase newly typed text or new attachments.
@@ -3491,12 +3487,12 @@ async function sendInput() {
       showComposerNotice('');
     }
   } catch (e) {
-    if (isSessionAbort(e)) return;
-    cancelEcho();
-    alert('Send failed: ' + e.message);
+    if (!requestScope.isCurrent(requestToken)) return;
+    storyClient?.uncertainComposerSend?.(echo);
+    showComposerNotice('Delivery not yet confirmed. Checking automatically; your draft is kept.');
   } finally {
     sendInFlight = false;
-    scheduleComposerReceipt();
+    scheduleComposerReceipt(0);
     if (requestScope.isCurrent(requestToken)) {
       updateSendState();
       autoExpandReply();
