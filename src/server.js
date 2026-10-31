@@ -15,6 +15,7 @@ import { tierOf, queueTier, QUEUE_TIER_ORDER } from './agents/supervisor/engagem
 import { bootPayload, createBootState, loadSequentially, trafficAllowed } from './startup.js';
 import { prepareProjectDirectory } from './project_init.js';
 import { removeProject } from './project_cleanup.js';
+import { createWebAssets } from './web_assets.js';
 
 // A request failure is caught at the request boundary below. An error that escapes that boundary means
 // process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
@@ -60,7 +61,8 @@ function sendCompressed(res, code, body, headers) {
   );
 }
 export function json(res, code, obj) {
-  sendCompressed(res, code, JSON.stringify(obj), { 'content-type': 'application/json; charset=utf-8' });
+  sendCompressed(res, code, JSON.stringify(obj), { 'content-type': 'application/json; charset=utf-8',
+    'cache-control': res.getHeader('cache-control') || 'no-store' });
 }
 export function readBody(req, limit = 50 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -377,10 +379,18 @@ const TYPES = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
+  '.wasm': 'application/wasm',
   '.map': 'application/json',
 };
+const webAssets = createWebAssets({ webDir: WEB_DIR, cacheDir: join(DATA_DIR, 'web-assets') });
 async function serveStatic(req, res, url) {
   let p = decodeURIComponent(url.pathname);
+  if (p.startsWith('/assets/')) {
+    const asset = await webAssets.get(p);
+    if (!asset) return send(res, 404, 'This application build is no longer available. Reload the app.', { 'cache-control': 'no-store' });
+    return sendCompressed(res, 200, asset.body, { ...asset.headers, 'content-type': TYPES[asset.ext] || 'application/octet-stream' });
+  }
   // The single-shell SPA is the sole implementation for every desktop app route. Historical *.html
   // bookmarks map to the same shell; router.js accepts those aliases and canonicalizes the URL in place.
   // desktop.html remains the deliberately separate classic dashboard selected by ?classic=1.
@@ -417,8 +427,12 @@ async function serveStatic(req, res, url) {
   const file = confinedPath(WEB_DIR, p);
   if (!file) return send(res, 403, 'forbidden');
   try {
-    const data = await readFile(file);
+    let data = await readFile(file);
     const ext = extname(file);
+    if (ext === '.html') {
+      try { data = Buffer.from(await webAssets.html(data.toString('utf8'))); }
+      catch (error) { console.warn('[aios] asset cache unavailable:', error.code || error.message); }
+    }
     // App code (html/js/css/manifest, excluding vendored libs) must revalidate so a
     // deploy reaches phones on the next reload — without this, no cache headers were
     // sent and Safari heuristically cached stale JS (e.g. an old voicemode.js). Vendored

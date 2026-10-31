@@ -20,6 +20,7 @@ import { createStoryUpdates } from './story_updates.js';
 import { bus } from './bus.js';
 import { providerIssue } from './provider_status.js';
 import { getLatestAttentionReport } from './attention_store.js';
+import { createBoundedCache } from './bounded_cache.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -75,7 +76,7 @@ function fallbackStory(sid) {
   return events;
 }
 
-const cache = new Map(); // key -> { file, mtimeMs, events, meta }
+const cache = createBoundedCache(); // local RAM only; at most 16 MiB of parsed report payloads
 const inFlight = new Map();
 const rolloutPaths = new Map();
 let rolloutInventory = null;
@@ -160,15 +161,14 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cur
   const key = `${sid}|${full ? 'full' : 'r' + rounds}|${cursor || ''}`;
   const hit = cache.get(key);
   if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
-  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.size === st.size && hit.ino === st.ino) return { sessionId: sid, events: hit.events, meta: hit.meta };
-  const flightKey = `${key}|${file}|${st.ino}|${st.size}|${st.mtimeMs}`;
+  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.ctimeMs === st.ctimeMs && hit.size === st.size && hit.ino === st.ino && hit.dev === st.dev) return { sessionId: sid, events: hit.events, meta: hit.meta };
+  const flightKey = `${key}|${file}|${st.dev}|${st.ino}|${st.size}|${st.mtimeMs}|${st.ctimeMs}`;
   if (inFlight.has(flightKey)) return inFlight.get(flightKey);
   const flight = readStoryPage({ file, rounds, full, cursor }).then(result => {
     if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
     const { events } = result;
     const meta = { ...result.meta, file, mtimeMs: st.mtimeMs, source: 'transcript' };
-    cache.set(key, { file, mtimeMs: st.mtimeMs, size: st.size, ino: st.ino, events, meta });
-    if (cache.size > 120) cache.delete(cache.keys().next().value);
+    cache.set(key, { file, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs, size: st.size, ino: st.ino, dev: st.dev, events, meta });
     return { sessionId: sid, events, meta };
   }).finally(() => { inFlight.delete(flightKey); });
   inFlight.set(flightKey, flight);

@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { createBoundedCache } from '../src/bounded_cache.js';
+const cache = createBoundedCache({ maxEntries: 2, maxBytes: 20 });
+cache.set('a', '12345'); cache.set('b', '12345');
+assert.equal(cache.bytes(), 14);
+assert.equal(cache.get('a'), '12345');
+cache.set('c', '12345');
+assert.equal(cache.get('b'), undefined, 'least recently read evicted');
+cache.set('a', 'x');
+assert.equal(cache.bytes(), 10, 'replacement accounts for removed bytes');
+cache.set('big', 'x'.repeat(30));
+assert.equal(cache.get('big'), undefined);
+cache.set('d', 'x'.repeat(12));
+assert.ok(cache.bytes() <= 20 && cache.size() <= 2);
+console.log('bounded_cache: LRU, byte cap, replacement and oversized payload passed');

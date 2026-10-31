@@ -8,6 +8,9 @@ import { claudeQueuedUser } from './claude_lifecycle.js';
 
 const START_BYTES = 256 * 1024;
 const MAX_BYTES = 32 * 1024 * 1024;
+// Only byte-offset hints, never retained raw history. A growing native transcript can start at the
+// previous window instead of repeatedly reading/parsing 256K, 512K, 1M ... across the network.
+const windowHints = new Map();
 const pool = [];
 const queue = [];
 let serial = 0;
@@ -104,22 +107,34 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
     const st = await fh.stat();
     const identity = fingerprint(file, st);
     const end = cursor ? decodeCursor(cursor, identity, st.size) : st.size;
+    const hintKey = `${identity}|${rounds}|${cursor || ''}`;
+    const hint = windowHints.get(hintKey);
+    const hintedBytes = hint && st.size >= hint.size ? Math.min(MAX_BYTES, end - hint.start) : 0;
+    // Probe the small tail first: a new short round must not inherit the previous huge tool window.
     let bytes = full ? end : Math.min(START_BYTES, end);
+    let retained = Buffer.alloc(0), retainedStart = end, ioBytes = 0;
     for (;;) {
       let start = Math.max(0, end - bytes);
       const rangeStart = start;
-      const buffer = Buffer.alloc(end - start);
-      const { bytesRead } = await fh.read(buffer, 0, buffer.length, start);
-      let text = buffer.subarray(0, bytesRead).toString('utf8');
+      // Expand backwards by reading ONLY the missing prefix. Short network reads are not EOF.
+      const prefix = Buffer.alloc(retainedStart - start);
+      for (let offset = 0; offset < prefix.length;) {
+        const { bytesRead } = await fh.read(prefix, offset, prefix.length - offset, start + offset);
+        if (!bytesRead) throw Object.assign(new Error('Story changed while reading. Please retry.'), { code: 'STORY_CHANGED' });
+        offset += bytesRead; ioBytes += bytesRead;
+      }
+      const buffer = retained.length ? Buffer.concat([prefix, retained]) : prefix;
+      retained = buffer; retainedStart = start;
+      let text = buffer.toString('utf8');
       if (start > 0) {
         const newline = buffer.indexOf(10);
-        if (newline >= 0) { start += newline + 1; text = buffer.subarray(newline + 1, bytesRead).toString('utf8'); }
+        if (newline >= 0) { start += newline + 1; text = buffer.subarray(newline + 1).toString('utf8'); }
         else text = ''; // a partial giant tool-result line is not a conversation boundary
       }
       let events = parseSessionLog(text);
       const completed = completedRoundStarts(events);
       if (!full && completed.length < rounds && start > 0 && bytes < MAX_BYTES) {
-        bytes = Math.min(MAX_BYTES, bytes * 2);
+        bytes = Math.min(MAX_BYTES, Math.max(bytes * 2, hintedBytes));
         continue;
       }
       let offset = start;
@@ -136,8 +151,13 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
       // Screenshot bytes must not travel inside the report JSON: four screenshots can outweigh
       // the entire conversation and prevent the mobile cache from saving even its final report.
       if (text.includes('"base64"')) attachShots(text, events, { start, identity });
+      if (!full) {
+        windowHints.delete(hintKey);
+        windowHints.set(hintKey, { start: rangeStart, size: st.size });
+        while (windowHints.size > 120) windowHints.delete(windowHints.keys().next().value);
+      }
       return { events, meta: { count: events.length, trimmed: offset > 0, full: full || offset === 0,
-        rounds, cursor: cursorFor(identity, offset), scannedBytes: end - start, totalBytes: st.size } };
+        rounds, cursor: cursorFor(identity, offset), scannedBytes: end - start, ioBytes, totalBytes: st.size } };
     }
   } finally { await fh.close(); }
 }

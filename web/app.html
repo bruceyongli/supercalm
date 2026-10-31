@@ -34,6 +34,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Supercalm</title>
+  <meta name="aios-assets" content="" />
   <!-- Discover critical modules together, not one network RTT per nested import on cellular/DERP. -->
   <link rel="modulepreload" href="router.js" />
   <link rel="modulepreload" href="shell.js" />
@@ -52,10 +53,11 @@
   <link rel="modulepreload" href="voice-interruption.js" />
   <script>
     if (/\/session(?:\.html)?$/.test(location.pathname)) {
+      const assetPrefix = document.querySelector('meta[name="aios-assets"]')?.content || '';
       for (const href of ['views/session-view.js', 'session.js', 'story-view.js', 'agents/host.js',
         'session-request-scope.js', 'terminal-layout.js', 'terminal-scroll.js', 'terminal-file-links.js',
         'file-preview.js', 'session-viewport.js']) {
-        const link = document.createElement('link'); link.rel = 'modulepreload'; link.href = href;
+        const link = document.createElement('link'); link.rel = 'modulepreload'; link.href = assetPrefix + href;
         document.head.append(link);
       }
       for (const href of ['vendor/xterm.js', 'vendor/xterm-fit.js']) {

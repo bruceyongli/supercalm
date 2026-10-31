@@ -49,6 +49,17 @@ try {
   assert.ok(ticks > 1, 'large tool-result parsing runs off the event loop');
   assert.equal(bigPage.events.find(e => e.kind === 'you')?.body, 'Request 0', 'a giant partial JSONL line does not hide the request');
   assert.equal(bigPage.events.find(e => e.kind === 'report')?.body, 'Report 0');
+  assert.equal(bigPage.meta.ioBytes, bigPage.meta.totalBytes,
+    'backward expansion reads each source byte once, never doubles network IO');
+  const warm = await readStoryWindow({ file: huge });
+  assert.deepEqual(warm.events, bigPage.events, 'window hints do not change report content');
+  await appendFile(huge, request(1) + report(1));
+  const growing = await readStoryWindow({ file: huge });
+  assert.equal(growing.events.find(e => e.kind === 'report')?.body, 'Report 1', 'growth is reread, not stale cached bytes');
+  assert.ok(growing.meta.ioBytes <= 256 * 1024, 'a short new turn never inherits the previous large scan');
+  await writeFile(huge, request(2) + report(2));
+  const rewritten = await readStoryWindow({ file: huge });
+  assert.equal(rewritten.events.find(e => e.kind === 'report')?.body, 'Report 2', 'truncation discards old window hints');
   const oversized = join(root, 'oversized.jsonl');
   await writeFile(oversized, request(0) + record(1, 'response_item', { type: 'function_call_output', output: 'z'.repeat(34 * 1024 * 1024) }) + report(0));
   let large = await readStoryPage({ file: oversized }), prior = Infinity;

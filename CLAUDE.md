@@ -294,6 +294,14 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
    system maxfiles 65536 (persisted via /Library/LaunchDaemons/limit.maxfiles.plist) + 8192 for
    ai.aios.server (SoftResourceLimits in its plist) — the old 256 default let ~100 leaked sockets
    wedge tailscaled.
+   Application HTML remains uncached, but `web_assets.js` rewrites its static references to one
+   content-addressed `/assets/<digest>/` tree. Relative/dynamic imports and Omni worklets share that
+   exact build, with immutable browser caching; API/navigation/manifest/SW URLs are unchanged.
+   Keep three generated snapshots in local `data/web-assets` (at most 36 MiB serialized) so an old
+   open tab can still lazy-load its own code after release. Never serve new bytes under an old digest,
+   cache session/API responses, or delete anything except this module's exact generated cache files.
+   Unversioned assets retain their no-store compatibility path. Optional Google font stylesheets do
+   not block first render. Test warm navigation AND old-build loading, not just a cold screenshot.
 10. **Never exec-wrap a launch, and Full means FULL.** macOS seatbelt does not nest: wrapping the
    tool argv in `sandbox-exec` (2026-08-11) made codex — which applies its own profile in
    workspace-write — die on EVERY command (`sandbox_apply: Operation not permitted`) and broke
@@ -388,7 +396,8 @@ clear its unconfirmed draft, and never let late feedback land on the next projec
 - **Shared implementation**: `web/vendor/omni/` is an unmodified, paired upstream snapshot from
   `~/omni/app/static/voice/`, integration `2026-10-08e`; SHA256-pinned in `omni_contract.test.js`.
   Replace the package together when upstream changes; do not patch a private cadence/decoder/VAD fork.
-  Serve `.mjs` as JavaScript and the paired package with `no-store` to avoid stale PWA combinations.
+  Serve `.mjs` as JavaScript. The paired package is immutable only inside its content-addressed build;
+  unversioned URLs remain `no-store` to avoid stale PWA combinations.
   `omni_client.js` also supports the existing private native `18002` gateway for future application-owned
   incremental text/tool speech sessions. The proxy does NOT expose `/v1/voice/speech/sessions`.
   Our current action harness produces complete spoken text (scenario A), not incremental tool speech.
@@ -666,6 +675,11 @@ Native transcript screenshots are lazy, session-scoped image references, never b
 Keep report text independent of image downloads and small enough for the recent-conversation cache.
 Image reads are bounded/off-thread and bind to transcript identity, record offset and hash; appends
 remain valid, while sibling transcripts, rotation and overwritten records cannot reuse a reference.
+Story's parsed cache is local RAM only, bounded to 120 entries and 16 MiB of serialized payload.
+Validate exact source path/device/inode/size/mtime/ctime; source data stays on its selected storage.
+Backward paging reads only missing prefixes instead of rereading overlapping windows from Spark.
+Bounded offset-only hints accelerate long rounds, but always probe the small tail first so a new
+short round does not inherit an older huge scan. Truncation/rotation discard incompatible hints.
 
 ## Supervisor (`supervisor.js` + `web/session.js` supervisor tab)
 An **opt-in, per-session supervise agent**. The contract is one markdown `doc` per session with this
