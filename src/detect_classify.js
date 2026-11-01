@@ -175,8 +175,25 @@ export function terminalQuestionPrompt(text) {
   const trust = terminalTrustPrompt(text);
   if (trust) return trust;
 
-  const raw = stripAnsi(String(text || '')).replace(/\r/g, '').split('\n').slice(-32);
+  const raw = stripAnsi(String(text || '')).replace(/\r/g, '').trimEnd().split('\n').slice(-32);
   const clean = (line) => line.replace(BORDERS, ' ').replace(/\s+$/, '').trim();
+
+  // Claude 2.1.316 removed numbers from its first-use bypass disclaimer. Keep
+  // this narrowly tied to the literal warning, exact choices and final footer;
+  // a quoted disclaimer above a live composer must remain inert.
+  const warningAt = raw.findLastIndex(line => /^\s*WARNING: Claude Code running in Bypass Permissions mode\s*$/.test(line));
+  const warningFooter = raw.findLastIndex(line => /^\s*Enter to confirm\s*·\s*Esc to cancel\s*$/i.test(line));
+  if (warningAt >= 0 && warningFooter > warningAt && !raw.slice(warningFooter + 1).map(clean).some(Boolean)) {
+    const choices = raw.slice(warningAt + 1, warningFooter).map(clean)
+      .map(line => line.match(/^([❯›>])?\s*(?:\d+[.)]\s*)?(No, exit|Yes, I accept)$/)).filter(Boolean);
+    const selected = choices.findIndex(choice => choice[1]);
+    if (choices.length === 2 && new Set(choices.map(choice => choice[2])).size === 2 && selected >= 0) {
+      return { question: raw.slice(warningAt, warningFooter).map(clean)
+        .filter(line => line && !/^(?:[❯›>]\s*)?(?:\d+[.)]\s*)?(?:No, exit|Yes, I accept)$/.test(line)).join('\n'),
+        options: choices.map((choice,index) => ({label:choice[2],selected:index===selected,
+          keys:[...Array.from({length:Math.abs(index-selected)},()=>index>selected?'down':'up'),'enter']})) };
+    }
+  }
 
   // Conventional shell confirmation.
   for (let i = raw.length - 1; i >= 0; i--) {
@@ -295,6 +312,7 @@ function autoConfirmKeys(text, autonomy, claude) {
     return prompt.options.find(option => /^yes\b/i.test(option.label) && !/clear context/i.test(option.label)
       && (autonomy === 'full' ? /bypass permissions/i.test(option.label) : !/bypass permissions/i.test(option.label)))?.keys || null;
   }
+  if (/bypass permissions mode/i.test(body) && autonomy !== 'full') return null;
   if (/bypass permissions mode|detected a custom api key|do you want to use this api key/i.test(body)) {
     return prompt.options.find(option => /^yes\b/i.test(option.label))?.keys || null;
   }

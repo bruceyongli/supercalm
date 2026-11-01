@@ -74,6 +74,12 @@ assert.deepEqual(trustConfirmKeys('Do you trust the files in this folder?\n❯ 1
   'older trust screen already highlighting Yes still confirms in place');
 
 const parsedTrust = terminalTrustPrompt(CURRENT_CLAUDE_TRUST);
+const bypass = 'WARNING: Claude Code running in Bypass Permissions mode\nIn Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous commands.\nBy proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.\nhttps://code.claude.com/docs/en/security\n❯ No, exit\n  Yes, I accept\nEnter to confirm · Esc to cancel' + '\n'.repeat(45);
+assert.deepEqual(classify({session:{id:'s_bypass',tool:'claude',autonomy:'full'},snap:bypass,idleMs:1000}).confirm,['down','enter']);
+for (const autonomy of ['ask','auto']) assert.equal(classify({session:{id:'s_bypass_'+autonomy,tool:'claude',autonomy},snap:bypass,idleMs:1000}).confirm,undefined,'bypass consent requires explicitly chosen full autonomy');
+assert.deepEqual(terminalQuestionPrompt(bypass).options.map(o=>o.label),['No, exit','Yes, I accept']);
+assert.equal(terminalQuestionPrompt(bypass+'\n❯ quoted disclaimer\n⏵⏵ bypass permissions on'),null);
+assert.equal(classify({session:{id:'s_quoted_bypass',tool:'claude',autonomy:'full'},snap:bypass+'\n❯ quoted disclaimer\n⏵⏵ bypass permissions on',idleMs:1000}).confirm,undefined);
 assert.equal(parsedTrust.question.split('\n')[0], 'Quick safety check: Is this a project you created or one you trust?',
   'the terminal question is preserved verbatim for Story');
 assert.deepEqual(parsedTrust.options.map((option) => option.label), ['No, exit', 'Yes, I trust this folder'],
