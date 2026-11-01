@@ -61,7 +61,13 @@ async function assertStoppedForMove(s) {
       (other.worktree_path === s.worktree_path && s.worktree_path || !other.worktree_path && other.project_id === s.project_id && !s.worktree_path)) throw migrationError('Another session is using this checkout');
   }
   let pane;
-  try { pane = (await exec(TMUX, ['display-message', '-p', '-t', s.tmux, '#{pane_pid}|#{pane_current_command}'], { timeout: 5000 })).stdout.trim(); }
+  try {
+    // tmux display-message can return an empty format with exit 0 for a missing
+    // target. Prove exact presence first; never infer it from formatted output.
+    await exec(TMUX, ['has-session', '-t', '=' + s.tmux], { timeout: 5000 });
+    pane = (await exec(TMUX, ['display-message', '-p', '-t', '=' + s.tmux, '#{pane_pid}|#{pane_current_command}'], { timeout: 5000 })).stdout.trim();
+    if (!/^\d+\|.+/.test(pane)) throw migrationError('Source terminal identity is unavailable');
+  }
   catch (error) {
     if (error.code !== 1 || !/can't find|no server running|No such file or directory/i.test(error.stderr || '')) throw migrationError('Cannot verify source terminal ownership');
   }
