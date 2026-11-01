@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, lstat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
@@ -31,6 +31,14 @@ try {
   assert.equal(await readFile(prefs,'utf8'), '{"theme":"light","custom":"retained"}', 'installer preserves existing native config');
   assert.throws(() => bundle.safeArchiveName('../escape')); assert.throws(() => bundle.safeArchiveName('/absolute'));
   assert.equal(bundle.safeArchiveName('./good/file'),'good/file');
+  const unsafe = join(dir,'unsafe'); await mkdir(unsafe);
+  await symlink('/outside-this-checkout',join(unsafe,'external'));
+  await exec('/usr/bin/tar',['--no-mac-metadata','-cf',join(dir,'unsafe.tar'),'-C',unsafe,'.']);
+  await assert.rejects(bundle.validateArchive(join(dir,'unsafe.tar')),/External symlink dependency/);
+  await rm(join(unsafe,'external')); await mkdir(join(unsafe,'.git'));
+  await writeFile(join(unsafe,'.git','config'),'[core]\n');
+  await exec('/usr/bin/tar',['--no-mac-metadata','-cf',join(dir,'unsafe.tar'),'-C',unsafe,'.']);
+  await assert.rejects(bundle.validateArchive(join(dir,'unsafe.tar')),/Git pointers are not working files/);
   assert.throws(() => transport.validateExecutionNode({id:'x',host:'bb2;touch nope'}));
   const probe = createServer(); await new Promise(r=>probe.listen(0,'127.0.0.1',r)); const port = probe.address().port; await new Promise(r=>probe.close(r));
   const node = transport.validateExecutionNode({id:'fixture',host:'bb2',root:workerRoot,token,localPort:port,remotePort:port,callbackPort:18793});

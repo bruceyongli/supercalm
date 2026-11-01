@@ -15,12 +15,26 @@ const tools = [
     models: [model('gpt-6-sol', 'codex', 'GPT-6 Sol', 'xhigh'), model('gpt-6.1-sol', 'codex', 'GPT-6.1 Sol', 'xhigh')] },
 ];
 const posts = [];
+const devices = [{id:'local',label:'Controller',online:true,local:true,launchable:false},
+  {id:'bb1',label:'bb1',online:true,default:true},{id:'bb2',label:'bb2',online:true},{id:'offline',label:'Sleeping Mac',online:false}];
+let move = null, movePosts = 0, retryPosts = 0;
 const json = (res, data) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
   if (path === '/aios/api/launch-options') return json(res, { tools, projects: [{ id: 'p_fixture', path: '/fixture/project', name: 'Fixture' }],
-    executionDevices: [{id:'local',label:'Controller',online:true,launchable:false},
-      {id:'bb1',label:'bb1',online:true,default:true},{id:'bb2',label:'bb2',online:true},{id:'offline',label:'Sleeping Mac',online:false}] });
+    executionDevices: devices });
+  if (path === '/aios/api/execution/devices') return json(res,{devices});
+  if (path === '/aios/api/session/s_paused/move') {
+    if (req.method === 'POST') {
+      let body = ''; for await (const chunk of req) body += chunk;
+      assert.equal(JSON.parse(body).device,'bb2'); movePosts++;
+      move={id:'x_fixture',phase:'activating',error:'Fixture connection interrupted; original retained',bytes:1234};
+    }
+    return json(res,{operation:move});
+  }
+  if (path === '/aios/api/execution/operations/x_fixture/retry' && req.method === 'POST') {
+    retryPosts++; move={...move,phase:'complete',error:null}; return json(res,{operation:move});
+  }
   if (path === '/aios/api/phone/home') return json(res, { sessions: [], counts: {} });
   if (path === '/aios/api/session' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -79,6 +93,19 @@ try {
     await page.waitForFunction(() => document.querySelector('#nl-gate')?.textContent.includes('Captured fixture'));
     assert.equal(posts.at(-1).model, 'claude-opus-5-5', 'launch pins the explicit discovered version');
     assert.equal(posts.at(-1).tool, 'claude');
+    await page.locator('#nl-cancel').click();
+    move=null;
+    await page.evaluate(async()=>{const m=await import('/aios/execution-devices.js');await m.openExecutionMove({id:'s_paused'});});
+    await page.locator('#execution-move [data-device]').selectOption('bb2');
+    const transfers=movePosts, retries=retryPosts;
+    await page.locator('#execution-move [data-start]').click();
+    await page.waitForFunction(()=>document.querySelector('#execution-move [data-start]')?.textContent==='Retry transfer');
+    assert.equal(movePosts,transfers+1);
+    assert.equal(await page.locator('#execution-move [data-start]').isEnabled(),true,'ownership-committed retry stays accessible');
+    await page.locator('#execution-move [data-start]').click();
+    await page.waitForFunction(()=>document.querySelector('#execution-move [data-progress]')?.textContent.includes('Ready · still paused'));
+    assert.equal(retryPosts,retries+1); assert.equal(movePosts,transfers+1,'retry never creates a new transfer');
+    await page.locator('#execution-move [data-close]').click();
     await page.close();
   }
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
