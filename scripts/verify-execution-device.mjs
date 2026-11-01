@@ -12,6 +12,8 @@ import { join, resolve, dirname } from 'node:path';
 import { createServer } from 'node:net';
 import { shquote as quote } from '../src/util.js';
 import { initializeExecutionNative } from '../src/execution_native.js';
+import { agentInputReady } from '../src/agent_input_ready.js';
+import { normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER } from '../src/claude_composer.js';
 
 if (process.argv[2] !== '--live-bb2') throw Error('Explicit --live-bb2 required (starts real disposable coding sessions)');
 const exec = promisify(execFile);
@@ -124,9 +126,14 @@ try {
     const file=await fetch(base+`/api/session/${session.id}/file?path=${encodeURIComponent(join(project,`proof-${tool}.md`))}&raw=1`);
     assert.equal(file.status,200);assert.equal((await file.text()).trim(),marker,'old absolute report links resolve after handoff');
     await request(`/api/session/${session.id}/resume`,{});
-    await pause(8000);
+    const resumedAt=Date.now();
+    await until('native composer ready '+session.id,async()=>{
+      const detail=await request(`/api/session/${session.id}`);
+      const screen=tool==='claude'?normalizeClaudeInputScreen(detail.snapshot):detail.snapshot;
+      return agentInputReady(screen,tool==='claude'?{completeComposer:true,footerPattern:CLAUDE_COMPOSER_FOOTER}:{});
+    },60000);
     const resumed = await request(`/api/session/${session.id}`);
-    console.log(JSON.stringify({phase:'resumed',tool,session:session.id,status:resumed.status,screen:resumed.snapshot?.slice(-3500)}));
+    console.log(JSON.stringify({phase:'resumed',tool,session:session.id,status:resumed.status,readyMs:Date.now()-resumedAt}));
     const sent=await request(`/api/session/${session.id}/input`,{text:'What exact marker did I ask you to remember? Reply "REMEMBERED " followed by that marker. Do not read any file or use tools.',source:'text',client_message_id:'verify-'+tool});
     const grounded=await report(session.id,'REMEMBERED '+marker);
     trace.checks.push({tool,session:session.id,nativeId,operation:moved.operation.id,owner:after.execution_node,sendReceipt:sent,report:storyText(grounded),preview:'200 old absolute path',original:await readFile(join(project,`proof-${tool}.md`),'utf8')});
@@ -148,7 +155,7 @@ try {
   const owned = await request('/api/phone/home').catch(()=>({sessions:[]}));
   for (const session of owned.sessions || []) {
     const detail = await request(`/api/session/${session.id}`).catch(()=>null);
-    console.error(JSON.stringify({session:session.id,status:detail?.status,question:detail?.question,screen:detail?.snapshot?.slice(-6000)}));
+    console.error(JSON.stringify({session:session.id,status:detail?.status,autonomy:detail?.autonomy,question:detail?.question,events:detail?.events?.slice(-10),screen:detail?.snapshot?.slice(-6000)}));
   }
   console.error((await readFile(join(dir,'controller.log'),'utf8').catch(()=>'' )).slice(-6000));
   console.error(await remoteCode(`console.log(require('fs').readFileSync(${JSON.stringify(join(remoteRoot,'worker.log'))},'utf8').slice(-6000))`).catch(()=>''));
