@@ -8,9 +8,9 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { loadExecutionNodes, saveExecutionNode, executionNodes, executionNode } from '../src/execution_transport.js';
+import { shquote as quote } from '../src/util.js';
 
 const exec = promisify(execFile), root = dirname(dirname(fileURLToPath(import.meta.url)));
-const quote = s => `'${String(s).replace(/'/g, `'\''`)}'`;
 const ssh = (node, command, options = {}) => node.local ? spawn('/bin/sh', ['-c', command], options)
   : spawn('/usr/bin/ssh', ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', node.host, command], options);
 function completed(child) {

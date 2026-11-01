@@ -35,6 +35,7 @@ const env = {
   CODEX_HOME: join(root,'native/codex'), CLAUDE_CONFIG_DIR: join(root,'native/claude'),
   AIOS_CODEX_SESSIONS_DIR: join(root,'native/codex/sessions'), AIOS_CODEX_HISTORY_FILE: join(root,'native/codex/history.jsonl'),
   AIOS_USAGE_CODEX_DIR: join(root,'native/codex/sessions'), AIOS_USAGE_CLAUDE_DIR: join(root,'native/claude/projects'),
+  AIOS_USAGE_AGY_FILE: join(root,'native/no-agy.jsonl'), AIOS_USAGE_AGY_CLI_LOG_DIR: join(root,'native/no-agy'),
   AIOS_CLI_PROXY_BASE: callback + '/api/cli-proxy', AIOS_CLAUDE_BASE_URL: callback + '/api/cli-proxy',
   AIOS_CLAUDE_KEY: 'sk-aios-via-proxy', AIOS_EXECUTION_MODEL_URL: callback + '/api/execution/model',
   AIOS_EXECUTION_CATALOG_URL: callback + '/api/models', AIOS_AUTO_PUBLISH: '0',

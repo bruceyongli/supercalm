@@ -5,15 +5,16 @@ import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pipeline } from 'node:stream/promises';
-import { mkdtemp, mkdir, writeFile, readFile, rm, open } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, open, realpath } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { tmpdir, homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createServer } from 'node:net';
+import { shquote as quote } from '../src/util.js';
 
 if (process.argv[2] !== '--live-bb2') throw Error('Explicit --live-bb2 required (starts real disposable coding sessions)');
-const exec = promisify(execFile), quote = s=>`'${String(s).replace(/'/g,`'\''`)}'`;
-const tag = 'verify-' + randomBytes(5).toString('hex'), dir = await mkdtemp(join(tmpdir(),'aios-devices-'));
+const exec = promisify(execFile);
+const tag = 'verify-' + randomBytes(5).toString('hex'), dir = await realpath(await mkdtemp(join(tmpdir(),'aios-devices-')));
 const remoteRoot = '/Users/apple/.local/share/supercalm-executor/' + tag;
 const remoteRuntime = JSON.parse((await exec('ssh',['-o','BatchMode=yes','bb2','/bin/cat /Users/apple/.local/share/supercalm-executor/runtime.json'])).stdout);
 const runtime = JSON.parse(await readFile(join(homedir(),'.local/share/supercalm-executor/runtime.json'),'utf8'));
@@ -66,6 +67,7 @@ try {
     CODEX_HOME:join(remoteRoot,'native/codex'),CLAUDE_CONFIG_DIR:join(remoteRoot,'native/claude'),
     AIOS_CODEX_SESSIONS_DIR:join(remoteRoot,'native/codex/sessions'),AIOS_CODEX_HISTORY_FILE:join(remoteRoot,'native/codex/history.jsonl'),
     AIOS_USAGE_CODEX_DIR:join(remoteRoot,'native/codex/sessions'),AIOS_USAGE_CLAUDE_DIR:join(remoteRoot,'native/claude/projects'),
+    AIOS_USAGE_AGY_FILE:join(remoteRoot,'native/no-agy.jsonl'),AIOS_USAGE_AGY_CLI_LOG_DIR:join(remoteRoot,'native/no-agy'),
     AIOS_CLAUDE_HOOKS:'1',AIOS_CODEX_NOTIFY:'1',AIOS_AUTO_PUBLISH:'0',AIOS_CONTEXT_INJECT:'0',AIOS_PREFLIGHT_GRILL:'0',
     AIOS_CLI_PROXY_BASE:`http://127.0.0.1:${callback}/api/cli-proxy`,AIOS_CLAUDE_BASE_URL:`http://127.0.0.1:${callback}/api/cli-proxy`,AIOS_CLAUDE_KEY:'sk-aios-via-proxy',
     AIOS_EXECUTION_MODEL_URL:`http://127.0.0.1:${callback}/api/execution/model`,AIOS_EXECUTION_CATALOG_URL:`http://127.0.0.1:${callback}/api/models`};
@@ -85,6 +87,7 @@ try {
     AIOS_WORKTREE_ROOT:join(dir,'worktrees'),AIOS_TMUX:wrapper,PATH:runtime.path,AIOS_TOOL_PATH:runtime.path,
     CODEX_HOME:join(dir,'native/codex'),CLAUDE_CONFIG_DIR:join(dir,'native/claude'),AIOS_CODEX_SESSIONS_DIR:join(dir,'native/codex/sessions'),AIOS_CODEX_HISTORY_FILE:join(dir,'native/codex/history.jsonl'),
     AIOS_USAGE_CODEX_DIR:join(dir,'native/codex/sessions'),AIOS_USAGE_CLAUDE_DIR:join(dir,'native/claude/projects'),
+    AIOS_USAGE_AGY_FILE:join(dir,'native/no-agy.jsonl'),AIOS_USAGE_AGY_CLI_LOG_DIR:join(dir,'native/no-agy'),
     AIOS_PROXY_API_KEY:'sk-aios-local',AIOS_CLAUDE_BASE_URL:'http://127.0.0.1:8793/api/cli-proxy',AIOS_CLAUDE_KEY:'sk-aios-via-proxy',
     AIOS_CLAUDE_HOOKS:'1',AIOS_CODEX_NOTIFY:'1',AIOS_AUTO_PUBLISH:'0',AIOS_CONTEXT_INJECT:'0',AIOS_PREFLIGHT_GRILL:'0',TMPDIR:dir,TMP:dir,TEMP:dir};
   delete env.AIOS_EXECUTION_NODE;
@@ -93,14 +96,17 @@ try {
   server=startController();
   await until('controller readiness',()=>fetch(base+'/readyz').then(r=>r.ok));
   await until('device connected',async()=>(await request('/api/execution/devices')).devices.some(d=>d.id==='bb2-test'&&d.online));
+  console.log(JSON.stringify({phase:'connected',fixture:tag,controller:base,root:dir}));
   const project=join(dir,'project');await mkdir(project);
   const git=async(...args)=>(await exec('git',['-C',project,...args])).stdout;
   await git('init','-b','main');await git('config','user.email','test@localhost');await git('config','user.name','Validation');
   await writeFile(join(project,'README.md'),'Disposable execution-device validation only.\n');await git('add','.');await git('commit','-m','fixture');
   for(const tool of ['codex','claude']) {
+    console.log(JSON.stringify({phase:'native-launch',tool}));
     const marker=`LOCAL-${tool}-${tag}`;
     const session=await request('/api/session',{path:project,tool,model:tool==='codex'?'gpt-6.1-sol':'claude-opus-5-5',effort:'low',autonomy:'full',task:`Disposable test. Remember the exact marker ${marker}. Write proof-${tool}.md containing only the marker. Then reply exactly "SAVED ${marker}". Do not start any helper or modify any other file.`});
     await report(session.id,'SAVED '+marker);
+    console.log(JSON.stringify({phase:'native-report',tool,session:session.id}));
     await request(`/api/session/${session.id}/stop`,{});
     const original=await request(`/api/session/${session.id}?surface=header`);
     const nativeId=original.codex_uuid||original.claude_transcript?.split('/').at(-1).replace(/\.jsonl$/,'');assert.ok(nativeId);
@@ -109,6 +115,7 @@ try {
     const moved=await request(`/api/session/${session.id}/move`,{device:'bb2-test'});
     await until('handoff '+session.id,async()=>{const op=(await request(`/api/session/${session.id}/move`)).operation;if(op.phase==='failed')throw Error(op.error);return op.phase==='complete';},240000);
     const after=await request(`/api/session/${session.id}?surface=header`);
+    console.log(JSON.stringify({phase:'moved',tool,session:session.id,nativeId}));
     assert.equal(after.id,original.id);assert.equal(after.status,'exited');assert.equal(after.execution_node,'bb2-test');
     assert.equal(after.codex_uuid||after.claude_transcript.split('/').at(-1).replace(/\.jsonl$/,''),nativeId);
     const file=await fetch(base+`/api/session/${session.id}/file?path=${encodeURIComponent(join(project,`proof-${tool}.md`))}&raw=1`);

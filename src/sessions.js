@@ -922,7 +922,7 @@ function resizeCandidate(sid, t = now()) {
 export async function sendText(name, text, options = {}) {
   const owner = store.getSessionByTmux(name);
   assertExecutionAvailable(owner?.id);
-  if (remoteSession(owner)) return executionRequest(owner, '/input', { method: 'POST', body: { text, ...options } });
+  if (remoteSession(owner)) return executionRequest(owner, '/execution/text', { method: 'POST', body: { text, options } });
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
@@ -1738,7 +1738,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
 
 export function resume(sid, options = {}) {
   try { assertExecutionAvailable(sid); } catch (error) { return Promise.reject(error); }
-  if (nodeForSession(sid)) return executionRequest(sid, '/resume', { method: 'POST', body: options, timeout: 60000 });
+  if (nodeForSession(sid)) return executionRequest(sid, '/execution/resume', { method: 'POST', body: options, timeout: 60000 });
   try { assertStorageSessionAvailable(sid, options.maintenanceToken); } catch (error) { return Promise.reject(error); }
   const inflight = pendingResumes.get(sid);
   if (inflight) return inflight;
@@ -3938,7 +3938,7 @@ async function confirmDeferredReply(sid, clientMessageId, submission = null) {
 
 export async function deliverReply(sid, text, options = {}) {
   assertExecutionAvailable(sid);
-  if (nodeForSession(sid)) return executionRequest(sid, '/input', { method: 'POST', body: { text, ...options } });
+  if (nodeForSession(sid)) return executionRequest(sid, '/execution/reply', { method: 'POST', body: { text, options }, timeout: 60000 });
   const clientMessageId = options.clientMessageId || null;
   if (!clientMessageId) return deliverReplyNow(sid, text, options); // existing voice/agent callers
   const source = options.source || 'text';
@@ -4441,7 +4441,7 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
 
 export async function killSession(sid) {
   assertExecutionAvailable(sid);
-  if (nodeForSession(sid)) return executionRequest(sid, '/kill', { method: 'POST', body: {} });
+  if (nodeForSession(sid)) return executionRequest(sid, '/kill', { method: 'POST', body: {} }).then(result => result.session);
   const s = store.getSession(sid);
   if (!s) return null;
   const pending = pendingLaunches.get(sid);

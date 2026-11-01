@@ -288,6 +288,19 @@ route('POST', '/api/session/:id/execution/evidence', workerOnly(async (req, { id
   const body = await readJson(req);
   return import('./voice.js').then(m => m.voiceEvidenceFor({ ...body, sessionId: id }, { refresh: true }));
 }));
+route('POST', '/api/session/:id/execution/reply', workerOnly(async (req, { id }) => {
+  const body = await readJson(req);
+  return import('./sessions.js').then(m => m.deliverReply(id, String(body.text || ''), body.options || {}));
+}));
+route('POST', '/api/session/:id/execution/text', workerOnly(async (req, { id }) => {
+  const body = await readJson(req), session = store.getSession(id);
+  if (!session) throw migrationError('No such session', 'session-missing', 404);
+  return import('./sessions.js').then(m => m.sendText(session.tmux, String(body.text || ''), body.options || {}));
+}));
+route('POST', '/api/session/:id/execution/resume', workerOnly(async (req, { id }) => {
+  const options = await readJson(req);
+  return import('./sessions.js').then(m => m.resume(id, options));
+}));
 route('POST', '/api/execution/model', handle(async req => {
   const node = executionNodes().find(n => n.id === req.headers['x-aios-node-id']);
   if (!node || req.headers['x-aios-node-token'] !== node.token) throw migrationError('Worker authentication required', 'execution-auth', 403);

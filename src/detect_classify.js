@@ -133,8 +133,8 @@ export function terminalTrustPrompt(text) {
   const options = [];
   let footerAt = -1;
   for (let i = promptAt; i < end; i++) {
-    if (/Enter to (?:confirm|select)|press enter to continue/i.test(raw[i])) { footerAt = i; break; }
-    const m = clean(raw[i]).match(/^([❯›>])?\s*(?:\d+[.)]\s*)?((?:Yes\b.*\btrust\b.*)|(?:No\b.*\bexit\b.*))$/i);
+    if (/Enter to (?:confirm|select)|press enter to continue|^\s*enter continue\s*·\s*esc quit\s*$/i.test(raw[i])) { footerAt = i; break; }
+    const m = clean(raw[i]).match(/^([❯›>])?\s*(?:\d+[.)]\s*)?((?:Yes\b.*\btrust\b.*)|(?:No\b.*\bexit\b.*)|Trust and continue|Quit)$/i);
     if (m) options.push({ line: i, label: m[2].replace(/\s+/g, ' ').trim(), selected: !!m[1] });
   }
   // The footer must be the final visible UI. A report can quote this entire menu above its live
@@ -142,7 +142,7 @@ export function terminalTrustPrompt(text) {
   // failure class as the historical quoted feedback-survey incident).
   if (!options.length || footerAt < 0 || raw.slice(footerAt + 1).map(clean).some(Boolean)) return null;
   const selected = options.findIndex((option) => option.selected);
-  const affirmative = options.findIndex((option) => /^yes\b/i.test(option.label) && /\btrust\b/i.test(option.label));
+  const affirmative = options.findIndex((option) => /^trust and continue$/i.test(option.label) || /^yes\b/i.test(option.label) && /\btrust\b/i.test(option.label));
 
   const firstOptionLine = Math.min(...options.map((option) => option.line));
   const question = raw.slice(promptAt, firstOptionLine).map(clean).filter(Boolean).join('\n').trim();

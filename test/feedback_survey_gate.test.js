@@ -65,6 +65,10 @@ const trust = classify({
   snap: CURRENT_CLAUDE_TRUST,
   idleMs: 1000,
 });
+const codexFolderAccess = 'Folder access\n/owned/test/project\nTrust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n› 1. Trust and continue\n  2. Quit\nenter continue · esc quit\n';
+assert.deepEqual(classify({session:{id:'s_codex_trust',tool:'codex',autonomy:'full'},snap:codexFolderAccess,idleMs:1000}).confirm,['enter']);
+assert.equal(classify({session:{id:'s_codex_ask',tool:'codex',autonomy:'ask'},snap:codexFolderAccess,idleMs:1000}).confirm,undefined);
+assert.equal(terminalTrustPrompt(codexFolderAccess+'\n› A report quoting the gate\nGPT-6.1 Sol'),null,'quoted Codex trust screens are not actionable');
 assert.deepEqual(trust.confirm, ['down', 'enter'], 'current Claude trust gate moves off default No before confirming');
 assert.deepEqual(trustConfirmKeys('Do you trust the files in this folder?\n❯ 1. Yes, I trust this folder\nEnter to confirm'), ['enter'],
   'older trust screen already highlighting Yes still confirms in place');
