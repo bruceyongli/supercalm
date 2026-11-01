@@ -70,8 +70,11 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   authority to terminate another project's jobs or shared services.
   The session rail replaces its grey brief with compact CPU/RAM/Disk values. Batch only visible rows
   through `/api/product/resources/sessions`; patch value nodes without reordering rows or resetting dots.
-  CPU/memory share a 15-second sample; owned disk scopes use a bounded, serial one-minute cache and
-  share a two-process `du` limit with Health. Exclude shared project source, deduplicate nested scopes,
+  CPU/memory share a 15-second sample; owned disk scopes refresh serially at most every five minutes
+  locally or fifteen minutes on registered remote storage, with failure backoff up to one hour.
+  Defer remote scans under OS warning pressure and all scans under critical pressure; keep last-known
+  sizes visibly stale. Free-capacity checks remain separate. Share a two-process `du` limit with Health.
+  Exclude shared project source, deduplicate nested scopes,
   show unknown/stale honestly, and never trigger a full storage inventory from the rail. Needs You keeps
   its actionable descriptions; resource sampling never advances activity or attention clocks.
 - Session families use only durable `parent_session_id`, never matching project names, titles or
@@ -688,6 +691,15 @@ Validate exact source path/device/inode/size/mtime/ctime; source data stays on i
 Backward paging reads only missing prefixes instead of rereading overlapping windows from Spark.
 Bounded offset-only hints accelerate long rounds, but always probe the small tail first so a new
 short round does not inherit an older huge scan. Truncation/rotation discard incompatible hints.
+Growing native histories use the SAME Codex/Claude adapters incrementally on two sticky workers.
+Retain only parsed native state (up to 8 MiB serialized per worker, 32 entries), byte offsets and lazy
+image references, never raw tool output/base64 windows or another local transcript copy. Read only
+new bytes plus bounded prefix/committed-tail anchors; preserve mirrored message IDs, tool/question
+results, plans and the previous completed round. Partial JSON/UTF-8 resumes at the last newline.
+Native histories are append-only; identity changes, truncation, same-size rewrites, anchor changes or
+oversized growth/state fall back to bounded cold reads. Historical cursor reads stay independent.
+Report actual per-read `ioBytes`, `parsedRecords` and `readMode` so cached payloads are not mistaken
+for new IO, and test live append amplification as well as unchanged-cache speed.
 
 ## Supervisor (`supervisor.js` + `web/session.js` supervisor tab)
 An **opt-in, per-session supervise agent**. The contract is one markdown `doc` per session with this

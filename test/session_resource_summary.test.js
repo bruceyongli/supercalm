@@ -27,6 +27,25 @@ const changed = disk.get([{ id: 's_one', paths: ['/new/worktree'] }])[0];
 assert.equal(changed.disk_bytes, null, 'changed ownership cannot reuse an old size');
 await disk.settled();
 
+let remoteCalls = 0, pressure = false, broken = false;
+const remote = createSessionDiskUsage({ clock: () => now, ttl: 100, remoteTtl: 1500,
+  canMeasure: () => !pressure, measure: async () => { remoteCalls++; return broken ? { error: 'timeout' } : { bytes: 42 }; } });
+const remoteScope = [{ id: 's_remote', paths: ['/mount/worktree'], remote: true }];
+remote.get(remoteScope); await remote.settled();
+now += 200; remote.get(remoteScope); await remote.settled();
+assert.equal(remoteCalls, 1, 'network scopes are not walked at the local polling cadence');
+now += 1600; pressure = true; remote.get(remoteScope); await remote.settled();
+assert.equal(remoteCalls, 1, 'memory pressure defers recursive network disk scans');
+assert.equal(remote.get(remoteScope)[0].disk_bytes, 42, 'deferral keeps the last known size');
+await remote.settled(); pressure = false; broken = true;
+remote.get(remoteScope); await remote.settled();
+assert.equal(remoteCalls, 2);
+now += 1600; remote.get(remoteScope); await remote.settled();
+assert.equal(remoteCalls, 2, 'a failed network scan backs off instead of timing out every minute');
+now += 1500; broken = false; remote.get(remoteScope); await remote.settled();
+assert.equal(remoteCalls, 3, 'a recovered path eventually refreshes');
+assert.equal(remote.get(remoteScope)[0].disk_stale, false);
+
 const snapshot = { checked_at: 2000, groups: [{ session_id: 's_one', cpu_percent: 143.1, footprint_bytes: 3e9, rss_bytes: 1e9,
   footprint_processes: 1, process_count: 2 }], errors: [] };
 const sessions = [{ id: 's_one', status: 'working', started_at: 1 }, { id: 's_absent', status: 'waiting' }, { id: 's_new', status: 'starting' }];

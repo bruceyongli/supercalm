@@ -10,19 +10,30 @@ import { projectGraphSummary } from './project_graph_core.js';
 import { storageInventory, databaseStorage, storageComponents, measureStoragePath } from './disk_storage.js';
 import { archiveStorageSummary } from './artifact_archive.js';
 import { currentDiskCapacity } from './disk_pressure.js';
-import { liveStorageStatus } from './live_storage.js';
+import { liveStorageStatus, liveStorageConfig } from './live_storage.js';
 import { planStorageCleanup, executeStorageCleanup } from './disk_cleanup.js';
 import { bus } from './bus.js';
 import { createResourceInventory } from './resource_usage.js';
 import { createSessionDiskUsage, sessionResourceSummary } from './session_resource_summary.js';
 
 const resources = createResourceInventory({ sessions: listSessions, projects: listProjects, tmux: TMUX, ttl: 15_000 });
-const sessionDisks = createSessionDiskUsage({ measure: measureStoragePath });
+const sessionDisks = createSessionDiskUsage({ measure: measureStoragePath, canMeasure: entry => {
+  const pressure = resources.get().host?.memory_pressure;
+  // Don't launch recursive remote reads during the initial unknown-pressure sample either.
+  return pressure !== 'critical' && (!entry.remote || pressure === 'normal');
+} });
 function diskRows(sessions) {
+  let remoteRoots;
+  try {
+    const config = liveStorageConfig();
+    remoteRoots = config ? [config.mount, ...config.mappings.filter(m => m.active).map(m => m.source)] : [];
+  } catch { remoteRoots = null; } // Unknown storage is expensive, never assume a cheap local scan.
   return sessionDisks.get(sessions.map(s => {
     const project = getProject(s.project_id);
-    return { id: s.id, paths: storageComponents(s, project)
-      .filter(c => c.kind !== 'worktree' || c.path !== project?.path).map(c => c.path) };
+    const paths = storageComponents(s, project)
+      .filter(c => c.kind !== 'worktree' || c.path !== project?.path).map(c => c.path);
+    const remote = !remoteRoots || paths.some(path => remoteRoots.some(root => path === root || path.startsWith(root + '/')));
+    return { id: s.id, paths, remote };
   }));
 }
 route('GET', '/api/product/resources', (req, res) => {

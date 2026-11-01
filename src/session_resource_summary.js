@@ -7,7 +7,8 @@ export function uniqueDiskRoots(paths) {
   return roots.filter((p, i) => !roots.slice(0, i).some(parent => p.startsWith(parent + sep)));
 }
 
-export function createSessionDiskUsage({ measure, clock = Date.now, ttl = 60_000, maxEntries = 256, budgetMs = 12_000 } = {}) {
+export function createSessionDiskUsage({ measure, clock = Date.now, ttl = 5 * 60_000,
+  remoteTtl = 15 * 60_000, canMeasure = () => true, maxEntries = 256, budgetMs = 12_000 } = {}) {
   const entries = new Map(), queue = new Map();
   let flight = null;
   async function drain() {
@@ -16,6 +17,10 @@ export function createSessionDiskUsage({ measure, clock = Date.now, ttl = 60_000
       while (queue.size) {
         const [id, entry] = queue.entries().next().value;
         queue.delete(id);
+        if (!canMeasure(entry)) {
+          entry.pending = false; entry.error = 'Disk scan deferred to protect responsiveness';
+          continue;
+        }
         const started = clock(); let bytes = 0, failed = false;
         for (const path of entry.paths) {
           const remaining = budgetMs - (clock() - started);
@@ -27,6 +32,8 @@ export function createSessionDiskUsage({ measure, clock = Date.now, ttl = 60_000
           } catch { failed = true; break; }
         }
         entry.pending = false; entry.attempted_at = clock(); entry.error = failed ? 'Disk measurement incomplete' : null;
+        entry.failures = failed ? entry.failures + 1 : 0;
+        entry.next_at = clock() + Math.min(60 * 60_000, entry.ttl * 2 ** Math.min(entry.failures, 6));
         if (!failed) { entry.bytes = bytes; entry.checked_at = clock(); }
       }
     })().finally(() => { flight = null; });
@@ -44,14 +51,17 @@ export function createSessionDiskUsage({ measure, clock = Date.now, ttl = 60_000
             if (!victim) continue;
             entries.delete(victim[0]);
           }
-          entry = { key, paths, bytes: null, checked_at: null, attempted_at: -Infinity, pending: false, error: null };
+          entry = { key, paths, bytes: null, checked_at: null, attempted_at: -Infinity, next_at: -Infinity,
+            failures: 0, pending: false, error: null };
           entries.set(scope.id, entry);
         }
-        if (!entry.pending && clock() - entry.attempted_at >= ttl) {
+        entry.remote = !!scope.remote;
+        entry.ttl = entry.remote ? remoteTtl : ttl;
+        if (!entry.pending && clock() >= entry.next_at) {
           entry.pending = true; queue.set(scope.id, entry);
         }
         rows.push({ id: scope.id, disk_bytes: entry.bytes, disk_checked_at: entry.checked_at,
-          disk_pending: entry.pending, disk_stale: !!entry.error || (entry.checked_at != null && clock() - entry.checked_at > ttl * 2),
+          disk_pending: entry.pending, disk_stale: !!entry.error || (entry.checked_at != null && clock() - entry.checked_at > entry.ttl * 2),
           disk_error: entry.error });
       }
       if (queue.size) void drain();

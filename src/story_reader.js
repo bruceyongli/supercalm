@@ -3,7 +3,8 @@
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
 import { open } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { parseSessionLog, completedRoundStarts } from './story.js';
+import { serialize } from 'node:v8';
+import { parseSessionLog, createSessionLogParser, completedRoundStarts } from './story.js';
 import { claudeQueuedUser } from './claude_lifecycle.js';
 
 const START_BYTES = 256 * 1024;
@@ -15,10 +16,132 @@ const pool = [];
 const queue = [];
 let serial = 0;
 
+// Parsed native state only: no raw tool-output windows, base64 images or local transcript copies.
+// Each of the two sticky workers owns at most 8 MiB of serialized state (16 MiB total).
+const liveWindows = new Map();
+let liveBytes = 0;
+const LIVE_BUDGET = 8 * 1024 * 1024;
+function takeWindow(key) {
+  const entry = liveWindows.get(key);
+  if (entry) { liveWindows.delete(key); liveBytes -= entry.weight; }
+  return entry;
+}
+function keepWindow(key, entry) {
+  if (!entry.cacheable) return;
+  entry.weight = serialize({ state: entry.parser.snapshot(), offsets: entry.offsets,
+    shots: entry.shots, anchors: entry.anchors }).byteLength;
+  if (entry.weight > LIVE_BUDGET) return;
+  takeWindow(key);
+  liveWindows.set(key, entry); liveBytes += entry.weight;
+  while (liveBytes > LIVE_BUDGET || liveWindows.size > 32) takeWindow(liveWindows.keys().next().value);
+}
+
+function parseAppend(entry, buffer, position) {
+  let start = 0, parsed = 0;
+  entry.cacheable = true;
+  while (start < buffer.length) {
+    const newline = buffer.indexOf(10, start), end = newline < 0 ? buffer.length : newline;
+    const line = buffer.subarray(start, end).toString('utf8');
+    let record;
+    try { record = JSON.parse(line); } catch {}
+    if (record && typeof record === 'object') {
+      entry.parser.append(record); parsed++;
+      const queued = claudeQueuedUser(record);
+      if (queued || record.type === 'user' || (record.type === 'event_msg' && record.payload?.type === 'user_message')
+          || (record.type === 'response_item' && record.payload?.type === 'message' && record.payload?.role === 'user')) {
+        const ts = Date.parse(queued?.timestamp || record.timestamp) || 0;
+        if (!entry.offsets.has(ts)) entry.offsets.set(ts, position + start);
+      }
+      if (line.includes('"base64"') && end - start <= MAX_IMAGE_RECORD_BYTES) {
+        for (const [index] of recordImages(record).entries()) {
+          const ref = Buffer.from(JSON.stringify({ identity: entry.identity, offset: position + start,
+            length: end - start, index, hash: recordHash(line) })).toString('base64url');
+          entry.shots.push({ ts: Date.parse(record.timestamp) || 0, ref });
+          if (entry.shots.length > 4) entry.shots.shift();
+        }
+      }
+      // A complete JSON record without its newline is visible, but not a safe append checkpoint.
+      if (newline < 0) entry.cacheable = false;
+    }
+    if (newline < 0) break;
+    start = newline + 1; entry.committed = position + start;
+  }
+  return parsed;
+}
+
+function windowResult(entry, end, rounds, ioBytes, parsedRecords, mode) {
+  let events = entry.parser.events(), offset = entry.start;
+  const completed = completedRoundStarts(events);
+  if (completed.length >= rounds) {
+    const first = completed[completed.length - rounds];
+    offset = entry.offsets.get(events[first].ts || 0) ?? offset;
+    events = events.slice(first);
+    if (entry.start === 0 && completed.length <= rounds) offset = 0;
+  }
+  for (const shot of entry.shots) {
+    const event = events.find(e => !e.shotRef && ['check', 'edit', 'work'].includes(e.kind) && Math.abs((e.ts || 0) - shot.ts) < 180e3);
+    if (event) event.shotRef = shot.ref;
+  }
+  return { events, meta: { count: events.length, trimmed: offset > 0, full: offset === 0,
+    rounds, cursor: cursorFor(entry.identity, offset), scannedBytes: end - entry.start, ioBytes,
+    totalBytes: end, parsedRecords, readMode: mode } };
+}
+
+function rememberAnchors(entry, buffer, position, st) {
+  const length = Math.min(4096, entry.committed - position);
+  if (length > 0) {
+    const tail = { position: entry.committed - length,
+      data: Buffer.from(buffer.subarray(entry.committed - length - position, entry.committed - position)) };
+    entry.anchors = [entry.anchors?.[0] || { position, data: Buffer.from(buffer.subarray(0, length)) }, tail];
+  }
+  Object.assign(entry, { size: st.size, mtime: st.mtimeMs, ctime: st.ctimeMs });
+}
+
+async function advanceWindow(fh, entry, st, identity, rounds) {
+  if (entry.identity !== identity || st.size < entry.size || st.mtimeMs < entry.mtime) return null;
+  if (st.size === entry.size) {
+    return st.mtimeMs === entry.mtime && st.ctimeMs === entry.ctime
+      ? windowResult(entry, st.size, rounds, 0, 0, 'unchanged') : null;
+  }
+  if (!entry.anchors?.length || st.size - entry.committed > MAX_BYTES) return null;
+  let ioBytes = 0;
+  // Native histories are append-only. Rotation/truncation/same-size rewrites invalidate state;
+  // prefix and committed-tail anchors also reject replaced content before an apparent append.
+  // Read the tail guard and appended bytes together; overlap the independent prefix guard.
+  // Three serial tiny reads on an under-pressure network mount can cost seconds EACH.
+  const readAt = async (position, length) => {
+    const bytes = Buffer.alloc(length);
+    for (let offset = 0; offset < length;) {
+      const { bytesRead } = await fh.read(bytes, offset, length - offset, position + offset);
+      if (!bytesRead) throw Object.assign(new Error('Story changed while reading. Please retry.'), { code: 'STORY_CHANGED' });
+      offset += bytesRead; ioBytes += bytesRead;
+    }
+    return bytes;
+  };
+  const [prefix, tail] = entry.anchors, start = entry.committed;
+  const combinedStart = Math.min(start, tail.position);
+  const prefixOutside = prefix.position < combinedStart;
+  const [combined, separatePrefix] = await Promise.all([
+    readAt(combinedStart, st.size - combinedStart),
+    prefixOutside ? readAt(prefix.position, prefix.data.length) : null,
+  ]);
+  for (const anchor of entry.anchors) {
+    const bytes = anchor === prefix && prefixOutside ? separatePrefix
+      : combined.subarray(anchor.position - combinedStart, anchor.position - combinedStart + anchor.data.length);
+    if (!bytes.equals(anchor.data)) return null;
+  }
+  const buffer = combined.subarray(start - combinedStart);
+  const parsed = parseAppend(entry, buffer, start);
+  rememberAnchors(entry, buffer, start, st);
+  return windowResult(entry, st.size, rounds, ioBytes, parsed, 'incremental');
+}
+
 function dispatch() {
   for (const slot of pool) {
     if (slot.job || !queue.length) continue;
-    const job = slot.job = queue.shift();
+    const index = queue.findIndex(job => job.workerIndex === slot.index);
+    if (index < 0) continue;
+    const job = slot.job = queue.splice(index, 1)[0];
     slot.worker.ref();
     slot.timer = setTimeout(() => slot.worker.terminate(), 60_000);
     slot.worker.postMessage({ id: job.id, args: job.args });
@@ -36,9 +159,9 @@ export function readStoryImage({ file, ref }) {
 function runReader(args) {
   return new Promise((resolve, reject) => {
     if (queue.length >= 64) return reject(new Error('Story reader is busy; please retry.'));
-    if (pool.length < 2) {
+    while (pool.length < 2) {
       const worker = new Worker(new URL(import.meta.url), { execArgv: process.execArgv.filter(arg => !arg.startsWith('--input-type')) });
-      const slot = { worker, job: null, timer: null };
+      const slot = { worker, job: null, timer: null, index: pool.some(s => s.index === 0) ? 1 : 0 };
       pool.push(slot);
       worker.on('message', (message) => {
         const job = slot.job;
@@ -50,7 +173,10 @@ function runReader(args) {
         else job.resolve(message.result);
         dispatch();
       });
+      let failed = false;
       const fail = (error) => {
+        if (failed) return;
+        failed = true;
         clearTimeout(slot.timer);
         slot.job?.reject(error);
         slot.job = null;
@@ -63,7 +189,9 @@ function runReader(args) {
       worker.once('exit', () => fail(new Error('Story reader stopped. Please retry.')));
       worker.unref();
     }
-    queue.push({ id: ++serial, args, resolve, reject });
+    // Stable ownership keeps each transcript's parser on one worker across live refreshes.
+    const workerIndex = createHash('sha256').update(args.file).digest()[0] % 2;
+    queue.push({ id: ++serial, args, resolve, reject, workerIndex });
     dispatch();
   });
 }
@@ -106,6 +234,12 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
   try {
     const st = await fh.stat();
     const identity = fingerprint(file, st);
+    const liveKey = !full && !cursor ? `${file}|${rounds}` : null;
+    const previous = liveKey && takeWindow(liveKey);
+    if (previous) {
+      const result = await advanceWindow(fh, previous, st, identity, rounds);
+      if (result) { keepWindow(liveKey, previous); return result; }
+    }
     const end = cursor ? decodeCursor(cursor, identity, st.size) : st.size;
     const hintKey = `${identity}|${rounds}|${cursor || ''}`;
     const hint = windowHints.get(hintKey);
@@ -131,11 +265,26 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
         if (newline >= 0) { start += newline + 1; text = buffer.subarray(newline + 1).toString('utf8'); }
         else text = ''; // a partial giant tool-result line is not a conversation boundary
       }
-      let events = parseSessionLog(text);
+      let entry, parsed = 0;
+      if (liveKey && text) {
+        entry = { parser: createSessionLogParser(), offsets: new Map(), shots: [], identity,
+          start, committed: start, cacheable: true };
+        parsed = parseAppend(entry, buffer.subarray(start - rangeStart), start);
+      }
+      let events = entry ? entry.parser.events() : parseSessionLog(text);
       const completed = completedRoundStarts(events);
       if (!full && completed.length < rounds && start > 0 && bytes < MAX_BYTES) {
         bytes = Math.min(MAX_BYTES, Math.max(bytes * 2, hintedBytes));
         continue;
+      }
+      if (entry) {
+        const window = buffer.subarray(start - rangeStart);
+        rememberAnchors(entry, window, start, st);
+        keepWindow(liveKey, entry);
+        const result = windowResult(entry, end, rounds, ioBytes, parsed, 'tail');
+        windowHints.delete(hintKey); windowHints.set(hintKey, { start: rangeStart, size: st.size });
+        while (windowHints.size > 120) windowHints.delete(windowHints.keys().next().value);
+        return result;
       }
       let offset = start;
       // A single tool-result line can exceed the scan budget. If skipping its partial prefix reaches

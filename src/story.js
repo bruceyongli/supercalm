@@ -191,7 +191,7 @@ function attachImagesToYou(atoms, ts, images, indent, attachments = []) {
   } else atoms.push({ ts, kind: 'you', text: '', images, attachments, indent });
 }
 
-function atomsFromCodex(lines) {
+function codexAtomReader() {
   const atoms = [];
   const callCmd = new Map(); // call_id -> cmd (F4)
   const assistantIds = new Map();
@@ -243,8 +243,8 @@ function atomsFromCodex(lines) {
     }
     else attachImagesToYou(atoms, ts, images, false, attachments);
   };
-  for (const l of lines) {
-    let j; try { j = JSON.parse(l); } catch { continue; }
+  const append = lines => { for (const l of lines) {
+    let j; try { j = typeof l === 'string' ? JSON.parse(l) : l; } catch { continue; }
     const ts = Date.parse(j.timestamp) || 0;
     const p = j.payload || {};
     if (j.type === 'session_meta') {
@@ -342,12 +342,15 @@ function atomsFromCodex(lines) {
       }
     }
   }
-  return atoms;
+  };
+  return { atoms, append, snapshot: () => ({ atoms, callCmd, assistantIds, asyncMirrors, recentAssistant, turnId, sawTurnCtx }) };
 }
+
+function atomsFromCodex(lines) { const reader = codexAtomReader(); reader.append(lines); return reader.atoms; }
 
 const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-function atomsFromClaude(lines) {
+function claudeAtomReader() {
   const atoms = [];
   const calls = new Map(); // current CLI results refer to tool_use_id, not the previous visible step
   const taskLists = new Map(); // a helper's task #1 is not the main agent's task #1
@@ -399,8 +402,8 @@ function atomsFromClaude(lines) {
     }
     if (call.planAtom) Object.assign(call.planAtom, { title: 'Updated the plan', planItems: normalizePlanItems([...tasks.values()]) });
   };
-  for (const l of lines) {
-    let j; try { j = JSON.parse(l); } catch { continue; }
+  const append = lines => { for (const l of lines) {
+    let j; try { j = typeof l === 'string' ? JSON.parse(l) : l; } catch { continue; }
     const ts = Date.parse(j.timestamp) || 0;
     const indent = !!j.isSidechain;
     const queued = claudeQueuedUser(j);
@@ -502,7 +505,11 @@ function atomsFromClaude(lines) {
             if (part.name === 'AskUserQuestion' && part.input?.answers) answerAsks(part.id, '', part.input);
             continue; // resume/replayed blocks are the same invocation, not another Story step
           }
-          const call = { name: part.name, input: part.input, chain: indent ? (j.agentId || j.sessionId || 'sidechain') : 'main',
+          // Only task results consult their original arguments. Never retain an entire Write/Edit
+          // payload (or embedded media) just to associate a later result with its invocation.
+          const call = { name: part.name, input: /^Task(?:Create|Update|Get|List)$/.test(part.name)
+            ? { taskId: part.input?.taskId, subject: part.input?.subject, status: part.input?.status } : undefined,
+            chain: indent ? (j.agentId || j.sessionId || 'sidechain') : 'main',
             description: part.input?.description, command: part.input?.command };
           calls.set(part.id, call);
           if (part.name === 'SubagentHandback' && part.input?.message) {
@@ -558,8 +565,11 @@ function atomsFromClaude(lines) {
     }
     // Non-human attachments, file-history snapshots, mode and last-prompt remain hidden.
   }
-  return atoms;
+  };
+  return { atoms, append, snapshot: () => ({ atoms, calls, taskLists, assistantBlocks, askIds, userIds }) };
 }
+
+function atomsFromClaude(lines) { const reader = claudeAtomReader(); reader.append(lines); return reader.atoms; }
 
 function providerFailureText(output) {
   const text = typeof output === 'string' ? output : String(output?.message || output?.type || 'Provider returned an unknown error.');
@@ -678,6 +688,24 @@ function parseSessionLog(jsonlText) {
   if (!lines.length) return [];
   const fmt = detectFormat(lines[0]);
   const atoms = fmt === 'codex' ? atomsFromCodex(lines) : atomsFromClaude(lines);
+  return storyFromAtoms(atoms);
+}
+
+// The same adapters own batch and incremental parsing. Keep invocation/message identity and
+// authoritative question answers across appends; rebuilding from only the new lines loses them.
+export function createSessionLogParser() {
+  let reader;
+  return {
+    append(record) {
+      reader ||= record.payload !== undefined ? codexAtomReader() : claudeAtomReader();
+      reader.append([record]);
+    },
+    events: () => storyFromAtoms(reader?.atoms || []),
+    snapshot: () => reader?.snapshot() || {},
+  };
+}
+
+function storyFromAtoms(atoms) {
   const out = buildStory(atoms);
   // Legacy S7 compatibility: an ask followed by operator input was inferred answered. Modern Claude
   // carries authoritative results: an unrelated steering message cannot answer its remaining questions.
