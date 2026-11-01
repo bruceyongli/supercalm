@@ -144,9 +144,13 @@ try {
   }
   // Genuinely new launches on bb2, rather than only migrated/replayed state.
   for (const tool of ['codex','claude']) {
-    const fresh=await request('/api/session',{path:project,device:'bb2-test',tool,model:tool==='codex'?'gpt-6.1-sol':'claude-opus-5-5',effort:'low',autonomy:'full',task:`Reply exactly "REMOTE-FRESH-${tool}-${tag}". No tools.`});
-    await report(fresh.id,`REMOTE-FRESH-${tool}-${tag}`);await request(`/api/session/${fresh.id}/stop`,{});
-    trace.checks.push({freshLaunch:fresh.id,tool,device:'bb2-test',nativeStory:true});
+    const marker=`REMOTE-FRESH-${tool}-${tag}`, fileName=`remote-${tool}.md`;
+    const fresh=await request('/api/session',{path:project,device:'bb2-test',tool,model:tool==='codex'?'gpt-6.1-sol':'claude-opus-5-5',effort:'low',autonomy:'full',task:`Disposable test. Write ${fileName} in your current working directory containing only ${marker}. Then reply exactly "${marker}". Do not start helpers or modify anything else.`});
+    await report(fresh.id,marker);
+    const file=await fetch(base+`/api/session/${fresh.id}/file?path=${fileName}&raw=1`);
+    assert.equal(file.status,200);assert.equal((await file.text()).trim(),marker,'native coding task writes on the destination SSD');
+    await request(`/api/session/${fresh.id}/stop`,{});
+    trace.checks.push({freshLaunch:fresh.id,tool,device:'bb2-test',nativeStory:true,nativeFile:fileName,preview:200});
   }
   server.kill('SIGTERM');await done(server);server=startController();
   await until('reconnected',async()=>(await request('/api/execution/devices')).devices.some(d=>d.id==='bb2-test'&&d.online));
