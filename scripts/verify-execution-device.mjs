@@ -104,7 +104,7 @@ try {
   const git=async(...args)=>(await exec('git',['-C',project,...args])).stdout;
   await git('init','-b','main');await git('config','user.email','test@localhost');await git('config','user.name','Validation');
   await writeFile(join(project,'README.md'),'Disposable execution-device validation only.\n');await git('add','.');await git('commit','-m','fixture');
-  for(const tool of ['codex','claude']) {
+  for(const tool of process.argv.includes('--only-claude') ? ['claude'] : ['codex','claude']) {
     console.log(JSON.stringify({phase:'native-launch',tool}));
     const marker=`LOCAL-${tool}-${tag}`;
     const session=await request('/api/session',{path:project,tool,model:tool==='codex'?'gpt-6.1-sol':'claude-opus-5-5',effort:'low',autonomy:'full',task:`Disposable test. Remember the exact marker ${marker}. Write proof-${tool}.md containing only the marker. Then reply exactly "SAVED ${marker}". Do not start any helper or modify any other file.`});
@@ -125,6 +125,8 @@ try {
     assert.equal(file.status,200);assert.equal((await file.text()).trim(),marker,'old absolute report links resolve after handoff');
     await request(`/api/session/${session.id}/resume`,{});
     await pause(8000);
+    const resumed = await request(`/api/session/${session.id}`);
+    console.log(JSON.stringify({phase:'resumed',tool,session:session.id,status:resumed.status,screen:resumed.snapshot?.slice(-3500)}));
     const sent=await request(`/api/session/${session.id}/input`,{text:'What exact marker did I ask you to remember? Reply "REMEMBERED " followed by that marker. Do not read any file or use tools.',source:'text',client_message_id:'verify-'+tool});
     const grounded=await report(session.id,'REMEMBERED '+marker);
     trace.checks.push({tool,session:session.id,nativeId,operation:moved.operation.id,owner:after.execution_node,sendReceipt:sent,report:storyText(grounded),preview:'200 old absolute path',original:await readFile(join(project,`proof-${tool}.md`),'utf8')});
@@ -143,6 +145,11 @@ try {
   console.log(JSON.stringify(trace,null,2));
 } catch(error) {
   trace.pass=false;trace.error=error.message;console.error(JSON.stringify(trace,null,2));
+  const owned = await request('/api/phone/home').catch(()=>({sessions:[]}));
+  for (const session of owned.sessions || []) {
+    const detail = await request(`/api/session/${session.id}`).catch(()=>null);
+    console.error(JSON.stringify({session:session.id,status:detail?.status,question:detail?.question,screen:detail?.snapshot?.slice(-6000)}));
+  }
   console.error((await readFile(join(dir,'controller.log'),'utf8').catch(()=>'' )).slice(-6000));
   console.error(await remoteCode(`console.log(require('fs').readFileSync(${JSON.stringify(join(remoteRoot,'worker.log'))},'utf8').slice(-6000))`).catch(()=>''));
   process.exitCode=1;

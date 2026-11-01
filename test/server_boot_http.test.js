@@ -58,7 +58,9 @@ try {
     const response = await fetch(base + path);
     assert.equal(response.status, 200, path);
     const html = await response.text();
-    assert.match(html, /<script type="module" src="router\.js"><\/script>/, `${path} serves the canonical SPA shell`);
+    const router = html.match(/<script type="module" src="((?:assets\/[a-f0-9]+\/)?router\.js)"><\/script>/);
+    assert.ok(router, `${path} serves the canonical SPA shell (including immutable release assets)`);
+    assert.equal((await fetch(base + '/aios/' + router[1])).status,200,'the shell module is actually available');
   }
   await fetch(base + '/api/version');
   const performance = await fetch(base + '/api/performance').then((response) => response.json());
@@ -120,6 +122,7 @@ try {
   ]);
   if (child.exitCode == null) child.kill('SIGKILL');
   await rm(projectRoot, { recursive: true, force: true });
+  await rm(data, { recursive: true, force: true });
 }
 
 console.log('server_boot_http.test ok');
