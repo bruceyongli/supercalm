@@ -145,7 +145,11 @@ try {
   const nativeRow = payload => JSON.stringify({ type: 'response_item', timestamp: new Date().toISOString(), payload }) + '\n';
   writeFileSync(nativeFile, nativeRow(ask) + nativeRow({ type: 'function_call_output', call_id: ask.call_id, output: '{"accepted":true}' }));
   const { refreshCodexQuestions } = await import('../src/codex_questions.js');
-  await refreshCodexQuestions(store.getSession(asyncId));
+  // Opening Story must bind an async question before returning answer controls, without waiting
+  // for a separate poll/read or relying on the test to populate durable question state first.
+  let story = await (await fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/story`)).json();
+  assert.equal(story.events.filter(e => e.kind === 'ask' && !e.answered).length, 2);
+  assert.equal(JSON.parse(store.getSession(asyncId).structured_question).id, ask.call_id);
   let home = await (await fetch(`http://127.0.0.1:${port}/api/phone/home`)).json();
   const attention = home.sessions.find(s => s.id === asyncId);
   assert.equal(attention.status, 'working', 'async attention does not invent a paused agent state');
@@ -153,7 +157,7 @@ try {
   assert.equal(attention.category, 'decision');
   assert.equal(attention.unread, 1);
   assert.equal(attention.option_events.length, 2, 'home gets persisted choices without a transcript parse');
-  let story = await (await fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/story`)).json();
+  story = await (await fetch(`http://127.0.0.1:${port}/api/session/${asyncId}/story`)).json();
   assert.equal(story.events.filter(e => e.kind === 'ask' && !e.answered).length, 2);
   const answers = [{ ask_id: ask.call_id, question: 'Which runtime?', values: [{ label: 'Node' }] },
     { ask_id: ask.call_id, question: 'Which checks?', values: [{ label: 'Full' }] }];

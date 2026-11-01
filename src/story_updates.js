@@ -6,7 +6,7 @@ import { stat } from 'node:fs/promises';
 export function createStoryUpdates({ resolve, bus, watchFile = watch, statFile = stat,
   debounceMs = 120, repairMs = 2500, pingMs = 15000 } = {}) {
   const entries = new Map();
-  const semantic = new Set(['summary', 'reply', 'settings', 'launch', 'resume', 'launch-error', 'exit', 'kill', 'stop', 'transcript', 'question']);
+  const semantic = new Set(['summary', 'reply', 'settings', 'launch', 'resume', 'launch-error', 'exit', 'kill', 'stop', 'transcript', 'question', 'codex-async-question', 'codex-question-answered']);
   function dispose(entry) {
     entry.closed = true;
     clearTimeout(entry.timer); clearInterval(entry.repair); clearInterval(entry.ping);

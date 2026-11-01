@@ -692,6 +692,14 @@ Backward paging reads only missing prefixes instead of rereading overlapping win
 Bounded offset-only hints accelerate long rounds, but always probe the small tail first so a new
 short round does not inherit an older huge scan. Truncation/rotation discard incompatible hints.
 Growing native histories use the SAME Codex/Claude adapters incrementally on two sticky workers.
+Story/image and graph workers use worker-only synchronous file handles: asynchronous filesystem IO
+in a Worker STILL shares libuv's pool with HTTP gzip, assets and delivery receipts. Never block the
+main thread; direct/main-thread readers stay asynchronous. Coalesce in-flight reads by exact native
+identity/page, not changing mtime, so live appends cannot build a queue of obsolete snapshots.
+The Story response must not await a second native question scan: use parsed questions plus durable
+overlays; persist parsed pending async calls before returning controls so immediate answers work.
+Background question discoveries/answers invalidate viewers. Keep Server-Timing stages for
+source resolution, metadata, reader and pane so real cold reads can be distinguished from cached tests.
 Retain only parsed native state (up to 8 MiB serialized per worker, 32 entries), byte offsets and lazy
 image references, never raw tool output/base64 windows or another local transcript copy. Read only
 new bytes plus bounded prefix/committed-tail anchors; preserve mirrored message IDs, tool/question

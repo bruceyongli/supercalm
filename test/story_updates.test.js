@@ -42,6 +42,11 @@ try {
   assert.equal(a.messages.length, beforeStatus, 'sibling/terminal heartbeat events do not invalidate Story');
   bus.emit('session-status', { session: 's_own', source: 'reply', status: 'working', previousStatus: 'working' });
   await wait(() => a.messages.length > beforeStatus);
+  for (const cause of ['codex-async-question', 'codex-question-answered']) {
+    const beforeQuestion = a.messages.length;
+    bus.emit('session-status', { session: 's_own', source: cause, status: 'working', previousStatus: 'working' });
+    await wait(() => a.messages.length > beforeQuestion);
+  }
   const beforeRotate = a.messages.length;
   const replacement = join(root, 'replacement.jsonl'); await writeFile(replacement, '{"report":"Rotated"}\n');
   await rename(replacement, source.file);

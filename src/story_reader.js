@@ -1,7 +1,7 @@
 // Read one conversation window off the HTTP/event-loop thread. Tool results can be hundreds of MB;
 // they must never stall launch options, input delivery or the live terminal while Story is parsing.
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
-import { open } from 'node:fs/promises';
+import { openReaderFile } from './reader_file.js';
 import { createHash } from 'node:crypto';
 import { serialize } from 'node:v8';
 import { parseSessionLog, createSessionLogParser, completedRoundStarts } from './story.js';
@@ -14,6 +14,7 @@ const MAX_BYTES = 32 * 1024 * 1024;
 const windowHints = new Map();
 const pool = [];
 const queue = [];
+const flights = new Map();
 let serial = 0;
 
 // Parsed native state only: no raw tool-output windows, base64 images or local transcript copies.
@@ -157,7 +158,11 @@ export function readStoryImage({ file, ref }) {
 }
 
 function runReader(args) {
-  return new Promise((resolve, reject) => {
+  // One read per exact page/image. Appends while a read is pending are caught by the next
+  // invalidation, not an unbounded line of obsolete reads from several devices/SSE refreshes.
+  const key = JSON.stringify([args.file, args.sourceIdentity || null, args.rounds || 1, !!args.full, args.cursor || null, args.ref || null, !!args.image]);
+  if (flights.has(key)) return flights.get(key);
+  const flight = new Promise((resolve, reject) => {
     if (queue.length >= 64) return reject(new Error('Story reader is busy; please retry.'));
     while (pool.length < 2) {
       const worker = new Worker(new URL(import.meta.url), { execArgv: process.execArgv.filter(arg => !arg.startsWith('--input-type')) });
@@ -193,7 +198,9 @@ function runReader(args) {
     const workerIndex = createHash('sha256').update(args.file).digest()[0] % 2;
     queue.push({ id: ++serial, args, resolve, reject, workerIndex });
     dispatch();
-  });
+  }).finally(() => { if (flights.get(key) === flight) flights.delete(key); });
+  flights.set(key, flight);
+  return flight;
 }
 
 // Cursor binds a byte boundary to this exact transcript/inode, not a timestamp or an expanding
@@ -230,7 +237,7 @@ function roundOffset(text, ts) {
 }
 
 export async function readStoryWindow({ file, rounds = 1, full = false, cursor = null }) {
-  const fh = await open(file, 'r');
+  const fh = await openReaderFile(file);
   try {
     const st = await fh.stat();
     const identity = fingerprint(file, st);
@@ -361,7 +368,7 @@ export async function readStoryImageRecord({ file, ref }) {
   let value;
   try { if (typeof ref !== 'string' || ref.length > 1024) throw missing(); value = JSON.parse(Buffer.from(ref, 'base64url')); }
   catch { throw missing(); }
-  const fh = await open(file, 'r');
+  const fh = await openReaderFile(file);
   try {
     const st = await fh.stat();
     const { offset, length, index, hash } = value || {};

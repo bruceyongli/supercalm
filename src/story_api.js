@@ -14,7 +14,7 @@ import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { spineFromMessages } from './story_spine.js';
 import { stripAnsi } from './util.js';
 import { terminalQuestionPrompt } from './detect_classify.js';
-import { refreshCodexQuestions, overlayCodexQuestions } from './codex_questions.js';
+import { refreshCodexQuestions, overlayCodexQuestions, rememberStoryQuestions } from './codex_questions.js';
 import { claudeTerminalFrame } from './claude_lifecycle.js';
 import { createStoryUpdates } from './story_updates.js';
 import { bus } from './bus.js';
@@ -152,19 +152,30 @@ function ownStory(sid) {
     note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
 }
 
-export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null } = {}) {
+export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null, timings = {} } = {}) {
+  let began = performance.now();
   const source = await storySource(sid);
+  timings.source = performance.now() - began;
   if (!source) return { error: 'no such session' };
   const { file } = source;
   if (!file) return ownStory(sid);
+  began = performance.now();
   const st = await stat(file);
+  timings.stat = performance.now() - began;
   const key = `${sid}|${full ? 'full' : 'r' + rounds}|${cursor || ''}`;
   const hit = cache.get(key);
   if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
-  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.ctimeMs === st.ctimeMs && hit.size === st.size && hit.ino === st.ino && hit.dev === st.dev) return { sessionId: sid, events: hit.events, meta: hit.meta };
-  const flightKey = `${key}|${file}|${st.dev}|${st.ino}|${st.size}|${st.mtimeMs}|${st.ctimeMs}`;
-  if (inFlight.has(flightKey)) return inFlight.get(flightKey);
-  const flight = readStoryPage({ file, rounds, full, cursor }).then(result => {
+  if (hit && hit.file === file && hit.mtimeMs === st.mtimeMs && hit.ctimeMs === st.ctimeMs && hit.size === st.size && hit.ino === st.ino && hit.dev === st.dev) return { sessionId: sid, events: hit.events,
+    meta: { ...hit.meta, readMode: 'cached', ioBytes: 0, parsedRecords: 0 } };
+  const flightKey = `${key}|${file}|${st.dev}|${st.ino}|${nativeIdentity(source.s)}`;
+  began = performance.now();
+  if (inFlight.has(flightKey)) {
+    const result = await inFlight.get(flightKey);
+    timings.read = performance.now() - began;
+    return result;
+  }
+  const flight = readStoryPage({ file, rounds, full, cursor, sourceIdentity: `${st.dev}|${st.ino}` }).then(result => {
+    timings.read = performance.now() - began;
     if (nativeIdentity(source.s) !== nativeIdentity(getSession(sid))) return ownStory(sid);
     const { events } = result;
     const meta = { ...result.meta, file, mtimeMs: st.mtimeMs, source: 'transcript' };
@@ -208,17 +219,23 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     const full = url?.searchParams?.get('full') === '1';
     const rounds = Math.max(1, Math.min(20, Number(url?.searchParams?.get('rounds')) || DEFAULT_ROUNDS));
     const cursor = url?.searchParams?.get('cursor') || null;
-    const r = await storyFor(sid, { rounds, full, cursor });
+    const timings = {};
+    const r = await storyFor(sid, { rounds, full, cursor, timings });
     if (r.error) return json(res, 404, { error: r.error });
     // Live session status (NOT baked into storyFor's cached meta — status changes far more often than
     // the transcript) so the story view can show a calming "working" animation while the agent runs.
     const s = getSession(sid);
     if (!cursor && s?.tool === 'codex') {
-      await refreshCodexQuestions(s, { file: r.meta?.source === 'transcript' ? r.meta.file : null });
+      if (r.meta?.source === 'transcript') rememberStoryQuestions(s, r.events);
+      // The native Story already includes questions in this page; the background observer keeps
+      // durable/out-of-page questions current and emits an invalidation when it finds a new one.
+      // Never hold a complete report behind a SECOND read of the same remote transcript.
+      void refreshCodexQuestions(s, { file: r.meta?.source === 'transcript' ? r.meta.file : null });
       r.events = overlayCodexQuestions(getSession(sid), r.events);
     }
     // Live CLI status line (only while working; one cheap capture-pane, off the cache since it changes
     // every second). Fail-open — a missing status just falls back to the generic working animation.
+    const paneBegan = performance.now();
     let liveStatus = null;
     if (!cursor && s?.status === 'working') {
       try { liveStatus = extractLiveStatus(await snapshot(sid, 16)); } catch {}
@@ -246,6 +263,8 @@ route('GET', '/api/session/:id/story', async (req, res, { id: sid }, url) => {
     const current = getSession(sid);
     const issue = !cursor && ['working', 'waiting'].includes(current?.status) ? providerIssue(current.provider_issue) : null;
     const liveIssue = issue ? { ...issue, reportId: getLatestAttentionReport(sid)?.id || null } : null;
+    timings.pane = performance.now() - paneBegan;
+    res.setHeader('server-timing', Object.entries(timings).map(([name, ms]) => `${name};dur=${ms.toFixed(1)}`).join(', '));
     json(res, 200, { ok: true, ...r, status: current?.status || null, liveStatus,
       pendingQuestion: liveIssue ? null : pendingQuestion, providerIssue: liveIssue });
   } catch (e) {

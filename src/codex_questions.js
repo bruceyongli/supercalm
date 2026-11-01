@@ -60,6 +60,19 @@ export function overlayCodexQuestions(session, events) {
   return !existing.length && !answered ? [...patched, ...questionEvents(authoritative)].sort((a, b) => a.ts - b.ts) : patched;
 }
 
+// The Story adapter already parsed these exact native calls. Persist the latest pending call
+// before exposing its controls, so a quick answer cannot race a second network-disk scan.
+export function rememberStoryQuestions(session, events) {
+  const pending = events.filter(e => e.kind === 'ask' && e.askMode === 'async' && e.askId && !e.answered);
+  const latest = pending.reduce((a, e) => !a || e.ts >= a.ts ? e : a, null);
+  if (!latest) return;
+  const rows = pending.filter(e => e.askId === latest.askId).sort((a, b) => a.questionIndex - b.questionIndex);
+  if (rows.some((e, index) => e.questionIndex !== index)) return; // never bind a partial group
+  rememberCodexQuestion(session.id, { id: latest.askId, mode: 'async', ts: latest.ts,
+    questions: rows.map(e => ({ id: e.questionId, header: String(e.title || '').replace(/^Needs your decision(?: — )?/, ''),
+      question: e.body, options: e.options || [], multiSelect: !!e.multiSelect })) });
+}
+
 export async function refreshCodexQuestions(session, { file: suppliedFile = null } = {}) {
   if (session?.tool !== 'codex' || (!suppliedFile && !session.codex_uuid)) return;
   let reader = readers.get(session.id);

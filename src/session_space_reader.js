@@ -1,6 +1,6 @@
 // Bounded graph I/O and parsing, isolated from the HTTP service's event loop.
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
-import { open } from 'node:fs/promises';
+import { openReaderFile } from './reader_file.js';
 import { buildSpace } from './session_space_parser.js';
 
 let worker = null, active = null, timer = null, serial = 0;
@@ -47,7 +47,7 @@ export function readSpace(args) {
 }
 
 export async function readTranscriptRange(file, start = 0, maxBytes = 4096) {
-  const fh = await open(file, 'r');
+  const fh = await openReaderFile(file);
   try {
     const st = await fh.stat();
     const length = Math.max(0, Math.min(st.size - start, maxBytes));
@@ -58,7 +58,7 @@ export async function readTranscriptRange(file, start = 0, maxBytes = 4096) {
 }
 
 export async function readSpaceWindow({ file, session, maxBytes = 32 * 1024 * 1024 }) {
-  const fh = await open(file, 'r');
+  const fh = await openReaderFile(file);
   try {
     const st = await fh.stat();
     let offset = Math.max(0, st.size - maxBytes);
