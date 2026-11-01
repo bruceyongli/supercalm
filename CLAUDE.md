@@ -219,6 +219,19 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   Remote code/history/artifacts remain on the selected storage. SMB versus SSHFS does not change
   physical network latency; never switch a live storage transport without isolated semantic/performance
   evidence. SSH artifact archives and SMB/APFS live storage are distinct paths, not interchangeable mounts.
+- Static web build copies: the package-command wrapper and checked project-release entry enable
+  `build_asset_copy.js` only in their child build processes (also in disposable local builds). On macOS,
+  matching `public/*` → `dist/*`, `build/*` or `out/*` files prefer native APFS copies (on the local home
+  volume, only files of at least 128 KiB; image/network volumes also need this for small assets);
+  Node/libuv's clone flag alone may be unimplemented. Require the same volume, real in-scope ancestry
+  and a new destination. Stage an independent copy, atomically link THAT copy into place, then remove
+  staging; NEVER hardlink original assets to outputs. Existing files/links, small local files, other layouts,
+  unsupported copies and explicit Node modes retain ordinary API semantics. Async copies use at most
+  four native workers. No shared source, proxy, permissions, release checks or storage mounts change,
+  and no persistent local cache is added. `AIOS_BUILD_FAST_COPY=0` opts out. This removes redundant
+  media-byte transfers, not source/dependency reads, compilation, verification or upload time; measure
+  each stage before promising an overall release deadline. Never interrupt another active build to
+  activate an optimization; already-running sessions pick it up on their next guarded build command.
 - Other disposable jobs: use `node "$AIOS_SCRATCH_RUN" -- <command> <args>` for test/download work.
   Each job gets its own TMPDIR / AIOS_JOB_TMPDIR; copy durable reports to AIOS_SESSION_ARTIFACTS
   before exit. Success is cleaned after its process group and open handles are gone; failures or

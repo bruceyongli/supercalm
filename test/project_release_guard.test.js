@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -26,7 +26,7 @@ const server = createServer((req, res) => {
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
 const base = 'http://127.0.0.1:' + server.address().port;
 await writeFile(join(fakeBin, 'npm'), `#!/usr/bin/env node
-console.log(JSON.stringify({called:true,noDeploy:process.env.AIOS_NO_DEPLOY??null,sha:process.env.AIOS_RELEASE_CANDIDATE_SHA,args:process.argv.slice(2)}));
+console.log(JSON.stringify({called:true,noDeploy:process.env.AIOS_NO_DEPLOY??null,sha:process.env.AIOS_RELEASE_CANDIDATE_SHA,args:process.argv.slice(2),copyRoot:process.env.AIOS_BUILD_COPY_ROOT??null,copyPreload:process.env.NODE_OPTIONS?.includes('build_asset_copy.js')||false}));
 process.exit(Number(process.env.TEST_RELEASE_EXIT||0));
 `);
 await chmod(join(fakeBin, 'npm'), 0o755);
@@ -64,7 +64,9 @@ try {
 
   let result = await run();
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(JSON.parse(result.stdout), { called: true, noDeploy: null, sha, args: options.args });
+  assert.deepEqual(JSON.parse(result.stdout), { called: true, noDeploy: null, sha, args: options.args,
+    copyRoot: process.platform === 'darwin' ? await realpath(repo) : null,
+    copyPreload: process.platform === 'darwin' });
   assert.match(result.stderr, /Supercalm release: p_release/);
   assert.equal((await readFile(join(context.lock_dir, 'p_release.lock'))).length, 0, 'no stale owner/approval record');
   result = await run(options.args, { TEST_RELEASE_EXIT: '7' });

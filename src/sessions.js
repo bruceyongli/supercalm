@@ -171,6 +171,9 @@ other than node_modules require --include (e.g. --include .env.production). Alte
 to $AIOS_BUILD_OUTPUT inside the build command. Do not deploy, edit source, or run watch/dev servers in
 this disposable snapshot; Git metadata is not copied. A pending transfer/active worker is not finalized:
 keep the only output copy until automatic recovery completes. Never clean another job yourself.
+Guarded package build/release commands also accelerate same-volume public-to-dist asset copies on
+macOS. Do not replace asset copies with hardlinks to source files: outputs must remain independent.
+Direct finite tool invocations should still use the build runner; the coding CLI itself is not patched.
 For other disposable test/download jobs, use: node "$AIOS_SCRATCH_RUN" -- <command> <args>.
 It supplies a fresh job TMPDIR / AIOS_JOB_TMPDIR, cleans completed successful jobs, and retains failed
 jobs for 24 hours. Save durable results under AIOS_SESSION_ARTIFACTS before the command exits.

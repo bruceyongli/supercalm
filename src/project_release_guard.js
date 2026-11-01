@@ -5,6 +5,7 @@ import { mkdir, open, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { gitOut } from './git.js';
+import { buildCopyEnvironment } from './build_copy_env.js';
 
 export function releaseScripts(value = []) {
   if (!Array.isArray(value) || value.length > 20) throw new Error('release_scripts must be a list of at most 20 {cwd, script} entries');
@@ -94,7 +95,7 @@ export async function runProjectRelease(context, { tool, executable, args, cwd, 
     }
     // Only this child receives permission. Never change the caller, server, launch configuration or
     // another session's env. Repository-owned gates and public verification remain in the release script.
-    const childEnv = { ...env, AIOS_DEPLOY_SOURCE_DIR: checked.source, AIOS_DEPLOY_BRANCH: checked.branch, AIOS_RELEASE_CANDIDATE_SHA: checked.sha };
+    const childEnv = buildCopyEnvironment(checked.source, { ...env, AIOS_DEPLOY_SOURCE_DIR: checked.source, AIOS_DEPLOY_BRANCH: checked.branch, AIOS_RELEASE_CANDIDATE_SHA: checked.sha });
     delete childEnv.AIOS_NO_DEPLOY;
     process.stderr.write(`Supercalm release: ${context.project_id} ${checked.sha.slice(0, 12)} — ${tool} ${args.join(' ')}\n`);
     return await new Promise((ok, no) => {

@@ -12,6 +12,7 @@ import { DATA_DIR } from './config.js';
 import { assertLiveStorage, isManagedStoragePath } from './live_storage.js';
 import { withSessionArchiveLock } from './archive_lock.js';
 import { buildRelativePath, buildManifest, copyBuildManifest, snapshotBuildSource } from './build_snapshot.js';
+import { buildCopyEnvironment } from './build_copy_env.js';
 
 const exec = promisify(execFile), GiB = 1024 ** 3;
 const SID = /^s_[a-zA-Z0-9_-]+$/, ID = /^b_[a-f0-9-]{36}$/;
@@ -99,7 +100,7 @@ async function unused(path) {
 }
 export function buildEnvironment(job, base = process.env) {
   const cache = join(job.path, 'cache'), tmp = join(job.path, 'tmp');
-  return { ...base, TMPDIR: tmp + '/', TMP: tmp, TEMP: tmp,
+  return buildCopyEnvironment(join(job.path, 'workspace'), { ...base, TMPDIR: tmp + '/', TMP: tmp, TEMP: tmp,
     AIOS_JOB_TMPDIR: tmp, AIOS_SESSION_TMPDIR: tmp, AIOS_BUILD_JOB_ID: job.id,
     AIOS_BUILD_OUTPUT: join(job.path, 'output'), AIOS_BUILD_SOURCE: job.source,
     AIOS_BUILD_RUN: '', // Nested build runners are not independent disk reservations.
@@ -114,7 +115,7 @@ export function buildEnvironment(job, base = process.env) {
     GRADLE_USER_HOME: join(cache, 'gradle'), GOCACHE: join(cache, 'go'), GOMODCACHE: join(cache, 'go-mod'),
     ELECTRON_CACHE: join(cache, 'electron'), ELECTRON_BUILDER_CACHE: join(cache, 'electron-builder'),
     // Keep HOME and credentials/toolchain paths intact. This is not an agent sandbox.
-  };
+  });
 }
 
 async function publish(job) {

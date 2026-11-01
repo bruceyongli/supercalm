@@ -52,6 +52,14 @@ case "$tool" in
 esac
 
 if [ "$deploy" -eq 0 ]; then
+  # Existing sessions already use this stable wrapper. Activate only for exact
+  # package build scripts, never dev/watch/test or the coding CLI itself.
+  if [ -n "${AIOS_SESSION_ID:-}" ] && [ "${AIOS_BUILD_FAST_COPY:-1}" != "0" ] \
+     && [[ "$tool" =~ ^(npm|pnpm|yarn|bun)$ ]] && [ "$#" -eq 2 ] \
+     && [[ "$1" =~ ^(run|run-script)$ ]] && [[ "$2" =~ ^build(:[a-zA-Z0-9_.-]+)?$ ]] \
+     && ! [[ "$2" =~ (watch|dev|serve) ]]; then
+    PATH="$clean_path" exec node "$(dirname "$0")/../bin/build-command.mjs" "$real" "$@"
+  fi
   PATH="$clean_path" exec "$real" "$@"
 fi
 
@@ -96,4 +104,7 @@ if [ -n "$source_dir" ]; then
   [ "$direct_vendor" -eq 1 ] && deny "direct vendor deploy bypasses the repository's reviewed release command"
 fi
 
+if [ -n "$source_dir" ] && [ -n "${AIOS_SESSION_ID:-}" ] && [ "${AIOS_BUILD_FAST_COPY:-1}" != "0" ]; then
+  PATH="$clean_path" exec node "$(dirname "$0")/../bin/build-command.mjs" --source "$source_real" "$real" "$@"
+fi
 PATH="$clean_path" exec "$real" "$@"
