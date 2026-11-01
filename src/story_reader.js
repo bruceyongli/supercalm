@@ -1,7 +1,7 @@
 // Read one conversation window off the HTTP/event-loop thread. Tool results can be hundreds of MB;
 // they must never stall launch options, input delivery or the live terminal while Story is parsing.
 import { Worker, isMainThread, parentPort } from 'node:worker_threads';
-import { openReaderFile } from './reader_file.js';
+import { openReaderFile, statReaderFile } from './reader_file.js';
 import { createHash } from 'node:crypto';
 import { serialize } from 'node:v8';
 import { parseSessionLog, createSessionLogParser, completedRoundStarts } from './story.js';
@@ -153,6 +153,11 @@ export function readStoryPage(args) {
   return runReader(args);
 }
 
+export async function statStoryFile(file) {
+  const value = await runReader({ file, stat: true });
+  return { ...value, isFile: () => value.regular };
+}
+
 export function readStoryImage({ file, ref }) {
   return runReader({ file, ref, image: true });
 }
@@ -160,7 +165,7 @@ export function readStoryImage({ file, ref }) {
 function runReader(args) {
   // One read per exact page/image. Appends while a read is pending are caught by the next
   // invalidation, not an unbounded line of obsolete reads from several devices/SSE refreshes.
-  const key = JSON.stringify([args.file, args.sourceIdentity || null, args.rounds || 1, !!args.full, args.cursor || null, args.ref || null, !!args.image]);
+  const key = JSON.stringify([args.file, args.sourceIdentity || null, args.rounds || 1, !!args.full, args.cursor || null, args.ref || null, !!args.image, !!args.stat]);
   if (flights.has(key)) return flights.get(key);
   const flight = new Promise((resolve, reject) => {
     if (queue.length >= 64) return reject(new Error('Story reader is busy; please retry.'));
@@ -386,6 +391,6 @@ export async function readStoryImageRecord({ file, ref }) {
 }
 
 if (!isMainThread) parentPort.on('message', async ({ id, args }) => {
-  try { parentPort.postMessage({ id, result: await (args.image ? readStoryImageRecord(args) : readStoryWindow(args)) }); }
+  try { parentPort.postMessage({ id, result: await (args.stat ? statReaderFile(args.file) : args.image ? readStoryImageRecord(args) : readStoryWindow(args)) }); }
   catch (error) { parentPort.postMessage({ id, error: error.message, code: error.code }); }
 });

@@ -2,8 +2,14 @@
 // delivery receipts. A network read must occupy only its dedicated reader, not that shared pool.
 // Direct/main-thread callers retain asynchronous IO; synchronous calls are worker-only.
 import { isMainThread } from 'node:worker_threads';
-import { open } from 'node:fs/promises';
-import { openSync, fstatSync, readSync, closeSync } from 'node:fs';
+import { open, stat } from 'node:fs/promises';
+import { openSync, fstatSync, readSync, closeSync, statSync } from 'node:fs';
+
+export async function statReaderFile(file) {
+  const value = isMainThread ? await stat(file) : statSync(file);
+  return { dev: value.dev, ino: value.ino, size: value.size, mtimeMs: value.mtimeMs,
+    ctimeMs: value.ctimeMs, regular: value.isFile() };
+}
 
 export async function openReaderFile(file) {
   if (isMainThread) return open(file, 'r');

@@ -1,6 +1,5 @@
 import http from 'node:http';
-import { gzip as gzipCb } from 'node:zlib';
-import { promisify } from 'node:util';
+import { compressHttpBody } from './http_compression.js';
 import { readFile, readdir } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import { PORT, HOST, WEB_DIR, DATA_DIR, VERSION, releaseChannel, COMMIT_SHA, BOOT_ID, TOOLS, TOOL_IDS, DEFAULT_AUTONOMY, AUTONOMY_LEVELS } from './config.js';
@@ -40,7 +39,6 @@ process.on('SIGHUP', () => console.error('[aios] received SIGHUP (ignored)'));
 // ---------------------------------------------------------------------------
 // tiny helpers
 // ---------------------------------------------------------------------------
-const gzipAsync = promisify(gzipCb);
 // Compress sizeable text responses when the client accepts it. Matters a lot on relayed
 // tailnet links (DERP): /api/state is ~67KB raw vs ~8KB gzipped, xterm.js 283KB vs ~70KB.
 // res.req is the native back-reference, so json()'s signature stays (res, code, obj).
@@ -55,10 +53,9 @@ export function send(res, code, body, headers = {}) {
 function sendCompressed(res, code, body, headers) {
   if (typeof body === 'string') body = Buffer.from(body);
   if (body.length < GZIP_MIN || !acceptsGzip(res)) return send(res, code, body, headers);
-  gzipAsync(body).then(
-    (zipped) => send(res, code, zipped, { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' }),
-    () => send(res, code, body, headers) // compression failure -> plain
-  );
+  compressHttpBody(body).then(zipped => zipped
+    ? send(res, code, zipped, { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' })
+    : send(res, code, body, { ...headers, vary: 'accept-encoding' }));
 }
 export function json(res, code, obj) {
   sendCompressed(res, code, JSON.stringify(obj), { 'content-type': 'application/json; charset=utf-8',

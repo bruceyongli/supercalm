@@ -3,11 +3,10 @@
 // Locates the session's exact NATIVE transcript (not the tmux pipe log or a same-project guess).
 // Cached by file mtime — a 200MB rollout is
 // only re-parsed when it actually grew. Parsing/large-file reads run in a bounded worker pool.
-import { stat } from 'node:fs/promises';
 import { route, json, send } from './server.js';
 import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
 import { findClaudeLog } from './claude_transcripts.js';
-import { readStoryPage, readStoryImage } from './story_reader.js';
+import { readStoryPage, readStoryImage, statStoryFile as stat } from './story_reader.js';
 import { snapshot } from './sessions.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
@@ -138,7 +137,7 @@ async function storySource(sid) {
     const cwd = s.worktree_path || project?.path || null;
     const file = s.tool === 'codex'
       ? await findCodexLog(s)
-      : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid), allowHeuristic: false });
+      : await findClaudeLog(cwd, s, { claimed: otherClaudeTranscripts(sid), allowHeuristic: false, statFile: stat });
     // Binding/recovery can finish during a filesystem read. Resolve again with the new identity.
     if (nativeIdentity(s) === nativeIdentity(getSession(sid))) return { s, file };
   }
@@ -186,7 +185,7 @@ export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cur
   return flight;
 }
 
-const storyUpdates = createStoryUpdates({ bus, resolve: async sid => {
+const storyUpdates = createStoryUpdates({ bus, statFile: stat, resolve: async sid => {
   const source = await storySource(sid);
   if (!source) return null;
   const { s, file } = source;

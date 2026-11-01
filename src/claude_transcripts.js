@@ -33,7 +33,7 @@ const relocated = new Map();
 
 // Claude may relocate a transcript after cwd/worktree changes. Recover only its exact UUID, never
 // whichever same-project file happens to be largest/latest. Cache directory searches, including misses.
-export async function findRelocatedClaudeLog(bound, { root = join(homedir(), '.claude', 'projects') } = {}) {
+export async function findRelocatedClaudeLog(bound, { root = join(homedir(), '.claude', 'projects'), statFile = stat } = {}) {
   const uuid = claudeResumeId(bound);
   if (!uuid) return null;
   const key = `${root}:${uuid}`;
@@ -45,7 +45,7 @@ export async function findRelocatedClaudeLog(bound, { root = join(homedir(), '.c
     for (const dir of dirs.slice(0, 2048)) {
       if (!dir.isDirectory()) continue;
       const candidate = join(root, dir.name, `${uuid}.jsonl`);
-      try { if ((await stat(candidate)).isFile()) { path = candidate; break; } } catch {}
+      try { if ((await statFile(candidate)).isFile()) { path = candidate; break; } } catch {}
     }
   } catch {}
   relocated.set(key, { at: Date.now(), path });
@@ -66,13 +66,13 @@ export function pickClaudeTranscript(cands, s, { claimed } = {}) {
   return pool.slice().sort((a, b) => b.size - a.size)[0]?.p || null;
 }
 
-export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(homedir(), '.claude', 'projects') } = {}) {
+export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(homedir(), '.claude', 'projects'), statFile = stat } = {}) {
   const bound = s?.claude_transcript;
   if (bound) {
-    try { if ((await stat(bound)).isFile()) return bound; } catch {}
+    try { if ((await statFile(bound)).isFile()) return bound; } catch {}
     // An exact native binding never authorizes reading another same-directory conversation when its
     // file disappears. Retain the identity for recovery; Story can use the session's own message spine.
-    return findRelocatedClaudeLog(bound, { root });
+    return findRelocatedClaudeLog(bound, { root, statFile });
   }
   // Story is a conversation, not a recovery candidate list. A timestamp/cwd/size match cannot
   // establish ownership when another conversation is still awaiting its first binding hook.
@@ -88,7 +88,7 @@ export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, ro
       if (!name.endsWith('.jsonl')) continue;
       const p = join(dir, name);
       try {
-        const st = await stat(p);
+        const st = await statFile(p);
         cands.push({ p, size: st.size, mtimeMs: st.mtimeMs, birthtimeMs: st.birthtimeMs || 0 });
       } catch {}
     }

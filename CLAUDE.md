@@ -694,7 +694,12 @@ short round does not inherit an older huge scan. Truncation/rotation discard inc
 Growing native histories use the SAME Codex/Claude adapters incrementally on two sticky workers.
 Story/image and graph workers use worker-only synchronous file handles: asynchronous filesystem IO
 in a Worker STILL shares libuv's pool with HTTP gzip, assets and delivery receipts. Never block the
-main thread; direct/main-thread readers stay asynchronous. Coalesce in-flight reads by exact native
+main thread with file IO; direct/main-thread readers stay asynchronous. Story source/cache/watch
+metadata checks use the same isolated workers, including Claude's exact-path relocation checks.
+HTTP gzip for at most 128 KiB of data uses bounded synchronous CPU work, avoiding the shared IO pool;
+larger bodies have a 150 ms compression budget and at most four outstanding jobs, then send plain
+bytes with Vary rather than hold response headers. Never drop or truncate the response body.
+Coalesce in-flight reads by exact native
 identity/page, not changing mtime, so live appends cannot build a queue of obsolete snapshots.
 The Story response must not await a second native question scan: use parsed questions plus durable
 overlays; persist parsed pending async calls before returning controls so immediate answers work.

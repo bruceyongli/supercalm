@@ -6,8 +6,10 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
-import { readStoryPage } from '../src/story_reader.js';
+import { readStoryPage, statStoryFile } from '../src/story_reader.js';
 import { readSpace } from '../src/session_space_reader.js';
+import { compressHttpBody } from '../src/http_compression.js';
+import { gunzipSync } from 'node:zlib';
 
 // A FIFO blocks the same libuv filesystem pool as a slow mount, without stressing CPU, creating
 // a remote fixture, or changing live sessions. Use one pool thread to make starvation deterministic.
@@ -42,14 +44,18 @@ if (process.env.AIOS_READER_IO_FIXTURE !== '1') {
     assert.equal(first, second, 'concurrent requests share exactly one native read');
     const deadline = setTimeout(release, 2500);
     try {
-      const [story, graph] = await Promise.all([first, readSpace({ file, session: { id: 's_fixture', tool: 'codex' } })]);
+      const body = Buffer.from('The complete session response. '.repeat(2000));
+      const [story, graph, metadata, compressed] = await Promise.all([first,
+        readSpace({ file, session: { id: 's_fixture', tool: 'codex' } }), statStoryFile(file), compressHttpBody(body)]);
       assert.ok(story.events.some(e => e.body === 'New report while shared filesystem IO is blocked'));
       assert.equal(story.meta.readMode, 'incremental');
       assert.ok(graph.bytesRead > 0);
+      assert.ok(metadata.isFile() && metadata.size > 0, 'metadata cannot wait on the shared pool either');
+      assert.deepEqual(gunzipSync(compressed), body, 'small HTTP replies stay compressed without waiting on native IO');
       assert.equal(released, false, 'Story and graph must finish before the shared pool is unblocked');
       assert.equal(localDone, false, 'readers cannot depend on the saturated HTTP filesystem pool');
       console.log(JSON.stringify({ sharedFilesystemPool: 'blocked', story: 'fresh native report', graph: 'complete',
-        nativeReadCoalesced: true, isolatedReadMs: Math.round(performance.now() - began) }));
+        nativeReadCoalesced: true, metadataIsolated: true, responseCompressed: true, isolatedReadMs: Math.round(performance.now() - began) }));
     } finally { clearTimeout(deadline); release(); }
     await Promise.all([blocked, local]);
   } finally {
