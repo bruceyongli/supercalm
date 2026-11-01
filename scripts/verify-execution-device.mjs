@@ -46,14 +46,17 @@ async function request(path,body) {
 }
 async function until(label, check, timeout=120000) {
   const start=Date.now();let last;
-  while(Date.now()-start<timeout){try{last=await check();if(last)return last;}catch(e){last=e.message;}await pause(1000);}
+  while(Date.now()-start<timeout){try{last=await check();if(last)return last;}catch(e){if(e.fatal)throw e;last=e.message;}await pause(1000);}
   throw Error(`${label} timed out: ${typeof last==='string'?last:JSON.stringify(last)}`);
 }
 const storyText=story=>(story.events||[]).filter(e=>e.kind==='report').map(e=>e.text||e.body||'').join('\n');
 async function report(sid, expected) {
   return until('native report '+sid,async()=>{
     const story=await request(`/api/session/${sid}/story`);
-    return story.meta?.source==='transcript' && storyText(story).includes(expected)?story:false;
+    if(story.meta?.source==='transcript' && storyText(story).includes(expected))return story;
+    const session=await request(`/api/session/${sid}?surface=header`);
+    if(['exited','error'].includes(session.status))throw Object.assign(Error(`Native agent stopped before report: ${sid} (${session.status_reason})`),{fatal:true});
+    return false;
   },180000);
 }
 try {

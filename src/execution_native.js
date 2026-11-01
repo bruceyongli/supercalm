@@ -4,6 +4,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 export async function initializeExecutionNative(root) {
+  // Codex requires CODEX_HOME to exist even when every provider option is on argv.
+  await mkdir(join(root, 'native/codex'), { recursive: true, mode: 0o700 });
   const directory = join(root, 'native/claude');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   try {
