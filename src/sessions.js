@@ -93,6 +93,7 @@ import { serializeAgentInput, createAgentSubmission } from './agent_submit.js';
 import { hasApprovedRenderedEntry, renderedFileMeta, serveRenderedFile } from './file_render.js';
 import { storedFileInfo, storedFileRead, storedFileStream } from './stored_file.js';
 import { sweepScratchJobs } from './scratch_jobs.js';
+import { confirmTerminalChoice } from './terminal_confirm.js';
 import { sweepLocalBuildJobs } from './local_build_jobs.js';
 import { flushTerminalTail, watchTerminalTail, stopTerminalTail } from './terminal_tail.js';
 import { createTerminalPipeRepair } from './terminal_pipe.js';
@@ -2344,15 +2345,24 @@ async function pollOnce() {
         question = r.question ?? null;
         providerIssue = r.providerIssue || null;
         // autonomous session asked us to auto-accept a one-time gate (trust / bypass warning)
-        if (r.confirm && now() - (entry.lastConfirm || 0) > 6000) {
+        if (r.confirm && !entry.confirming && now() - (entry.lastConfirm || 0) > 6000) {
           entry.lastConfirm = now();
           store.addEvent(s.id, 'auto-confirm', { autonomy: s.autonomy });
+          entry.confirming = true;
           (async () => {
-            for (const k of r.confirm) {
-              await sendKey(entry.tmux, k).catch(() => {});
-              await sleep(280);
+            const isCurrent = () => reg.get(s.id) === entry && store.getSession(s.id)?.desired_status !== 'exited';
+            if (terminalQuestionPrompt(snap)) {
+              await confirmTerminalChoice({ screen: snap, keys: r.confirm, isCurrent,
+                readScreen: () => snapshot(s.id), sendKey: key => sendKey(entry.tmux, key) });
+            } else if (s.tool !== 'claude') {
+              // Preserve legacy non-Claude gates that do not expose a choice selector.
+              for (const k of r.confirm) {
+                if (!isCurrent()) return;
+                await sendKey(entry.tmux, k); await sleep(280);
+              }
             }
-          })();
+          })().catch(error => console.error('[aios] native confirmation deferred', s.id, error.code || 'unavailable'))
+            .finally(() => { entry.confirming = false; });
         }
       }
     }

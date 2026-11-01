@@ -55,7 +55,7 @@ async function report(sid, expected) {
     const story=await request(`/api/session/${sid}/story`);
     if(story.meta?.source==='transcript' && storyText(story).includes(expected))return story;
     const session=await request(`/api/session/${sid}?surface=header`);
-    if(['exited','error'].includes(session.status))throw Object.assign(Error(`Native agent stopped before report: ${sid} (${session.status_reason})`),{fatal:true});
+    if(['exited','error'].includes(session.status) && /unexpected-exit|launch-failed/.test(session.status_reason||''))throw Object.assign(Error(`Native agent stopped before report: ${sid} (${session.status_reason})`),{fatal:true});
     return false;
   },180000);
 }
