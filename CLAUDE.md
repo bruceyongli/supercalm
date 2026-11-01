@@ -201,7 +201,19 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   launchd services use their own service lifecycle; native sessions use the session maintenance flow.
   Never force-detach a live image, or migrate the proxy fleet. Validate native file semantics and clean
   detach/reconnect durability with disposable fixtures before choosing a storage transport.
-- Finite builds/packages: use `node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>`
+- Execution devices (2026-11-01 operator correction; supersedes remote-hot-storage defaults):
+  new coding sessions run on the selected Mac's local SSD, including complete Git objects,
+  workspaces, dependencies/builds, live native histories and worker SQLite. Spark is cold storage,
+  not a dependency of a new execution checkout. Existing Spark originals remain untouched until an
+  explicit paused-session move; never move active user work or delete originals implicitly.
+  `execution_nodes.js` / `execution_worker.js` implement one-owner, durable, dormant-then-activate
+  handoffs; preserve exact native IDs and staged/unstaged/untracked files. Offline is NOT exited.
+  Controller shadows never enter local recovery, cleanup or supervisor loops. SSH is transport,
+  not the lifetime of native processes. Run the same committed runtime on each registered device
+  through `bin/deploy`; private worker auth is stored mode 0600, never in argv or browser state.
+  Preserve release source contracts, do not turn a copied repository into an approved deploy source.
+  See `docs/specs/execution-devices.md` and the opt-in disposable live-device verification script.
+- Finite builds/packages in legacy remote workspaces: use `node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>`
   (or `node "$AIOS_BUILD_RUN" ...`). Replace/repeat `--output` for the actual relative output paths;
   commands can also write to `AIOS_BUILD_OUTPUT`. Source edits stay in the session worktree. The runner
   snapshots dirty tracked/nonignored untracked files and installed `node_modules` onto local SSD;
@@ -216,7 +228,7 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   One local build at a time; default admission/monitoring budget 30 GiB and reserve 50 GiB. These are
   application guards, not an OS filesystem quota. `AIOS_BUILD_MAX_BYTES`/`AIOS_BUILD_RESERVE_BYTES`
   configure them; `AIOS_LOCAL_BUILD_ROOT` must resolve to the local home volume, not a remote alias.
-  Remote code/history/artifacts remain on the selected storage. SMB versus SSHFS does not change
+  Legacy remote originals remain on the selected storage until explicitly moved. SMB versus SSHFS does not change
   physical network latency; never switch a live storage transport without isolated semantic/performance
   evidence. SSH artifact archives and SMB/APFS live storage are distinct paths, not interchangeable mounts.
 - Static web build copies: the package-command wrapper and checked project-release entry enable

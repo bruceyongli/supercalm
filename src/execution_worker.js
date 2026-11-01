@@ -132,6 +132,12 @@ async function finalizeImport(op, expected) {
     await git(['read-tree', spec.git.head]);
   }
   if (spec.git?.origin) await git(['remote', 'add', 'origin', spec.git.origin]).catch(() => git(['remote', 'set-url', 'origin', spec.git.origin]));
+  // Copy author identity only, never credential helpers, hooks or global config.
+  for (const [key, value] of Object.entries(spec.git?.identity || {})) {
+    if (['name','email'].includes(key) && typeof value === 'string' && value && value.length <= 512 && !/[\r\n\0]/.test(value)) {
+      await git(['config', '--local', `user.${key}`, value]);
+    }
+  }
   await unpack(op, 'tree', cwd);
   if (row.parts.index) await copyFile(join(importDir(op), 'index'), join(cwd, '.git/index'));
   await assertLocalCheckout(cwd);

@@ -18,7 +18,9 @@ const posts = [];
 const json = (res, data) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(data)); };
 const server = createServer(async (req, res) => {
   const path = new URL(req.url, 'http://127.0.0.1').pathname;
-  if (path === '/aios/api/launch-options') return json(res, { tools, projects: [{ id: 'p_fixture', path: '/fixture/project', name: 'Fixture' }] });
+  if (path === '/aios/api/launch-options') return json(res, { tools, projects: [{ id: 'p_fixture', path: '/fixture/project', name: 'Fixture' }],
+    executionDevices: [{id:'local',label:'Controller',online:true,launchable:false},
+      {id:'bb1',label:'bb1',online:true,default:true},{id:'bb2',label:'bb2',online:true},{id:'offline',label:'Sleeping Mac',online:false}] });
   if (path === '/aios/api/phone/home') return json(res, { sessions: [], counts: {} });
   if (path === '/aios/api/session' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
@@ -44,6 +46,10 @@ try {
     await page.goto(`http://127.0.0.1:${server.address().port}/aios/?desktop=1`);
     const open = () => page.evaluate(async () => { const { openLaunch } = await import('/aios/shell.js'); await openLaunch(); });
     await open();
+    assert.equal(await page.locator('#nl-device').inputValue(),'bb1','new work defaults to local SSD executor');
+    assert.equal(await page.locator('#nl-device option[value="local"]').count(),0,'legacy Spark controller is not a launch target');
+    assert.equal(await page.locator('#nl-device option[value="offline"]').evaluate(el=>el.disabled),true);
+    await page.locator('#nl-device').selectOption('bb2');
     assert.equal(await page.locator('#nl-model').inputValue(), 'claude-opus-5-5');
     assert.equal(await page.locator('#nl-effort').inputValue(), 'max');
     await page.locator('#nl-tool [data-tool="codex"]').click();
@@ -63,8 +69,10 @@ try {
     assert.equal(posts.length, count + 1);
     assert.equal(posts.at(-1).model, 'gpt-6.1-sol');
     assert.equal(posts.at(-1).effort, 'xhigh');
+    assert.equal(posts.at(-1).device,'bb2','selected device reaches launch handler');
     await page.locator('#nl-cancel').click();
     await open();
+    assert.equal(await page.locator('#nl-device').inputValue(),'bb1');
     assert.equal(await page.locator('#nl-model').inputValue(), 'claude-opus-5-5', 'new modal gets fresh defaults');
     await page.locator('#nl-task').fill('Test Claude launch default');
     await page.locator('#nl-go').click();

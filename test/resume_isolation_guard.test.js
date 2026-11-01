@@ -72,6 +72,9 @@ const { TOOLS } = await import('../src/config.js');
 const calls = () => readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 const newSessions = () => calls().filter((a) => a[0] === 'new-session');
 const launchLine = (sid) => readFileSync(join(data, 'launch', sid + '.sh'), 'utf8');
+// Inspect the environment prefix, not quoted instructions which also explain
+// what AIOS_NO_DEPLOY means. A prompt mention is not an exported interlock.
+const launchEnvironment = sid => launchLine(sid).split(/ '(?:claude|codex)'(?: |\n)/)[0];
 
 const gitProject = store.createProject({ id: 'p_iso_git', name: 'Isolated repo', path: repoPath });
 const plainProject = store.createProject({ id: 'p_iso_plain', name: 'Plain dir', path: plainPath });
@@ -156,7 +159,7 @@ await check('control: a shared-tree session resumes (guard does not break normal
   const created = newSessions().slice(before);
   assert.equal(created.length, 1, 'exactly one pane was created');
   assert.equal(created[0][created[0].indexOf('-c') + 1], repoPath, 'a non-isolated session launches in the project path');
-  assert.ok(!/AIOS_NO_DEPLOY=1/.test(launchLine(shared.id)), 'a shared-tree launch carries no interlock — the state the fail-open path used to fake');
+  assert.ok(!/AIOS_NO_DEPLOY=1/.test(launchEnvironment(shared.id)), 'a shared-tree launch carries no interlock — the state the fail-open path used to fake');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -173,7 +176,7 @@ await check('control: a restorable worktree resumes INTO the worktree with the d
   const created = newSessions().slice(before);
   assert.equal(created.length, 1);
   assert.equal(created[0][created[0].indexOf('-c') + 1], keptPath, 'the pane opens in the isolated worktree, not the shared checkout');
-  assert.match(launchLine(kept.id), /AIOS_NO_DEPLOY=1/, 'isolation restored => the deploy interlock is present');
+  assert.match(launchEnvironment(kept.id), /AIOS_NO_DEPLOY=1/, 'isolation restored => the deploy interlock is present');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -207,7 +210,7 @@ await check('launch: isolated full-autonomy Codex keeps the full bypass + the de
   assert.match(line, /dangerously-bypass-approvals-and-sandbox/, 'the pane command carries the full bypass');
   assert.doesNotMatch(line, /workspace-write/, 'no leftover confinement flags');
   assert.doesNotMatch(line, /sandbox-exec/, 'the launch line is never exec-wrapped (seatbelt cannot nest)');
-  assert.match(line, /AIOS_NO_DEPLOY=1/, 'the deploy interlock remains the isolation guarantee');
+  assert.match(launchEnvironment(launched.id), /AIOS_NO_DEPLOY=1/, 'the deploy interlock remains the isolation guarantee');
 });
 
 // ---------------------------------------------------------------------------------------------

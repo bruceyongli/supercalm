@@ -11,6 +11,7 @@ import { tmpdir, homedir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { createServer } from 'node:net';
 import { shquote as quote } from '../src/util.js';
+import { initializeExecutionNative } from '../src/execution_native.js';
 
 if (process.argv[2] !== '--live-bb2') throw Error('Explicit --live-bb2 required (starts real disposable coding sessions)');
 const exec = promisify(execFile);
@@ -55,6 +56,7 @@ async function report(sid, expected) {
 }
 try {
   await mkdir(data,{recursive:true});
+  await initializeExecutionNative(dir);
   await writeFile(join(data,'model_catalog.json'),JSON.stringify(await fetch('http://127.0.0.1:8793/api/models').then(r=>r.json())));
   const receiver=remote(`const fs=require('fs');fs.mkdirSync(${JSON.stringify(remoteRoot)},{recursive:true,mode:448});require('stream/promises').pipeline(process.stdin,fs.createWriteStream(${JSON.stringify(join(remoteRoot,'runtime.bundle'))},{flags:'wx'})).catch(()=>process.exit(1));`);
   receiver.stdout.resume();receiver.stderr.pipe(process.stderr);
@@ -71,13 +73,14 @@ try {
     AIOS_CLAUDE_HOOKS:'1',AIOS_CODEX_NOTIFY:'1',AIOS_AUTO_PUBLISH:'0',AIOS_CONTEXT_INJECT:'0',AIOS_PREFLIGHT_GRILL:'0',
     AIOS_CLI_PROXY_BASE:`http://127.0.0.1:${callback}/api/cli-proxy`,AIOS_CLAUDE_BASE_URL:`http://127.0.0.1:${callback}/api/cli-proxy`,AIOS_CLAUDE_KEY:'sk-aios-via-proxy',
     AIOS_EXECUTION_MODEL_URL:`http://127.0.0.1:${callback}/api/execution/model`,AIOS_EXECUTION_CATALOG_URL:`http://127.0.0.1:${callback}/api/models`};
-  await remoteCode(`const fs=require('fs'),cp=require('child_process'),root=${JSON.stringify(remoteRoot)},env=${JSON.stringify(workerEnv)};
+  await remoteCode(`(async()=>{const fs=require('fs'),cp=require('child_process'),root=${JSON.stringify(remoteRoot)},env=${JSON.stringify(workerEnv)};
     cp.execFileSync('/usr/bin/git',['clone',root+'/runtime.bundle',root+'/app']);
     cp.execFileSync(${JSON.stringify(remoteRuntime.node)},[${JSON.stringify(join(remoteRuntime.node,'../../lib/node_modules/npm/bin/npm-cli.js'))},'ci','--omit=dev','--ignore-scripts'],{cwd:root+'/app',env:{...process.env,PATH:env.PATH},timeout:180000});
     fs.mkdirSync(root+'/data',{recursive:true});fs.writeFileSync(root+'/control-token',${JSON.stringify(token)},{mode:384});
+    await import(root+'/app/src/execution_native.js').then(m=>m.initializeExecutionNative(root));
     fs.writeFileSync(root+'/tmux',${JSON.stringify(`#!/bin/sh\nTMUX='' exec /opt/homebrew/bin/tmux -L ${tag}-worker "$@"\n`)},{mode:448});
     const log=fs.openSync(root+'/worker.log','a');const child=cp.spawn(${JSON.stringify(remoteRuntime.node)},[root+'/app/src/server.js'],{cwd:root+'/app',env:{...process.env,...env},detached:true,stdio:['ignore',log,log]});
-    fs.writeFileSync(root+'/pid',String(child.pid));child.unref();console.log('worker fixture started');`);
+    fs.writeFileSync(root+'/pid',String(child.pid));child.unref();console.log('worker fixture started');})().catch(e=>{console.error(e.message);process.exit(1)});`);
   workerStarted=true;
   await writeFile(join(dir,'nodes.json'),JSON.stringify({version:1,nodes:[{id:'bb2-test',label:'bb2 test',host:'bb2',root:remoteRoot,localPort:forward,remotePort,callbackPort:callback,token}]}),{mode:0o600});
   const wrapper=join(dir,'tmux');await writeFile(wrapper,`#!/bin/sh\nTMUX='' exec /opt/homebrew/bin/tmux -L ${socket} "$@"\n`,{mode:0o700});
@@ -127,10 +130,12 @@ try {
     trace.checks.push({tool,session:session.id,nativeId,operation:moved.operation.id,owner:after.execution_node,sendReceipt:sent,report:storyText(grounded),preview:'200 old absolute path',original:await readFile(join(project,`proof-${tool}.md`),'utf8')});
     await request(`/api/session/${session.id}/stop`,{});
   }
-  // A genuinely new launch on bb2, rather than only migrated/replayed state.
-  const fresh=await request('/api/session',{path:project,device:'bb2-test',tool:'codex',model:'gpt-6.1-sol',effort:'low',autonomy:'full',task:`Reply exactly "REMOTE-FRESH-${tag}". No tools.`});
-  await report(fresh.id,`REMOTE-FRESH-${tag}`);await request(`/api/session/${fresh.id}/stop`,{});
-  trace.checks.push({freshLaunch:fresh.id,device:'bb2-test',nativeStory:true});
+  // Genuinely new launches on bb2, rather than only migrated/replayed state.
+  for (const tool of ['codex','claude']) {
+    const fresh=await request('/api/session',{path:project,device:'bb2-test',tool,model:tool==='codex'?'gpt-6.1-sol':'claude-opus-5-5',effort:'low',autonomy:'full',task:`Reply exactly "REMOTE-FRESH-${tool}-${tag}". No tools.`});
+    await report(fresh.id,`REMOTE-FRESH-${tool}-${tag}`);await request(`/api/session/${fresh.id}/stop`,{});
+    trace.checks.push({freshLaunch:fresh.id,tool,device:'bb2-test',nativeStory:true});
+  }
   server.kill('SIGTERM');await done(server);server=startController();
   await until('reconnected',async()=>(await request('/api/execution/devices')).devices.some(d=>d.id==='bb2-test'&&d.online));
   for(const check of trace.checks.filter(c=>c.session))assert.equal((await request(`/api/session/${check.session}?surface=header`)).status,'exited');

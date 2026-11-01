@@ -166,7 +166,10 @@ history when the task actually needs it. Disposable clones belong in $AIOS_SESSI
 must remove your own disposable clones/build copies after their last use rather than accumulating
 them until this long-running session ends. Check available disk space before large downloads/builds;
 if space is low, stop new bulk writes and report it. Never delete another session's files to make room.
-For finite builds/packages, use: node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>.
+For local-SSD execution devices, build in the existing local checkout; do not copy the repository or
+dependencies again merely to build. Keep all hot build inputs/caches on this Mac. Remove disposable
+outputs/caches after publishing the required artifacts, but keep source, Git and live native history.
+Only for legacy network-backed workspaces, use: node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>.
 Replace dist with the actual relative output path; repeat --output for multiple outputs. Run from the
 repository root. The runner copies dirty/untracked source plus node_modules to local SSD, runs there,
 publishes declared outputs/logs back to AIOS_SESSION_ARTIFACTS, and deletes ALL local build inputs,
@@ -177,7 +180,7 @@ this disposable snapshot; Git metadata is not copied. A pending transfer/active 
 keep the only output copy until automatic recovery completes. Never clean another job yourself.
 Guarded package build/release commands also accelerate same-volume public-to-dist asset copies on
 macOS. Do not replace asset copies with hardlinks to source files: outputs must remain independent.
-Direct finite tool invocations should still use the build runner; the coding CLI itself is not patched.
+Direct finite tools in legacy network workspaces should use the build runner; the coding CLI itself is not patched.
 For other disposable test/download jobs, use: node "$AIOS_SCRATCH_RUN" -- <command> <args>.
 It supplies a fresh job TMPDIR / AIOS_JOB_TMPDIR, cleans completed successful jobs, and retains failed
 jobs for 24 hours. Save durable results under AIOS_SESSION_ARTIFACTS before the command exits.
@@ -3465,7 +3468,7 @@ route('GET', '/api/session/:id', async (req, res, { id: sid }, url) => {
     messages: store.messagesFor(sid),
     events: store.eventsFor(sid, 60),
     composer_history: store.composerDraftHistoryFor(sid),
-    snapshot: s.status === 'starting' || s.status === 'error' ? '' : await snapshot(sid),
+    snapshot: s.status === 'starting' || s.status === 'error' ? '' : await snapshot(sid).catch(() => ''),
   });
 });
 

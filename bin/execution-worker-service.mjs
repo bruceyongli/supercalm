@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { initializeExecutionNative } from '../src/execution_native.js';
 
 const exec = promisify(execFile);
 let input = ''; for await (const chunk of process.stdin) { input += chunk; if (input.length > 65536) throw Error('Invalid worker configuration'); }
@@ -17,6 +18,7 @@ const actual = (await exec('/usr/bin/git', ['-C', app, 'rev-parse', 'HEAD'])).st
 if (actual !== config.sha) throw Error('Worker release identity mismatch');
 const paths = ['data', 'workspaces', 'worktrees', 'native/codex', 'native/claude', 'tmp'];
 for (const part of paths) await mkdir(join(root, part), { recursive: true, mode: 0o700 });
+await initializeExecutionNative(root);
 const tokenPath = join(root,'control-token');
 try { if ((await readFile(tokenPath,'utf8')).trim() !== config.token) throw Error('Worker control identity differs; no automatic credential replacement'); }
 catch (error) { if (error.code !== 'ENOENT') throw error; await writeFile(tokenPath, config.token + '\n', { flag: 'wx', mode: 0o600 }); }
@@ -38,7 +40,7 @@ const env = {
   AIOS_USAGE_AGY_FILE: join(root,'native/no-agy.jsonl'), AIOS_USAGE_AGY_CLI_LOG_DIR: join(root,'native/no-agy'),
   AIOS_CLI_PROXY_BASE: callback + '/api/cli-proxy', AIOS_CLAUDE_BASE_URL: callback + '/api/cli-proxy',
   AIOS_CLAUDE_KEY: 'sk-aios-via-proxy', AIOS_EXECUTION_MODEL_URL: callback + '/api/execution/model',
-  AIOS_EXECUTION_CATALOG_URL: callback + '/api/models', AIOS_AUTO_PUBLISH: '0',
+  AIOS_EXECUTION_CATALOG_URL: callback + '/api/models', AIOS_AUTO_PUBLISH: '0', AIOS_RELEASE_MONITOR: '0',
   TMPDIR: join(root,'tmp'), TMP: join(root,'tmp'), TEMP: join(root,'tmp'),
 };
 const xml = value => String(value).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -54,5 +56,17 @@ await exec('/bin/launchctl',['bootout',`${domain}/${label}`]).catch(() => {});
 await exec('/bin/launchctl',['bootstrap',domain,plist]);
 await exec('/bin/launchctl',['enable',`${domain}/${label}`]);
 await exec('/bin/launchctl',['kickstart',`${domain}/${label}`]);
+let ready = false;
+for (let attempt = 0; attempt < 60; attempt++) {
+  try {
+    const response = await fetch(`http://127.0.0.1:${config.remotePort}/api/execution/health`, {
+      headers: { 'x-aios-node-token': config.token }, signal: AbortSignal.timeout(1000),
+    });
+    const health = await response.json();
+    if (response.ok && health.node === config.id && health.commit === actual) { ready = true; break; }
+  } catch {}
+  await new Promise(resolve => setTimeout(resolve, 500));
+}
+if (!ready) throw Error('Worker did not confirm the exact installed release; inspect its worker.log');
 if (config.bundle.startsWith(join(root,'releases') + '/') && config.bundle.endsWith('.bundle')) await rm(config.bundle);
 console.log(JSON.stringify({ node: config.id, localSSD: true, commit: actual, service: label }));

@@ -17,13 +17,14 @@ export async function gitEvidence(path) {
   })).stdout;
   const top = (await run(['rev-parse', '--show-toplevel'])).trim();
   if (await realpath(top) !== await realpath(path)) throw migrationError('Select the complete repository root, not a subdirectory');
-  const [head, branch, status, index, origin, submodules, diff, splitIndex, sparse] = await Promise.all([
+  const [head, branch, status, index, origin, submodules, diff, splitIndex, sparse, userName, userEmail] = await Promise.all([
     run(['rev-parse', 'HEAD']), run(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => ''),
     run(['status', '--porcelain=v2', '-z', '--untracked-files=all']),
     run(['rev-parse', '--path-format=absolute', '--git-path', 'index']),
     run(['remote', 'get-url', 'origin']).catch(() => ''), run(['ls-files', '--stage']),
     run(['diff', '--binary', 'HEAD']), run(['rev-parse', '--shared-index-path']),
     run(['config', '--get', 'core.sparseCheckout']).catch(() => ''),
+    run(['config', '--get', 'user.name']).catch(() => ''), run(['config', '--get', 'user.email']).catch(() => ''),
   ]);
   if (/^160000 /m.test(submodules)) throw migrationError('This checkout has Git submodules. Initialize a self-contained copy before device migration.', 'execution-submodule');
   if (splitIndex.trim() || sparse.trim() === 'true') throw migrationError('Sparse/split-index checkouts need a full local checkout before device migration', 'execution-special-index');
@@ -31,7 +32,8 @@ export async function gitEvidence(path) {
   // Never serialize an embedded password/token from a legacy Git remote.
   if (/^https?:\/\/[^/]*@/i.test(cleanOrigin)) throw migrationError('Remove credentials embedded in the Git remote URL before migrating');
   return { head: head.trim(), branch: branch.trim() || null,
-    statusHash: createHash('sha256').update(status).update(diff).digest('hex'), index: index.trim(), origin: cleanOrigin || null };
+    statusHash: createHash('sha256').update(status).update(diff).digest('hex'), index: index.trim(), origin: cleanOrigin || null,
+    identity: { name: userName.trim(), email: userEmail.trim() } };
 }
 export async function assertLocalCheckout(path) {
   const root = await realpath(path);

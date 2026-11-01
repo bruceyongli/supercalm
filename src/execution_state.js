@@ -6,7 +6,9 @@ import { sessionStatusPayload } from './session_projection.js';
 
 const SESSION_TABLES = ['messages', 'events', 'decisions', 'agent_grants', 'supervisor_reviews',
   'session_limits', 'preflight_specs', 'session_maps', 'composer_drafts'];
-const PROJECT_TABLES = ['project_helpers', 'project_context'];
+// Preserve the operator's exact release contract. Moving code does not grant a
+// new deploy source or silently strip existing per-command release permission.
+const PROJECT_TABLES = ['project_helpers', 'project_context', 'release_targets'];
 const columns = table => db.prepare(`PRAGMA table_info("${table}")`).all();
 export function insertKnownRow(table, row, { omit = [], ignore = false } = {}) {
   const names = columns(table).map(c => c.name).filter(name => Object.hasOwn(row, name) && !omit.includes(name));
@@ -23,12 +25,15 @@ export function exportExecutionState(sid) {
     if (!columns(name).some(c => c.name === 'session_id')) continue;
     tables[name] = db.prepare(`SELECT * FROM "${name}" WHERE session_id=?`).all(sid);
   }
+  return { session, project, tables, projectTables: exportExecutionProjectState(project.id) };
+}
+export function exportExecutionProjectState(projectId) {
   const projectTables = {};
   for (const name of PROJECT_TABLES) {
     if (!columns(name).some(c => c.name === 'project_id')) continue;
-    projectTables[name] = db.prepare(`SELECT * FROM "${name}" WHERE project_id=?`).all(session.project_id);
+    projectTables[name] = db.prepare(`SELECT * FROM "${name}" WHERE project_id=?`).all(projectId);
   }
-  return { session, project, tables, projectTables };
+  return projectTables;
 }
 export function importExecutionState(data, { cwd, projectPath, transcript, operation, kind = 'move' }) {
   const existing = getSession(data.session.id);

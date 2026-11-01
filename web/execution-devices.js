@@ -46,10 +46,11 @@ export async function openExecutionMove(session) {
       operation = op;
       if (!op || !modal.isConnected) return;
       const pending = !['complete','failed','cancelled'].includes(op.phase);
+      const retryable = op.phase === 'failed' || op.phase === 'activating' && op.error;
       q('[data-progress]').textContent = `${phaseLabel(op.phase)}${op.bytes ? ` · ${gib(op.bytes)} transferred` : ''}${op.error ? ` — ${op.error}` : ''}`;
-      q('[data-start]').disabled = pending || op.phase === 'complete' || op.phase === 'cancelled';
-      q('[data-start]').textContent = op.phase === 'failed' || op.phase === 'activating' && op.error ? 'Retry transfer' : 'Move';
-      q('[data-device]').disabled = true;
+      q('[data-start]').disabled = pending && !retryable || op.phase === 'complete';
+      q('[data-start]').textContent = retryable ? 'Retry transfer' : 'Move';
+      q('[data-device]').disabled = op.phase !== 'cancelled';
       if (pending) timer = setTimeout(poll, 2000);
     };
     async function poll() {
@@ -61,7 +62,7 @@ export async function openExecutionMove(session) {
       if (busy) return;
       busy = true; q('[data-start]').disabled = true;
       try {
-        const result = operation?.phase === 'failed'
+        const result = operation?.phase === 'failed' || operation?.phase === 'activating' && operation.error
           ? await api(`api/execution/operations/${operation.id}/retry`, { method: 'POST' })
           : await api(`api/session/${session.id}/move`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device: q('[data-device]').value }) });
         show(result.operation);

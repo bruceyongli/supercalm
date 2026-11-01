@@ -22,6 +22,13 @@ try {
   await writeFile(join(source,'plan.md'),'# Plan\nUnstaged detail.\n'); await writeFile(join(source,'local.txt'),'untracked');
   const bundle = await import('../src/execution_bundle.js');
   const transport = await import('../src/execution_transport.js');
+  const { initializeExecutionNative } = await import('../src/execution_native.js');
+  await initializeExecutionNative(workerRoot);
+  const prefs = join(workerRoot, 'native/claude/.claude.json');
+  assert.deepEqual(JSON.parse(await readFile(prefs,'utf8')), {hasCompletedOnboarding:true,theme:'dark'});
+  await writeFile(prefs, '{"theme":"light","custom":"retained"}');
+  await initializeExecutionNative(workerRoot);
+  assert.equal(await readFile(prefs,'utf8'), '{"theme":"light","custom":"retained"}', 'installer preserves existing native config');
   assert.throws(() => bundle.safeArchiveName('../escape')); assert.throws(() => bundle.safeArchiveName('/absolute'));
   assert.equal(bundle.safeArchiveName('./good/file'),'good/file');
   assert.throws(() => transport.validateExecutionNode({id:'x',host:'bb2;touch nope'}));
@@ -51,6 +58,8 @@ try {
   const state = await import('../src/execution_state.js');
   const attention = await import('../src/attention_store.js');
   store.createProject({id:'p_device_fixture',name:'Device fixture',path:source});
+  store.db.exec('CREATE TABLE IF NOT EXISTS release_targets(project_id TEXT PRIMARY KEY,source_dir TEXT,source_branch TEXT,auto_release INTEGER,release_scripts TEXT)');
+  store.db.prepare('INSERT INTO release_targets VALUES(?,?,?,?,?)').run('p_device_fixture',source,'main',1,'["bin/release"]');
   store.createSession({id:sid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-source',status:'exited',autonomy:'full',model:'gpt-6.1-sol',effort:'xhigh'});
   store.updateSession(sid,{worktree_path:source,branch:'main',codex_uuid:uuid,desired_status:'exited',runtime_status:'exited',status_reason:'operator-stop'});
   store.addMessage(sid,'in','task','Keep the original task.'); store.addMessage(sid,'out','detect','Original report');
@@ -61,6 +70,7 @@ try {
   await assert.rejects(bundle.assertNativeIdentity(native,'codex','wrong'),/different conversation/);
   const evidence = await bundle.gitEvidence(source);
   const spec = {...state.exportExecutionState(sid),kind:'move',git:evidence,native:{uuid,name:native.split('/').at(-1)},manifest:{},sourcePath:source};
+  assert.equal(spec.projectTables.release_targets[0].source_dir,source);
   assert.equal((await request(`/api/execution/import/${op}`)).phase,'absent');
   assert.equal((await request(`/api/execution/import/${op}/prepare`,spec)).phase,'receiving');
   const parts = {};
@@ -72,6 +82,7 @@ try {
   const [result, same] = await Promise.all([request(`/api/execution/import/${op}/finalize`,{parts}),request(`/api/execution/import/${op}/finalize`,{parts})]);
   assert.equal(result.phase,'imported'); assert.equal(same.cwd,result.cwd);
   assert.equal((await bundle.gitEvidence(result.cwd)).statusHash,evidence.statusHash);
+  assert.deepEqual((await bundle.gitEvidence(result.cwd)).identity,evidence.identity,'Git author identity retained per repository');
   assert.equal(await readFile(join(result.cwd,'local.txt'),'utf8'),'untracked');
   assert.equal(await bundle.assertLocalCheckout(result.cwd),result.cwd);
   const dormant = await request('/api/execution/state'); assert.equal(dormant.sessions.length,0,'dormant imports are invisible to reconciliation');
@@ -79,6 +90,9 @@ try {
   assert.equal(store.listExpectedLiveSessions().length,0,'controller cannot recover worker-owned sessions');
   for(const m of result.mapping) store.db.prepare('INSERT INTO execution_message_map VALUES(?,?,?)').run('fixture',m.remote_id,m.local_id);
   const active = await request(`/api/execution/import/${op}/activate`,{});
+  const release = (await request(`/api/session/${sid}/release-context`)).context;
+  assert.equal(release.source_dir,source,'release source is preserved, never redirected to worker checkout');
+  assert.equal(release.auto_release,true); assert.deepEqual(release.release_scripts,['bin/release']);
   assert.equal(active.session.status,'exited','move stays paused'); assert.equal(active.session.codex_uuid,uuid);
   assert.equal((await request(`/api/execution/import/${op}/activate`,{})).session.id,sid,'duplicate activation is idempotent');
   const snapshot = await request('/api/execution/state'); state.mirrorExecutionSnapshot(node,snapshot);

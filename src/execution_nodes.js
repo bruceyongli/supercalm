@@ -13,7 +13,7 @@ import { readManifest } from './launch_contract.js';
 import { EXECUTION_NODE, remoteSession, migrationError } from './execution_identity.js';
 import { loadExecutionNodes, executionNodes, executionNode, nodeRequest, connectExecutionNode, proxyNodeRequest } from './execution_transport.js';
 import { nodeForSession, executionDeviceList, assertExecutionAvailable } from './execution_routing.js';
-import { mirrorExecutionSnapshot, exportExecutionState } from './execution_state.js';
+import { mirrorExecutionSnapshot, exportExecutionState, exportExecutionProjectState } from './execution_state.js';
 import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus } from './execution_worker.js';
 import { gitEvidence, gitBundle, workingArchive, committedArchive, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
 import { codexRolloutFiles, pickRolloutByUuid } from './codex_rollouts.js';
@@ -139,7 +139,7 @@ async function performOperation(op) {
         git = { head: null, branch: 'main', origin: null };
       }
       git.branch = branchFor(project, s.id);
-      spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: {},
+      spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: exportExecutionProjectState(project.id),
         kind: 'launch', git, sourcePath, artifactsPath: join(DATA_DIR, 'session-artifacts', s.id) };
     }
     if (row.kind === 'move') {
