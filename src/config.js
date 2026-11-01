@@ -201,8 +201,9 @@ export const TOOLS = {
     fastMode: true,
     live: { fast_mode: () => '/fast' }, // Codex exposes fast inference as an interactive slash toggle.
     env: ({ model, viaProxy } = {}) => toolEnv('codex', model, viaProxy),
-    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy } = {}) => {
+    argv: (task, { effort, autonomy, model, resume, resumeId, fastMode, notifyArg, appendPrompt, mcpUrl, viaProxy, nativeCwd } = {}) => {
       const a = resume ? ['codex', 'resume', resumeId || '--last'] : ['codex'];
+      if (nativeCwd) a.push('--cd', nativeCwd);
       // viaProxy forces the proxy bridge even for native gpt-5.x (then an explicit model is required so the
       // bridge knows what to route). Foreign models bridge regardless.
       const m = model || (viaProxy ? codexDefaultModel() : null);

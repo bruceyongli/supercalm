@@ -211,4 +211,32 @@ export const CORE_MIGRATIONS = [
     description: 'Distinguish provider capacity blockers from operator questions without ending the CLI',
     up(db) { ensureColumn(db, 'sessions', 'provider_issue', 'TEXT'); },
   },
+  {
+    id: '0010_execution_devices',
+    description: 'Fence session execution ownership separately from storage and liveness',
+    up(db) {
+      ensureColumn(db, 'sessions', 'execution_node', 'TEXT');
+      ensureColumn(db, 'sessions', 'execution_revision', 'INTEGER');
+      ensureColumn(db, 'sessions', 'execution_checkout', 'INTEGER NOT NULL DEFAULT 0');
+      ensureColumn(db, 'sessions', 'execution_dormant', 'INTEGER NOT NULL DEFAULT 0');
+      ensureColumn(db, 'sessions', 'execution_transfer', 'TEXT');
+      ensureColumn(db, 'projects', 'execution_node', 'TEXT');
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS execution_sync (
+          node TEXT PRIMARY KEY, cursor INTEGER NOT NULL DEFAULT 0, checked_at INTEGER,
+          online INTEGER NOT NULL DEFAULT 0, error TEXT, health TEXT
+        );
+        CREATE TABLE IF NOT EXISTS execution_message_map (
+          node TEXT NOT NULL, remote_id INTEGER NOT NULL, local_id INTEGER NOT NULL,
+          PRIMARY KEY(node, remote_id)
+        );
+        CREATE TABLE IF NOT EXISTS execution_operations (
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL, node TEXT NOT NULL, kind TEXT NOT NULL,
+          phase TEXT NOT NULL, detail TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_operations_session ON execution_operations(session_id);
+      `);
+    },
+  },
 ];

@@ -52,6 +52,8 @@ export function sessionStatusPayload(session, {
     provider_issue: row.provider_issue,
     title: row.title || null,
     parent_session_id: row.parent_session_id || null,
+    execution_node: row.execution_node || null,
+    execution_checkout: !!row.execution_checkout,
     tool: row.tool,
     toolLabel: row.toolLabel,
     toolColor: row.toolColor,

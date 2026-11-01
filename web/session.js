@@ -51,6 +51,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
             <button class="btn ghost sm session-more" id="session-more" type="button" title="Session actions" aria-label="Session actions" aria-expanded="false">•••</button>
             <span class="session-actions-menu" id="session-actions-menu" role="menu" hidden>
               <button type="button" id="b-stop" role="menuitem"><b>Stop &amp; park</b><span>Frees the pane and stays resumable</span></button>
+              <button type="button" id="b-move" role="menuitem" hidden><b>Move to device</b><span>Continue this conversation on another Mac</span></button>
               <button type="button" id="b-kill" class="danger" role="menuitem"><b>Kill session</b><span>Ends the agent process</span></button>
             </span>
           </span>
@@ -1905,7 +1906,7 @@ function applySessionInfo(s) {
   latestSessionInfo = merged;
   updateJumpLatest();
   if (merged.toolColor && merged.toolLabel) {
-    $('#s-badge').innerHTML = `<span class="badge" style="border-color:${merged.toolColor}99;color:${merged.toolColor}">${merged.toolLabel}</span>`;
+    $('#s-badge').innerHTML = `<span class="badge" style="border-color:${merged.toolColor}99;color:${merged.toolColor}">${merged.toolLabel}</span>${merged.execution_node && merged.execution_node !== 'local' ? ` <small title="Execution device">${escapeHtml(merged.execution_node)}</small>` : ''}`;
   }
   renderHeaderTitle(merged);
   const st = $('#s-status');
@@ -1919,6 +1920,11 @@ function applySessionInfo(s) {
   if (resume && merged.status) resume.hidden = merged.status !== 'exited';
   const stop = $('#b-stop');
   if (stop && merged.status) stop.hidden = merged.status === 'exited';
+  const move = $('#b-move');
+  if (move) {
+    move.hidden = !['exited','error'].includes(merged.status) || !!merged.execution_node && merged.execution_node !== 'local' || !['codex','claude'].includes(merged.tool);
+    move.onclick = () => import('./execution-devices.js').then(m => m.openExecutionMove(latestSessionInfo));
+  }
   setSessionBrowserIdentity(merged);
 }
 

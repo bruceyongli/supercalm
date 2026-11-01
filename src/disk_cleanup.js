@@ -14,6 +14,8 @@ import { bus } from './bus.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import { sessionHasProtectedJobs } from './scratch_jobs.js';
 import { storageMigrationProtected } from './live_storage.js';
+import { remoteSession } from './execution_identity.js';
+import { assertExecutionAvailable } from './execution_routing.js';
 
 const exec = promisify(execFile), plans = new Map(), receipts = new Map(), flights = new Map();
 const MODES = new Set(['disposable', 'outputs', 'delete']);
@@ -36,6 +38,8 @@ async function safeOwnedWorktree(session, project) {
 async function stoppedSession(id, mode) {
   const s = store.getSession(id);
   if (!s) fail('Session no longer exists', 'session-not-found', 404);
+  assertExecutionAvailable(id);
+  if (remoteSession(s) || s.execution_dormant) fail('This session belongs to another execution device; its original files are retained', 'execution-owned-elsewhere');
   const eligibility = cleanupEligibility(s);
   if (!eligibility.cleanable || (mode === 'delete' && !eligibility.deletable)) fail(eligibility.reason || 'Only operator-killed sessions can be deleted');
   const lifecycle = await import('./sessions.js');

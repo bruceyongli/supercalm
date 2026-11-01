@@ -29,6 +29,11 @@ ask: the CORE of why the operator is being pinged — the agent's REASONING and 
 CRITICAL: Ignore the composer placeholder hint — the greyed suggestion shown next to '>' or '❯' (e.g. "Explain this codebase", "Write tests for @filename", "Summarize recent commits"). It is a rotating UI hint, NOT a real task, instruction, or question.`;
 
 async function chat(payload) {
+  if (process.env.AIOS_EXECUTION_MODEL_URL) {
+    const { controllerModel } = await import('./execution_model.js');
+    const r = await controllerModel(payload.model, payload.messages, { temperature: payload.temperature, maxTokens: payload.max_tokens });
+    return JSON.stringify({ model: r.model, choices: [{ message: { content: r.content } }] });
+  }
   const key = await fleetKey(); // the proxy fleet rejects keyless calls
   return new Promise((resolve, reject) => {
     const data = Buffer.from(JSON.stringify(payload));

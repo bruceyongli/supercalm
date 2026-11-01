@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join, basename, normalize } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { DATA_DIR } from '../config.js';
+import { remoteSession } from '../execution_identity.js';
 import { route, json, readJson } from '../server.js';
 import { bus } from '../bus.js';
 import { now } from '../util.js';
@@ -214,7 +215,7 @@ function tick() {
       continue;
     }
     const s = getSession(grant.session_id);
-    if (!s) continue;
+    if (!s || remoteSession(s) || s.execution_dormant) continue;
     if (s.status === 'exited') {
       const exitedMs = Number(rec.meta.tickOnExitedMs || 0);
       const endedAt = Number(s.ended_at || s.last_activity || 0);

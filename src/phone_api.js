@@ -143,7 +143,7 @@ route('GET', '/api/phone/home', async (req, res) => {
       SELECT s.parent_session_id FROM sessions s JOIN visible v ON s.id = v.id
       WHERE s.parent_session_id IS NOT NULL
     )
-    SELECT s.id, s.project_id, s.parent_session_id, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.structured_question, s.provider_issue, s.last_activity, s.started_at, s.revision, p.name AS project
+    SELECT s.id, s.project_id, s.parent_session_id, s.execution_node, s.title, s.tool, s.model, s.status, s.category, s.stage, s.summary, s.question, s.structured_question, s.provider_issue, s.last_activity, s.started_at, s.revision, p.name AS project
     FROM sessions s
     LEFT JOIN projects p ON p.id = s.project_id
     WHERE s.id IN (SELECT id FROM visible)

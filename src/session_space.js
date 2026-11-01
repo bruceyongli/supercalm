@@ -276,7 +276,7 @@ async function sweepOnce() {
   if (sweeping) return;
   sweeping = true;
   try {
-    for (const s of listSessions()) {
+    for (const s of listSessions().filter(s => !s.execution_node || s.execution_node === (process.env.AIOS_EXECUTION_NODE || 'local'))) {
       if (s.tool !== 'claude' && s.tool !== 'codex') continue;
       const built = _getMeta.get(s.id);
       if (!(s.status === 'exited' && built)) await maybeRebuild(s).catch(() => {}); // exited+built is structurally stable

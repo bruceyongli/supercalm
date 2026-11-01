@@ -3,7 +3,10 @@ import { VERSION, DATA_DIR, TMUX } from './config.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { now } from './util.js';
-import { listProjects, listSessions, getSession, getProject } from './store.js';
+import { listProjects, listSessions, listLocalSessions, getSession, getProject } from './store.js';
+import { remoteSession } from './execution_identity.js';
+import { executionDeviceList } from './execution_routing.js';
+import { executionNode, nodeRequest } from './execution_transport.js';
 import { authStatus } from './authmode.js';
 import { listProviders, status as providerStatus } from './auth/index.js';
 import { projectGraphSummary } from './project_graph_core.js';
@@ -16,7 +19,7 @@ import { bus } from './bus.js';
 import { createResourceInventory } from './resource_usage.js';
 import { createSessionDiskUsage, sessionResourceSummary } from './session_resource_summary.js';
 
-const resources = createResourceInventory({ sessions: listSessions, projects: listProjects, tmux: TMUX, ttl: 15_000 });
+const resources = createResourceInventory({ sessions: listLocalSessions, projects: listProjects, tmux: TMUX, ttl: 15_000 });
 const sessionDisks = createSessionDiskUsage({ measure: measureStoragePath, canMeasure: entry => {
   const pressure = resources.get().host?.memory_pressure;
   // Don't launch recursive remote reads during the initial unknown-pressure sample either.
@@ -42,12 +45,18 @@ route('GET', '/api/product/resources', (req, res) => {
   json(res, 200, { ...snapshot, capacity: currentDiskCapacity(), session_disk: diskRows(sessions) });
 });
 // Small, bounded projection for the rail: no process trees, project source scans or per-row requests.
-route('GET', '/api/product/resources/sessions', (req, res, _params, url) => {
+route('GET', '/api/product/resources/sessions', async (req, res, _params, url) => {
   const ids = [...new Set((url.searchParams.get('ids') || '').split(',').filter(Boolean))];
   if (ids.length > 80 || ids.some(id => !/^s_[a-zA-Z0-9_-]+$/.test(id))) return json(res, 400, { error: 'Select up to 80 valid sessions' });
   const sessions = ids.map(id => getSession(id)).filter(Boolean), snapshot = resources.get();
+  const local = sessions.filter(s => !remoteSession(s));
+  const deviceRows = await Promise.all([...new Set(sessions.filter(remoteSession).map(s => s.execution_node))].map(async id => {
+    const owned = sessions.filter(s => s.execution_node === id);
+    try { return (await nodeRequest(executionNode(id), `/api/product/resources/sessions?ids=${owned.map(s => s.id).join(',')}`, { timeout: 2500 })).sessions; }
+    catch { return owned.map(s => ({ id: s.id, cpu_percent: null, memory_bytes: null, disk_bytes: null, stale: true, device: id })); }
+  }));
   json(res, 200, { checked_at: snapshot.checked_at || null, state: snapshot.state,
-    stale: !!snapshot.stale || !!snapshot.error, sessions: sessionResourceSummary(snapshot, sessions, diskRows(sessions)) });
+    stale: !!snapshot.stale || !!snapshot.error, sessions: [...sessionResourceSummary(snapshot, local, diskRows(local)), ...deviceRows.flat()] });
 });
 let lastResourceAlert = 0;
 async function monitorResources() {
@@ -192,6 +201,7 @@ route('GET', '/api/product/health', async (req, res, _params, url) => {
     graphs,
     disk,
     resources: { checked_at: resource.checked_at || null, stale: resource.stale, host: resource.host || null },
+    executionDevices: executionDeviceList(),
     issues,
   });
 });

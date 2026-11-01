@@ -20,6 +20,7 @@ import { bus } from './bus.js';
 import { providerIssue } from './provider_status.js';
 import { getLatestAttentionReport } from './attention_store.js';
 import { createBoundedCache } from './bounded_cache.js';
+import { nodeForSession, executionRequest } from './execution_routing.js';
 
 // Pull the CLI's OWN live status line out of the pane tail so the story shows the real agent status
 // instead of a generic "working…". Claude renders "✢ Roosting… (1m 57s · ↓ 6.8k tokens)"; codex renders
@@ -152,6 +153,10 @@ function ownStory(sid) {
 }
 
 export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null, timings = {} } = {}) {
+  if (nodeForSession(sid)) {
+    const query = new URLSearchParams({ rounds: String(rounds), ...(full ? { full: '1' } : {}), ...(cursor ? { cursor } : {}) });
+    return executionRequest(sid, '/story?' + query);
+  }
   let began = performance.now();
   const source = await storySource(sid);
   timings.source = performance.now() - began;

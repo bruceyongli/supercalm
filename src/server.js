@@ -15,6 +15,7 @@ import { bootPayload, createBootState, loadSequentially, trafficAllowed } from '
 import { prepareProjectDirectory } from './project_init.js';
 import { removeProject } from './project_cleanup.js';
 import { createWebAssets } from './web_assets.js';
+import { executionDeviceList } from './execution_routing.js';
 
 // A request failure is caught at the request boundary below. An error that escapes that boundary means
 // process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
@@ -88,6 +89,8 @@ export async function readJson(req) {
 // router
 // ---------------------------------------------------------------------------
 const routes = [];
+let executionRouter = null;
+export function setExecutionRouter(handler) { executionRouter = handler; }
 export function route(method, path, handler) {
   const keys = [];
   const rx = new RegExp(
@@ -141,6 +144,7 @@ const FEATURE_MODULES = [
   './capability_api.js',
   './slo_api.js',
   './agents/host.js',
+  './execution_nodes.js',
 ];
 export const bootState = createBootState();
 
@@ -255,6 +259,7 @@ export function buildState() {
     autonomyLevels: AUTONOMY_LEVELS,
     flags: flags(),
     projects,
+    executionDevices: executionDeviceList(),
     sessions: all,
     queue,
     counts: {
@@ -310,6 +315,7 @@ route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
 // projection small lets the shell prefetch it without putting /api/state on the click path.
 route('GET', '/api/launch-options', (req, res) => json(res, 200, {
   ok: true,
+  executionDevices: executionDeviceList(),
   projects: store.listLaunchProjects(),
   tools: launchTools(),
   defaults: { autonomy: DEFAULT_AUTONOMY },
@@ -492,6 +498,7 @@ server = http.createServer(async (req, res) => {
     res.once('close', () => settleRequest(false));
   }
   try {
+    if (executionRouter && await executionRouter(req, res, url)) return;
     for (const r of routes) {
       if (r.method !== req.method) continue;
       const m = url.pathname.match(r.rx);
@@ -531,6 +538,8 @@ featureReady.catch((e) => {
 // NEW page loads through the tailnet hang. Outlive Serve's idle pool (90s) instead.
 server.keepAliveTimeout = 120_000;
 server.headersTimeout = 125_000; // must exceed keepAliveTimeout
+// SSH-authenticated worker imports have their own transfer deadline and disk reserve.
+if (process.env.AIOS_EXECUTION_NODE) server.requestTimeout = 0;
 
 server.on('error', (e) => {
   console.error('[aios] server error:', e.message);

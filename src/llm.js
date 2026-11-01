@@ -27,6 +27,10 @@ function withUserTail(chain) {
 }
 
 async function once(port, model, messages, { temperature, max_tokens = 700, timeout_ms = 45000, signal } = {}) {
+  if (process.env.AIOS_EXECUTION_MODEL_URL) {
+    const { controllerModel } = await import('./execution_model.js');
+    return (await controllerModel(model, messages, { temperature, maxTokens: max_tokens })).content;
+  }
   const key = await fleetKey(); // the proxy fleet rejects keyless calls
   return new Promise((resolve, reject) => {
     const voice = model.startsWith('voice/');

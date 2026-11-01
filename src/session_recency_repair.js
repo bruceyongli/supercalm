@@ -1,6 +1,7 @@
 // Narrow, auditable repair for the old resume path that stamped reboot time onto idle sessions.
 // Keep all messages, read/dismissal state and runtime state. Never rewind activity after recovery.
 import { nativeWorkActivity } from './session_recovery_activity.js';
+import { remoteSession } from './execution_identity.js';
 
 const meaningful = `(type IN ('launch','input','terminal-input','stop','kill','stop-request','kill-request','usage-limit-stop')
   OR (type='resume' AND COALESCE(json_extract(payload,'$.reason'),'')!='boot-recovery')
@@ -23,6 +24,7 @@ export async function repairRebootRecency(db, { dryRun = false, nativeActivity =
   const audit = db.prepare("INSERT INTO events(session_id,ts,type,payload) VALUES (?,?,'reboot-recency-repaired',?)");
   const repaired = [];
   for (const session of candidates) {
+    if (remoteSession(session)) continue;
     const recentInput = Number(input.get(session.id)?.ts) || 0, recentIntent = Number(intent.get(session.id)?.ts) || 0;
     if (Math.max(recentInput, recentIntent) >= session.recovery_at) continue;
     const native = await nativeActivity(session).catch(() => ({ available: true, lastAt: 0 }));

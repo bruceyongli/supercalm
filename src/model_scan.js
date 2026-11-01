@@ -65,6 +65,16 @@ export function mergeCliCatalog(providers, cliProviders = {}) {
 
 let rescanInFlight = null;
 async function performRescan() {
+  if (process.env.AIOS_EXECUTION_CATALOG_URL) {
+    const response = await fetch(process.env.AIOS_EXECUTION_CATALOG_URL, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw Error('Controller model catalog unavailable');
+    const data = await response.json();
+    const ok = applyCatalog(data.providers, { scannedAt: data.scannedAt, source: 'controller' });
+    if (!ok) throw Error('Invalid controller model catalog');
+    await mkdir(DATA_DIR, { recursive: true });
+    await writeFile(CATALOG_PATH, JSON.stringify({ providers: data.providers, scannedAt: data.scannedAt }));
+    return { ok, modelCount: listProxyModels({ includeImages: true }).length, added: [], failures: [], degraded: false };
+  }
   const before = new Set(listProxyModels({ includeImages: true }).map((m) => m.id));
   // Required precedence: signed-in subscription CLIs, configured API providers, then fleet.
   const cli = await discoverCliModels();

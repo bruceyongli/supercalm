@@ -7,6 +7,7 @@ import { worktreeDbVerdict } from './db_guard.js';
 import { now } from './util.js';
 import { applyMigrations } from './migrations.js';
 import { CORE_MIGRATIONS } from './schema_migrations.js';
+import { remoteSession } from './execution_identity.js';
 
 // Multi-session safety guard: a server booted from a LINKED git worktree (a scratch/dev instance) must
 // NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption.
@@ -216,9 +217,10 @@ export const getSession = (id) => _getSession.get(id);
 export const getSessionByTmux = (t) => _getSessionByTmux.get(t);
 export const listSessions = () => _allSessions.all();
 export const listLiveSessions = () => _liveSessions.all();
-export const listExpectedLiveSessions = () => _expectedLiveSessions.all();
+export const listExpectedLiveSessions = () => _expectedLiveSessions.all().filter(s => !remoteSession(s) && !s.execution_dormant);
+export const listLocalSessions = () => _allSessions.all().filter(s => !remoteSession(s));
 
-const SESSION_FIELDS = ['project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'desired_status', 'runtime_status', 'runtime_boot_id', 'runtime_heartbeat_at', 'status_reason', 'recovery_attempts', 'question', 'summary', 'category', 'stage', 'structured_question', 'provider_issue', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
+const SESSION_FIELDS = ['execution_node', 'execution_revision', 'execution_checkout', 'execution_dormant', 'execution_transfer', 'project_id', 'parent_session_id', 'tool', 'tmux', 'title', 'status', 'desired_status', 'runtime_status', 'runtime_boot_id', 'runtime_heartbeat_at', 'status_reason', 'recovery_attempts', 'question', 'summary', 'category', 'stage', 'structured_question', 'provider_issue', 'autonomy', 'effort', 'model', 'fast_mode', 'orchestration', 'codex_via_proxy', 'codex_uuid', 'claude_transcript', 'worktree_path', 'branch', 'parked', 'degraded', 'last_activity', 'ended_at', 'exit_code'];
 export function updateSession(id, patch) {
   const next = { ...patch };
   // One durable write path owns lifecycle semantics. UI actions, agent hooks, polling, and resumes all

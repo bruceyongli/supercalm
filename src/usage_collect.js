@@ -55,7 +55,7 @@ function projectFor(cwd, fallback = null) {
 function sessionForToolCwdTime(tool, cwd, eventTs) {
   const project = projectFor(cwd);
   let best = null;
-  for (const s of store.listSessions()) {
+  for (const s of store.listLocalSessions()) {
     if (s.tool !== tool) continue;
     const start = Number(s.started_at || 0) - 5 * 60_000;
     const end = Number(s.ended_at || 0) || Number(s.last_activity || 0) + 5 * 60_000;
@@ -528,7 +528,7 @@ function looksLikeLimitCodeSnippet(msg, before = '') {
 }
 
 async function scanTerminalLogs(counts) {
-  for (const s of store.listSessions()) {
+  for (const s of store.listLocalSessions()) {
     const path = join(LOG_DIR, s.id + '.log');
     let st;
     try {

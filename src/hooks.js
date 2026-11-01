@@ -10,10 +10,11 @@ import { flagOn } from './flags.js';
 import { claudeResumeId } from './claude_transcripts.js';
 import { providerIssueFromError } from './provider_status.js';
 import { storageMaintenanceFor } from './storage_maintenance.js';
+import { remoteSession } from './execution_identity.js';
 
 // Only paths inside claude's own project store are bindable — the value is later stat/read by the
 // story view, so a forged hook POST must not be able to point it at an arbitrary file.
-const CLAUDE_PROJECTS_ROOT = join(homedir(), '.claude', 'projects') + '/';
+const CLAUDE_PROJECTS_ROOT = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects') + '/';
 
 // Tools POST lifecycle events here so Supercalm knows precisely when a session is
 // working vs waiting. The session id arrives as the AIOS_SESSION_ID we injected
@@ -36,6 +37,7 @@ const _latestOutput = store.db.prepare("SELECT id FROM messages WHERE session_id
 export function repairMissedHookAttention() {
   const repaired = [];
   for (const { id } of _waitingSessions.all()) {
+    if (remoteSession(store.getSession(id))) continue;
     if (storageMaintenanceFor(id)) continue;
     const hook = _latestHook.get(id);
     if (!hook) continue;
@@ -55,6 +57,7 @@ export function repairMissedHookAttention() {
 
 function handle(tool, b, res) {
   const sid = b.session || b.session_id || b['session-id'];
+  if (remoteSession(store.getSession(sid))) return json(res, 200, { ok: true, ignored: 'different-execution-device' });
   if (sid && storageMaintenanceFor(sid)) {
     // Keep late lifecycle evidence, without treating a maintenance pause as completion.
     store.addEvent(sid, 'storage-maintenance-hook', { tool, event: String(b.event || b.type || b.hook_event_name || '') });

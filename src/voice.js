@@ -13,6 +13,7 @@ import { getVoiceConfig, getSpeech } from './model_providers.js';
 import { id, now, stripAnsi } from './util.js';
 import { buildVoiceBrief, speakBrief, speakOnTheGoBrief, sanitizeForSpeech, stripRoutineProcessEvidence, requestThreadForSpeech } from './voice_brief.js';
 import { buildVoiceSourcePack, voiceSourceContext, voiceSourceSummary } from './voice_sources.js';
+import { nodeForSession, executionRequest } from './execution_routing.js';
 import { listWiki, readWiki, searchWiki } from './wiki.js';
 import { getContext } from './context_doc.js';
 import { getRuntime, listEvents as listProjectEvents, taskCard } from './agents/supervisor/project_memory.js';
@@ -344,6 +345,8 @@ function latestStoryEvidence(events) {
 
 export async function voiceEvidenceFor(it, { refresh = false } = {}) {
   if (!it) return { projectContext: '', taskContext: '', recentConversation: '', requestContext: '', reportContext: '', sourceContext: '', sourcePack: { sources: [], totalChars: 0 } };
+  if (nodeForSession(it.sessionId)) return executionRequest(it.sessionId, '/execution/evidence', { method: 'POST',
+    body: { reportTs: it.reportTs, latestReport: it.latestReport, originalRequest: it.originalRequest }, timeout: 30000 });
   if (refresh) it._evidence = null;
   if (it._evidence) return it._evidence;
   if (it._evidencePromise) return it._evidencePromise;

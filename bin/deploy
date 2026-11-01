@@ -181,6 +181,8 @@ done
 if [ "$push_ok" != 1 ]; then echo "error: release push failed; service was not restarted" >&2; exit 1; fi
 
 if [ "$ON_HOST" = 1 ]; then
+  echo "==> publish configured execution devices (same release commit)"
+  node bin/execution-node.mjs deploy-all
   # On host itself: the local checkout already has the pushed commit; just refresh deps + restart.
   echo "==> on-host (host): npm install + restart locally"
   npm install --omit=dev
@@ -190,6 +192,7 @@ if [ "$ON_HOST" = 1 ]; then
 else
   echo "==> host: fetch + fast-forward $BR + npm install"
   ssh "$HOST" "bash -lc 'set -e; cd ~/aios && git fetch origin --quiet && git checkout --quiet \"$BR\" && git merge --ff-only \"origin/$BR\" && npm install --omit=dev'"
+  ssh "$HOST" "bash -lc 'cd ~/aios && node bin/execution-node.mjs deploy-all'"
 
   echo "==> restart service"
   ssh "$HOST" 'launchctl kickstart -k "gui/$(id -u)/ai.aios.server" 2>/dev/null \

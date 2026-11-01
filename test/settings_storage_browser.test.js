@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 import { chromium, webkit } from 'playwright';
 
-const names = ['views/settings.js', 'settings-storage.js', 'common.js', 'session-indicator.js', 'provider-issue.js',
+const names = ['views/settings.js', 'settings-storage.js', 'execution-devices.js', 'common.js', 'session-indicator.js', 'provider-issue.js',
   'markdown-inline.js', 'file-reference.js', 'onboarding.css', 'desktop.css', 'styles.css', 'redesign-skin.css'];
 const assets = new Map(names.map(name => [`/aios/${name}`, readFileSync(new URL(`../web/${name}`, import.meta.url))]));
 const local = { available_bytes: 138 * 1024 ** 3, total_bytes: 460 * 1024 ** 3 };

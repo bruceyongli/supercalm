@@ -2,6 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fleetKey, listProxyModels, routeForModel, assertModelRoute } from '../model_catalog.js';
+import { controllerModel } from '../execution_model.js';
 
 // Shared proxy-model transport for panel agents. Consolidates the hand-rolled /v1/chat/completions
 // callers (the old supervisor.js chat() + llm.js once()). Pure transport + parse: NO usage recording
@@ -77,6 +78,7 @@ async function callExactClaudeOAuth(route, messages, opts) {
 // POST chat-completions to a resolved fleet route, retrying transient failures. `messages` may contain
 // OpenAI-style multimodal content arrays (text + image_url). Returns { content, usage, raw, model }.
 export async function callProxyModel(route, messages, opts = {}) {
+  if (process.env.AIOS_EXECUTION_MODEL_URL) return controllerModel(route.id || route.model, messages, opts);
   assertModelRoute(route);
   const key = routeKeyOf(route);
   if (route?.proxy === 'claude' && exactClaudeRoutes.has(key)) {

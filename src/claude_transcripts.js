@@ -33,7 +33,7 @@ const relocated = new Map();
 
 // Claude may relocate a transcript after cwd/worktree changes. Recover only its exact UUID, never
 // whichever same-project file happens to be largest/latest. Cache directory searches, including misses.
-export async function findRelocatedClaudeLog(bound, { root = join(homedir(), '.claude', 'projects'), statFile = stat } = {}) {
+export async function findRelocatedClaudeLog(bound, { root = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), statFile = stat } = {}) {
   const uuid = claudeResumeId(bound);
   if (!uuid) return null;
   const key = `${root}:${uuid}`;
@@ -66,7 +66,7 @@ export function pickClaudeTranscript(cands, s, { claimed } = {}) {
   return pool.slice().sort((a, b) => b.size - a.size)[0]?.p || null;
 }
 
-export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(homedir(), '.claude', 'projects'), statFile = stat } = {}) {
+export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), statFile = stat } = {}) {
   const bound = s?.claude_transcript;
   if (bound) {
     try { if ((await statFile(bound)).isFile()) return bound; } catch {}

@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { DATA_DIR, ROOT } from './config.js';
 import * as store from './store.js';
+import { remoteSession, EXECUTION_NODE } from './execution_identity.js';
 
 const cleanupFlights = new Map();
 
@@ -75,6 +76,11 @@ export async function removeProject(projectId, {
       throw cleanupError('no such project', 'project-not-found', 404);
     }
     if (automatic && project.lifecycle !== 'temporary') return { ok: true, removed: false, reason: 'persistent' };
+    if ((project.execution_node && project.execution_node !== EXECUTION_NODE)
+        || store.listSessions().some(s => s.project_id === projectId && remoteSession(s))) {
+      if (automatic) return { ok: true, removed: false, reason: 'execution-device-owned' };
+      throw cleanupError('This project has device-owned sessions; its retained source files have not been removed', 'execution-device-owned', 409);
+    }
     if (store.liveSessionsForProject(projectId) > 0) {
       if (automatic) return { ok: true, removed: false, reason: 'live-sessions' };
       throw cleanupError('project has live sessions — stop them first', 'project-has-live-sessions', 409);

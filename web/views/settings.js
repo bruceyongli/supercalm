@@ -7,6 +7,8 @@
 // View contract: export init(host, params) + teardown().
 import { api, escapeHtml as esc } from '../common.js';
 import { mountStorageSettings } from '../settings-storage.js';
+import { mountExecutionSettings } from '../execution-devices.js';
+let teardownExecution = null;
 
 const SETTINGS_CSS = `
     /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
@@ -630,6 +632,7 @@ export function init(el) {
         <a href="#st-voice">Voice</a>
         <a href="#st-remote">Remote access</a>
         <a href="#st-storage">Storage</a>
+        <a href="#st-devices">Execution devices</a>
         <a href="#st-prefs">Preferences</a>
       </nav>
       <div class="st-body">
@@ -657,6 +660,9 @@ export function init(el) {
       <section class="st-sec" id="st-prefs" data-st-prefs data-search="notifications autoplay quick keys voice rate interface">
         <h2>Preferences</h2>
         <div class="ob-card" id="st-prefscard"></div>
+      </section>
+      <section class="st-sec" id="st-devices" data-search="bb1 bb2 execution devices ssh local SSD sessions migration">
+        <h2>Execution devices</h2><div id="st-devicecard"></div>
       </section>
       <div class="st-search-empty" data-st-empty hidden>No settings match that search.</div>
       </div>
@@ -692,9 +698,12 @@ export function init(el) {
   loadAgents(); loadProviders(); loadVoice(); loadRemote(); renderPrefs();
   teardownStorage?.();
   teardownStorage = mountStorageSettings(host.querySelector('#st-storagecard'));
+  teardownExecution?.();
+  teardownExecution = mountExecutionSettings(host.querySelector('#st-devicecard'));
 }
 
 export function teardown() {
+  teardownExecution?.(); teardownExecution = null;
   teardownStorage?.();
   teardownStorage = null;
   if (onScroll) removeEventListener('scroll', onScroll);

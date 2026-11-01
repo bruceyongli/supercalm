@@ -2,6 +2,10 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:fs/promises';
 import { withSessionArchiveLock } from './archive_lock.js';
+import { remoteSession, EXECUTION_NODE } from './execution_identity.js';
+import { nodeForSession, executionRequest, assertExecutionAvailable } from './execution_routing.js';
+import { assertLocalCheckout } from './execution_bundle.js';
+import { defaultExecutionNode } from './execution_transport.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate, storageBranchCheckpointAllows, storageBranchEvidenceValid } from './storage_maintenance.js';
 import { sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
@@ -691,8 +695,16 @@ async function registeredProjectWorktreeContaining(s, target) {
 // resolver so a document mentioned in a report gets exactly the same project/worktree/transcript
 // authorization as the interactive file viewer.
 export async function resolveSessionFile(s, rawRequested) {
-  const requested = normalizeSessionFileRequest(rawRequested);
+  let requested = normalizeSessionFileRequest(rawRequested);
   if (!requested) return null;
+  if (s.execution_checkout && isAbsolute(requested)) {
+    const manifest = await readManifest(s.id);
+    const mappings = (manifest?.previous_locations || []).flatMap(m => [
+      [m.artifacts, m.artifactTarget], [m.worktree, m.target], [m.project, m.target],
+    ]).filter(([from, to]) => from && to).sort((a, b) => b[0].length - a[0].length);
+    const mapping = mappings.find(([from]) => requested === from || requested.startsWith(from + sep));
+    if (mapping) requested = mapping[1] + requested.slice(mapping[0].length);
+  }
   const root = projectFileRoot(s);
   const candidate = normalize(isAbsolute(requested) ? requested : join(root, requested));
   let target = '';
@@ -821,6 +833,7 @@ function ensureServer() {
 export async function snapshot(sessionId, lines = 0) {
   const s = store.getSession(sessionId);
   if (!s) return '';
+  if (remoteSession(s)) return (await executionRequest(s, '/execution/snapshot?lines=' + Math.max(0, Number(lines) || 0))).snapshot;
   const args = ['capture-pane', '-p', '-t', s.tmux];
   if (lines) args.push('-S', String(-lines));
   try {
@@ -907,6 +920,9 @@ function resizeCandidate(sid, t = now()) {
 // parking detector — sendText confirms it after a menu answer so answers actually deliver.
 
 export async function sendText(name, text, options = {}) {
+  const owner = store.getSessionByTmux(name);
+  assertExecutionAvailable(owner?.id);
+  if (remoteSession(owner)) return executionRequest(owner, '/input', { method: 'POST', body: { text, ...options } });
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   return serializeAgentInput(name, () => sendTextUnlocked(name, text, options));
 }
@@ -1046,6 +1062,9 @@ const KEYMAP = {
   'ctrl-d': 'C-d', 'ctrl-r': 'C-r', 'ctrl-z': 'C-z', 'ctrl-u': 'C-u',
 };
 export async function sendKey(name, key) {
+  const owner = store.getSessionByTmux(name);
+  assertExecutionAvailable(owner?.id);
+  if (remoteSession(owner)) return executionRequest(owner, '/key', { method: 'POST', body: { key } });
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   markRawInput(name);
   const k = KEYMAP[String(key).toLowerCase()] || key;
@@ -1058,6 +1077,9 @@ export async function sendKey(name, key) {
 // per-keystroke input to a raw-mode TUI (CLAUDE.md gotcha #8), not the programmatic paste+Enter that
 // the delay in sendText() guards against.
 export async function sendRaw(name, data) {
+  const owner = store.getSessionByTmux(name);
+  assertExecutionAvailable(owner?.id);
+  if (remoteSession(owner)) return executionRequest(owner, '/type', { method: 'POST', body: { data } });
   assertStorageSessionAvailable(store.getSessionByTmux(name)?.id);
   markRawInput(name);
   await exec(TMUX, ['send-keys', '-t', name, '-l', '--', data], X);
@@ -1067,6 +1089,7 @@ export async function sendRaw(name, data) {
 // launch / discover / lifecycle
 // ---------------------------------------------------------------------------
 function register(s) {
+  if (remoteSession(s) || s.execution_dormant) return null;
   if (reg.has(s.id)) {
     const entry = reg.get(s.id);
     // A queued launch is born with a non-routable pending-* tmux placeholder. If anything registered
@@ -1152,11 +1175,17 @@ async function findCodexSession(cwd) {
 
 // Create a fresh tmux pane and start (or resume) the tool in it. Returns the tmux name.
 async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, cwd, paneName = null }) {
+  // Execution devices never copy subscription credentials. Every Codex launch,
+  // including native child sessions and resumes, uses the controller gateway.
+  if (EXECUTION_NODE !== 'local' && tool === 'codex') {
+    viaProxy = true;
+    if (!store.getSession(sid)?.codex_via_proxy) store.updateSession(sid, { codex_via_proxy: 1 });
+  }
   // `cwd`, when set, is the session's isolated git worktree — it wins over project.path so concurrent
   // sessions on one repo never share a working tree. project.path is NEVER mutated.
   const dir = cwd || project?.path || process.env.HOME;
   if (!existsSync(dir)) throw new Error('path does not exist on host: ' + dir);
-  const isolated = !!cwd && cwd !== project?.path;
+  const isolated = !!store.getSession(sid)?.execution_checkout || !!cwd && cwd !== project?.path;
   const name = paneName || `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
   const logFile = join(LOG_DIR, sid + '.log');
   await prepareSessionStorage(sid);
@@ -1177,7 +1206,8 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // isolated→workspace-write downgrade started an inner seatbelt that cannot coexist with any
   // outer profile and bricked every isolated codex session. Escape risk is handled by supervision
   // + the AIOS_NO_DEPLOY interlock below.
-  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, appendPrompt: CHILD_SESSION_HYGIENE };
+  const argvOpts = { effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy,
+    nativeCwd: store.getSession(sid)?.execution_checkout ? dir : null, appendPrompt: CHILD_SESSION_HYGIENE };
   // Restore the existing AIOS contract: rebuild current project/hygiene instructions on Claude
   // resume, rather than silently sending the native CLI's original system-prompt snapshot again.
   if (tool === 'claude' && resume && claudeSupportsPromptSnapshot()) argvOpts.refreshSystemPrompt = true;
@@ -1377,8 +1407,8 @@ async function completeLaunch(spec) {
   // Per-session worktree isolation (opt-in per project, #isolation helper). Once enabled this is a
   // safety contract: fail CLOSED if the path is not itself a repo or worktree setup fails. An operator
   // can still choose shared-directory behavior explicitly by disabling the helper.
-  let wt = null;
-  if (helperEnabled(project?.id, 'isolation') && project?.path) {
+  let wt = spec.preparedWorktree || null;
+  if (!wt && helperEnabled(project?.id, 'isolation') && project?.path) {
     const contract = deployContract(project.id);
     // A project may ship from a durable release branch rather than origin/HEAD. Fork every new
     // isolated session from that declared branch so the agent starts with what production actually
@@ -1392,7 +1422,7 @@ async function completeLaunch(spec) {
   }
   spec.worktree = wt;
   assertLaunchActive(spec);
-  const name = await phase('tmux-and-agent', () => startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false, cwd: wt?.path, paneName: spec.paneName }));
+  const name = await phase('tmux-and-agent', () => startPane({ sid, project, tool, task: launchTask, effort, autonomy, model, fastMode: activeFastMode, orchestration, resume: false, cwd: wt?.path, paneName: spec.paneName, viaProxy: spec.preparedWorktree ? true : undefined }));
   if (ticket.cancelled || store.getSession(sid)?.status !== 'starting') {
     await tmuxOk('kill-session', '-t', name);
     assertLaunchActive(spec);
@@ -1471,6 +1501,24 @@ export function queueLaunch(args) {
   return spec.session;
 }
 
+// Authenticated device import has already reserved the immutable session ID and a
+// complete local checkout. Reuse the ordinary launch implementation and input hooks.
+export async function launchPreparedSession(sid) {
+  const s = store.getSession(sid);
+  if (!s?.execution_checkout || remoteSession(s) || s.execution_dormant || s.status_reason !== 'execution-staged') throw new Error('Prepared session is not ready');
+  await assertLocalCheckout(s.worktree_path);
+  const project = store.getProject(s.project_id);
+  const task = store.messagesFor(sid, 100000).filter(m => m.direction === 'in').sort((a, b) => a.id - b.id)[0]?.text || null;
+  const ticket = { sid, cancelled: false, startedAt: now() };
+  const session = store.updateSession(sid, { status: 'starting', desired_status: 'working', runtime_status: 'starting' });
+  const spec = { sid, ticket, session, project, tool: s.tool, task, effort: s.effort, autonomy: s.autonomy,
+    model: s.model, activeFastMode: !!s.fast_mode, orchestration: s.orchestration, paneName: s.tmux,
+    preparedWorktree: { path: s.worktree_path, branch: s.branch, reused: true } };
+  pendingLaunches.set(sid, ticket);
+  setImmediate(() => completeLaunch(spec).catch(error => failLaunch(spec, error)));
+  return session;
+}
+
 // Relaunch a stopped session, continuing the tool's conversation in the same project.
 async function resumeNow(sid, { force = false, waitForInput = false, preserveStatus = null, recoveryReason = 'resume', maintenanceToken = null } = {}) {
   const s = store.getSession(sid);
@@ -1508,6 +1556,9 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
     }
   }
   assertDiskHeadroom(store.getProject(s.project_id)?.path);
+  if (s.execution_checkout && s.tool === 'codex' && !s.codex_uuid) {
+    throw Object.assign(new Error('This device session has no proven native conversation yet. The original request is retained; no other conversation was resumed.'), { code: 'codex-transcript-missing' });
+  }
   // Missing native history is not permission to --continue somebody else's latest conversation, nor
   // to kill a still-live agent and discover the loss afterwards. First look for this EXACT UUID.
   if (s.tool === 'claude' && s.claude_transcript && !(await findClaudeLog(null, s))) {
@@ -1541,7 +1592,9 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // Isolated session: reuse its worktree (re-`git worktree add` if the registration was pruned). Its
   // cwd wins over project.path for the pane AND the codex rollout lookup.
   let cwd = undefined;
-  if (s.worktree_path && project?.path) {
+  if (s.execution_checkout) {
+    cwd = await assertLocalCheckout(s.worktree_path);
+  } else if (s.worktree_path && project?.path) {
     try {
       const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
       cwd = wt?.path;
@@ -1684,6 +1737,8 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
 }
 
 export function resume(sid, options = {}) {
+  try { assertExecutionAvailable(sid); } catch (error) { return Promise.reject(error); }
+  if (nodeForSession(sid)) return executionRequest(sid, '/resume', { method: 'POST', body: options, timeout: 60000 });
   try { assertStorageSessionAvailable(sid, options.maintenanceToken); } catch (error) { return Promise.reject(error); }
   const inflight = pendingResumes.get(sid);
   if (inflight) return inflight;
@@ -2481,6 +2536,7 @@ export function paneSig(sid) {
 // streak so the poll loop doesn't instantly re-flag it as waiting. Shared by the
 // /input route and the voice concierge so both paths behave identically.
 export function noteReply(sid) {
+  if (remoteSession(store.getSession(sid))) return;
   if (store.getSession(sid)?.tool === 'claude') { clearHookState(sid); clearClaudeAttention(sid); }
   resolveCodexQuestion(sid);
   const before = store.getSession(sid);
@@ -3368,6 +3424,14 @@ route('POST', '/api/session', async (req, res) => {
   }
   const settings = launchSettings(b, tool);
   try {
+    const device = (!b.device || b.device === EXECUTION_NODE) ? (defaultExecutionNode()?.id || EXECUTION_NODE) : b.device;
+    if (device !== EXECUTION_NODE) {
+      const { queueExecutionLaunch } = await import('./execution_nodes.js');
+      const s = await queueExecutionLaunch(device, { project, tool, task: b.task ? String(b.task) : null,
+        ...settings, parentSessionId: parent?.id || null, agentName: b.agent_name || b.title });
+      return json(res, 202, decorate(s));
+    }
+    if (project.execution_node && project.execution_node !== EXECUTION_NODE) return json(res, 409, { error: 'Select this project’s execution device to start a session there.' });
     const s = queueLaunch({ project, tool, task: b.task ? String(b.task) : null, ...settings, parentSessionId: parent?.id || null, agentName: b.agent_name || b.title });
     json(res, 202, decorate(s));
   } catch (e) {
@@ -3873,6 +3937,8 @@ async function confirmDeferredReply(sid, clientMessageId, submission = null) {
 }
 
 export async function deliverReply(sid, text, options = {}) {
+  assertExecutionAvailable(sid);
+  if (nodeForSession(sid)) return executionRequest(sid, '/input', { method: 'POST', body: { text, ...options } });
   const clientMessageId = options.clientMessageId || null;
   if (!clientMessageId) return deliverReplyNow(sid, text, options); // existing voice/agent callers
   const source = options.source || 'text';
@@ -4374,6 +4440,8 @@ route('POST', '/api/session/:id/stop', async (req, res, { id: sid }) => {
 });
 
 export async function killSession(sid) {
+  assertExecutionAvailable(sid);
+  if (nodeForSession(sid)) return executionRequest(sid, '/kill', { method: 'POST', body: {} });
   const s = store.getSession(sid);
   if (!s) return null;
   const pending = pendingLaunches.get(sid);
@@ -4621,7 +4689,9 @@ async function boot() {
   await repairTerminalPipes([...reg.values()]).catch(() => {});
   const swept = await sweepTemporaryProjects();
   if (swept.some((result) => result?.removed)) bus.emit('changed');
-  const liveSessionIds = store.listExpectedLiveSessions().map((session) => session.id);
+  // A handoff retains the source's originals, including scratch. Remote ownership
+  // is not permission for the controller's orphan sweeper to delete them.
+  const liveSessionIds = [...store.listExpectedLiveSessions(), ...store.listSessions().filter(remoteSession)].map(session => session.id);
   const sweptScratch = await sweepSessionStorage(liveSessionIds);
   if (sweptScratch.length) console.log(`[aios] removed ${sweptScratch.length} orphaned session scratch director${sweptScratch.length === 1 ? 'y' : 'ies'}`);
   // Never overlap poll ticks: an auto-fallback relaunch (or a slow tmux) can make one tick outlast POLL_MS,

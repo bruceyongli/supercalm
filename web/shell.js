@@ -454,9 +454,13 @@ export async function openLaunch(opts = {}) {
   if (!m.isConnected) return;
   const projects = stateCache.projects || [];
   const tools = stateCache.tools || [];
+  const devices = (stateCache.executionDevices || [{ id: 'local', label: 'This Mac', online: true }]).filter(d => d.launchable !== false);
   m.innerHTML = `
     <div class="dk-palette-box dk-launch-box">
       <div class="dk-launch-h">New session</div>
+      <label class="dk-field" ${devices.length < 2 ? 'hidden' : ''}>Run on
+        <select id="nl-device">${devices.map(d => `<option value="${esc(d.id)}" ${d.default ? 'selected' : ''} ${d.online ? '' : 'disabled'}>${esc(d.label)}${d.online ? ' · local SSD' : ' · offline'}</option>`).join('')}</select>
+      </label>
       <label class="dk-field">Project
         <select id="nl-project">${projects.map((p) => `<option value="${esc(p.id)}" data-path="${esc(p.path)}">${esc(p.name)}</option>`).join('')}<option value="__new">+ new project…</option></select>
       </label>
@@ -514,7 +518,11 @@ export async function openLaunch(opts = {}) {
   // "+ new project…" is the pre-selected first option and no change event ever fires — the old
   // onchange-only wiring left the path field permanently hidden, so a first-time user could not
   // add a project from anywhere (this modal is the only add-project surface in the redesign).
-  const syncNewProj = () => { q('#nl-newproj').hidden = q('#nl-project').value !== '__new'; };
+  const syncNewProj = () => {
+    q('#nl-newproj').hidden = q('#nl-project').value !== '__new';
+    const project = projects.find(p => p.id === q('#nl-project').value);
+    if (project?.execution_node) q('#nl-device').value = project.execution_node;
+  };
   q('#nl-project').onchange = syncNewProj;
   if (opts.projectId && projects.some((p) => p.id === opts.projectId)) q('#nl-project').value = opts.projectId;
   else if (opts.newProject || opts.path) { q('#nl-project').value = '__new'; if (opts.path) q('#nl-path').value = opts.path; }
@@ -535,8 +543,11 @@ export async function openLaunch(opts = {}) {
     const path = isNew ? q('#nl-path').value.trim() : q('#nl-project').selectedOptions[0]?.dataset.path;
     if (!task || !path) { q('#nl-gate').textContent = !task ? 'a task is required' : 'a path is required for a new project'; return; }
     q('#nl-go').textContent = 'Launching…';
+    q('#nl-go').disabled = true;
     try {
       const body = { path, tool: toolBtns.find((b) => b.classList.contains('on'))?.dataset.tool || 'claude', task, autonomy: q('#nl-auto').value, model: q('#nl-model').value || undefined, effort: q('#nl-effort').value || undefined };
+      body.device = q('#nl-device').value;
+      if (!isNew) body.project_id = q('#nl-project').value;
       if (isNew && q('#nl-name').value.trim()) body.name = q('#nl-name').value.trim();
       if (isNew && q('#nl-kb').checked) body.kb = true;
       const r = await api('api/session', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
@@ -545,7 +556,7 @@ export async function openLaunch(opts = {}) {
       upsertSession(r);
       closeLaunch();
       navigate(`session?id=${r.id}`);
-    } catch (e) { q('#nl-gate').textContent = '⚠ ' + (e.message || e); q('#nl-go').textContent = 'Launch'; }
+    } catch (e) { q('#nl-gate').textContent = '⚠ ' + (e.message || e); q('#nl-go').textContent = 'Launch'; q('#nl-go').disabled = false; }
   };
 }
 
