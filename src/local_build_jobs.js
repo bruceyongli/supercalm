@@ -13,6 +13,7 @@ import { assertLiveStorage, isManagedStoragePath } from './live_storage.js';
 import { withSessionArchiveLock } from './archive_lock.js';
 import { buildRelativePath, buildManifest, copyBuildManifest, snapshotBuildSource } from './build_snapshot.js';
 import { buildCopyEnvironment } from './build_copy_env.js';
+import { localBuildSize } from './local_build_size.js';
 
 const exec = promisify(execFile), GiB = 1024 ** 3;
 const SID = /^s_[a-zA-Z0-9_-]+$/, ID = /^b_[a-f0-9-]{36}$/;
@@ -243,8 +244,10 @@ async function execute(job, command, args) {
         try {
           await capacity();
           if (++ticks % 5 === 0) {
-            const { stdout } = await exec('du', ['-sk', job.path], { timeout: 10_000, maxBuffer: 1024 });
-            const bytes = Number(stdout.trim().split(/\s+/)[0]) * 1024;
+            let total;
+            try { total = await exec('du', ['-sk', job.path], { timeout: 10_000, maxBuffer: 1024 }); }
+            catch (error) { total = error; }
+            const { bytes } = localBuildSize(total, job.path);
             if (!Number.isFinite(bytes) || bytes > maxBytes) throw Error('Local build exceeded its disposable disk budget');
           }
         } catch (e) { abort(e.message); }
