@@ -10,7 +10,7 @@ import { executionNode, nodeRequest } from './execution_transport.js';
 import { authStatus } from './authmode.js';
 import { listProviders, status as providerStatus } from './auth/index.js';
 import { projectGraphSummary } from './project_graph_core.js';
-import { storageInventory, databaseStorage, storageComponents, measureStoragePath } from './disk_storage.js';
+import { storageInventory, databaseStorage, storageComponents, measureStoragePath, canScanStorage } from './disk_storage.js';
 import { archiveStorageSummary } from './artifact_archive.js';
 import { currentDiskCapacity } from './disk_pressure.js';
 import { liveStorageStatus, liveStorageConfig } from './live_storage.js';
@@ -21,6 +21,7 @@ import { createSessionDiskUsage, sessionResourceSummary } from './session_resour
 
 const resources = createResourceInventory({ sessions: listLocalSessions, projects: listProjects, tmux: TMUX, ttl: 15_000 });
 const sessionDisks = createSessionDiskUsage({ measure: measureStoragePath, canMeasure: entry => {
+  if (!canScanStorage()) return false;
   const pressure = resources.get().host?.memory_pressure;
   // Don't launch recursive remote reads during the initial unknown-pressure sample either.
   return pressure !== 'critical' && (!entry.remote || pressure === 'normal');

@@ -17,6 +17,8 @@ import { localBuildJobs, localBuildStorageRoot } from './local_build_jobs.js';
 const exec = promisify(execFile);
 export const isInside = (path, root) => path === root || path.startsWith(root + sep);
 const SID = /^s_[a-zA-Z0-9_-]+$/;
+const moving = store.db.prepare("SELECT 1 FROM execution_operations WHERE phase NOT IN ('complete','failed','cancelled') LIMIT 1");
+export const canScanStorage = () => !moving.get();
 let measurements = 0;
 const measurementWaiters = [];
 async function withDiskSlot(fn) {
@@ -100,12 +102,15 @@ export function exclusiveStorageRows(rows) {
 }
 
 export function createStorageInventory({ projects = store.listProjects, sessions = store.listSessions,
-  measure = measureStoragePath, canonical = path => realpath(path).catch(() => resolve(path)), ttl = 15 * 60_000 } = {}) {
-  let cache = null, flight = null, scanned = 0, total = 0, generation = 0, error = null;
+  measure = measureStoragePath, canonical = path => realpath(path).catch(() => resolve(path)), ttl = 15 * 60_000,
+  canScan = canScanStorage } = {}) {
+  let cache = null, flight = null, scanned = 0, total = 0, generation = 0, error = null, retryDeferred = false;
+  const assertScan = () => { if (!canScan()) throw Object.assign(Error('Disk inventory deferred during device migration'), { code: 'inventory-deferred' }); };
   async function scan() {
     const ps = projects(), ss = sessions(), byProject = new Map(ps.map(p => [p.id, p]));
     const targets = new Map();
     const add = async row => {
+      assertScan();
       const path = await canonical(row.path);
       if (!targets.has(path)) targets.set(path, { ...row, path });
     };
@@ -124,6 +129,7 @@ export function createStorageInventory({ projects = store.listProjects, sessions
     let next = 0;
     await Promise.all([0, 1].map(async () => {
       while (next < rows.length) {
+        assertScan();
         const row = rows[next++];
         Object.assign(row, await measure(row.path)); scanned++;
       }
@@ -155,12 +161,15 @@ export function createStorageInventory({ projects = store.listProjects, sessions
   }
   return {
     get({ refresh = false } = {}) {
-      if (!flight && (refresh || !cache || Date.now() - cache.scanned_at > ttl)) {
+      const deferred = !canScan();
+      if (!deferred && !flight && (refresh || retryDeferred || !cache || Date.now() - cache.scanned_at > ttl)) {
+        retryDeferred = false;
         const token = generation;
         flight = scan().then(result => { if (generation === token) { cache = result; error = null; } })
-          .catch(e => { error = String(e.message || e); }).finally(() => { flight = null; });
+          .catch(e => { if (e.code === 'inventory-deferred') retryDeferred = true; else error = String(e.message || e); }).finally(() => { flight = null; });
       }
-      return { state: flight ? 'scanning' : error ? 'error' : 'ready', progress: { scanned, total }, error,
+      return { state: deferred ? 'deferred' : flight ? 'scanning' : error ? 'error' : 'ready', progress: { scanned, total },
+        error: deferred ? 'Disk inventory paused during device migration; previous measurements retained.' : error,
         ...(cache || { projects: [], sessions: [], shared: [] }), capacity: currentDiskCapacity(), database: databaseStorage(), live_storage: liveStorageStatus() };
     },
     invalidate() { generation++; cache = null; },

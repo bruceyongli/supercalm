@@ -39,6 +39,26 @@ try {
   assert.equal(snapshot.state, 'ready');
   assert.equal(snapshot.projects[0].source_bytes, 100);
   inventory.get(); assert.equal(calls, done, 'cached Health polling does not rescan directories');
+  let allowed = true, pauseCalls = 0, releaseScan;
+  let measureGate = Promise.resolve();
+  const pausable = createStorageInventory({ projects: () => [{id:'p2',name:'Paused fixture',path:'/p2'}], sessions:()=>[],
+    canonical:async p=>p,canScan:()=>allowed,measure:async()=>{pauseCalls++;await measureGate;return {bytes:123};} });
+  pausable.get(); const complete = await pausable.settled();
+  const measured = pauseCalls;
+  allowed = false;
+  assert.equal(pausable.get({refresh:true}).state,'deferred');
+  assert.equal(pauseCalls,measured,'migration prevents new background directory scans');
+  assert.deepEqual(pausable.get().projects,complete.projects,'deferral keeps actual previous sizes, not fabricated zeroes');
+  allowed = true; measureGate = new Promise(resolve=>{releaseScan=resolve;});
+  pausable.get({refresh:true}); await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(pauseCalls,measured+2);
+  allowed = false; releaseScan();
+  await pausable.settled();
+  assert.equal(pauseCalls,measured+2,'a scan started before migration does not schedule more directory traversals');
+  assert.deepEqual(pausable.get().projects,complete.projects);
+  allowed = true; measureGate = Promise.resolve();
+  assert.equal(pausable.get().state,'scanning','interrupted inventory can resume after migration');
+  assert.equal((await pausable.settled()).state,'ready');
   const killed = store.createSession({ id: 's_killed', tool: 'codex', tmux: 'fixture', status: 'exited' });
   store.updateSession(killed.id, { status_reason: 'operator-kill' });
   assert.equal(cleanupEligibility(store.getSession(killed.id)).deletable, true);
