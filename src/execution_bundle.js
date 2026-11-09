@@ -101,11 +101,20 @@ for name,item in members.items():
  if any('/'.join(parent.split('/')[:i]) in links for i in range(1,len(parent.split('/'))+1)):
   raise RuntimeError('Archive member beneath a symlink')
  if name in links: resolve_link(name)
- if item.islnk() and (item.linkname not in members or not members[item.linkname].isfile()):
-  raise RuntimeError('Invalid archive hardlink')
+ if item.islnk():
+  # GNU tar commonly spells targets with './'; member keys are normalized above.
+  target=posixpath.normpath(item.linkname)
+  if target not in members or not members[target].isfile(): raise RuntimeError('Invalid archive hardlink')
 `;
 export async function validateArchive(file, { allowGit = false } = {}) {
-  await exec('/usr/bin/python3', ['-c', archiveValidator, file, allowGit ? 'data' : 'tree'], { timeout: 120000, maxBuffer: 65536 });
+  try {
+    await exec('/usr/bin/python3', ['-c', archiveValidator, file, allowGit ? 'data' : 'tree'], { timeout: 120000, maxBuffer: 65536 });
+  } catch (error) {
+    // execFile's message begins with the complete Python program. Keep the
+    // actual validation reason visible in the bounded handoff error instead.
+    const reason = String(error.stderr || '').split('\n').findLast(line => line.startsWith('RuntimeError: '))?.slice(14, 400);
+    throw migrationError(`Archive validation failed: ${reason || (error.killed ? 'validation timed out' : 'could not read archive')}; source files are retained`, 'execution-archive-invalid');
+  }
 }
 export async function hashFile(file) {
   const hash = createHash('sha256'); let size = 0;

@@ -37,6 +37,10 @@ the existing origin, copies source packs sequentially and hydrates missing reach
 Only the source HEAD/refs/index select the result. Include index-only blobs, not just index metadata.
 Later sessions in the same project may reuse already-received destination objects after an exact
 HEAD/index-object check. Every checkout is independent: no alternates, source hardlinks or hooks.
+Receiver-only Git receipts are not proof that the source exporter completed. Reuse only a bound,
+successfully generated local seed; validate bundle headers and sizes before acknowledging or unpacking.
+An exact, unimported legacy operation can repair an invalid Git receipt without replacing its identity,
+checkout or other transferred parts. Active transfers and imported sessions cannot enter that repair.
 
 Registered archived worktrees stream directly from SSH storage to the destination. Validate the
 original reciprocal Git registration, HEAD/index receipt and before/after remote fingerprint;
@@ -56,6 +60,12 @@ not pointers to Spark. The destination manifest records cold original paths. Thi
 the same receiving operation and retain its Git receipts, but never change an imported operation.
 No cold path is deleted. Artifact directories use bounded parallel reads too. With this explicit
 choice, their `node_modules` and Python environments identified by `pyvenv.cfg` remain cold.
+Legacy external `node_modules` symlinks can rebuild into empty local targets only when their recorded
+target belongs to this exact project or a recorded same-project workspace, and neither HEAD nor the
+copied index tracks that path or its descendants. The immutable operation policy binds these roots;
+never infer a wider shared parent. A worker-local derived archive rewrites those links, passes the
+normal archive validator and is removed after extraction. Keep the received archive's receipt and
+all source originals; arbitrary external links and tracked dependency links still fail closed.
 Compiled `.app` bundles (with `Contents/Info.plist`), DMG images and ZIPs containing an app bundle
 also stay at source; ordinary source/report ZIPs are retained in the transfer. Policy v2 can upgrade
 an exact receiving v1 operation without replacing its Git/native receipts. Other

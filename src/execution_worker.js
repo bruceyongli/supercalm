@@ -1,6 +1,6 @@
 // Worker half of the handoff protocol. All files are staged on its LOCAL SSD.
 // Import is dormant until the controller has durably committed the owner.
-import { open, mkdir, readFile, writeFile, rename, copyFile, lstat, realpath, rm, statfs } from 'node:fs/promises';
+import { open, mkdir, mkdtemp, readFile, writeFile, rename, copyFile, lstat, realpath, rm, statfs } from 'node:fs/promises';
 import { join, dirname, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -15,6 +15,8 @@ import { validateArchive, assertLocalCheckout, gitEvidence, hashFile, assertNati
 import { importExecutionState } from './execution_state.js';
 import { writeManifest } from './launch_contract.js';
 import { claudeSlug } from './claude_transcripts.js';
+import { validateDependencyRebuildPolicy } from './execution_dependency_policy.js';
+import { prepareDependencyWorkingArchive } from './execution_dependency_archive.js';
 
 const exec = promisify(execFile);
 export const workerRoot = () => process.env.AIOS_EXECUTION_ROOT || join(homedir(), '.local/share/supercalm-executor');
@@ -38,10 +40,36 @@ async function save(op, row) {
   await writeFile(file + '.tmp', JSON.stringify(row) + '\n', { mode: 0o600 });
   await rename(file + '.tmp', file);
 }
+async function assertGitBundleHeader(path, receipt = null) {
+  let file;
+  try {
+    file = await open(path, 'r');
+    const info = await file.stat(), header = Buffer.alloc(32);
+    const { bytesRead } = await file.read(header, 0, header.length, 0);
+    if (!info.isFile() || bytesRead !== header.length || !/^# v[23] git bundle\n/.test(header.toString('utf8'))
+        || receipt && info.size !== receipt.size) throw migrationError('Invalid Git bundle; source files are retained', 'execution-git-bundle-invalid');
+  } catch (error) {
+    if (error.code === 'ENOENT') throw migrationError('Invalid Git bundle; source files are retained', 'execution-git-bundle-invalid');
+    throw error;
+  } finally { await file?.close(); }
+}
+const preparing = new Set();
 export async function prepareWorkerImport(op, spec) {
+  if (preparing.has(op) || finalizations.has(op) || gitReuses.has(op) || [...receiving].some(key => key.startsWith(op + ':'))) {
+    throw migrationError('Handoff is busy; retry preparation after the active transfer finishes');
+  }
+  preparing.add(op);
+  try { return await prepareImport(op, spec); }
+  finally { preparing.delete(op); }
+}
+async function prepareImport(op, spec) {
   if (!/^s_[a-zA-Z0-9_-]+$/.test(spec.session?.id || '') || !/^p_[a-zA-Z0-9_-]+$/.test(spec.project?.id || '')
     || !(spec.historyOnly === true && spec.kind === 'move' || ['claude', 'codex'].includes(spec.session?.tool)) || !['launch','move'].includes(spec.kind)) throw migrationError('Invalid session import');
   if (spec.historyOnly && spec.native) throw migrationError('A historical import cannot discard a native conversation');
+  if (spec.dependencyRebuildPolicy) {
+    if (spec.kind !== 'move' || spec.artifactCopyPolicy?.rebuildDependencies !== true) throw migrationError('Dependency rebuilding requires the explicit move policy');
+    validateDependencyRebuildPolicy(spec.dependencyRebuildPolicy);
+  }
   if (spec.artifactArchives && (!Array.isArray(spec.artifactArchives) || spec.artifactArchives.length > 1000 ||
     spec.artifactArchives.some(a => a.sessionId !== spec.session.id || !a.name || a.name.startsWith('.') || basename(a.name) !== a.name || /[\\\r\n\0]/.test(a.name)))) throw migrationError('Invalid archived artifact scope');
   const root = await realpath(workerRoot());
@@ -53,6 +81,18 @@ export async function prepareWorkerImport(op, spec) {
     const identity = value => JSON.stringify([value.session.id, value.project.id, value.session.tool, value.kind,
       value.native?.uuid || null, value.sourcePath || null, value.git?.head || null, value.git?.statusHash || null, !!value.historyOnly]);
     if (identity(existing.spec) !== identity(spec)) throw migrationError('Handoff identity conflict');
+    if (['receiving','unpacking'].includes(existing.phase) && existing.spec.git?.head && existing.parts.git) {
+      try { await assertGitBundleHeader(join(importDir(op), 'git'), existing.parts.git); }
+      catch (error) {
+        if (error.code !== 'execution-git-bundle-invalid' || store.getSession(existing.spec.session.id)) throw error;
+        // Older receivers could acknowledge an empty producer stream. Repair
+        // only this exact, still-unimported operation; keep its checkout, native
+        // identity, all other receipts and every original file untouched.
+        existing.gitRepair = { previousPhase: existing.phase, at: Date.now(), reason: error.code };
+        delete existing.parts.git; delete existing.gitSeedSession; delete existing.gitSeedReceipt;
+        existing.phase = 'receiving'; await save(op, existing);
+      }
+    }
     if (existing.phase === 'receiving' && !existing.spec.migrationVersion && spec.migrationVersion === 1) {
       existing.spec = spec; await save(op, existing);
     }
@@ -74,6 +114,12 @@ export async function prepareWorkerImport(op, spec) {
       for (const part of Object.keys(existing.parts)) if (part === 'artifacts' || spec.artifactCopyPolicy.version === 3 && (part === 'attachments' || /^artifact-\d+$/.test(part))) delete existing.parts[part];
       await save(op, existing);
     } else if (JSON.stringify(existing.spec.artifactCopyPolicy || null) !== JSON.stringify(spec.artifactCopyPolicy || null)) throw migrationError('Artifact copy policy conflict');
+    if (spec.dependencyRebuildPolicy && !existing.spec.dependencyRebuildPolicy) {
+      if (!['receiving','unpacking'].includes(existing.phase) || store.getSession(spec.session.id)) throw migrationError('Cannot change dependency rebuilding after import');
+      // Add only the explicitly authorized, source-bound extraction policy.
+      // The received tar, index, Git evidence and every part receipt stay intact.
+      existing.spec.dependencyRebuildPolicy = spec.dependencyRebuildPolicy; await save(op, existing);
+    } else if (JSON.stringify(existing.spec.dependencyRebuildPolicy || null) !== JSON.stringify(spec.dependencyRebuildPolicy || null)) throw migrationError('Dependency rebuild policy conflict');
     return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
   }
   if (store.getSession(spec.session.id)) throw migrationError('Session already exists on the destination');
@@ -87,13 +133,13 @@ export async function prepareWorkerImport(op, spec) {
 }
 const receiving = new Set();
 export async function receiveWorkerPart(op, part, request) {
-  if (!validPart(await record(op), part)) throw migrationError('Unknown handoff part');
   const key = `${op}:${part}`;
-  if (receiving.has(key)) throw migrationError('This handoff part is still being received');
+  if (preparing.has(op) || finalizations.has(op) || receiving.has(key)) throw migrationError('This handoff is busy or its part is still being received');
   receiving.add(key);
   let file;
   try {
     const row = await record(op);
+    if (!validPart(row, part)) throw migrationError('Unknown handoff part');
     if (row.phase !== 'receiving') throw migrationError('Handoff no longer accepts files');
     const path = join(importDir(op), part);
     file = await open(path + '.partial', 'w', 0o600);
@@ -107,10 +153,12 @@ export async function receiveWorkerPart(op, part, request) {
       hash.update(chunk); await file.writeFile(chunk);
     }
     await file.sync(); await file.close(); file = null;
+    if (part === 'git') await assertGitBundleHeader(path + '.partial', { size });
     await rename(path + '.partial', path);
     const receipt = { size, sha256: hash.digest('hex') };
     const latest = await record(op);
     latest.parts[part] = receipt;
+    if (part === 'git') { delete latest.gitSeedSession; delete latest.gitSeedReceipt; }
     await save(op, latest);
     return receipt;
   } finally { await file?.close(); receiving.delete(key); }
@@ -123,12 +171,27 @@ export function reuseWorkerGit(op) {
   return gitReuses.get(op);
 }
 async function reuseGit(op) {
+  const key = `${op}:git`;
+  if (preparing.has(op) || finalizations.has(op) || receiving.has(key)) throw migrationError('Handoff Git is busy');
+  receiving.add(key);
+  try { return await generateOrReuseGit(op); }
+  finally { receiving.delete(key); }
+}
+async function generateOrReuseGit(op) {
   const row = await record(op), sid = row.spec.gitSeedSession;
-  if (row.parts.git) return { receipt: row.parts.git };
   if (row.phase !== 'receiving' || !sid || !row.spec.git?.head) return { receipt: null };
   const seed = store.getSession(sid);
   if (!seed || seed.project_id !== row.spec.session.project_id || seed.execution_node !== EXECUTION_NODE || seed.execution_dormant || !seed.execution_checkout) return { receipt: null };
   const cwd = await assertLocalCheckout(seed.worktree_path);
+  // A receiver receipt proves byte transport only, not successful completion of
+  // the upstream producer. Only our completed local generator owns this marker;
+  // even a plausible uploaded bundle must regenerate when the controller has
+  // not acknowledged it. Legacy markers without a bound receipt also regenerate.
+  if (row.gitSeedSession === sid && row.gitSeedReceipt && row.parts.git
+      && row.gitSeedReceipt.size === row.parts.git.size && row.gitSeedReceipt.sha256 === row.parts.git.sha256) {
+    try { await assertGitBundleHeader(join(importDir(op), 'git'), row.parts.git); return { receipt: row.parts.git }; }
+    catch (error) { if (error.code !== 'execution-git-bundle-invalid') throw error; }
+  }
   const index = row.parts.index ? join(importDir(op), 'index') : null;
   // A missing staged object means use the real source, not silently drop it.
   try {
@@ -147,13 +210,13 @@ async function reuseGit(op) {
   const done = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(migrationError('Local Git seed export failed; source retained'))); });
   try { await Promise.all([done, pipeline(child.stdout, createWriteStream(path + '.partial', { mode: 0o600 }))]); }
   catch (error) { child.kill('SIGTERM'); throw error; }
+  await assertGitBundleHeader(path + '.partial');
   await rename(path + '.partial', path);
   const receipt = await hashFile(path);
-  const latest = await record(op); latest.parts.git = receipt; latest.gitSeedSession = sid; await save(op, latest);
+  const latest = await record(op); latest.parts.git = receipt; latest.gitSeedSession = sid; latest.gitSeedReceipt = receipt; await save(op, latest);
   return { receipt };
 }
-async function unpack(op, part, destination) {
-  const file = join(importDir(op), part);
+async function unpack(op, part, destination, file = join(importDir(op), part)) {
   await validateArchive(file, { allowGit: part !== 'tree' });
   await mkdir(destination, { recursive: true, mode: 0o700 });
   await exec('/usr/bin/tar', ['-xf', file, '-C', destination, '--no-same-owner'], { timeout: 30 * 60_000, maxBuffer: 65536 });
@@ -168,6 +231,7 @@ async function copyIdentical(source, destination) {
 }
 const finalizations = new Map();
 export function finalizeWorkerImport(op, expected) {
+  if (preparing.has(op)) throw migrationError('Handoff preparation is still running');
   if (!finalizations.has(op)) finalizations.set(op, finalizeImport(op, expected).finally(() => finalizations.delete(op)));
   return finalizations.get(op);
 }
@@ -184,6 +248,7 @@ async function finalizeImport(op, expected) {
   if (!row.parts.tree || spec.git?.head && !row.parts.git || spec.kind === 'move' && !spec.historyOnly && !row.parts.native) throw migrationError('Handoff is missing required files');
   if ((spec.artifactArchives || []).some((a, i) => !row.parts[`artifact-${i}`])) throw migrationError('Handoff is missing archived artifacts');
   if (spec.git?.indexReceipt && (row.parts.index?.sha256 !== spec.git.indexReceipt.sha256 || row.parts.index.size !== spec.git.indexReceipt.size)) throw migrationError('The archived index differs from its source receipt');
+  if (spec.git?.head) await assertGitBundleHeader(join(importDir(op), 'git'), row.parts.git);
   const cwd = row.cwd;
   const filesReady = row.phase === 'files-ready';
   let transcript = row.transcript || null;
@@ -208,7 +273,22 @@ async function finalizeImport(op, expected) {
       await git(['config', '--local', `user.${key}`, value]);
     }
   }
-  await unpack(op, 'tree', cwd);
+  if (spec.dependencyRebuildPolicy) {
+    if (!row.parts.index || !spec.git?.head) throw migrationError('Dependency rebuilding requires the exact copied index and HEAD');
+    const temporary = await mkdtemp(join(importDir(op), 'dependency-rebuild-'));
+    try {
+      const prepared = await prepareDependencyWorkingArchive({ archive: join(importDir(op), 'tree'),
+        destination: join(temporary, 'tree'), repository: cwd, index: join(importDir(op), 'index'), head: spec.git.head,
+        sourceRoot: spec.archive?.sourceRoot || spec.session.worktree_path || spec.sourcePath, policy: spec.dependencyRebuildPolicy });
+      await unpack(op, 'tree', cwd, prepared.path);
+      row.dependencyRebuild = { version: 1, policy: spec.dependencyRebuildPolicy, links: prepared.rebuilt,
+        sourceReceipt: row.parts.tree, originalsRetained: true };
+      await save(op, row);
+    } finally { await rm(temporary, { recursive: true, force: true }); }
+  } else await unpack(op, 'tree', cwd);
+  if (row.dependencyRebuild?.links.length) {
+    await writeFile(join(cwd, '.git/info/exclude'), '\n/.aios/execution-rebuilt-dependencies/\n', { flag: 'a' });
+  }
   if (await lstat(join(cwd, '.aios/execution-dependencies')).then(s => s.isDirectory(), e => { if (e.code === 'ENOENT') return false; throw e; })) {
     // This namespace was absent at source and is created only by the portable
     // exporter. Do not add dependency copies to the user's Git working changes.
@@ -252,6 +332,7 @@ async function finalizeImport(op, expected) {
     model: spec.session.model, effort: spec.session.effort, execution_operation: op,
     cold_files: spec.coldFiles || null,
     cold_artifacts: spec.artifactCopyPolicy || null,
+    dependency_rebuild: row.dependencyRebuild || null,
     previous_locations: [{ project: spec.project.path, worktree: spec.session.worktree_path, artifacts: spec.artifactsPath,
       target: cwd, artifactTarget: join(DATA_DIR, 'session-artifacts', spec.session.id) }] });
   row = { ...row, phase: 'imported', mapping, importedAt: Date.now() };

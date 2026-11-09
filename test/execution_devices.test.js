@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, symlink, realpath } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readlink, rm, lstat, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
+import http from 'node:http';
 
 const exec = promisify(execFile), dir = await realpath(await mkdtemp(join(tmpdir(), 'aios-execution-test-')));
 process.env.AIOS_DATA = join(dir,'controller'); process.env.AIOS_WORKTREE_ROOT = join(dir,'worktrees');
@@ -122,6 +124,104 @@ try {
   assert.equal(active.session.status,'exited','move stays paused'); assert.equal(active.session.codex_uuid,uuid);
   assert.equal(active.session.branch,'main','observed branch wins over stale registration without switching source branches');
   assert.equal((await request(`/api/execution/import/${op}/activate`,{})).session.id,sid,'duplicate activation is idempotent');
+  // Legacy interrupted producers could leave a receiver-only, empty Git receipt.
+  // All private record edits below are confined to this disposable worker fixture.
+  const repairSid = 's_device_git_repair', repairOp = 'x_' + 'd'.repeat(24);
+  const repairUuid = '44444444-2222-4333-8444-555555555555';
+  store.createSession({id:repairSid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-repair',status:'exited'});
+  store.updateSession(repairSid,{worktree_path:source,codex_uuid:repairUuid});
+  const repairNative = join(dir,`rollout-2026-11-01T00-00-00-${repairUuid}.jsonl`);
+  await writeFile(repairNative,JSON.stringify({type:'session_meta',payload:{id:repairUuid,cwd:source,timestamp:'2026-11-01T00:00:00Z'}})+'\n');
+  const repairSpec = {...state.exportExecutionState(repairSid),kind:'move',git:evidence,gitSeedSession:sid,
+    native:{uuid:repairUuid,name:repairNative.split('/').at(-1)},manifest:{},sourcePath:source};
+  const repairPrepared = await request(`/api/execution/import/${repairOp}/prepare`,repairSpec);
+  const repairDirectory = join(workerRoot,'imports',repairOp), repairRecordFile = join(repairDirectory,'record.json');
+  const readRepair = async () => JSON.parse(await readFile(repairRecordFile,'utf8'));
+  const putGit = bytes => fetch(`${base}/api/execution/import/${repairOp}/git`,{
+    method:'PUT',headers:{'x-aios-node-token':token},body:bytes,signal:AbortSignal.timeout(10000)});
+  for (const invalid of ['', 'not a Git bundle'.repeat(4)]) {
+    const rejected = await putGit(invalid);
+    assert.equal(rejected.status,409); assert.match((await rejected.json()).error,/Invalid Git bundle/);
+    assert.ok(!(await readRepair()).parts.git,'empty/malformed upload is never acknowledged as a Git receipt');
+    assert.equal((await readRepair()).phase,'receiving');
+  }
+  const repairParts = {
+    index:await bundle.uploadExecutionPart(node,repairOp,'index',evidence.index),
+    tree:await bundle.uploadExecutionPart(node,repairOp,'tree',await portableWorkingArchive(source,sid)),
+    native:await bundle.uploadExecutionPart(node,repairOp,'native',repairNative),
+  };
+  for (const version of [2,3]) {
+    // Header validation is bounded, not a pack-integrity proof. This receipt
+    // remains unacknowledged by the controller and must never shortcut git-seed.
+    const truncated = `# v${version} git bundle\n${'f'.repeat(40)} HEAD\n\nPACK`;
+    const incoming = await putGit(truncated);
+    assert.equal(incoming.status,200,'both supported Git bundle headers are accepted');
+    const incomingReceipt = await incoming.json();
+    assert.ok(!(await readRepair()).gitSeedReceipt,'uploads clear any previous local-generation proof');
+    const generated = await request(`/api/execution/import/${repairOp}/git-seed`,{});
+    assert.notEqual(generated.receipt.sha256,incomingReceipt.sha256,'receiver-only plausible but truncated bundle regenerates locally');
+    assert.ok(generated.receipt.size > Buffer.byteLength(truncated));
+    assert.deepEqual((await readRepair()).gitSeedReceipt,generated.receipt);
+    assert.equal((await readRepair()).gitSeedSession,sid);
+    const generatedInode = (await lstat(join(repairDirectory,'git'))).ino;
+    assert.deepEqual((await request(`/api/execution/import/${repairOp}/git-seed`,{})).receipt,generated.receipt);
+    assert.equal((await lstat(join(repairDirectory,'git'))).ino,generatedInode,'a validated successful local seed receipt is reusable');
+  }
+  const emptyReceipt = {size:0,sha256:createHash('sha256').digest('hex')};
+  const legacy = await readRepair();
+  legacy.parts.git = emptyReceipt; delete legacy.gitSeedSession; delete legacy.gitSeedReceipt;
+  await writeFile(join(repairDirectory,'git'),''); await writeFile(repairRecordFile,JSON.stringify(legacy));
+  await assert.rejects(request(`/api/execution/import/${repairOp}/finalize`,{parts:{...repairParts,git:emptyReceipt}}),/Invalid Git bundle/);
+  assert.equal((await readRepair()).phase,'receiving','invalid Git is rejected before the unpacking phase mutation');
+  await assert.rejects(lstat(repairPrepared.cwd),{code:'ENOENT'},'invalid Git cannot create a destination checkout');
+  await assert.rejects(request(`/api/execution/import/${repairOp}/prepare`,{...repairSpec,native:{...repairSpec.native,uuid}}),/identity conflict/);
+  assert.deepEqual((await readRepair()).parts.git,emptyReceipt,'different captured native identity cannot repair an operation');
+  let finishUpload;
+  const receivingLog = new Promise((resolveUpload,reject) => {
+    finishUpload = http.request({hostname:'127.0.0.1',port,method:'PUT',path:`/api/execution/import/${repairOp}/log`,
+      headers:{'x-aios-node-token':token}},response => {
+      let body='';response.on('data',chunk=>body+=chunk);response.on('end',()=>response.statusCode===200?resolveUpload(JSON.parse(body)):reject(Error(body)));
+    });
+    finishUpload.on('error',reject);finishUpload.write('Retained diagnostic log');
+  });
+  try {
+    let opened=false;
+    for(let i=0;i<100;i++) {try {await lstat(join(repairDirectory,'log.partial'));opened=true;break;}catch{} await new Promise(r=>setTimeout(r,10));}
+    assert.ok(opened,'the fixture upload is actively held open');
+    await assert.rejects(request(`/api/execution/import/${repairOp}/prepare`,repairSpec),/busy/);
+    assert.deepEqual((await readRepair()).parts.git,emptyReceipt,'repair cannot race an active receiver');
+  } finally {finishUpload.end();}
+  repairParts.log = await receivingLog;
+  const receivingRepaired = await request(`/api/execution/import/${repairOp}/prepare`,repairSpec);
+  assert.equal(receivingRepaired.phase,'receiving');assert.ok(!receivingRepaired.parts.git);
+  assert.deepEqual(receivingRepaired.parts,repairParts,'repair keeps tree, native, index and diagnostic receipts');
+  assert.equal((await lstat(join(repairDirectory,'git'))).size,0,'repair does not delete original or staged directories/files');
+  const unpackingLegacy = await readRepair();
+  unpackingLegacy.phase='unpacking';unpackingLegacy.parts.git=emptyReceipt;
+  await exec('/usr/bin/git',['init','-b','main',repairPrepared.cwd]);
+  const retainedMarker = join(repairPrepared.cwd,'.git','retained-diagnostic');
+  await writeFile(retainedMarker,'preserve this already initialized checkout');
+  await writeFile(repairRecordFile,JSON.stringify(unpackingLegacy));
+  const unpackingRepaired = await request(`/api/execution/import/${repairOp}/prepare`,repairSpec);
+  assert.equal(unpackingRepaired.phase,'receiving');assert.ok(!unpackingRepaired.parts.git);
+  assert.equal(unpackingRepaired.cwd,repairPrepared.cwd,'same operation keeps its exact checkout');
+  assert.deepEqual(unpackingRepaired.parts,repairParts);
+  repairParts.git=(await request(`/api/execution/import/${repairOp}/git-seed`,{})).receipt;
+  const validUnpacking = await readRepair();validUnpacking.phase='unpacking';
+  await writeFile(repairRecordFile,JSON.stringify(validUnpacking));
+  assert.equal((await request(`/api/execution/import/${repairOp}/prepare`,repairSpec)).phase,'unpacking','valid Git never rolls an operation back');
+  await request(`/api/execution/import/${repairOp}/finalize`,{parts:repairParts});
+  assert.equal(await readFile(retainedMarker,'utf8'),'preserve this already initialized checkout');
+  const importedRepair = await readRepair(), importedBundle = await readFile(join(repairDirectory,'git'));
+  await writeFile(join(repairDirectory,'git'),'');
+  await writeFile(repairRecordFile,JSON.stringify({...importedRepair,phase:'unpacking',parts:{...importedRepair.parts,git:emptyReceipt}}));
+  await assert.rejects(request(`/api/execution/import/${repairOp}/prepare`,repairSpec),/Invalid Git bundle/);
+  assert.equal((await readRepair()).phase,'unpacking','an imported session prevents legacy repair');
+  await writeFile(join(repairDirectory,'git'),importedBundle);await writeFile(repairRecordFile,JSON.stringify(importedRepair));
+  const repairedActive = await request(`/api/execution/import/${repairOp}/activate`,{});
+  assert.equal(repairedActive.session.id,repairSid);assert.equal(repairedActive.session.codex_uuid,repairUuid);
+  assert.equal(repairedActive.session.execution_transfer,repairOp);assert.equal(repairedActive.session.worktree_path,repairPrepared.cwd);
+  assert.equal((await bundle.gitEvidence(source)).statusHash,evidence.statusHash,'repair never changes original Git/worktree files');
   const reuseSid = 's_device_reuse', reuseOp = 'x_' + 'c'.repeat(24);
   store.createSession({id:reuseSid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-reuse',status:'exited'});
   const reuseSpec = {...state.exportExecutionState(reuseSid),kind:'move',git:{...evidence,indexReceipt:await bundle.hashFile(evidence.index)},
@@ -195,6 +295,45 @@ try {
     'historical relocation does not grant access outside the imported session');
   await assert.rejects(request(`/api/session/${historySid}/execution/resume`,{force:true}),/preserved historical session/);
   await assert.rejects(lstat(join(workerRoot,'imports',op,'tree')),{code:'ENOENT'},'transfer containers cleaned after activation');
+  // A legacy received tar may have both an already portable root dependency and
+  // a nested same-project link. Repair extraction locally without retransfers.
+  await mkdir(join(source,'aliyun-deploy'));
+  const nestedTarget=join(source,'shared/node_modules');
+  await symlink(nestedTarget,join(source,'aliyun-deploy/node_modules'));
+  const dependencySid='s_device_dependency',dependencyOp='x_'+'e'.repeat(24);
+  const dependencyUuid='33333333-2222-4333-8444-555555555555';
+  store.createSession({id:dependencySid,project_id:'p_device_fixture',tool:'codex',tmux:'dependency-history',status:'exited'});
+  store.updateSession(dependencySid,{worktree_path:source,codex_uuid:dependencyUuid});
+  const dependencyNative=join(dir,`rollout-2026-11-01T00-00-00-${dependencyUuid}.jsonl`);
+  await writeFile(dependencyNative,JSON.stringify({type:'session_meta',payload:{id:dependencyUuid,cwd:source}})+'\n');
+  const dependencyEvidence=await bundle.gitEvidence(source);
+  const dependencySpec={...state.exportExecutionState(dependencySid),kind:'move',manifest:{},sourcePath:source,
+    native:{uuid:dependencyUuid,name:dependencyNative.split('/').at(-1)},
+    git:{...dependencyEvidence,indexReceipt:await bundle.hashFile(dependencyEvidence.index)},gitSeedSession:sid,
+    artifactCopyPolicy:{version:2,rebuildDependencies:true,source,originalsRetained:true}};
+  await request(`/api/execution/import/${dependencyOp}/prepare`,dependencySpec);
+  const dependencyParts={index:await bundle.uploadExecutionPart(node,dependencyOp,'index',dependencyEvidence.index)};
+  dependencyParts.git=(await request(`/api/execution/import/${dependencyOp}/git-seed`,{})).receipt;
+  dependencyParts.tree=await bundle.uploadExecutionPart(node,dependencyOp,'tree',await portableWorkingArchive(source,sid,coldFiles));
+  dependencyParts.native=await bundle.uploadExecutionPart(node,dependencyOp,'native',dependencyNative);
+  await assert.rejects(request(`/api/execution/import/${dependencyOp}/finalize`,{parts:dependencyParts}),/External symlink dependency/);
+  const dependencyPolicy={version:1,allowedSourceRoots:[source]}, repairedSpec={...dependencySpec,dependencyRebuildPolicy:dependencyPolicy};
+  const dependencyUpgrade=await request(`/api/execution/import/${dependencyOp}/prepare`,repairedSpec);
+  assert.equal(dependencyUpgrade.phase,'unpacking');assert.deepEqual(dependencyUpgrade.parts,dependencyParts);
+  await assert.rejects(request(`/api/execution/import/${dependencyOp}/prepare`,{...repairedSpec,
+    dependencyRebuildPolicy:{version:1,allowedSourceRoots:[join(dir,'unrelated-project')]}}),/Dependency rebuild policy conflict/);
+  const dependencyResult=await request(`/api/execution/import/${dependencyOp}/finalize`,{parts:dependencyParts});
+  const dependencyDirectory=join(workerRoot,'imports',dependencyOp);
+  assert.deepEqual(await bundle.hashFile(join(dependencyDirectory,'tree')),dependencyParts.tree,'repair retains the original tar and transfer receipt');
+  assert.equal(await readlink(join(dependencyResult.cwd,'aliyun-deploy/node_modules')),'../.aios/execution-rebuilt-dependencies/0');
+  assert.ok((await lstat(join(dependencyResult.cwd,'.aios/execution-dependencies/0'))).isDirectory(),'existing portable root dependency is retained');
+  assert.equal((await bundle.gitEvidence(dependencyResult.cwd)).statusHash,dependencyEvidence.statusHash,'repair keeps exact source Git evidence');
+  assert.equal(await readlink(join(source,'aliyun-deploy/node_modules')),nestedTarget,'original external dependency link remains untouched');
+  const dependencyRecord=JSON.parse(await readFile(join(dependencyDirectory,'record.json'),'utf8'));
+  assert.equal(dependencyRecord.dependencyRebuild.links[0].path,'aliyun-deploy/node_modules');
+  assert.deepEqual(await bundle.hashFile(join(dependencyDirectory,'native')),dependencyParts.native,'exact native receipt is reused');
+  await assert.rejects(request(`/api/execution/import/${dependencyOp}/prepare`,dependencySpec),/Dependency rebuild policy conflict/);
+  assert.equal((await request(`/api/execution/import/${dependencyOp}/activate`,{})).session.codex_uuid,dependencyUuid);
   console.log(JSON.stringify({pass:true,handler:'actual worker HTTP import',git:'HEAD/index/staged/unstaged/untracked preserved',native:uuid,
     owner:'fixture',paused:true,originals:'retained',duplicateImport:'idempotent',attention:'dismissal retained until new report',transport:'private token'}));
 } catch(error) { console.error(logs); throw error; }

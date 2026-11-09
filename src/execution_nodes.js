@@ -28,6 +28,8 @@ import { executionSource, archivedGitEvidence, archivedWorkingArchive, retainedN
 import { portableWorkingArchive, portableArtifactArchive } from './execution_tree.js';
 import { planColdWorkingFiles, validateColdBuildPaths } from './execution_cold.js';
 import { routeColdExecutionPreview } from './execution_cold_preview.js';
+import { buildDependencyRebuildPolicy } from './execution_dependency_policy.js';
+import { parseExecutionPane } from './execution_pane.js';
 
 const exec = promisify(execFile), flights = new Map(), syncFlights = new Map();
 const operation = id => store.db.prepare('SELECT * FROM execution_operations WHERE id=?').get(id);
@@ -71,22 +73,22 @@ async function assertStoppedForMove(s, options = {}) {
   }
   let pane;
   try {
-    // tmux display-message can return an empty format with exit 0 for a missing
-    // target. Prove exact presence first; never infer it from formatted output.
+    // A session target can exist while display-message has no selected pane and
+    // returns "|". Enumerate that exact session and require one live owned pane.
     await exec(TMUX, ['has-session', '-t', '=' + s.tmux], { timeout: 5000 });
-    pane = (await exec(TMUX, ['display-message', '-p', '-t', '=' + s.tmux, '#{pane_pid}|#{pane_current_command}'], { timeout: 5000 })).stdout.trim();
-    if (!/^\d+\|.+/.test(pane)) throw migrationError('Source terminal identity is unavailable');
+    pane = parseExecutionPane((await exec(TMUX, ['list-panes', '-s', '-t', '=' + s.tmux, '-F',
+      '#{session_name}|#{pane_id}|#{pane_pid}|#{pane_current_command}|#{pane_dead}'], { timeout: 5000 })).stdout, s.tmux);
   }
   catch (error) {
     if (error.code !== 1 || !/can't find|no server running|No such file or directory/i.test(error.stderr || '')) throw migrationError('Cannot verify source terminal ownership');
   }
   if (pane) {
-    const [pid, command] = pane.split('|');
+    const { pid, command } = pane;
     if (!['zsh','bash','sh','fish'].includes(command)) throw migrationError('The native agent is still running; use Stop before migration');
     const processes = (await exec('/bin/ps', ['-axo', 'pid=,ppid='], { timeout: 5000 })).stdout.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
     if (processes.some(([, parent]) => parent === Number(pid))) throw migrationError('The stopped terminal still has background work');
     // Retire only this proven idle shell, never an agent/process family.
-    await exec(TMUX, ['kill-session', '-t', s.tmux], { timeout: 5000 });
+    await exec(TMUX, ['kill-session', '-t', '=' + s.tmux], { timeout: 5000 });
   }
   // Detached writers need not be children of the old tmux shell. Check open
   // file descriptors/cwds once (not a recursive lsof directory walk on Spark).
@@ -176,6 +178,15 @@ async function performOperation(op) {
       const seed = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id);
       if (seed) spec = { ...spec, gitSeedSession: seed.id };
     }
+    if (row.kind === 'move' && detail.rebuildDependencies && spec.git?.head && !spec.dependencyRebuildPolicy) {
+      // Add this opt-in policy once, including exact failed-operation retries.
+      // Completed moves still retain the old source roots in their snapshots.
+      const sessions = store.db.prepare('SELECT id,project_id,worktree_path FROM sessions WHERE project_id=?').all(s.project_id);
+      const operations = store.db.prepare(`SELECT o.session_id,o.kind,o.detail FROM execution_operations o
+        JOIN sessions s ON s.id=o.session_id WHERE s.project_id=? AND o.kind='move'`).all(s.project_id);
+      spec = { ...spec, dependencyRebuildPolicy: buildDependencyRebuildPolicy(spec,
+        { project: store.getProject(s.project_id), sessions, operations }) };
+    }
     const checkSource = async () => {
       if (!spec.git) return;
       const current = spec.archive ? await archivedGitEvidence(spec.archive, spec.sourcePath) : await gitEvidence(spec.sourcePath, { excludedPaths: spec.coldFiles?.entries.map(e => e.path) || [] });
@@ -206,7 +217,7 @@ async function performOperation(op) {
     }
     updateOperation(op, 'copying', { spec, parts });
     let status = await nodeRequest(node, `/api/execution/import/${op}`);
-    if (['absent', 'receiving'].includes(status.phase)) status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
+    if (['absent', 'receiving', 'unpacking'].includes(status.phase)) status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
     if (status.phase === 'active') throw migrationError('Destination is already active but ownership is not committed');
     if (status.phase === 'receiving') {
     const uploaded = part => parts[part] && status.parts?.[part]?.sha256 === parts[part].sha256;
