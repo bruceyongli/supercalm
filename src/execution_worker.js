@@ -68,9 +68,10 @@ export async function prepareWorkerImport(op, spec) {
       await save(op, existing);
     } else if (JSON.stringify(existing.spec.coldFiles || null) !== JSON.stringify(spec.coldFiles || null)
       || (existing.spec.workingStatusHash || null) !== (spec.workingStatusHash || null)) throw migrationError('Cold storage plan identity conflict');
-    if (spec.artifactCopyPolicy && (!existing.spec.artifactCopyPolicy || existing.spec.artifactCopyPolicy.version === 1 && spec.artifactCopyPolicy.version === 2)) {
-      if (existing.phase !== 'receiving' || receiving.has(`${op}:artifacts`)) throw migrationError('Cannot change the artifact copy policy during import');
-      existing.spec.artifactCopyPolicy = spec.artifactCopyPolicy; delete existing.parts.artifacts;
+    if (spec.artifactCopyPolicy && (!existing.spec.artifactCopyPolicy || existing.spec.artifactCopyPolicy.version < spec.artifactCopyPolicy.version && [2,3].includes(spec.artifactCopyPolicy.version))) {
+      if (existing.phase !== 'receiving' || [...receiving].some(key => key.startsWith(op + ':'))) throw migrationError('Cannot change the artifact copy policy during import');
+      existing.spec.artifactCopyPolicy = spec.artifactCopyPolicy;
+      for (const part of Object.keys(existing.parts)) if (part === 'artifacts' || spec.artifactCopyPolicy.version === 3 && (part === 'attachments' || /^artifact-\d+$/.test(part))) delete existing.parts[part];
       await save(op, existing);
     } else if (JSON.stringify(existing.spec.artifactCopyPolicy || null) !== JSON.stringify(spec.artifactCopyPolicy || null)) throw migrationError('Artifact copy policy conflict');
     return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
@@ -173,7 +174,8 @@ export function finalizeWorkerImport(op, expected) {
 async function finalizeImport(op, expected) {
   if ([...receiving].some(key => key.startsWith(op + ':'))) throw migrationError('Transfer is still receiving files');
   let row = await record(op);
-  if (['imported','active'].includes(row.phase)) return { cwd: row.cwd, mapping: row.mapping, phase: row.phase };
+  const locations = { artifactTarget: join(DATA_DIR, 'session-artifacts', row.spec.session.id), attachmentTarget: join(row.cwd, '.aios/attachments', row.spec.session.id) };
+  if (['imported','active'].includes(row.phase)) return { cwd: row.cwd, mapping: row.mapping, phase: row.phase, ...locations };
   if (!['receiving','unpacking','files-ready'].includes(row.phase)) throw migrationError('Incomplete handoff needs recovery; originals are retained');
   for (const [part, receipt] of Object.entries(expected.parts || {})) {
     if (!row.parts[part] || row.parts[part].size !== receipt.size || row.parts[part].sha256 !== receipt.sha256) throw migrationError('Transfer receipt mismatch');
@@ -254,7 +256,7 @@ async function finalizeImport(op, expected) {
       target: cwd, artifactTarget: join(DATA_DIR, 'session-artifacts', spec.session.id) }] });
   row = { ...row, phase: 'imported', mapping, importedAt: Date.now() };
   await save(op, row);
-  return { cwd, mapping, phase: 'imported' };
+  return { cwd, mapping, phase: 'imported', ...locations };
 }
 const activations = new Map();
 export function activateWorkerImport(op) {

@@ -9,10 +9,11 @@ import { DB_PATH } from '../src/config.js';
 
 const [projectId, device, ...flags] = process.argv.slice(2);
 if (!/^p_[a-zA-Z0-9_-]+$/.test(projectId || '') || !/^[a-z][a-z0-9_-]{0,39}$/.test(device || '') || device === 'local'
-  || flags.some(f => !['--stop-active', '--preserve-history', '--rebuild-dependencies'].includes(f) && !f.startsWith('--cold-build=') && !/^--jobs=[1-4]$/.test(f))) throw Error('Usage: AIOS_DATA=... node bin/move-execution-project.mjs PROJECT DEVICE [--stop-active] [--preserve-history] [--rebuild-dependencies] [--cold-build=RELATIVE_PATH] [--jobs=1..4]');
+  || flags.some(f => !['--stop-active', '--preserve-history', '--rebuild-dependencies', '--retain-historical-artifacts'].includes(f) && !f.startsWith('--cold-build=') && !/^--jobs=[1-4]$/.test(f))) throw Error('Usage: AIOS_DATA=... node bin/move-execution-project.mjs PROJECT DEVICE [--stop-active] [--preserve-history] [--rebuild-dependencies] [--retain-historical-artifacts] [--cold-build=RELATIVE_PATH] [--jobs=1..4]');
 const jobs = Number(flags.find(f => f.startsWith('--jobs='))?.slice(7) || 1);
 const { validateColdBuildPaths } = await import('../src/execution_cold.js');
 const copyPolicy = { rebuildDependencies: flags.includes('--rebuild-dependencies'),
+  retainHistoricalArtifacts: flags.includes('--retain-historical-artifacts'),
   coldBuildPaths: validateColdBuildPaths(flags.filter(f => f.startsWith('--cold-build=')).map(f => f.slice(13))) };
 if (copyPolicy.coldBuildPaths.length && !copyPolicy.rebuildDependencies) throw Error('--cold-build requires --rebuild-dependencies');
 const root = join(homedir(), '.local/share/aios/execution-moves');

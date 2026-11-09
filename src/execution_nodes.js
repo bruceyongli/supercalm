@@ -27,6 +27,7 @@ import { branchFor } from './worktrees.js';
 import { executionSource, archivedGitEvidence, archivedWorkingArchive, retainedNativeRoots, executionArtifactArchives } from './execution_archive.js';
 import { portableWorkingArchive, portableArtifactArchive } from './execution_tree.js';
 import { planColdWorkingFiles, validateColdBuildPaths } from './execution_cold.js';
+import { routeColdExecutionPreview } from './execution_cold_preview.js';
 
 const exec = promisify(execFile), flights = new Map(), syncFlights = new Map();
 const operation = id => store.db.prepare('SELECT * FROM execution_operations WHERE id=?').get(id);
@@ -46,6 +47,7 @@ function publicOperation(row) {
     error: row.error, created_at: row.created_at, updated_at: row.updated_at,
     historyOnly: !!detail.spec?.historyOnly,
     rebuildDependencies: !!detail.rebuildDependencies,
+    retainHistoricalArtifacts: !!detail.retainHistoricalArtifacts,
     bytes: Object.values(detail.parts || {}).reduce((sum, p) => sum + (p.size || 0), 0) };
 }
 
@@ -184,10 +186,12 @@ async function performOperation(op) {
       await checkSource();
     }
     const parts = detail.parts || {};
-    if (detail.rebuildDependencies && (!spec.artifactCopyPolicy || spec.artifactCopyPolicy.version === 1)) {
-      spec = { ...spec, artifactCopyPolicy: { version: 2, rebuildDependencies: true,
+    const artifactVersion = detail.retainHistoricalArtifacts ? 3 : detail.rebuildDependencies ? 2 : 0;
+    if (artifactVersion > (spec.artifactCopyPolicy?.version || 0)) {
+      spec = { ...spec, artifactCopyPolicy: { version: artifactVersion, rebuildDependencies: !!detail.rebuildDependencies,
+        ...(detail.retainHistoricalArtifacts ? { retainHistoricalArtifacts: true, attachmentsSource: join(spec.project.path, '.aios/attachments', s.id) } : {}),
         source: spec.artifactsPath, originalsRetained: true } };
-      delete parts.artifacts;
+      for (const part of Object.keys(parts)) if (part === 'artifacts' || artifactVersion === 3 && (part === 'attachments' || /^artifact-\d+$/.test(part))) delete parts[part];
     }
     if (row.kind === 'move' && detail.rebuildDependencies && !spec.coldFiles && spec.sourcePath && !spec.archive) {
       const coldFiles = await planColdWorkingFiles(spec.sourcePath, detail);
@@ -226,10 +230,10 @@ async function performOperation(op) {
       if (!uploaded('artifacts')) await optionalUpload(node, op, 'artifacts', spec.artifactsPath, true, parts, spec.artifactCopyPolicy);
       for (const [index, archive] of (spec.artifactArchives || []).entries()) {
         const part = `artifact-${index}`;
-        if (!uploaded(part)) parts[part] = await uploadExecutionPart(node, op, part, archivedWorkingArchive(archive));
+        if (!uploaded(part)) parts[part] = await uploadExecutionPart(node, op, part, archivedWorkingArchive(archive, spec.artifactCopyPolicy));
         updateOperation(op, 'copying', { parts });
       }
-      if (!uploaded('attachments')) await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts);
+      if (!uploaded('attachments')) await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts, spec.artifactCopyPolicy);
       if (!uploaded('log')) await optionalUpload(node, op, 'log', join(LOG_DIR, s.id + '.log'), false, parts);
       await assertStoppedForMove(store.getSession(s.id), moveOptions);
       await checkSource();
@@ -245,7 +249,7 @@ async function performOperation(op) {
       store.db.prepare('UPDATE sessions SET execution_node=?,worktree_path=?,execution_revision=NULL,revision=revision+1 WHERE id=?')
         .run(node.id, result.cwd, s.id);
       for (const m of result.mapping || []) store.db.prepare('INSERT OR IGNORE INTO execution_message_map(node,remote_id,local_id) VALUES(?,?,?)').run(node.id, m.remote_id, m.local_id);
-      updateOperation(op, 'activating', { destination: result.cwd });
+      updateOperation(op, 'activating', { destination: result.cwd, artifactTarget: result.artifactTarget, attachmentTarget: result.attachmentTarget });
       store.db.exec('COMMIT');
     } catch (error) { store.db.exec('ROLLBACK'); throw error; }
     await nodeRequest(node, `/api/execution/import/${op}/activate`, { method: 'POST', body: {}, timeout: 60000 });
@@ -344,7 +348,7 @@ route('POST', '/api/session/:id/move', handle(async (req, { id: sid }) => {
   await nodeRequest(node, '/api/execution/health');
   const op = 'x_' + randomBytes(12).toString('hex'), at = Date.now();
   store.db.prepare('INSERT INTO execution_operations VALUES(?,?,?,?,?,?,?,?,?)').run(op, sid, node.id, 'move', 'queued', JSON.stringify({ preserveHistory: body.preserveHistory === true,
-    rebuildDependencies: body.rebuildDependencies === true, coldBuildPaths }), null, at, at);
+    rebuildDependencies: body.rebuildDependencies === true, retainHistoricalArtifacts: body.retainHistoricalArtifacts === true, coldBuildPaths }), null, at, at);
   setImmediate(() => runOperation(op));
   return { operation: publicOperation(operation(op)) };
 }));
@@ -357,6 +361,11 @@ route('POST', '/api/execution/operations/:id/retry', handle(async (req, { id }) 
     const current = await nodeRequest(executionNode(row.node), `/api/execution/import/${id}`);
     if (row.kind !== 'move' || !['absent','receiving'].includes(current.phase)) throw migrationError('This handoff has already imported files; its copy policy cannot change');
     patch.rebuildDependencies = true; patch.coldBuildPaths = validateColdBuildPaths(body.coldBuildPaths);
+  }
+  if (body.retainHistoricalArtifacts === true && !JSON.parse(row.detail).retainHistoricalArtifacts) {
+    const current = await nodeRequest(executionNode(row.node), `/api/execution/import/${id}`);
+    if (row.kind !== 'move' || !['absent','receiving'].includes(current.phase)) throw migrationError('This handoff has already imported files; its copy policy cannot change');
+    patch.retainHistoricalArtifacts = true;
   }
   if (row.phase === 'failed') updateOperation(id, 'queued', patch, null);
   runOperation(id); return { operation: publicOperation(row) };
@@ -421,7 +430,10 @@ setExecutionRouter(async (req, res, url) => {
     catch (error) { json(res, error.status, { error: error.message, code: error.code }); return true; }
   }
   let node;
-  try { node = nodeForSession(sid); }
+  try {
+    if (await routeColdExecutionPreview(req, url, sid)) return false;
+    node = nodeForSession(sid);
+  }
   catch (error) { json(res, error.status || 503, { error: error.message, code: error.code }); return true; }
   if (!node) return false;
   await proxyNodeRequest(node, req, res, url.pathname + url.search); return true;

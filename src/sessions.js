@@ -3795,7 +3795,7 @@ route('GET', '/api/session/:id/files', async (req, res, { id: sid }) => {
 });
 
 route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
-  const s = store.getSession(sid);
+  const s = req.executionColdPreviewSession?.id === sid ? req.executionColdPreviewSession : store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   const u = new URL(req.url, 'http://x');
   const rel = u.searchParams.get('path') || '';
@@ -3869,7 +3869,7 @@ route('GET', '/api/session/:id/file', async (req, res, { id: sid }) => {
 });
 
 route('GET', '/api/session/:id/render/:token/(.*)', async (req, res, { id: sid, token }, url) => {
-  const session = store.getSession(sid);
+  const session = req.executionColdPreviewSession?.id === sid ? req.executionColdPreviewSession : store.getSession(sid);
   if (!session) return json(res, 404, { error: 'no such session' });
   const prefix = `/api/session/${encodeURIComponent(sid)}/render/${token}/`;
   return serveRenderedFile(req, res, { session, token, asset: url.pathname.slice(prefix.length), resolveFile: resolveSessionFile });

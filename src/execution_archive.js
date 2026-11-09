@@ -56,10 +56,51 @@ export async function executionArtifactArchives(sessionId) {
     .map(r => ({ ...r, name: r.sourceRoot.split('/').at(-1) }));
 }
 
-export function archivedWorkingArchive(archive) {
+// Historical media/debug attachments remain in their registered SSH archive.
+// Stream only regular report files; never follow symlinks, hydrate the source,
+// or rescan/hash the excluded media. Per-file checks still bind transferred bytes
+// to the opened source version, and the normal upload receipt checks transport.
+const historicalReportArchive = `import os,sys,stat,tarfile
+extensions={'.md','.markdown','.txt','.html','.htm','.csv','.tsv','.rst','.adoc','.asciidoc'}
+def identity(st): return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_ctime_ns,st.st_mode)
+def regular(directory,name):
+ try: return stat.S_ISREG(os.stat(name,dir_fd=directory,follow_symlinks=False).st_mode)
+ except FileNotFoundError: return False
+def cold_directory(directory,name):
+ if name=='node_modules': return True
+ if name in ('venv','.venv') and regular(directory,name+'/pyvenv.cfg'): return True
+ return name.endswith('.app') and regular(directory,name+'/Contents/Info.plist')
+root=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+try:
+ root_identity=identity(os.fstat(root))
+ with tarfile.open(fileobj=sys.stdout.buffer,mode='w|',format=tarfile.PAX_FORMAT) as archive:
+  for directory,dirs,files,descriptor in os.fwalk('.',topdown=True,follow_symlinks=False,dir_fd=root):
+   directory_identity=identity(os.fstat(descriptor))
+   dirs[:]=sorted(name for name in dirs if not cold_directory(descriptor,name))
+   for name in sorted(files):
+    if os.path.splitext(name)[1].lower() not in extensions: continue
+    relative=os.path.join(directory,name)
+    if any(c in relative for c in '\\\\\\r\\n\\0') or any(p=='..' for p in relative.split('/')): raise RuntimeError('Unsafe report archive member')
+    before=os.stat(name,dir_fd=descriptor,follow_symlinks=False)
+    if not stat.S_ISREG(before.st_mode): continue
+    fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW,dir_fd=descriptor)
+    with os.fdopen(fd,'rb') as stream:
+     if identity(os.fstat(stream.fileno()))!=identity(before): raise RuntimeError('Report changed before transfer')
+     info=tarfile.TarInfo(relative); info.size=before.st_size; info.mode=stat.S_IMODE(before.st_mode); info.mtime=before.st_mtime
+     archive.addfile(info,stream)
+     if identity(os.fstat(stream.fileno()))!=identity(before) or identity(os.stat(name,dir_fd=descriptor,follow_symlinks=False))!=identity(before): raise RuntimeError('Report changed during transfer')
+   if identity(os.fstat(descriptor))!=directory_identity: raise RuntimeError('Report directory changed during transfer')
+ if identity(os.fstat(root))!=root_identity or identity(os.stat(sys.argv[1],follow_symlinks=False))!=root_identity: raise RuntimeError('Report archive root changed during transfer')
+finally: os.close(root)
+`;
+
+export function archivedWorkingArchive(archive, { retainHistoricalArtifacts = false } = {}) {
   validateArchiveLocation(archive.host, archive.remoteRoot);
+  const command = retainHistoricalArtifacts && archive.kind !== 'worktree'
+    ? `python3 -c ${shellQuote(historicalReportArchive)} ${shellQuote(archive.remoteRoot)}`
+    : `tar ${archive.kind === 'worktree' ? '--exclude=./.git ' : ''}-C ${shellQuote(archive.remoteRoot)} -cf - .`;
   return { command: '/usr/bin/ssh', args: ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', '-o', 'ServerAliveInterval=10', '-o', 'ServerAliveCountMax=3', archive.host,
-    `tar ${archive.kind === 'worktree' ? '--exclude=./.git ' : ''}-C ${shellQuote(archive.remoteRoot)} -cf - .`] };
+    command] };
 }
 
 // Only consult original-retention journals from the configured migration. Never

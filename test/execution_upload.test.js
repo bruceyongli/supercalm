@@ -10,7 +10,8 @@ const server = http.createServer(async (req, res) => {
   headersAt = Date.now();
   assert.equal(req.headers['x-aios-node-token'], 'fixture-token');
   const hash = createHash('sha256'); let size = 0;
-  for await (const chunk of req) { bytesAt ||= Date.now(); size += chunk.length; hash.update(chunk); }
+  try { for await (const chunk of req) { bytesAt ||= Date.now(); size += chunk.length; hash.update(chunk); } }
+  catch (error) { if (req.aborted) return; throw error; }
   res.writeHead(200, { 'content-type': 'application/json' });
   res.end(JSON.stringify({ size, sha256: hash.digest('hex') }));
 });
@@ -30,6 +31,13 @@ try {
   assert.ok(bytesAt - started >= 1400);
   assert.equal(receipt.size, Buffer.byteLength('delayed bundle'));
   assert.equal(receipt.sha256, createHash('sha256').update('delayed bundle').digest('hex'));
+  const progressing = await uploadExecutionPart({localPort:server.address().port,token:'fixture-token'},
+    'x_'+'2'.repeat(24),'artifacts',{command:process.execPath,args:['-e',
+      'let n=0;const t=setInterval(()=>{process.stdout.write("x");if(++n===4)clearInterval(t)},500)']},{timeout:1000});
+  assert.equal(progressing.size,4,'a progressing transfer outlives a single idle deadline');
+  await assert.rejects(uploadExecutionPart({localPort:server.address().port,token:'fixture-token'},
+    'x_'+'3'.repeat(24),'artifacts',{command:process.execPath,args:['-e',
+      'process.stdout.write("x");setTimeout(()=>process.stdout.write("late"),10000)']},{timeout:500}),/stalled/);
   console.log('Execution upload authenticates before delayed archive output; receipt matches.');
 } finally {
   server.closeAllConnections();

@@ -80,5 +80,17 @@ try {
   assert.ok(names.includes('./source.zip'),'source archives are not treated as compiled applications');
   assert.equal(await readFile(join(artifacts,'Desktop.app/Contents/Info.plist'),'utf8'),'<plist/>');
   assert.equal(await readFile(join(artifacts,'runtime/venv/pyvenv.cfg'),'utf8'),'home = python');
+  for (const path of ['screenshot.png','recording.mp4','debug.json','trace.jsonl','trace.log']) await writeFile(join(artifacts,path),'cold historical data');
+  await mkdir(join(artifacts,'debug')); await writeFile(join(artifacts,'debug/report.md'),'# Report in a debug directory');
+  await writeFile(join(artifacts,'results.csv'),'word,result\n你好,ok\n');
+  await symlink(join(artifacts,'report.html'),join(artifacts,'alias.html'));
+  const reports = portableArtifactArchive(artifacts,{retainHistoricalArtifacts:true});
+  const reportChild = spawn(reports.command,reports.args,{stdio:['ignore','pipe','inherit']}), reportTar = join(root,'reports.tar');
+  await Promise.all([pipeline(reportChild.stdout,createWriteStream(reportTar)),new Promise((r,j)=>{reportChild.on('error',j);reportChild.on('close',c=>c===0?r():j(Error('report export failed')));})]);
+  await validateArchive(reportTar);
+  const reportNames = (await exec('/usr/bin/tar',['-tf',reportTar])).stdout;
+  for (const path of ['report.html','notes/venv/plan.md','debug/report.md','results.csv']) assert.ok(reportNames.includes('./'+path),path);
+  for (const path of ['screenshot.png','recording.mp4','debug.json','trace.jsonl','trace.log','source.zip','alias.html','Desktop.app']) assert.ok(!reportNames.includes('./'+path),path);
+  assert.equal(await readFile(join(artifacts,'screenshot.png'),'utf8'),'cold historical data');
   console.log('execution cold policy: retained originals, exact hot Git state, reports and local dependency placeholder passed');
 } finally { await rm(root, { recursive: true, force: true }); }

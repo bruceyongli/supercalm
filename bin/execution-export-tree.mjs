@@ -9,6 +9,7 @@ root=sys.argv[1]; plan=json.loads(base64.b64decode(sys.argv[2]))
 if isinstance(plan,list): plan={'links':plan}
 links={p['name']:p for p in plan.get('links',[])}
 excluded={p['path']:p for p in plan.get('excluded',[])}
+report_extensions=('.md','.markdown','.txt','.html','.htm','.csv','.tsv','.rst','.adoc','.asciidoc')
 def identity(st): return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_mode)
 def stable_open(path,st):
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
@@ -17,6 +18,9 @@ def stable_open(path,st):
   stream.close(); raise RuntimeError('Source changed before transfer')
  return stream
 def walk(path,name):
+ if plan.get('reportOnly'):
+  if os.path.islink(path): return
+  if not os.path.isdir(path) and not path.lower().endswith(report_extensions): return
  if plan.get('artifactDependencies') and not os.path.islink(path):
   base=os.path.basename(path)
   if os.path.isdir(path):
@@ -35,7 +39,10 @@ def walk(path,name):
  yield (path,name,None)
  if os.path.isdir(path) and not os.path.islink(path):
   for entry in sorted(os.scandir(path),key=lambda e:e.name):
-   if entry.is_dir(follow_symlinks=False) or (name+'/'+entry.name).removeprefix('./') in excluded or (plan.get('artifactDependencies') and entry.name.lower().endswith(('.dmg','.zip'))): yield from walk(entry.path,name+'/'+entry.name)
+   if plan.get('reportOnly'):
+    if entry.is_dir(follow_symlinks=False): yield from walk(entry.path,name+'/'+entry.name)
+    elif entry.name.lower().endswith(report_extensions) and entry.is_file(follow_symlinks=False): yield (entry.path,name+'/'+entry.name,None)
+   elif entry.is_dir(follow_symlinks=False) or (name+'/'+entry.name).removeprefix('./') in excluded or (plan.get('artifactDependencies') and entry.name.lower().endswith(('.dmg','.zip'))): yield from walk(entry.path,name+'/'+entry.name)
    else: yield (entry.path,name+'/'+entry.name,None)
 def entries():
  for name in sorted(os.listdir(root)):

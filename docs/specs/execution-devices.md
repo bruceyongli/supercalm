@@ -63,6 +63,17 @@ reports, media and ordinary directories named `venv` are still copied. This poli
 artifact root are recorded in the destination manifest. Retries reuse completed native-history
 and report receipts as well as Git receipts, rather than resending multi-gigabyte conversations.
 
+The separate explicit `retainHistoricalArtifacts: true` option (batch flag
+`--retain-historical-artifacts`) copies report text only from artifacts and uploads, including
+registered SSH artifact archives. Markdown, plain text, HTML, CSV/TSV, reStructuredText and AsciiDoc
+move; screenshots, recordings, JSON/debug traces and other original attachments stay untouched at
+their registered source. Policy v3 upgrades only a receiving transfer, retaining hot code, Git and
+native-history receipts. Original report URLs remain controller-served with normal session evidence
+and scope checks, including rendered HTML assets and range downloads; new bb2 outputs stay worker-
+served. Thus cold media requires the controller and source storage, but coding does not. A missing
+source produces an availability error, not an empty replacement file. Transfer timeouts measure
+stalled progress rather than total duration; receipt acceptance also requires source EOF.
+
 Explicit `preserveHistory: true` permits moving older stopped records whose native transcript was
 already unavailable. First check the exact UUID, including identity-bound retained-original migration
 journals. A history-only result is labelled and cannot Resume (including force), borrow another

@@ -132,12 +132,12 @@ export async function assertNativeIdentity(file, tool, uuid) {
 }
 export async function uploadExecutionPart(node, operation, part, source, { timeout = 60 * 60_000 } = {}) {
   return new Promise((resolvePromise, reject) => {
-    const hash = createHash('sha256'); let size = 0, settled = false, command = null, commandExit = null, receipt = null;
+    const hash = createHash('sha256'); let size = 0, settled = false, command = null, commandExit = null, receipt = null, stream, sourceEnded = false;
     const finish = error => {
       if (settled) return;
-      if (!error && (!receipt || command && commandExit !== 0)) return;
+      if (!error && (!receipt || !sourceEnded || command && commandExit !== 0)) return;
       settled = true; clearTimeout(timer);
-      if (error) { request.destroy(); command?.kill('SIGTERM'); reject(error); }
+      if (error) { request.destroy(); stream?.destroy(); command?.kill('SIGTERM'); reject(error); }
       else {
         const sha256 = hash.digest('hex');
         if (receipt.size !== size || receipt.sha256 !== sha256) reject(migrationError('Transfer digest mismatch; source files are retained'));
@@ -154,13 +154,14 @@ export async function uploadExecutionPart(node, operation, part, source, { timeo
         catch (error) { finish(error); }
       });
     });
-    const timer = setTimeout(() => finish(Error('Device transfer timed out; source files are retained')), timeout);
+    // Slow sources may exceed an hour while still making progress. Bound stalls,
+    // not total archive size; otherwise a healthy copy is discarded at 60 minutes.
+    const timer = setTimeout(() => finish(Error('Device transfer stalled; source files are retained')), timeout);
     request.on('error', finish);
     // A cold Git export can prepare for minutes before writing its first byte.
     // Authenticate now: otherwise Node buffers these headers until stdout starts
     // and the worker's header deadline closes an apparently empty connection.
     request.flushHeaders();
-    let stream;
     if (typeof source === 'string') stream = createReadStream(source);
     else {
       command = spawn(source.command, source.args, { cwd: source.cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', COPYFILE_DISABLE: '1' }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -171,7 +172,8 @@ export async function uploadExecutionPart(node, operation, part, source, { timeo
       stream = command.stdout;
     }
     stream.on('error', finish);
-    stream.on('data', bytes => { hash.update(bytes); size += bytes.length; });
+    stream.on('data', bytes => { if (!settled) { timer.refresh(); hash.update(bytes); size += bytes.length; } });
+    stream.on('end', () => { sourceEnded = true; finish(); });
     stream.pipe(request);
   });
 }

@@ -144,6 +144,15 @@ try {
   await request(`/api/execution/import/${reuseOp}/prepare`,{...coldSpec,artifactCopyPolicy:{...coldSpec.artifactCopyPolicy,version:2}});
   await assert.rejects(request(`/api/execution/import/${reuseOp}/prepare`,coldSpec),/Artifact copy policy conflict/);
   reuseParts.tree = await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid,coldFiles));
+  await bundle.uploadExecutionPart(node,reuseOp,'artifacts',await portableWorkingArchive(source,sid,coldFiles));
+  await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));
+  await bundle.uploadExecutionPart(node,reuseOp,'attachments',await portableWorkingArchive(source,sid));
+  const reportSpec = {...coldSpec,artifactCopyPolicy:{...coldSpec.artifactCopyPolicy,version:3,retainHistoricalArtifacts:true}};
+  const reportsUpgrade = await request(`/api/execution/import/${reuseOp}/prepare`,reportSpec);
+  for (const part of ['artifacts','artifact-0','attachments']) assert.ok(!reportsUpgrade.parts[part],'only historical attachment receipts invalidate');
+  assert.equal(reportsUpgrade.parts.tree.sha256,reuseParts.tree.sha256,'hot code is not retransferred');
+  assert.equal(reportsUpgrade.parts.git.sha256,reuseParts.git.sha256,'Git is not retransferred');
+  await assert.rejects(request(`/api/execution/import/${reuseOp}/prepare`,coldSpec),/Artifact copy policy conflict/);
   reuseParts.artifacts = await bundle.uploadExecutionPart(node,reuseOp,'artifacts',await portableWorkingArchive(source,sid,coldFiles));
   reuseParts['artifact-0'] = await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));
   await request(`/api/execution/import/${reuseOp}/finalize`,{parts:reuseParts});
