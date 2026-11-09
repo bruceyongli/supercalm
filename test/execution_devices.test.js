@@ -116,11 +116,12 @@ try {
   const reuseSid = 's_device_reuse', reuseOp = 'x_' + 'c'.repeat(24);
   store.createSession({id:reuseSid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-reuse',status:'exited'});
   const reuseSpec = {...state.exportExecutionState(reuseSid),kind:'move',git:{...evidence,indexReceipt:await bundle.hashFile(evidence.index)},
-    archive:{sourceRoot:source},gitSeedSession:sid,historyOnly:true,manifest:{},artifactArchives:[{sessionId:reuseSid,name:'old-report'}]};
+    archive:{sourceRoot:source},historyOnly:true,manifest:{},artifactArchives:[{sessionId:reuseSid,name:'old-report'}]};
   await request(`/api/execution/import/${reuseOp}/prepare`,reuseSpec);
   const reuseParts = {index:await bundle.uploadExecutionPart(node,reuseOp,'index',evidence.index)};
+  await request(`/api/execution/import/${reuseOp}/prepare`,{...reuseSpec,gitSeedSession:sid});
   const reused = await request(`/api/execution/import/${reuseOp}/git-seed`,{});
-  assert.ok(reused.receipt?.size,'same-project destination Git is reused without source network traversal');
+  assert.ok(reused.receipt?.size,'an existing transfer can reuse a later same-project import without source network traversal');
   reuseParts.git = reused.receipt;
   reuseParts.tree = await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid));
   reuseParts['artifact-0'] = await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));

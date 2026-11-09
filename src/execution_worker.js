@@ -56,6 +56,11 @@ export async function prepareWorkerImport(op, spec) {
     if (existing.phase === 'receiving' && !existing.spec.migrationVersion && spec.migrationVersion === 1) {
       existing.spec = spec; await save(op, existing);
     }
+    if (existing.phase === 'receiving' && !existing.spec.gitSeedSession && spec.gitSeedSession) {
+      // This is only a reusable object source, never permission to change the
+      // captured session/HEAD/index. reuseGit checks same-project ownership.
+      existing.spec.gitSeedSession = spec.gitSeedSession; await save(op, existing);
+    }
     return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
   }
   if (store.getSession(spec.session.id)) throw migrationError('Session already exists on the destination');

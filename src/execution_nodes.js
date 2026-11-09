@@ -164,6 +164,12 @@ async function performOperation(op) {
       spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: exportExecutionProjectState(project.id),
         kind: 'launch', git, sourcePath, artifactsPath: join(DATA_DIR, 'session-artifacts', s.id) };
     }
+    // An older failed operation may predate the first successful project import.
+    // Keep its exact snapshot, but allow it to use the now-available local seed.
+    if (row.kind === 'move' && spec.git?.head && !spec.gitSeedSession) {
+      const seed = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id);
+      if (seed) spec = { ...spec, gitSeedSession: seed.id };
+    }
     const checkSource = async () => {
       if (!spec.git) return;
       const current = spec.archive ? await archivedGitEvidence(spec.archive, spec.sourcePath) : await gitEvidence(spec.sourcePath);
