@@ -29,7 +29,7 @@ try {
   await mkdir(modules, { recursive: true }); await writeFile(join(modules, 'old.js'), 'obsolete dependency');
   await symlink(modules, join(source, 'node_modules'));
   const { planColdWorkingFiles, validateColdBuildPaths } = await import('../src/execution_cold.js');
-  const { portableWorkingArchive } = await import('../src/execution_tree.js');
+  const { portableWorkingArchive, portableArtifactArchive } = await import('../src/execution_tree.js');
   const { gitEvidence, validateArchive } = await import('../src/execution_bundle.js');
   for (const path of ['../dist', '/dist', 'reports', 'x/../../dist', 'x\\dist']) assert.throws(() => validateColdBuildPaths([path]));
   await assert.rejects(planColdWorkingFiles(source, { coldBuildPaths: ['dist'] }), /tracked source/);
@@ -59,5 +59,18 @@ try {
   assert.equal((await gitEvidence(source)).statusHash, before.statusHash);
   assert.equal(await readFile(join(source, 'desktop/electron-dist/runtime.bin'), 'utf8'), 'old rebuildable runtime');
   assert.equal(await readFile(join(modules, 'old.js'), 'utf8'), 'obsolete dependency');
+  const artifacts = join(root, 'artifacts'); await mkdir(join(artifacts, 'runtime/venv'), {recursive:true});
+  await mkdir(join(artifacts, 'notes/venv'), {recursive:true});
+  await mkdir(join(artifacts, 'node_modules')); await writeFile(join(artifacts, 'node_modules/dep.js'), 'old dependency');
+  await writeFile(join(artifacts, 'runtime/venv/pyvenv.cfg'), 'home = python');
+  await writeFile(join(artifacts, 'notes/venv/plan.md'), 'not a Python environment');
+  await writeFile(join(artifacts, 'report.html'), '<h1>Keep the report</h1>');
+  const artifactArchive = portableArtifactArchive(artifacts, {rebuildDependencies:true});
+  const a = spawn(artifactArchive.command, artifactArchive.args, {stdio:['ignore','pipe','inherit']}), af = join(root,'artifacts.tar');
+  await Promise.all([pipeline(a.stdout, createWriteStream(af)),new Promise((r,j)=>{a.on('error',j);a.on('close',c=>c===0?r():j(Error('artifact export failed')));})]);
+  const names = (await exec('/usr/bin/tar',['-tf',af])).stdout;
+  assert.ok(names.includes('./report.html')); assert.ok(names.includes('./notes/venv/plan.md'));
+  assert.ok(!names.includes('./node_modules')); assert.ok(!names.includes('./runtime/venv'));
+  assert.equal(await readFile(join(artifacts,'runtime/venv/pyvenv.cfg'),'utf8'),'home = python');
   console.log('execution cold policy: retained originals, exact hot Git state, reports and local dependency placeholder passed');
 } finally { await rm(root, { recursive: true, force: true }); }

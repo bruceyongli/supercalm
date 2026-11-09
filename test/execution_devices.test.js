@@ -133,12 +133,16 @@ try {
   assert.ok(reused.receipt?.size,'an existing transfer can reuse a later same-project import without source network traversal');
   reuseParts.git = reused.receipt;
   const coldFiles = {version:1,rebuildDependencies:true,entries:[]};
-  const coldSpec = {...reuseSpec,gitSeedSession:sid,coldFiles,workingStatusHash:evidence.statusHash};
+  const coldSpec = {...reuseSpec,gitSeedSession:sid,coldFiles,workingStatusHash:evidence.statusHash,
+    artifactCopyPolicy:{version:1,rebuildDependencies:true,source,originalsRetained:true}};
   await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid));
+  await bundle.uploadExecutionPart(node,reuseOp,'artifacts',await portableWorkingArchive(source,sid));
   const upgrade = await request(`/api/execution/import/${reuseOp}/prepare`,coldSpec);
   assert.ok(!upgrade.parts.tree,'an explicit cold-policy upgrade invalidates only the old staged tree');
+  assert.ok(!upgrade.parts.artifacts,'an artifact policy upgrade invalidates its previous staged archive');
   assert.equal(upgrade.parts.git.sha256,reused.receipt.sha256,'already uploaded Git is reused');
   reuseParts.tree = await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid,coldFiles));
+  reuseParts.artifacts = await bundle.uploadExecutionPart(node,reuseOp,'artifacts',await portableWorkingArchive(source,sid,coldFiles));
   reuseParts['artifact-0'] = await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));
   await request(`/api/execution/import/${reuseOp}/finalize`,{parts:reuseParts});
   assert.equal((await request(`/api/execution/import/${reuseOp}/activate`,{})).session.execution_history_only,1);

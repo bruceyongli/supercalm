@@ -17,6 +17,9 @@ def stable_open(path,st):
   stream.close(); raise RuntimeError('Source changed before transfer')
  return stream
 def walk(path,name):
+ if plan.get('artifactDependencies') and not os.path.islink(path) and os.path.isdir(path):
+  base=os.path.basename(path)
+  if base=='node_modules' or (base in ('venv','.venv') and os.path.isfile(os.path.join(path,'pyvenv.cfg'))): return
  if name.removeprefix('./') in excluded:
   saved=excluded[name.removeprefix('./')]; st=os.lstat(path)
   if st.st_ino!=saved['inode'] or st.st_dev!=saved['device']: raise RuntimeError('Cold source identity changed')

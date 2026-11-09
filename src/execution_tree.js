@@ -7,6 +7,11 @@ import { DATA_DIR } from './config.js';
 import { executionGit } from './execution_git.js';
 import { expectedStoragePath } from './live_storage.js';
 
+export function portableArtifactArchive(path, { rebuildDependencies = false } = {}) {
+  return { command: process.execPath, args: [fileURLToPath(new URL('../bin/execution-export-tree.mjs', import.meta.url)), path,
+    Buffer.from(JSON.stringify({ links: [], artifactDependencies: rebuildDependencies })).toString('base64')] };
+}
+
 export async function portableWorkingArchive(path, sid, coldFiles = null) {
   const links = [];
   try { await lstat(join(path, '.aios/execution-dependencies')); throw Error('Managed dependency destination already exists; source retained'); }

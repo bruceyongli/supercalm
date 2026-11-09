@@ -68,6 +68,11 @@ export async function prepareWorkerImport(op, spec) {
       await save(op, existing);
     } else if (JSON.stringify(existing.spec.coldFiles || null) !== JSON.stringify(spec.coldFiles || null)
       || (existing.spec.workingStatusHash || null) !== (spec.workingStatusHash || null)) throw migrationError('Cold storage plan identity conflict');
+    if (spec.artifactCopyPolicy && !existing.spec.artifactCopyPolicy) {
+      if (existing.phase !== 'receiving' || receiving.has(`${op}:artifacts`)) throw migrationError('Cannot change the artifact copy policy during import');
+      existing.spec.artifactCopyPolicy = spec.artifactCopyPolicy; delete existing.parts.artifacts;
+      await save(op, existing);
+    } else if (JSON.stringify(existing.spec.artifactCopyPolicy || null) !== JSON.stringify(spec.artifactCopyPolicy || null)) throw migrationError('Artifact copy policy conflict');
     return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
   }
   if (store.getSession(spec.session.id)) throw migrationError('Session already exists on the destination');
@@ -244,6 +249,7 @@ async function finalizeImport(op, expected) {
     cwd, worktree_path: cwd, branch: spec.git?.branch || null, autonomy: spec.session.autonomy,
     model: spec.session.model, effort: spec.session.effort, execution_operation: op,
     cold_files: spec.coldFiles || null,
+    cold_artifacts: spec.artifactCopyPolicy || null,
     previous_locations: [{ project: spec.project.path, worktree: spec.session.worktree_path, artifacts: spec.artifactsPath,
       target: cwd, artifactTarget: join(DATA_DIR, 'session-artifacts', spec.session.id) }] });
   row = { ...row, phase: 'imported', mapping, importedAt: Date.now() };

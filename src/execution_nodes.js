@@ -25,7 +25,7 @@ import { routeForModel } from './model_catalog.js';
 import { callProxyModel } from './agents/model.js';
 import { branchFor } from './worktrees.js';
 import { executionSource, archivedGitEvidence, archivedWorkingArchive, retainedNativeRoots, executionArtifactArchives } from './execution_archive.js';
-import { portableWorkingArchive } from './execution_tree.js';
+import { portableWorkingArchive, portableArtifactArchive } from './execution_tree.js';
 import { planColdWorkingFiles, validateColdBuildPaths } from './execution_cold.js';
 
 const exec = promisify(execFile), flights = new Map(), syncFlights = new Map();
@@ -117,11 +117,11 @@ async function nativeSource(s) {
   await assertNativeIdentity(path, s.tool, uuid);
   return { path, uuid };
 }
-async function optionalUpload(node, op, name, path, isDirectory, parts) {
+async function optionalUpload(node, op, name, path, isDirectory, parts, archiveOptions = {}) {
   let info;
   try { info = await lstat(path); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
   if (info.isSymbolicLink()) path = await realpath(path);
-  parts[name] = await uploadExecutionPart(node, op, name, isDirectory ? workingArchive(path) : path);
+  parts[name] = await uploadExecutionPart(node, op, name, isDirectory ? portableArtifactArchive(path, archiveOptions) : path);
   updateOperation(op, 'copying', { parts });
 }
 async function performOperation(op) {
@@ -184,6 +184,11 @@ async function performOperation(op) {
       await checkSource();
     }
     const parts = detail.parts || {};
+    if (detail.rebuildDependencies && !spec.artifactCopyPolicy) {
+      spec = { ...spec, artifactCopyPolicy: { version: 1, rebuildDependencies: true,
+        source: spec.artifactsPath, originalsRetained: true } };
+      delete parts.artifacts;
+    }
     if (row.kind === 'move' && detail.rebuildDependencies && !spec.coldFiles && spec.sourcePath && !spec.archive) {
       const coldFiles = await planColdWorkingFiles(spec.sourcePath, detail);
       const working = await gitEvidence(spec.sourcePath, { excludedPaths: coldFiles.entries.map(e => e.path) });
@@ -215,17 +220,17 @@ async function performOperation(op) {
     if (!uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', tree);
     updateOperation(op, 'copying', { parts });
     if (row.kind === 'move') {
-      if (spec.native) parts.native = await uploadExecutionPart(node, op, 'native', spec.native.path);
+      if (spec.native && !uploaded('native')) parts.native = await uploadExecutionPart(node, op, 'native', spec.native.path);
       updateOperation(op, 'copying', { parts });
-      if (s.tool === 'claude' && spec.native) await optionalUpload(node, op, 'native-extra', spec.native.path.replace(/\.jsonl$/, ''), true, parts);
-      await optionalUpload(node, op, 'artifacts', spec.artifactsPath, true, parts);
+      if (s.tool === 'claude' && spec.native && !uploaded('native-extra')) await optionalUpload(node, op, 'native-extra', spec.native.path.replace(/\.jsonl$/, ''), true, parts);
+      if (!uploaded('artifacts')) await optionalUpload(node, op, 'artifacts', spec.artifactsPath, true, parts, spec.artifactCopyPolicy);
       for (const [index, archive] of (spec.artifactArchives || []).entries()) {
         const part = `artifact-${index}`;
         if (!uploaded(part)) parts[part] = await uploadExecutionPart(node, op, part, archivedWorkingArchive(archive));
         updateOperation(op, 'copying', { parts });
       }
-      await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts);
-      await optionalUpload(node, op, 'log', join(LOG_DIR, s.id + '.log'), false, parts);
+      if (!uploaded('attachments')) await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts);
+      if (!uploaded('log')) await optionalUpload(node, op, 'log', join(LOG_DIR, s.id + '.log'), false, parts);
       await assertStoppedForMove(store.getSession(s.id), moveOptions);
       await checkSource();
     }

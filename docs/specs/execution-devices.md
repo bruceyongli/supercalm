@@ -54,7 +54,11 @@ reports and conversations still move. Original Git identity remains bound, with 
 state digest for the retained hot files. Scoped dependency links become local empty rebuild targets,
 not pointers to Spark. The destination manifest records cold original paths. This choice can upgrade
 the same receiving operation and retain its Git receipts, but never change an imported operation.
-No cold path is deleted, and artifact/report transfers are not filtered by dependency rules.
+No cold path is deleted. Artifact directories use bounded parallel reads too. With this explicit
+choice, their `node_modules` and Python environments identified by `pyvenv.cfg` remain cold;
+reports, media and ordinary directories named `venv` are still copied. This policy and the original
+artifact root are recorded in the destination manifest. Retries reuse completed native-history
+and report receipts as well as Git receipts, rather than resending multi-gigabyte conversations.
 
 Explicit `preserveHistory: true` permits moving older stopped records whose native transcript was
 already unavailable. First check the exact UUID, including identity-bound retained-original migration
