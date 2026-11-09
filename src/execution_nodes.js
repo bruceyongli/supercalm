@@ -26,6 +26,7 @@ import { callProxyModel } from './agents/model.js';
 import { branchFor } from './worktrees.js';
 import { executionSource, archivedGitEvidence, archivedWorkingArchive, retainedNativeRoots, executionArtifactArchives } from './execution_archive.js';
 import { portableWorkingArchive } from './execution_tree.js';
+import { planColdWorkingFiles, validateColdBuildPaths } from './execution_cold.js';
 
 const exec = promisify(execFile), flights = new Map(), syncFlights = new Map();
 const operation = id => store.db.prepare('SELECT * FROM execution_operations WHERE id=?').get(id);
@@ -44,6 +45,7 @@ function publicOperation(row) {
   return { id: row.id, session_id: row.session_id, node: row.node, kind: row.kind, phase: row.phase,
     error: row.error, created_at: row.created_at, updated_at: row.updated_at,
     historyOnly: !!detail.spec?.historyOnly,
+    rebuildDependencies: !!detail.rebuildDependencies,
     bytes: Object.values(detail.parts || {}).reduce((sum, p) => sum + (p.size || 0), 0) };
 }
 
@@ -146,9 +148,11 @@ async function performOperation(op) {
       const source = await assertStoppedForMove(s, moveOptions);
       const native = await nativeSource(s).catch(error => { if (moveOptions.history && error.code === 'execution-native-missing') return null; throw error; });
       if (native && !source.path) throw migrationError('Native conversation exists but its checkout is missing; the historical move has not replaced it');
-      const git = source.archive ? await archivedGitEvidence(source.archive, source.path) : source.path ? await gitEvidence(source.path) : null;
+      const coldFiles = detail.rebuildDependencies && source.path && !source.archive ? await planColdWorkingFiles(source.path, detail) : null;
+      const git = source.archive ? await archivedGitEvidence(source.archive, source.path) : source.path ? await gitEvidence(source.path, { excludedPaths: coldFiles?.entries.map(e => e.path) || [] }) : null;
       const gitSeedSession = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id)?.id;
-      spec = { ...exportExecutionState(s.id), kind: 'move', migrationVersion: 1, native, git, gitSeedSession, archive: source.archive || null, historyOnly: !native,
+      spec = { ...exportExecutionState(s.id), kind: 'move', migrationVersion: 1, native, git, gitSeedSession, coldFiles,
+        workingStatusHash: coldFiles ? git.statusHash : null, archive: source.archive || null, historyOnly: !native,
         artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: join(DATA_DIR, 'session-artifacts', s.id), sourcePath: source.path };
     } else if (!spec) {
       const project = store.getProject(s.project_id);
@@ -172,14 +176,25 @@ async function performOperation(op) {
     }
     const checkSource = async () => {
       if (!spec.git) return;
-      const current = spec.archive ? await archivedGitEvidence(spec.archive, spec.sourcePath) : await gitEvidence(spec.sourcePath);
-      if (current.head !== spec.git.head || current.statusHash !== spec.git.statusHash || spec.archive &&
+      const current = spec.archive ? await archivedGitEvidence(spec.archive, spec.sourcePath) : await gitEvidence(spec.sourcePath, { excludedPaths: spec.coldFiles?.entries.map(e => e.path) || [] });
+      if (current.head !== spec.git.head || current.statusHash !== (spec.workingStatusHash || spec.git.statusHash) || spec.archive &&
         (current.indexReceipt.sha256 !== spec.git.indexReceipt.sha256 || current.archiveFingerprint !== spec.git.archiveFingerprint)) throw migrationError('The source changed since this transfer started; originals are retained');
     };
     if (row.kind === 'move' && resumingCopy) {
       await checkSource();
     }
     const parts = detail.parts || {};
+    if (row.kind === 'move' && detail.rebuildDependencies && !spec.coldFiles && spec.sourcePath && !spec.archive) {
+      const coldFiles = await planColdWorkingFiles(spec.sourcePath, detail);
+      const working = await gitEvidence(spec.sourcePath, { excludedPaths: coldFiles.entries.map(e => e.path) });
+      spec = { ...spec, coldFiles, workingStatusHash: working.statusHash };
+      delete parts.tree; // only this operation's staged archive; Git/history receipts remain
+    }
+    let portableTree;
+    if (spec.coldFiles) {
+      portableTree = await portableWorkingArchive(spec.sourcePath, s.id, spec.coldFiles);
+      spec.coldFiles.dependencies = portableTree.links.filter(l => l.rebuild).map(l => ({ name: l.name, source: l.path, localLink: l.localLink, retained: true }));
+    }
     updateOperation(op, 'copying', { spec, parts });
     let status = await nodeRequest(node, `/api/execution/import/${op}`);
     if (['absent', 'receiving'].includes(status.phase)) status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
@@ -195,7 +210,7 @@ async function performOperation(op) {
     updateOperation(op, 'copying', { parts });
     const tree = spec.archive ? archivedWorkingArchive(spec.archive)
       : !spec.sourcePath ? { command: '/usr/bin/tar', args: ['-cf', '-', '-T', '/dev/null'] }
-      : row.kind === 'launch' && spec.git?.head ? committedArchive(spec.sourcePath, spec.git.head) : await portableWorkingArchive(spec.sourcePath, s.id);
+      : row.kind === 'launch' && spec.git?.head ? committedArchive(spec.sourcePath, spec.git.head) : portableTree || await portableWorkingArchive(spec.sourcePath, s.id);
     if (tree.links?.length) { moveOptions.extraRoots = tree.links.map(l => l.path); await assertStoppedForMove(s, moveOptions); }
     if (!uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', tree);
     updateOperation(op, 'copying', { parts });
@@ -317,19 +332,28 @@ route('POST', '/api/project/:id/execution-device', handle(async (req, { id }) =>
 route('POST', '/api/session/:id/move', handle(async (req, { id: sid }) => {
   assertExecutionAvailable(sid);
   const body = await readJson(req), node = executionNode(body.device);
+  const coldBuildPaths = validateColdBuildPaths(body.coldBuildPaths);
+  if (coldBuildPaths.length && body.rebuildDependencies !== true) throw migrationError('Cold build paths require explicit dependency rebuilding');
   if (!['codex','claude'].includes(store.getSession(sid)?.tool) && body.preserveHistory !== true) throw migrationError('Only Codex and Claude conversations can resume on this device; older tools may be explicitly preserved as history');
   await assertStoppedForMove(store.getSession(sid), { history: body.preserveHistory === true });
   await nodeRequest(node, '/api/execution/health');
   const op = 'x_' + randomBytes(12).toString('hex'), at = Date.now();
-  store.db.prepare('INSERT INTO execution_operations VALUES(?,?,?,?,?,?,?,?,?)').run(op, sid, node.id, 'move', 'queued', JSON.stringify({ preserveHistory: body.preserveHistory === true }), null, at, at);
+  store.db.prepare('INSERT INTO execution_operations VALUES(?,?,?,?,?,?,?,?,?)').run(op, sid, node.id, 'move', 'queued', JSON.stringify({ preserveHistory: body.preserveHistory === true,
+    rebuildDependencies: body.rebuildDependencies === true, coldBuildPaths }), null, at, at);
   setImmediate(() => runOperation(op));
   return { operation: publicOperation(operation(op)) };
 }));
 route('GET', '/api/session/:id/move', handle((_req, { id: sid }) => ({ operation: publicOperation(store.db.prepare('SELECT * FROM execution_operations WHERE session_id=? ORDER BY created_at DESC LIMIT 1').get(sid)) })));
-route('POST', '/api/execution/operations/:id/retry', handle(async (_req, { id }) => {
+route('POST', '/api/execution/operations/:id/retry', handle(async (req, { id }) => {
   const row = operation(id);
   if (!row || !['activating','failed'].includes(row.phase)) throw migrationError('This operation is not awaiting retry');
-  if (row.phase === 'failed') updateOperation(id, 'queued', {}, null);
+  const body = await readJson(req), patch = {};
+  if (body.rebuildDependencies === true && !JSON.parse(row.detail).rebuildDependencies) {
+    const current = await nodeRequest(executionNode(row.node), `/api/execution/import/${id}`);
+    if (row.kind !== 'move' || !['absent','receiving'].includes(current.phase)) throw migrationError('This handoff has already imported files; its copy policy cannot change');
+    patch.rebuildDependencies = true; patch.coldBuildPaths = validateColdBuildPaths(body.coldBuildPaths);
+  }
+  if (row.phase === 'failed') updateOperation(id, 'queued', patch, null);
   runOperation(id); return { operation: publicOperation(row) };
 }));
 route('GET', '/api/execution/health', workerOnly(async () => ({ protocol: 1, node: EXECUTION_NODE, version: VERSION,

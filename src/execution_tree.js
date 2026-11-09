@@ -7,7 +7,7 @@ import { DATA_DIR } from './config.js';
 import { executionGit } from './execution_git.js';
 import { expectedStoragePath } from './live_storage.js';
 
-export async function portableWorkingArchive(path, sid) {
+export async function portableWorkingArchive(path, sid, coldFiles = null) {
   const links = [];
   try { await lstat(join(path, '.aios/execution-dependencies')); throw Error('Managed dependency destination already exists; source retained'); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
@@ -29,8 +29,10 @@ export async function portableWorkingArchive(path, sid) {
     const info = await lstat(target);
     if (!info.isFile() && !info.isDirectory()) throw Error('Unsupported session dependency');
     links.push({ name: entry.name, path: target, inode: info.ino, device: info.dev,
-      localLink: ignored ? null : `.aios/execution-dependencies/${links.length}` });
+      localLink: ignored ? null : `.aios/execution-dependencies/${links.length}`,
+      rebuild: !!coldFiles?.rebuildDependencies && (entry.name === 'node_modules' || ignored && /\.tsbuildinfo$/.test(entry.name)),
+      directory: info.isDirectory() });
   }
   return { command: process.execPath, args: [fileURLToPath(new URL('../bin/execution-export-tree.mjs', import.meta.url)), path,
-    Buffer.from(JSON.stringify(links)).toString('base64')], links };
+    Buffer.from(JSON.stringify({ links, excluded: coldFiles?.entries || [] })).toString('base64')], links };
 }

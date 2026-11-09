@@ -9,7 +9,12 @@ import { DB_PATH } from '../src/config.js';
 
 const [projectId, device, ...flags] = process.argv.slice(2);
 if (!/^p_[a-zA-Z0-9_-]+$/.test(projectId || '') || !/^[a-z][a-z0-9_-]{0,39}$/.test(device || '') || device === 'local'
-  || flags.some(f => !['--stop-active', '--preserve-history'].includes(f))) throw Error('Usage: AIOS_DATA=... node bin/move-execution-project.mjs PROJECT DEVICE [--stop-active] [--preserve-history]');
+  || flags.some(f => !['--stop-active', '--preserve-history', '--rebuild-dependencies'].includes(f) && !f.startsWith('--cold-build=') && !/^--jobs=[1-4]$/.test(f))) throw Error('Usage: AIOS_DATA=... node bin/move-execution-project.mjs PROJECT DEVICE [--stop-active] [--preserve-history] [--rebuild-dependencies] [--cold-build=RELATIVE_PATH] [--jobs=1..4]');
+const jobs = Number(flags.find(f => f.startsWith('--jobs='))?.slice(7) || 1);
+const { validateColdBuildPaths } = await import('../src/execution_cold.js');
+const copyPolicy = { rebuildDependencies: flags.includes('--rebuild-dependencies'),
+  coldBuildPaths: validateColdBuildPaths(flags.filter(f => f.startsWith('--cold-build=')).map(f => f.slice(13))) };
+if (copyPolicy.coldBuildPaths.length && !copyPolicy.rebuildDependencies) throw Error('--cold-build requires --rebuild-dependencies');
 const root = join(homedir(), '.local/share/aios/execution-moves');
 await mkdir(root, { recursive: true, mode: 0o700 });
 const file = join(root, `${projectId}-${device}.json`);
@@ -21,7 +26,8 @@ db.close();
 let journal = await readFile(file, 'utf8').then(JSON.parse, e => { if (e.code === 'ENOENT') return null; throw e; });
 if (!journal) journal = { version: 1, project: projectId, device, startedAt: Date.now(), sessions: {} };
 if (journal.project !== projectId || journal.device !== device) throw Error('Migration journal identity conflict');
-const save = async () => { const text = JSON.stringify(journal, null, 2) + '\n'; await writeFile(file + '.tmp', text, { mode: 0o600 }); await rename(file + '.tmp', file); };
+let saves = Promise.resolve();
+const save = () => saves = saves.then(async () => { const text = JSON.stringify(journal, null, 2) + '\n'; await writeFile(file + '.tmp', text, { mode: 0o600 }); await rename(file + '.tmp', file); });
 const request = async (path, body) => {
   const res = await fetch(`http://127.0.0.1:8793${path}`, { method: body === undefined ? 'GET' : 'POST',
     ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }), signal: AbortSignal.timeout(60000) });
@@ -30,10 +36,10 @@ const request = async (path, body) => {
 const devices = await request('/api/execution/devices');
 if (!devices.devices.some(d => d.id === device && d.online && !d.local)) throw Error('Destination is not connected');
 console.log(JSON.stringify({ project, device, count: sessions.length, journal: file }));
-for (const session of sessions) {
+async function move(session) {
   const state = journal.sessions[session.id] ||= { id: session.id, title: session.title, tool: session.tool,
     codexUuid: session.codex_uuid, claudeTranscript: session.claude_transcript, originalStatus: session.status };
-  if (session.execution_node === device && state.phase === 'complete') continue;
+  if (session.execution_node === device && state.phase === 'complete') return;
   if (session.execution_node && session.execution_node !== 'local' && session.execution_node !== device) throw Error('A session is owned by a different worker; not moved implicitly');
   try {
     let operation = (await request(`/api/session/${session.id}/move`)).operation;
@@ -44,10 +50,10 @@ for (const session of sessions) {
         if (!flags.includes('--stop-active')) throw Error('Session is not stopped; --stop-active requires explicit operator authorization');
         await request(`/api/session/${session.id}/stop`, {});
       }
-      try { operation = (await request(`/api/session/${session.id}/move`, { device, preserveHistory: flags.includes('--preserve-history') })).operation; }
+      try { operation = (await request(`/api/session/${session.id}/move`, { device, preserveHistory: flags.includes('--preserve-history'), ...copyPolicy })).operation; }
       catch (error) { operation = (await request(`/api/session/${session.id}/move`)).operation; if (!operation) throw error; }
     } else if (operation.phase === 'failed') {
-      await request(`/api/execution/operations/${operation.id}/retry`, {});
+      await request(`/api/execution/operations/${operation.id}/retry`, copyPolicy);
     }
     state.operation = operation.id; state.phase = operation.phase; state.error = null; await save();
     console.log(JSON.stringify({ session: session.id, operation: operation.id, phase: 'following' }));
@@ -67,6 +73,13 @@ for (const session of sessions) {
     console.log(JSON.stringify({ session: session.id, error: error.message }));
   }
 }
+// Establish a real project checkout before parallel history-only imports can
+// choose its project path. Every later job follows its own durable operation.
+let next = 0;
+if (!sessions.some(s => s.execution_node === device)) await move(sessions[next++]);
+await Promise.all(Array.from({ length: jobs }, async () => {
+  for (;;) { const session = sessions[next++]; if (!session) return; await move(session); }
+}));
 const done = sessions.filter(s => journal.sessions[s.id]?.phase === 'complete');
 journal.completed = done.length; journal.total = sessions.length; journal.checkedAt = Date.now();
 if (done.length === sessions.length) {

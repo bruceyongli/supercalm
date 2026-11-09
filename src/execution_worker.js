@@ -61,6 +61,13 @@ export async function prepareWorkerImport(op, spec) {
       // captured session/HEAD/index. reuseGit checks same-project ownership.
       existing.spec.gitSeedSession = spec.gitSeedSession; await save(op, existing);
     }
+    if (spec.coldFiles && !existing.spec.coldFiles) {
+      if (existing.phase !== 'receiving' || receiving.has(`${op}:tree`)) throw migrationError('Cannot change the copy policy during import');
+      existing.spec.coldFiles = spec.coldFiles; existing.spec.workingStatusHash = spec.workingStatusHash;
+      delete existing.parts.tree;
+      await save(op, existing);
+    } else if (JSON.stringify(existing.spec.coldFiles || null) !== JSON.stringify(spec.coldFiles || null)
+      || (existing.spec.workingStatusHash || null) !== (spec.workingStatusHash || null)) throw migrationError('Cold storage plan identity conflict');
     return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
   }
   if (store.getSession(spec.session.id)) throw migrationError('Session already exists on the destination');
@@ -204,7 +211,7 @@ async function finalizeImport(op, expected) {
   if (!spec.historyOnly || spec.git?.head) await assertLocalCheckout(cwd);
   if (spec.git?.head) {
     const observed = await gitEvidence(cwd);
-    if (observed.head !== spec.git.head || spec.kind === 'move' && !spec.archive && observed.statusHash !== spec.git.statusHash) {
+    if (observed.head !== spec.git.head || spec.kind === 'move' && !spec.archive && observed.statusHash !== (spec.workingStatusHash || spec.git.statusHash)) {
       throw migrationError('The destination Git state differs; the source is still authoritative');
     }
   }
@@ -236,6 +243,7 @@ async function finalizeImport(op, expected) {
   await writeManifest(spec.session.id, { ...spec.manifest, tool: spec.session.tool, project_path: projectPath,
     cwd, worktree_path: cwd, branch: spec.git?.branch || null, autonomy: spec.session.autonomy,
     model: spec.session.model, effort: spec.session.effort, execution_operation: op,
+    cold_files: spec.coldFiles || null,
     previous_locations: [{ project: spec.project.path, worktree: spec.session.worktree_path, artifacts: spec.artifactsPath,
       target: cwd, artifactTarget: join(DATA_DIR, 'session-artifacts', spec.session.id) }] });
   row = { ...row, phase: 'imported', mapping, importedAt: Date.now() };

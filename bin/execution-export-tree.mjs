@@ -5,7 +5,10 @@ import { spawn } from 'node:child_process';
 const script = `import os,sys,json,base64,tarfile,stat,io
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
-root=sys.argv[1]; links={p['name']:p for p in json.loads(base64.b64decode(sys.argv[2]))}
+root=sys.argv[1]; plan=json.loads(base64.b64decode(sys.argv[2]))
+if isinstance(plan,list): plan={'links':plan}
+links={p['name']:p for p in plan.get('links',[])}
+excluded={p['path']:p for p in plan.get('excluded',[])}
 def identity(st): return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_mode)
 def stable_open(path,st):
  fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
@@ -14,10 +17,14 @@ def stable_open(path,st):
   stream.close(); raise RuntimeError('Source changed before transfer')
  return stream
 def walk(path,name):
+ if name.removeprefix('./') in excluded:
+  saved=excluded[name.removeprefix('./')]; st=os.lstat(path)
+  if st.st_ino!=saved['inode'] or st.st_dev!=saved['device']: raise RuntimeError('Cold source identity changed')
+  return
  yield (path,name,None)
  if os.path.isdir(path) and not os.path.islink(path):
   for entry in sorted(os.scandir(path),key=lambda e:e.name):
-   if entry.is_dir(follow_symlinks=False): yield from walk(entry.path,name+'/'+entry.name)
+   if entry.is_dir(follow_symlinks=False) or (name+'/'+entry.name).removeprefix('./') in excluded: yield from walk(entry.path,name+'/'+entry.name)
    else: yield (entry.path,name+'/'+entry.name,None)
 def entries():
  for name in sorted(os.listdir(root)):
@@ -27,6 +34,12 @@ def entries():
    p=links[name]; st=os.lstat(p['path'])
    if os.path.realpath(target)!=p['path'] or st.st_ino!=p['inode'] or st.st_dev!=p['device']: raise RuntimeError('Dependency identity changed')
    target=p['path']
+   if p.get('rebuild'):
+    if p.get('localLink'):
+     yield (None,'./'+name,p['localLink'])
+     yield (None,'./'+p['localLink'],False)
+    elif p.get('directory'): yield (None,'./'+name,False)
+    continue
    if p.get('localLink'):
     yield (None,'./'+name,p['localLink'])
     yield from walk(target,'./'+p['localLink'])
@@ -35,6 +48,9 @@ def entries():
 def prepare(item):
  path,name,link=item; info=tarfile.TarInfo(name)
  if link is not None:
+  if link is False:
+   info.type=tarfile.DIRTYPE; info.mode=0o755
+   return (info,None,None,None)
   info.type=tarfile.SYMTYPE; info.linkname=link
   return (info,None,None,None)
  st=os.lstat(path); info.mode=stat.S_IMODE(st.st_mode); info.uid=st.st_uid; info.gid=st.st_gid; info.mtime=st.st_mtime

@@ -47,6 +47,15 @@ ignored links may materialize, while visible untracked links retain their symlin
 reserved, Git-excluded `.aios/execution-dependencies` directory. Tracked/external links remain
 blocked. Dependency writers and changed per-file identities stop the move, never delete originals.
 
+Operator-selected `rebuildDependencies: true` keeps ignored dependency/build caches at the source.
+The separate `coldBuildPaths` allowlist can retain specifically approved unignored build outputs;
+it rejects tracked descendants and arbitrary paths. Source, staged changes, other untracked files,
+reports and conversations still move. Original Git identity remains bound, with a separate working
+state digest for the retained hot files. Scoped dependency links become local empty rebuild targets,
+not pointers to Spark. The destination manifest records cold original paths. This choice can upgrade
+the same receiving operation and retain its Git receipts, but never change an imported operation.
+No cold path is deleted, and artifact/report transfers are not filtered by dependency rules.
+
 Explicit `preserveHistory: true` permits moving older stopped records whose native transcript was
 already unavailable. First check the exact UUID, including identity-bound retained-original migration
 journals. A history-only result is labelled and cannot Resume (including force), borrow another

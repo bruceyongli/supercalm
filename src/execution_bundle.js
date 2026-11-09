@@ -11,10 +11,12 @@ import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { migrationError } from './execution_identity.js';
 import { executionGit } from './execution_git.js';
+import { coldPathspec } from './execution_cold.js';
 
 const exec = promisify(execFile);
 export async function gitEvidence(path, options = {}) {
-  const run = (args, extra = {}) => executionGit(path, args, { ...options, ...extra });
+  const { excludedPaths = [], ...gitOptions } = options;
+  const run = (args, extra = {}) => executionGit(path, args, { ...gitOptions, ...extra });
   const optional = args => run(args).catch(error => { if (error.exitCode === 1 || error.exitCode === 2) return ''; throw error; });
   const top = (await run(['rev-parse', '--show-toplevel'])).trim();
   if (await realpath(top) !== await realpath(path)) throw migrationError('Select the complete repository root, not a subdirectory');
@@ -34,7 +36,7 @@ export async function gitEvidence(path, options = {}) {
   // Serial full-tree scans avoid competing for the network disk. Keep the exact
   // original hash framing (status followed by diff), including all untracked paths.
   const hash = createHash('sha256');
-  await run(['status', '--porcelain=v2', '-z', '--untracked-files=all'], { label: 'working-tree scan', onData: chunk => hash.update(chunk) });
+  await run(['status', '--porcelain=v2', '-z', '--untracked-files=all', ...coldPathspec(excludedPaths)], { label: 'working-tree scan', onData: chunk => hash.update(chunk) });
   await run(['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD'], { label: 'change scan', onData: chunk => hash.update(chunk) });
   const cleanOrigin = origin.trim();
   // Never serialize an embedded password/token from a legacy Git remote.
