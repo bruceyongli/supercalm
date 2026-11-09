@@ -154,6 +154,10 @@ export async function uploadExecutionPart(node, operation, part, source, { timeo
     });
     const timer = setTimeout(() => finish(Error('Device transfer timed out; source files are retained')), timeout);
     request.on('error', finish);
+    // A cold Git export can prepare for minutes before writing its first byte.
+    // Authenticate now: otherwise Node buffers these headers until stdout starts
+    // and the worker's header deadline closes an apparently empty connection.
+    request.flushHeaders();
     let stream;
     if (typeof source === 'string') stream = createReadStream(source);
     else {
