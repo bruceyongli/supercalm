@@ -5,10 +5,11 @@ import { bus } from './bus.js';
 import { sessionStatusPayload } from './session_projection.js';
 
 const SESSION_TABLES = ['messages', 'events', 'decisions', 'agent_grants', 'supervisor_reviews',
-  'session_limits', 'preflight_specs', 'session_maps', 'composer_drafts'];
+  'session_limits', 'session_usage_limits', 'preflight_specs', 'session_maps', 'composer_drafts',
+  'session_labels', 'pm_session_runtime', 'file_render_grants'];
 // Preserve the operator's exact release contract. Moving code does not grant a
 // new deploy source or silently strip existing per-command release permission.
-const PROJECT_TABLES = ['project_helpers', 'project_context', 'release_targets'];
+const PROJECT_TABLES = ['project_helpers', 'project_context', 'release_targets', 'wiki_pages', 'pm_tasks', 'pm_standards'];
 const columns = table => db.prepare(`PRAGMA table_info("${table}")`).all();
 export function insertKnownRow(table, row, { omit = [], ignore = false } = {}) {
   const names = columns(table).map(c => c.name).filter(name => Object.hasOwn(row, name) && !omit.includes(name));
@@ -58,7 +59,8 @@ export function importExecutionState(data, { cwd, projectPath, transcript, opera
       const generatedId = cols.find(c => c.name === 'id' && c.type === 'INTEGER' && c.pk);
       for (const row of data.tables?.[name] || []) {
         if (row.session_id !== data.session.id) throw migrationError('Cross-session state in migration');
-        const result = insertKnownRow(name, row, { omit: generatedId ? ['id'] : [] });
+        const imported = name === 'pm_session_runtime' ? { ...row, worktree: cwd, branch: data.git?.branch || row.branch } : row;
+        const result = insertKnownRow(name, imported, { omit: generatedId ? ['id'] : [] });
         if (name === 'messages' && result) {
           const remoteId = Number(result.lastInsertRowid);
           mapping.push({ local_id: row.id, remote_id: remoteId });

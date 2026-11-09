@@ -50,8 +50,13 @@ export async function prepareWorkerImport(op, spec) {
   if (capacity.bavail * capacity.bsize < 10 * 1024 ** 3) throw migrationError('The device has less than 10 GiB free', 'disk-space-critical', 507);
   const existing = await record(op).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
   if (existing) {
-    if (existing.spec.session.id !== spec.session.id) throw migrationError('Handoff identity conflict');
-    return { phase: existing.phase, cwd: existing.cwd };
+    const identity = value => JSON.stringify([value.session.id, value.project.id, value.session.tool, value.kind,
+      value.native?.uuid || null, value.sourcePath || null, value.git?.head || null, value.git?.statusHash || null, !!value.historyOnly]);
+    if (identity(existing.spec) !== identity(spec)) throw migrationError('Handoff identity conflict');
+    if (existing.phase === 'receiving' && !existing.spec.migrationVersion && spec.migrationVersion === 1) {
+      existing.spec = spec; await save(op, existing);
+    }
+    return { phase: existing.phase, cwd: existing.cwd, parts: existing.parts };
   }
   if (store.getSession(spec.session.id)) throw migrationError('Session already exists on the destination');
   const cwd = join(root, 'workspaces', spec.session.id);

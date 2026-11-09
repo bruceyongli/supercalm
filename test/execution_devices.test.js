@@ -86,6 +86,8 @@ try {
   assert.equal(spec.projectTables.release_targets[0].source_dir,source);
   assert.equal((await request(`/api/execution/import/${op}`)).phase,'absent');
   assert.equal((await request(`/api/execution/import/${op}/prepare`,spec)).phase,'receiving');
+  await assert.rejects(request(`/api/execution/import/${op}/prepare`,{...spec,git:{...spec.git,head:'f'.repeat(40)}}),/identity conflict/);
+  assert.equal((await request(`/api/execution/import/${op}/prepare`,{...spec,migrationVersion:1})).phase,'receiving', 'an exact old operation upgrades in place');
   const parts = {};
   parts.git = await bundle.uploadExecutionPart(node,op,'git',bundle.gitBundle(source));
   parts.tree = await bundle.uploadExecutionPart(node,op,'tree',await portableWorkingArchive(source,sid));

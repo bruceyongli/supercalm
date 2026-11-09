@@ -135,13 +135,20 @@ async function performOperation(op) {
     const resumingCopy = !!spec;
     const moveOptions = { history: !!detail.preserveHistory };
     if (row.kind === 'move') await assertStoppedForMove(s, moveOptions);
+    if (spec && row.kind === 'move' && !spec.migrationVersion) {
+      // Upgrade this exact pre-release transfer, not a replacement operation.
+      // Keep its captured identity/history and add previously omitted metadata.
+      const current = exportExecutionState(s.id);
+      spec = { ...spec, migrationVersion: 1, tables: { ...current.tables, ...spec.tables },
+        projectTables: { ...current.projectTables, ...spec.projectTables }, artifactArchives: await executionArtifactArchives(s.id) };
+    }
     if (!spec && row.kind === 'move') {
       const source = await assertStoppedForMove(s, moveOptions);
       const native = await nativeSource(s).catch(error => { if (moveOptions.history && error.code === 'execution-native-missing') return null; throw error; });
       if (native && !source.path) throw migrationError('Native conversation exists but its checkout is missing; the historical move has not replaced it');
       const git = source.archive ? await archivedGitEvidence(source.archive, source.path) : source.path ? await gitEvidence(source.path) : null;
       const gitSeedSession = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id)?.id;
-      spec = { ...exportExecutionState(s.id), kind: 'move', native, git, gitSeedSession, archive: source.archive || null, historyOnly: !native,
+      spec = { ...exportExecutionState(s.id), kind: 'move', migrationVersion: 1, native, git, gitSeedSession, archive: source.archive || null, historyOnly: !native,
         artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: join(DATA_DIR, 'session-artifacts', s.id), sourcePath: source.path };
     } else if (!spec) {
       const project = store.getProject(s.project_id);
@@ -169,7 +176,7 @@ async function performOperation(op) {
     const parts = detail.parts || {};
     updateOperation(op, 'copying', { spec, parts });
     let status = await nodeRequest(node, `/api/execution/import/${op}`);
-    if (status.phase === 'absent') status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
+    if (['absent', 'receiving'].includes(status.phase)) status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
     if (status.phase === 'active') throw migrationError('Destination is already active but ownership is not committed');
     if (status.phase === 'receiving') {
     const uploaded = part => parts[part] && status.parts?.[part]?.sha256 === parts[part].sha256;
