@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { initializeExecutionNative } from '../src/execution_native.js';
+import { bootstrapExecutionService } from '../src/execution_launchd.js';
 
 const exec = promisify(execFile);
 let input = ''; for await (const chunk of process.stdin) { input += chunk; if (input.length > 65536) throw Error('Invalid worker configuration'); }
@@ -53,7 +54,7 @@ const source = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict
 await mkdir(join(home,'Library/LaunchAgents'),{ recursive:true });
 await writeFile(plist + '.tmp', source,{ mode:0o600 }); await rename(plist + '.tmp',plist);
 await exec('/bin/launchctl',['bootout',`${domain}/${label}`]).catch(() => {});
-await exec('/bin/launchctl',['bootstrap',domain,plist]);
+await bootstrapExecutionService((command, args) => exec(command, args, { timeout: 10000 }), domain, plist);
 await exec('/bin/launchctl',['enable',`${domain}/${label}`]);
 await exec('/bin/launchctl',['kickstart',`${domain}/${label}`]);
 let ready = false;
