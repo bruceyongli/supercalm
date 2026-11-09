@@ -74,7 +74,7 @@ try {
   store.db.exec('CREATE TABLE IF NOT EXISTS release_targets(project_id TEXT PRIMARY KEY,source_dir TEXT,source_branch TEXT,auto_release INTEGER,release_scripts TEXT)');
   store.db.prepare('INSERT INTO release_targets VALUES(?,?,?,?,?)').run('p_device_fixture',source,'main',1,'["bin/release"]');
   store.createSession({id:sid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-source',status:'exited',autonomy:'full',model:'gpt-6.1-sol',effort:'xhigh'});
-  store.updateSession(sid,{worktree_path:source,branch:'main',codex_uuid:uuid,desired_status:'exited',runtime_status:'exited',status_reason:'operator-stop'});
+  store.updateSession(sid,{worktree_path:source,branch:'old-registration',codex_uuid:uuid,desired_status:'exited',runtime_status:'exited',status_reason:'operator-stop'});
   store.addMessage(sid,'in','task','Keep the original task.'); store.addMessage(sid,'out','detect','Original report');
   attention.dismissAttention(sid);
   const native = join(dir,`rollout-2026-11-01T00-00-00-${uuid}.jsonl`);
@@ -111,6 +111,7 @@ try {
   assert.equal(release.source_dir,source,'release source is preserved, never redirected to worker checkout');
   assert.equal(release.auto_release,true); assert.deepEqual(release.release_scripts,['bin/release']);
   assert.equal(active.session.status,'exited','move stays paused'); assert.equal(active.session.codex_uuid,uuid);
+  assert.equal(active.session.branch,'main','observed branch wins over stale registration without switching source branches');
   assert.equal((await request(`/api/execution/import/${op}/activate`,{})).session.id,sid,'duplicate activation is idempotent');
   const reuseSid = 's_device_reuse', reuseOp = 'x_' + 'c'.repeat(24);
   store.createSession({id:reuseSid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-reuse',status:'exited'});

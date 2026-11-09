@@ -49,6 +49,7 @@ export function importExecutionState(data, { cwd, projectPath, transcript, opera
     insertKnownRow('sessions', { ...data.session, execution_node: EXECUTION_NODE, execution_checkout: !data.historyOnly || data.git?.head ? 1 : 0,
       execution_history_only: data.historyOnly ? 1 : 0,
       execution_dormant: 1, execution_transfer: operation, execution_revision: null, worktree_path: cwd,
+      branch: data.git?.branch ?? data.session.branch,
       claude_transcript: transcript || null, tmux: `aios-node-${data.session.id}`, status: 'exited',
       desired_status: 'exited', runtime_status: 'exited', status_reason: data.historyOnly ? 'execution-history-only' : 'execution-staged',
       // Worker credentials remain on the controller; CLI traffic uses its existing model gateway.
