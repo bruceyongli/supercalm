@@ -21,6 +21,11 @@ try {
   await writeFile(join(source,'plan.md'),'# Plan\nKeep original context.\n'); await git('add','.'); await git('commit','-m','fixture');
   await writeFile(join(source,'plan.md'),'# Plan\nStaged detail.\n'); await git('add','plan.md');
   await writeFile(join(source,'plan.md'),'# Plan\nUnstaged detail.\n'); await writeFile(join(source,'local.txt'),'untracked');
+  const smallFiles = join(source,'parallel-files'); await mkdir(smallFiles);
+  for(let i=0;i<48;i++) await writeFile(join(smallFiles,`文件-${i}.txt`),Buffer.alloc(4096,i));
+  await writeFile(join(smallFiles,'large.bin'),Buffer.alloc(3*1024*1024,193));
+  await writeFile(join(smallFiles,'executable'),'#!/bin/sh\nexit 0\n',{mode:0o751});
+  await symlink('../plan.md',join(smallFiles,'relative-link'));
   const bundle = await import('../src/execution_bundle.js');
   const {portableWorkingArchive} = await import('../src/execution_tree.js');
   const modules = join(process.env.AIOS_DATA,'session-storage',sid,'modules'); await mkdir(modules,{recursive:true});
@@ -99,6 +104,10 @@ try {
   assert.equal((await bundle.gitEvidence(result.cwd)).statusHash,evidence.statusHash);
   assert.deepEqual((await bundle.gitEvidence(result.cwd)).identity,evidence.identity,'Git author identity retained per repository');
   assert.equal(await readFile(join(result.cwd,'local.txt'),'utf8'),'untracked');
+  for(let i=0;i<48;i++) assert.deepEqual(await readFile(join(result.cwd,'parallel-files',`文件-${i}.txt`)),Buffer.alloc(4096,i));
+  assert.deepEqual(await readFile(join(result.cwd,'parallel-files/large.bin')),Buffer.alloc(3*1024*1024,193),'large files stream outside the bounded small-file buffers');
+  assert.equal((await lstat(join(result.cwd,'parallel-files/executable'))).mode&0o777,0o751);
+  assert.equal(await readFile(join(result.cwd,'parallel-files/relative-link'),'utf8'),'# Plan\nUnstaged detail.\n');
   assert.equal(await readFile(join(result.cwd,'node_modules/dependency.js'),'utf8'),'export const retained = true;', 'owned dependencies are local, not pointers back to Spark');
   assert.equal((await exec('/usr/bin/git', ['-C', result.cwd, 'show', ':plan.md'])).stdout, '# Plan\nStaged detail.\n', 'index-only blobs are included, not just index metadata');
   assert.equal(await bundle.assertLocalCheckout(result.cwd),result.cwd);

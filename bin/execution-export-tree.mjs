@@ -2,16 +2,24 @@
 import { spawn } from 'node:child_process';
 // tarfile preserves nested relative symlinks. Only the explicitly validated top
 // entries are materialized; broad tar --dereference would recurse through cycles.
-const script = `import os,sys,json,base64,tarfile
+const script = `import os,sys,json,base64,tarfile,stat,io
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 root=sys.argv[1]; links={p['name']:p for p in json.loads(base64.b64decode(sys.argv[2]))}
-class StableTar(tarfile.TarFile):
- def addfile(self,info,fileobj=None):
-  before=os.fstat(fileobj.fileno()) if fileobj else None
-  super().addfile(info,fileobj)
-  if before:
-   after=os.fstat(fileobj.fileno())
-   if (before.st_ino,before.st_size,before.st_mtime_ns)!=(after.st_ino,after.st_size,after.st_mtime_ns): raise RuntimeError('Source changed during transfer')
-with StableTar.open(fileobj=sys.stdout.buffer,mode='w|',dereference=False,format=tarfile.PAX_FORMAT) as archive:
+def identity(st): return (st.st_dev,st.st_ino,st.st_size,st.st_mtime_ns,st.st_mode)
+def stable_open(path,st):
+ fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+ stream=os.fdopen(fd,'rb')
+ if identity(os.fstat(stream.fileno()))!=identity(st):
+  stream.close(); raise RuntimeError('Source changed before transfer')
+ return stream
+def walk(path,name):
+ yield (path,name,None)
+ if os.path.isdir(path) and not os.path.islink(path):
+  for entry in sorted(os.scandir(path),key=lambda e:e.name):
+   if entry.is_dir(follow_symlinks=False): yield from walk(entry.path,name+'/'+entry.name)
+   else: yield (entry.path,name+'/'+entry.name,None)
+def entries():
  for name in sorted(os.listdir(root)):
   if name=='.git': continue
   target=os.path.join(root,name)
@@ -20,10 +28,42 @@ with StableTar.open(fileobj=sys.stdout.buffer,mode='w|',dereference=False,format
    if os.path.realpath(target)!=p['path'] or st.st_ino!=p['inode'] or st.st_dev!=p['device']: raise RuntimeError('Dependency identity changed')
    target=p['path']
    if p.get('localLink'):
-    info=tarfile.TarInfo('./'+name); info.type=tarfile.SYMTYPE; info.linkname=p['localLink']; archive.addfile(info)
-    archive.add(target,arcname='./'+p['localLink'],recursive=True)
+    yield (None,'./'+name,p['localLink'])
+    yield from walk(target,'./'+p['localLink'])
     continue
-  archive.add(target,arcname='./'+name,recursive=True)
+  yield from walk(target,'./'+name)
+def prepare(item):
+ path,name,link=item; info=tarfile.TarInfo(name)
+ if link is not None:
+  info.type=tarfile.SYMTYPE; info.linkname=link
+  return (info,None,None,None)
+ st=os.lstat(path); info.mode=stat.S_IMODE(st.st_mode); info.uid=st.st_uid; info.gid=st.st_gid; info.mtime=st.st_mtime
+ data=None
+ if stat.S_ISDIR(st.st_mode): info.type=tarfile.DIRTYPE
+ elif stat.S_ISLNK(st.st_mode): info.type=tarfile.SYMTYPE; info.linkname=os.readlink(path)
+ elif stat.S_ISREG(st.st_mode):
+  info.type=tarfile.REGTYPE; info.size=st.st_size
+  if st.st_size<=2*1024*1024:
+   with stable_open(path,st) as stream:
+    data=stream.read(st.st_size+1)
+    if len(data)!=st.st_size or identity(os.fstat(stream.fileno()))!=identity(st): raise RuntimeError('Source changed during transfer')
+ else: raise RuntimeError('Special files are not portable')
+ return (info,data,path,st)
+def emit(archive,prepared):
+ info,data,path,st=prepared
+ if not info.isreg(): archive.addfile(info); return
+ if data is not None: archive.addfile(info,io.BytesIO(data)); return
+ with stable_open(path,st) as stream:
+  archive.addfile(info,stream)
+  if identity(os.fstat(stream.fileno()))!=identity(st): raise RuntimeError('Source changed during transfer')
+# At most sixteen 2 MiB buffers, with eight reads in flight. Large files stream
+# directly; no full-tree snapshot/cache or unbounded dependency buffers on bb1.
+with ThreadPoolExecutor(max_workers=8) as pool,tarfile.open(fileobj=sys.stdout.buffer,mode='w|',dereference=False,format=tarfile.PAX_FORMAT) as archive:
+ pending=deque()
+ for item in entries():
+  pending.append(pool.submit(prepare,item))
+  if len(pending)>=16: emit(archive,pending.popleft().result())
+ while pending: emit(archive,pending.popleft().result())
 `;
 const child = spawn('/usr/bin/python3', ['-c', script, process.argv[2], process.argv[3]], { stdio: ['ignore', 'inherit', 'inherit'] });
 const stop = () => child.kill('SIGTERM');
