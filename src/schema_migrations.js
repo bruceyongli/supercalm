@@ -239,4 +239,9 @@ export const CORE_MIGRATIONS = [
       `);
     },
   },
+  {
+    id: '0011_execution_history',
+    description: 'Distinguish migrated historical records from resumable native conversations',
+    up(db) { ensureColumn(db, 'sessions', 'execution_history_only', 'INTEGER NOT NULL DEFAULT 0'); },
+  },
 ];

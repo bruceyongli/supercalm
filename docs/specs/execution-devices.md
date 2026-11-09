@@ -31,6 +31,30 @@ only the destination owner may activate. Failures keep originals and the origina
 restart reconciles the same operation, never creates a new conversation or starts both copies.
 Keep original location/manifest and source-to-destination path aliases for historical previews.
 
+Slow/network sources stream Git evidence with classified deadlines rather than a 16 MiB stdout
+ceiling or a one-minute scan deadline. A disposable local mirror may seed published objects from
+the existing origin, copies source packs sequentially and hydrates missing reachable objects.
+Only the source HEAD/refs/index select the result. Include index-only blobs, not just index metadata.
+Later sessions in the same project may reuse already-received destination objects after an exact
+HEAD/index-object check. Every checkout is independent: no alternates, source hardlinks or hooks.
+
+Registered archived worktrees stream directly from SSH storage to the destination. Validate the
+original reciprocal Git registration, HEAD/index receipt and before/after remote fingerprint;
+the archive's old local inode fingerprint is not comparable to remote inodes. Artifact archives
+are also copied with transfer receipts. No source archive is evicted or overwritten.
+Untracked root links into the same session's scratch (such as node_modules) are copied locally;
+ignored links may materialize, while visible untracked links retain their symlink shape into the
+reserved, Git-excluded `.aios/execution-dependencies` directory. Tracked/external links remain
+blocked. Dependency writers and changed per-file identities stop the move, never delete originals.
+
+Explicit `preserveHistory: true` permits moving older stopped records whose native transcript was
+already unavailable. First check the exact UUID, including identity-bound retained-original migration
+journals. A history-only result is labelled and cannot Resume (including force), borrow another
+conversation or create a new one. Existing messages, files, dismissal/activity clocks and original
+locations remain. It is not reported as a successfully recovered native conversation. Once every
+session belongs to a device, the project execution-device API can select that owner for new launches
+without changing its original release authorization/source contract.
+
 ## Acceptance
 
 - Device health and selector; local default, no arbitrary SSH/browser command injection.

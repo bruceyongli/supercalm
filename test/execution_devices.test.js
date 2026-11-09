@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, lstat, symlink, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:net';
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
-const exec = promisify(execFile), dir = await mkdtemp(join(tmpdir(), 'aios-execution-test-'));
+const exec = promisify(execFile), dir = await realpath(await mkdtemp(join(tmpdir(), 'aios-execution-test-')));
 process.env.AIOS_DATA = join(dir,'controller'); process.env.AIOS_WORKTREE_ROOT = join(dir,'worktrees');
 process.env.AIOS_EXECUTION_NODES_FILE = join(dir,'nodes.json'); process.env.AIOS_ENV_FILE = join(dir,'absent.env');
 delete process.env.AIOS_EXECUTION_NODE;
@@ -17,10 +17,15 @@ try {
   await mkdir(source); await mkdir(workerRoot); await mkdir(join(workerRoot,'data/logs'),{recursive:true});
   const git = async (...args) => (await exec('/usr/bin/git',['-C',source,...args])).stdout.trim();
   await git('init','-b','main'); await git('config','user.email','test@localhost'); await git('config','user.name','Device fixture');
+  await writeFile(join(source,'.gitignore'),'node_modules/\n');
   await writeFile(join(source,'plan.md'),'# Plan\nKeep original context.\n'); await git('add','.'); await git('commit','-m','fixture');
   await writeFile(join(source,'plan.md'),'# Plan\nStaged detail.\n'); await git('add','plan.md');
   await writeFile(join(source,'plan.md'),'# Plan\nUnstaged detail.\n'); await writeFile(join(source,'local.txt'),'untracked');
   const bundle = await import('../src/execution_bundle.js');
+  const {portableWorkingArchive} = await import('../src/execution_tree.js');
+  const modules = join(process.env.AIOS_DATA,'session-storage',sid,'modules'); await mkdir(modules,{recursive:true});
+  await writeFile(join(modules,'dependency.js'),'export const retained = true;');
+  await symlink(modules,join(source,'node_modules'));
   const transport = await import('../src/execution_transport.js');
   const { initializeExecutionNative } = await import('../src/execution_native.js');
   await initializeExecutionNative(workerRoot);
@@ -83,7 +88,7 @@ try {
   assert.equal((await request(`/api/execution/import/${op}/prepare`,spec)).phase,'receiving');
   const parts = {};
   parts.git = await bundle.uploadExecutionPart(node,op,'git',bundle.gitBundle(source));
-  parts.tree = await bundle.uploadExecutionPart(node,op,'tree',bundle.workingArchive(source));
+  parts.tree = await bundle.uploadExecutionPart(node,op,'tree',await portableWorkingArchive(source,sid));
   parts.index = await bundle.uploadExecutionPart(node,op,'index',evidence.index);
   parts.native = await bundle.uploadExecutionPart(node,op,'native',native);
   await assert.rejects(request(`/api/execution/import/${op}/finalize`,{parts:{tree:{...parts.tree,size:1}}}),/receipt mismatch/);
@@ -92,6 +97,8 @@ try {
   assert.equal((await bundle.gitEvidence(result.cwd)).statusHash,evidence.statusHash);
   assert.deepEqual((await bundle.gitEvidence(result.cwd)).identity,evidence.identity,'Git author identity retained per repository');
   assert.equal(await readFile(join(result.cwd,'local.txt'),'utf8'),'untracked');
+  assert.equal(await readFile(join(result.cwd,'node_modules/dependency.js'),'utf8'),'export const retained = true;', 'owned dependencies are local, not pointers back to Spark');
+  assert.equal((await exec('/usr/bin/git', ['-C', result.cwd, 'show', ':plan.md'])).stdout, '# Plan\nStaged detail.\n', 'index-only blobs are included, not just index metadata');
   assert.equal(await bundle.assertLocalCheckout(result.cwd),result.cwd);
   const dormant = await request('/api/execution/state'); assert.equal(dormant.sessions.length,0,'dormant imports are invisible to reconciliation');
   store.updateSession(sid,{execution_node:'fixture'});
@@ -103,6 +110,20 @@ try {
   assert.equal(release.auto_release,true); assert.deepEqual(release.release_scripts,['bin/release']);
   assert.equal(active.session.status,'exited','move stays paused'); assert.equal(active.session.codex_uuid,uuid);
   assert.equal((await request(`/api/execution/import/${op}/activate`,{})).session.id,sid,'duplicate activation is idempotent');
+  const reuseSid = 's_device_reuse', reuseOp = 'x_' + 'c'.repeat(24);
+  store.createSession({id:reuseSid,project_id:'p_device_fixture',tool:'codex',tmux:'fixture-reuse',status:'exited'});
+  const reuseSpec = {...state.exportExecutionState(reuseSid),kind:'move',git:{...evidence,indexReceipt:await bundle.hashFile(evidence.index)},
+    archive:{sourceRoot:source},gitSeedSession:sid,historyOnly:true,manifest:{},artifactArchives:[{sessionId:reuseSid,name:'old-report'}]};
+  await request(`/api/execution/import/${reuseOp}/prepare`,reuseSpec);
+  const reuseParts = {index:await bundle.uploadExecutionPart(node,reuseOp,'index',evidence.index)};
+  const reused = await request(`/api/execution/import/${reuseOp}/git-seed`,{});
+  assert.ok(reused.receipt?.size,'same-project destination Git is reused without source network traversal');
+  reuseParts.git = reused.receipt;
+  reuseParts.tree = await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid));
+  reuseParts['artifact-0'] = await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));
+  await request(`/api/execution/import/${reuseOp}/finalize`,{parts:reuseParts});
+  assert.equal((await request(`/api/execution/import/${reuseOp}/activate`,{})).session.execution_history_only,1);
+  assert.equal(await readFile(join(workerRoot,'data/session-artifacts',reuseSid,'old-report/local.txt'),'utf8'),'untracked');
   const snapshot = await request('/api/execution/state'); state.mirrorExecutionSnapshot(node,snapshot);
   const before = store.getSession(sid); state.mirrorExecutionSnapshot(node,snapshot);
   assert.equal(store.getSession(sid).revision,before.revision,'polling preserves revision and activity');
@@ -113,6 +134,16 @@ try {
   assert.equal(attention.getAttentionDismissal(sid),null,'only a genuinely new report reopens attention');
   assert.equal(await readFile(join(source,'plan.md'),'utf8'),'# Plan\nUnstaged detail.\n','original is unchanged');
   assert.equal((await bundle.gitEvidence(source)).statusHash,evidence.statusHash);
+  const historySid = 's_device_history', historyOp = 'x_' + 'b'.repeat(24);
+  store.createSession({id:historySid,project_id:'p_device_fixture',tool:'agy',tmux:'fixture-history',status:'exited'});
+  const history = {...state.exportExecutionState(historySid),kind:'move',git:null,historyOnly:true,manifest:{}};
+  await request(`/api/execution/import/${historyOp}/prepare`,history);
+  const historyParts = {tree:await bundle.uploadExecutionPart(node,historyOp,'tree',{command:'/usr/bin/tar',args:['-cf','-','-T','/dev/null']})};
+  await request(`/api/execution/import/${historyOp}/finalize`,{parts:historyParts});
+  const historical = await request(`/api/execution/import/${historyOp}/activate`,{});
+  assert.equal(historical.session.execution_history_only,1);
+  assert.equal(historical.session.execution_checkout,0);
+  await assert.rejects(request(`/api/session/${historySid}/execution/resume`,{force:true}),/preserved historical session/);
   await assert.rejects(lstat(join(workerRoot,'imports',op,'tree')),{code:'ENOENT'},'transfer containers cleaned after activation');
   console.log(JSON.stringify({pass:true,handler:'actual worker HTTP import',git:'HEAD/index/staged/unstaged/untracked preserved',native:uuid,
     owner:'fixture',paused:true,originals:'retained',duplicateImport:'idempotent',attention:'dismissal retained until new report',transport:'private token'}));

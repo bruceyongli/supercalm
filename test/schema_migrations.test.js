@@ -41,7 +41,8 @@ db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) 
 db.prepare("INSERT INTO events (session_id,ts,type,payload) VALUES ('s_rebooted',4,'exit','{\"code\":null,\"reason\":\"tmux gone on restart\"}')").run();
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes', '0007_operator_input_receipts', '0008_structured_async_questions', '0009_session_provider_issue', '0010_execution_devices']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes', '0007_operator_input_receipts', '0008_structured_async_questions', '0009_session_provider_issue', '0010_execution_devices', '0011_execution_history']);
+assert(db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'execution_history_only'));
 assert(db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'execution_node'));
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
 assert.equal(db.prepare("SELECT applied_at FROM schema_migrations WHERE id='0001_sessions_complete_shape'").get().applied_at, 1234);

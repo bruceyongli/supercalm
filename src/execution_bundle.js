@@ -6,33 +6,41 @@ import { createReadStream } from 'node:fs';
 import { lstat, realpath, open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { migrationError } from './execution_identity.js';
+import { executionGit } from './execution_git.js';
 
 const exec = promisify(execFile);
-export async function gitEvidence(path) {
-  const run = async args => (await exec('/usr/bin/git', ['-C', path, ...args], {
-    timeout: 60000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
-  })).stdout;
+export async function gitEvidence(path, options = {}) {
+  const run = (args, extra = {}) => executionGit(path, args, { ...options, ...extra });
+  const optional = args => run(args).catch(error => { if (error.exitCode === 1 || error.exitCode === 2) return ''; throw error; });
   const top = (await run(['rev-parse', '--show-toplevel'])).trim();
   if (await realpath(top) !== await realpath(path)) throw migrationError('Select the complete repository root, not a subdirectory');
-  const [head, branch, status, index, origin, submodules, diff, splitIndex, sparse, userName, userEmail] = await Promise.all([
-    run(['rev-parse', 'HEAD']), run(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => ''),
-    run(['status', '--porcelain=v2', '-z', '--untracked-files=all']),
+  const [head, branch, index, origin, splitIndex, sparse, userName, userEmail] = await Promise.all([
+    run(['rev-parse', 'HEAD']), optional(['symbolic-ref', '--short', '-q', 'HEAD']),
     run(['rev-parse', '--path-format=absolute', '--git-path', 'index']),
-    run(['remote', 'get-url', 'origin']).catch(() => ''), run(['ls-files', '--stage']),
-    run(['diff', '--binary', 'HEAD']), run(['rev-parse', '--shared-index-path']),
-    run(['config', '--get', 'core.sparseCheckout']).catch(() => ''),
-    run(['config', '--get', 'user.name']).catch(() => ''), run(['config', '--get', 'user.email']).catch(() => ''),
+    optional(['config', '--get', 'remote.origin.url']), run(['rev-parse', '--shared-index-path']),
+    optional(['config', '--get', 'core.sparseCheckout']),
+    optional(['config', '--get', 'user.name']), optional(['config', '--get', 'user.email']),
   ]);
-  if (/^160000 /m.test(submodules)) throw migrationError('This checkout has Git submodules. Initialize a self-contained copy before device migration.', 'execution-submodule');
+  let fragment = '';
+  await run(['ls-files', '--stage', '-z'], { onData: chunk => {
+    fragment += chunk.toString('utf8'); const rows = fragment.split('\0'); fragment = rows.pop();
+    if (rows.some(row => row.startsWith('160000 '))) throw migrationError('This checkout has Git submodules. Initialize a self-contained copy before device migration.', 'execution-submodule');
+  } });
   if (splitIndex.trim() || sparse.trim() === 'true') throw migrationError('Sparse/split-index checkouts need a full local checkout before device migration', 'execution-special-index');
+  // Serial full-tree scans avoid competing for the network disk. Keep the exact
+  // original hash framing (status followed by diff), including all untracked paths.
+  const hash = createHash('sha256');
+  await run(['status', '--porcelain=v2', '-z', '--untracked-files=all'], { label: 'working-tree scan', onData: chunk => hash.update(chunk) });
+  await run(['diff', '--no-ext-diff', '--no-textconv', '--binary', 'HEAD'], { label: 'change scan', onData: chunk => hash.update(chunk) });
   const cleanOrigin = origin.trim();
   // Never serialize an embedded password/token from a legacy Git remote.
   if (/^https?:\/\/[^/]*@/i.test(cleanOrigin)) throw migrationError('Remove credentials embedded in the Git remote URL before migrating');
   return { head: head.trim(), branch: branch.trim() || null,
-    statusHash: createHash('sha256').update(status).update(diff).digest('hex'), index: index.trim(), origin: cleanOrigin || null,
+    statusHash: hash.digest('hex'), index: index.trim(), origin: cleanOrigin || null,
     identity: { name: userName.trim(), email: userEmail.trim() } };
 }
 export async function assertLocalCheckout(path) {
@@ -63,7 +71,7 @@ with tarfile.open(sys.argv[1], 'r:*') as archive:
   if name.startswith('/') or '\\\\' in name or any(p=='..' for p in name.split('/')) or any(c in name for c in '\\r\\n\\0'):
    raise RuntimeError('Unsafe archive member')
   if item.isdev() or item.isfifo(): raise RuntimeError('Special files are not portable')
-  if '.git' in name.split('/'): raise RuntimeError('Git pointers are not working files')
+  if '.git' in name.split('/') and sys.argv[2]!='data': raise RuntimeError('Git pointers are not working files')
   name=posixpath.normpath(name)
   if name in members and not item.isdir(): raise RuntimeError('Repeated archive member')
   members[name]=item
@@ -94,8 +102,8 @@ for name,item in members.items():
  if item.islnk() and (item.linkname not in members or not members[item.linkname].isfile()):
   raise RuntimeError('Invalid archive hardlink')
 `;
-export async function validateArchive(file) {
-  await exec('/usr/bin/python3', ['-c', archiveValidator, file], { timeout: 120000, maxBuffer: 65536 });
+export async function validateArchive(file, { allowGit = false } = {}) {
+  await exec('/usr/bin/python3', ['-c', archiveValidator, file, allowGit ? 'data' : 'tree'], { timeout: 120000, maxBuffer: 65536 });
 }
 export async function hashFile(file) {
   const hash = createHash('sha256'); let size = 0;
@@ -168,6 +176,7 @@ export function workingArchive(path) {
 export function committedArchive(path, head) {
   return { command: '/usr/bin/git', args: ['-C', path, 'archive', '--format=tar', head] };
 }
-export function gitBundle(path) {
-  return { command: '/usr/bin/git', args: ['-C', path, 'bundle', 'create', '-', '--all', 'HEAD'] };
+export function gitBundle(path, git = {}) {
+  return { command: process.execPath, args: [fileURLToPath(new URL('../bin/execution-export-git.mjs', import.meta.url)), path,
+    Buffer.from(JSON.stringify({ head: git.head, index: git.index })).toString('base64')] };
 }

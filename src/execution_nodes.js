@@ -14,7 +14,7 @@ import { EXECUTION_NODE, remoteSession, migrationError } from './execution_ident
 import { loadExecutionNodes, executionNodes, executionNode, nodeRequest, connectExecutionNode, proxyNodeRequest } from './execution_transport.js';
 import { nodeForSession, executionDeviceList, assertExecutionAvailable } from './execution_routing.js';
 import { mirrorExecutionSnapshot, exportExecutionState, exportExecutionProjectState } from './execution_state.js';
-import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus } from './execution_worker.js';
+import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus, reuseWorkerGit } from './execution_worker.js';
 import { gitEvidence, gitBundle, workingArchive, committedArchive, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
 import { codexRolloutFiles, pickRolloutByUuid } from './codex_rollouts.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
@@ -24,6 +24,8 @@ import { sessionStatusPayload } from './session_projection.js';
 import { routeForModel } from './model_catalog.js';
 import { callProxyModel } from './agents/model.js';
 import { branchFor } from './worktrees.js';
+import { executionSource, archivedGitEvidence, archivedWorkingArchive, retainedNativeRoots, executionArtifactArchives } from './execution_archive.js';
+import { portableWorkingArchive } from './execution_tree.js';
 
 const exec = promisify(execFile), flights = new Map(), syncFlights = new Map();
 const operation = id => store.db.prepare('SELECT * FROM execution_operations WHERE id=?').get(id);
@@ -41,19 +43,22 @@ function publicOperation(row) {
   const detail = typeof row.detail === 'string' ? JSON.parse(row.detail) : row.detail;
   return { id: row.id, session_id: row.session_id, node: row.node, kind: row.kind, phase: row.phase,
     error: row.error, created_at: row.created_at, updated_at: row.updated_at,
+    historyOnly: !!detail.spec?.historyOnly,
     bytes: Object.values(detail.parts || {}).reduce((sum, p) => sum + (p.size || 0), 0) };
 }
 
-async function assertStoppedForMove(s) {
+async function assertStoppedForMove(s, options = {}) {
   if (!s || remoteSession(s) || !['exited','error'].includes(s.status) || s.desired_status !== 'exited'
       || s.runtime_status !== 'exited' || s.execution_dormant) throw migrationError('Stop the session before moving it; running conversations are not interrupted');
   const { sessionBusyForCleanup } = await import('./sessions.js');
   if (sessionBusyForCleanup(s.id)) throw migrationError('Session lifecycle is busy');
   const project = store.getProject(s.project_id);
   if (!project) throw migrationError('Session project is unavailable');
-  const path = await realpath(s.worktree_path || project.path);
+  const source = await executionSource(s, project, options);
+  const path = source.archive ? s.worktree_path : source.path;
   const protectedPath = await realpath(join(homedir(), 'proxy')).catch(() => resolve(homedir(), 'proxy'));
-  if (path === protectedPath || path.startsWith(protectedPath + '/')) throw migrationError('The shared proxy project cannot be moved');
+  const projectPath = await realpath(project.path);
+  if (projectPath === protectedPath || projectPath.startsWith(protectedPath + '/') || path === protectedPath || path?.startsWith(protectedPath + '/')) throw migrationError('The shared proxy project cannot be moved');
   for (const other of store.listSessions()) {
     if (other.id === s.id || remoteSession(other)) continue;
     if (other.parent_session_id === s.id && !['exited','error'].includes(other.status)) throw migrationError('This session has a running helper');
@@ -83,25 +88,30 @@ async function assertStoppedForMove(s) {
   // file descriptors/cwds once (not a recursive lsof directory walk on Spark).
   const { stdout } = await exec('/usr/sbin/lsof', ['-nP', '-Fpan'], { timeout: 15000, maxBuffer: 32 * 1024 * 1024 });
   let owner = null, access = null;
+  const ownedPaths = [path, ...(options.extraRoots || [])].filter(Boolean);
   for (const line of stdout.split('\n')) {
     if (line[0] === 'p') { owner = Number(line.slice(1)); access = null; }
     else if (line[0] === 'a') access = line.slice(1);
     else if (line[0] === 'n' && owner !== process.pid && (access === 'w' || access === 'u')
-      && (line.slice(1) === path || line.slice(1).startsWith(path + '/'))) throw migrationError('A process still has this checkout open for writing');
+      && ownedPaths.some(root => line.slice(1) === root || line.slice(1).startsWith(root + '/'))) throw migrationError('A process still has this checkout or its session dependencies open for writing');
   }
-  return { project, path };
+  return { project, ...source };
 }
 async function nativeSource(s) {
   if (s.tool === 'codex') {
-    if (!s.codex_uuid) throw migrationError('This session has no bound Codex conversation ID');
-    const path = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
-    if (!path) throw migrationError('The exact Codex conversation file is unavailable');
+    if (!s.codex_uuid) throw migrationError('This session has no bound Codex conversation ID', 'execution-native-missing');
+    let path = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
+    if (!path) for (const root of await retainedNativeRoots(join(homedir(), '.codex/sessions'))) {
+      path = pickRolloutByUuid(await codexRolloutFiles(root), s.codex_uuid); if (path) break;
+    }
+    if (!path) throw migrationError('The exact Codex conversation file is unavailable', 'execution-native-missing');
     await assertNativeIdentity(path, s.tool, s.codex_uuid);
     return { path, name: basename(path), uuid: s.codex_uuid };
   }
+  if (s.tool !== 'claude') throw migrationError('This tool supports history preservation only on this device', 'execution-native-missing');
   const path = await findClaudeLog(null, s, { allowHeuristic: false });
   const uuid = claudeResumeId(path);
-  if (!uuid) throw migrationError('The exact Claude conversation file is unavailable');
+  if (!uuid) throw migrationError('The exact Claude conversation file is unavailable', 'execution-native-missing');
   await assertNativeIdentity(path, s.tool, uuid);
   return { path, uuid };
 }
@@ -122,12 +132,17 @@ async function performOperation(op) {
   }
   await withSessionArchiveLock(row.session_id, async () => {
     let s = store.getSession(row.session_id), spec = detail.spec;
-    if (row.kind === 'move') await assertStoppedForMove(s);
+    const resumingCopy = !!spec;
+    const moveOptions = { history: !!detail.preserveHistory };
+    if (row.kind === 'move') await assertStoppedForMove(s, moveOptions);
     if (!spec && row.kind === 'move') {
-      const source = await assertStoppedForMove(s);
-      const native = await nativeSource(s);
-      spec = { ...exportExecutionState(s.id), kind: 'move', native, git: await gitEvidence(source.path),
-        manifest: await readManifest(s.id), artifactsPath: join(DATA_DIR, 'session-artifacts', s.id), sourcePath: source.path };
+      const source = await assertStoppedForMove(s, moveOptions);
+      const native = await nativeSource(s).catch(error => { if (moveOptions.history && error.code === 'execution-native-missing') return null; throw error; });
+      if (native && !source.path) throw migrationError('Native conversation exists but its checkout is missing; the historical move has not replaced it');
+      const git = source.archive ? await archivedGitEvidence(source.archive, source.path) : source.path ? await gitEvidence(source.path) : null;
+      const gitSeedSession = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id)?.id;
+      spec = { ...exportExecutionState(s.id), kind: 'move', native, git, gitSeedSession, archive: source.archive || null, historyOnly: !native,
+        artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: join(DATA_DIR, 'session-artifacts', s.id), sourcePath: source.path };
     } else if (!spec) {
       const project = store.getProject(s.project_id);
       const sourcePath = await realpath(project.path);
@@ -142,9 +157,14 @@ async function performOperation(op) {
       spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: exportExecutionProjectState(project.id),
         kind: 'launch', git, sourcePath, artifactsPath: join(DATA_DIR, 'session-artifacts', s.id) };
     }
-    if (row.kind === 'move') {
-      const current = await gitEvidence(spec.sourcePath);
-      if (current.head !== spec.git.head || current.statusHash !== spec.git.statusHash) throw migrationError('The source changed since this transfer started; originals are retained');
+    const checkSource = async () => {
+      if (!spec.git) return;
+      const current = spec.archive ? await archivedGitEvidence(spec.archive, spec.sourcePath) : await gitEvidence(spec.sourcePath);
+      if (current.head !== spec.git.head || current.statusHash !== spec.git.statusHash || spec.archive &&
+        (current.indexReceipt.sha256 !== spec.git.indexReceipt.sha256 || current.archiveFingerprint !== spec.git.archiveFingerprint)) throw migrationError('The source changed since this transfer started; originals are retained');
+    };
+    if (row.kind === 'move' && resumingCopy) {
+      await checkSource();
     }
     const parts = detail.parts || {};
     updateOperation(op, 'copying', { spec, parts });
@@ -153,22 +173,33 @@ async function performOperation(op) {
     if (status.phase === 'active') throw migrationError('Destination is already active but ownership is not committed');
     if (status.phase === 'receiving') {
     const uploaded = part => parts[part] && status.parts?.[part]?.sha256 === parts[part].sha256;
-    if (spec.git.head && !uploaded('git')) parts.git = await uploadExecutionPart(node, op, 'git', gitBundle(spec.sourcePath));
+    if (spec.git?.index && !uploaded('index')) await optionalUpload(node, op, 'index', spec.git.index, false, parts);
+    if (spec.gitSeedSession && spec.git?.head && !uploaded('git')) {
+      const reused = await nodeRequest(node, `/api/execution/import/${op}/git-seed`, { method: 'POST', body: {}, timeout: 10 * 60_000 });
+      if (reused.receipt) { parts.git = reused.receipt; status.parts ||= {}; status.parts.git = reused.receipt; }
+    }
+    if (spec.git?.head && !uploaded('git')) parts.git = await uploadExecutionPart(node, op, 'git', gitBundle(spec.sourcePath, spec.git));
     updateOperation(op, 'copying', { parts });
-    if (!uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', row.kind === 'launch' && spec.git.head
-      ? committedArchive(spec.sourcePath, spec.git.head) : workingArchive(spec.sourcePath));
+    const tree = spec.archive ? archivedWorkingArchive(spec.archive)
+      : !spec.sourcePath ? { command: '/usr/bin/tar', args: ['-cf', '-', '-T', '/dev/null'] }
+      : row.kind === 'launch' && spec.git?.head ? committedArchive(spec.sourcePath, spec.git.head) : await portableWorkingArchive(spec.sourcePath, s.id);
+    if (tree.links?.length) { moveOptions.extraRoots = tree.links.map(l => l.path); await assertStoppedForMove(s, moveOptions); }
+    if (!uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', tree);
     updateOperation(op, 'copying', { parts });
     if (row.kind === 'move') {
-      if (spec.git.index) await optionalUpload(node, op, 'index', spec.git.index, false, parts);
-      parts.native = await uploadExecutionPart(node, op, 'native', spec.native.path);
+      if (spec.native) parts.native = await uploadExecutionPart(node, op, 'native', spec.native.path);
       updateOperation(op, 'copying', { parts });
-      if (s.tool === 'claude') await optionalUpload(node, op, 'native-extra', spec.native.path.replace(/\.jsonl$/, ''), true, parts);
+      if (s.tool === 'claude' && spec.native) await optionalUpload(node, op, 'native-extra', spec.native.path.replace(/\.jsonl$/, ''), true, parts);
       await optionalUpload(node, op, 'artifacts', spec.artifactsPath, true, parts);
+      for (const [index, archive] of (spec.artifactArchives || []).entries()) {
+        const part = `artifact-${index}`;
+        if (!uploaded(part)) parts[part] = await uploadExecutionPart(node, op, part, archivedWorkingArchive(archive));
+        updateOperation(op, 'copying', { parts });
+      }
       await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts);
       await optionalUpload(node, op, 'log', join(LOG_DIR, s.id + '.log'), false, parts);
-      await assertStoppedForMove(store.getSession(s.id));
-      const after = await gitEvidence(spec.sourcePath);
-      if (after.head !== spec.git.head || after.statusHash !== spec.git.statusHash) throw migrationError('Source checkout changed during transfer. Source ownership is unchanged.');
+      await assertStoppedForMove(store.getSession(s.id), moveOptions);
+      await checkSource();
     }
     }
     updateOperation(op, 'importing', { parts });
@@ -257,14 +288,27 @@ const workerOnly = fn => handle(async (req, params, url) => {
 });
 route('GET', '/api/execution/devices', handle(() => ({ devices: executionDeviceList(),
   operations: store.db.prepare('SELECT * FROM execution_operations ORDER BY created_at DESC LIMIT 30').all().map(publicOperation) })));
+route('POST', '/api/project/:id/execution-device', handle(async (req, { id }) => {
+  const body = await readJson(req), node = executionNode(body.device), project = store.getProject(id);
+  if (!project) throw migrationError('No such project', 'project-missing', 404);
+  if (store.db.prepare('SELECT 1 FROM sessions WHERE project_id=? AND COALESCE(execution_node,\'local\')!=? LIMIT 1').get(id, node.id)) throw migrationError('Move every project session before changing its default execution device');
+  const snapshot = await nodeRequest(node, '/api/execution/state', { timeout: 10000 });
+  const destination = snapshot.projects.find(p => p.id === id && p.execution_node === node.id);
+  if (!destination) throw migrationError('The project has no local checkout on that device');
+  // Retain the original path/release contract as provenance; new launches resolve
+  // the same project ID on its owner rather than rereading Spark on the controller.
+  store.db.prepare('UPDATE projects SET execution_node=? WHERE id=?').run(node.id, id);
+  bus.emit('changed');
+  return { project: store.getProject(id), destination: destination.path };
+}));
 route('POST', '/api/session/:id/move', handle(async (req, { id: sid }) => {
   assertExecutionAvailable(sid);
   const body = await readJson(req), node = executionNode(body.device);
-  if (!['codex','claude'].includes(store.getSession(sid)?.tool)) throw migrationError('Only Codex and Claude conversations can move to this device');
-  await assertStoppedForMove(store.getSession(sid));
+  if (!['codex','claude'].includes(store.getSession(sid)?.tool) && body.preserveHistory !== true) throw migrationError('Only Codex and Claude conversations can resume on this device; older tools may be explicitly preserved as history');
+  await assertStoppedForMove(store.getSession(sid), { history: body.preserveHistory === true });
   await nodeRequest(node, '/api/execution/health');
   const op = 'x_' + randomBytes(12).toString('hex'), at = Date.now();
-  store.db.prepare('INSERT INTO execution_operations VALUES(?,?,?,?,?,?,?,?,?)').run(op, sid, node.id, 'move', 'queued', '{}', null, at, at);
+  store.db.prepare('INSERT INTO execution_operations VALUES(?,?,?,?,?,?,?,?,?)').run(op, sid, node.id, 'move', 'queued', JSON.stringify({ preserveHistory: body.preserveHistory === true }), null, at, at);
   setImmediate(() => runOperation(op));
   return { operation: publicOperation(operation(op)) };
 }));
@@ -285,6 +329,7 @@ route('GET', '/api/execution/state', workerOnly(async (_req, _params, url) => {
     cursor: messages.at(-1)?.id || after, health: { disk: currentDiskCapacity(), host: sampleHostResources.peek(), version: VERSION } };
 }));
 route('POST', '/api/execution/import/:id/prepare', workerOnly(async (req, { id }) => prepareWorkerImport(id, await readJson(req))));
+route('POST', '/api/execution/import/:id/git-seed', workerOnly((_req, { id }) => reuseWorkerGit(id)));
 route('PUT', '/api/execution/import/:id/:part', workerOnly((req, { id, part }) => receiveWorkerPart(id, part, req)));
 route('POST', '/api/execution/import/:id/finalize', workerOnly(async (req, { id }) => finalizeWorkerImport(id, await readJson(req))));
 route('POST', '/api/execution/import/:id/activate', workerOnly((_req, { id }) => activateWorkerImport(id)));

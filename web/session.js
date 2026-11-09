@@ -1917,7 +1917,11 @@ function applySessionInfo(s) {
     st.title = indicator.detail;
   }
   const resume = $('#b-resume');
-  if (resume && merged.status) resume.hidden = merged.status !== 'exited';
+  if (resume && merged.status) {
+    resume.hidden = merged.status !== 'exited';
+    resume.disabled = !!merged.execution_history_only;
+    resume.title = merged.execution_history_only ? 'Historical session: original native conversation unavailable; messages and files retained' : '';
+  }
   const stop = $('#b-stop');
   if (stop && merged.status) stop.hidden = merged.status === 'exited';
   const move = $('#b-move');

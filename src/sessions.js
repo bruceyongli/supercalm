@@ -1527,6 +1527,7 @@ export async function launchPreparedSession(sid) {
 async function resumeNow(sid, { force = false, waitForInput = false, preserveStatus = null, recoveryReason = 'resume', maintenanceToken = null } = {}) {
   const s = store.getSession(sid);
   if (!s) throw new Error('no such session');
+  if (s.execution_history_only) throw Object.assign(new Error('This is a preserved historical session. Its original native conversation was unavailable before migration; no replacement conversation has been started. Messages and available files are retained.'), { code: 'execution-history-only', status: 409 });
   if (!TOOLS[s.tool]) throw new Error('unknown tool: ' + s.tool);
   const recoveryCancelled = () => {
     if (recoveryReason !== 'boot-recovery' && recoveryReason !== 'storage-maintenance') return false;

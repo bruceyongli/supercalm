@@ -213,6 +213,13 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   through `bin/deploy`; private worker auth is stored mode 0600, never in argv or browser state.
   Preserve release source contracts, do not turn a copied repository into an approved deploy source.
   See `docs/specs/execution-devices.md` and the opt-in disposable live-device verification script.
+  Network-source moves traverse Git on disposable local SSD and include index-only objects.
+  Registered archived worktrees/artifacts stream directly from SSH storage; retain originals and
+  bind exact Git registration plus remote before/after stability, not old local inode fingerprints.
+  Same-project destination Git may seed later transfers without alternates/source hardlinks.
+  Untracked session-owned scratch dependencies are relocated locally with Git state unchanged;
+  arbitrary external links are not followed. Explicit history-preservation moves label missing
+  native conversations and disable Resume rather than creating/borrowing a replacement conversation.
 - Finite builds/packages in legacy remote workspaces: use `node "$AIOS_SCRATCH_RUN" --build --output dist -- <command> <args>`
   (or `node "$AIOS_BUILD_RUN" ...`). Replace/repeat `--output` for the actual relative output paths;
   commands can also write to `AIOS_BUILD_OUTPUT`. Source edits stay in the session worktree. The runner
