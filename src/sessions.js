@@ -701,7 +701,11 @@ async function registeredProjectWorktreeContaining(s, target) {
 export async function resolveSessionFile(s, rawRequested) {
   let requested = normalizeSessionFileRequest(rawRequested);
   if (!requested) return null;
-  if (s.execution_checkout && isAbsolute(requested)) {
+  // Reports retain the original path. Relocate the file, not its mention evidence.
+  const evidenceRequested = requested;
+  // Historical imports have no runnable checkout, but their saved reports and
+  // attachments still need the exact old-to-new locations in the handoff manifest.
+  if ((s.execution_checkout || s.execution_history_only && s.execution_transfer) && isAbsolute(requested)) {
     const manifest = await readManifest(s.id);
     const mappings = (manifest?.previous_locations || []).flatMap(m => [
       [m.artifacts, m.artifactTarget], [m.worktree, m.target], [m.project, m.target],
@@ -767,17 +771,17 @@ export async function resolveSessionFile(s, rawRequested) {
   for (const [scope, managedRoot] of [['session-artifact', managedStorage.artifacts], ['session-temp', managedStorage.tmp]]) {
     const physicalRoot = expectedStoragePath(managedRoot);
     if ((pathInside(physicalRoot, compared) || !target && pathInside(managedRoot, compared))
-        && (!target || await sessionMentionsFile(s, requested, compared))) {
+        && (!target || await sessionMentionsFile(s, evidenceRequested, compared))) {
       return { target: compared, displayPath: requested, scope };
     }
   }
   const projectWorktree = await registeredProjectWorktreeContaining(s, compared);
-  if (projectWorktree && await sessionMentionsFile(s, requested, compared)) {
+  if (projectWorktree && await sessionMentionsFile(s, evidenceRequested, compared)) {
     return { target: compared, displayPath: requested, scope: 'project-worktree' };
   }
   const inTemp = (await tempFileRoots()).some((tempRoot) => pathInside(tempRoot, compared));
   if (inTemp) {
-    if (!target || await sessionMentionsFile(s, requested, target)) {
+    if (!target || await sessionMentionsFile(s, evidenceRequested, target)) {
       return { target: compared, displayPath: requested, scope: 'temp' };
     }
     return null;

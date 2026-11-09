@@ -139,13 +139,27 @@ try {
   assert.equal((await bundle.gitEvidence(source)).statusHash,evidence.statusHash);
   const historySid = 's_device_history', historyOp = 'x_' + 'b'.repeat(24);
   store.createSession({id:historySid,project_id:'p_device_fixture',tool:'agy',tmux:'fixture-history',status:'exited'});
-  const history = {...state.exportExecutionState(historySid),kind:'move',git:null,historyOnly:true,manifest:{}};
+  const historyArtifacts = join(dir,'historical-artifacts'); await mkdir(historyArtifacts);
+  await writeFile(join(historyArtifacts,'report.md'),'# Historical report\nOriginal findings retained.\n');
+  await writeFile(join(historyArtifacts,'private.md'),'not mentioned by the session');
+  store.addMessage(historySid,'out','reply',`Report: ${join(historyArtifacts,'report.md')}`);
+  const history = {...state.exportExecutionState(historySid),kind:'move',git:null,historyOnly:true,manifest:{},artifactsPath:historyArtifacts};
   await request(`/api/execution/import/${historyOp}/prepare`,history);
   const historyParts = {tree:await bundle.uploadExecutionPart(node,historyOp,'tree',{command:'/usr/bin/tar',args:['-cf','-','-T','/dev/null']})};
+  historyParts.artifacts = await bundle.uploadExecutionPart(node,historyOp,'artifacts',bundle.workingArchive(historyArtifacts));
   await request(`/api/execution/import/${historyOp}/finalize`,{parts:historyParts});
   const historical = await request(`/api/execution/import/${historyOp}/activate`,{});
   assert.equal(historical.session.execution_history_only,1);
   assert.equal(historical.session.execution_checkout,0);
+  const oldReportUrl = `${base}/api/session/${historySid}/file?raw=1&path=${encodeURIComponent(join(historyArtifacts,'report.md'))}`;
+  const oldReport = await fetch(oldReportUrl);
+  assert.equal(oldReport.status,200,'historical report links are remapped even without a runnable Git checkout');
+  assert.equal(await oldReport.text(),'# Historical report\nOriginal findings retained.\n');
+  assert.equal((await fetch(`${base}/api/session/${historySid}/file?raw=1&path=${encodeURIComponent(join(historyArtifacts,'private.md'))}`)).status,403,
+    'an unmentioned sibling is not authorized by the relocation manifest');
+  const unrelated = join(dir,'unrelated.txt'); await writeFile(unrelated,'outside the imported session');
+  assert.equal((await fetch(`${base}/api/session/${historySid}/file?raw=1&path=${encodeURIComponent(unrelated)}`)).status,403,
+    'historical relocation does not grant access outside the imported session');
   await assert.rejects(request(`/api/session/${historySid}/execution/resume`,{force:true}),/preserved historical session/);
   await assert.rejects(lstat(join(workerRoot,'imports',op,'tree')),{code:'ENOENT'},'transfer containers cleaned after activation');
   console.log(JSON.stringify({pass:true,handler:'actual worker HTTP import',git:'HEAD/index/staged/unstaged/untracked preserved',native:uuid,
