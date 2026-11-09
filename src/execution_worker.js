@@ -68,7 +68,7 @@ export async function prepareWorkerImport(op, spec) {
       await save(op, existing);
     } else if (JSON.stringify(existing.spec.coldFiles || null) !== JSON.stringify(spec.coldFiles || null)
       || (existing.spec.workingStatusHash || null) !== (spec.workingStatusHash || null)) throw migrationError('Cold storage plan identity conflict');
-    if (spec.artifactCopyPolicy && !existing.spec.artifactCopyPolicy) {
+    if (spec.artifactCopyPolicy && (!existing.spec.artifactCopyPolicy || existing.spec.artifactCopyPolicy.version === 1 && spec.artifactCopyPolicy.version === 2)) {
       if (existing.phase !== 'receiving' || receiving.has(`${op}:artifacts`)) throw migrationError('Cannot change the artifact copy policy during import');
       existing.spec.artifactCopyPolicy = spec.artifactCopyPolicy; delete existing.parts.artifacts;
       await save(op, existing);

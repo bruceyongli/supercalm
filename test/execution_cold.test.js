@@ -65,12 +65,20 @@ try {
   await writeFile(join(artifacts, 'runtime/venv/pyvenv.cfg'), 'home = python');
   await writeFile(join(artifacts, 'notes/venv/plan.md'), 'not a Python environment');
   await writeFile(join(artifacts, 'report.html'), '<h1>Keep the report</h1>');
+  await mkdir(join(artifacts,'Desktop.app/Contents'),{recursive:true});
+  await writeFile(join(artifacts,'Desktop.app/Contents/Info.plist'),'<plist/>');
+  await writeFile(join(artifacts,'Desktop.dmg'),'built disk image');
+  await exec('/usr/bin/zip',['-q','Desktop.zip','Desktop.app/Contents/Info.plist'],{cwd:artifacts});
+  await exec('/usr/bin/zip',['-q','source.zip','report.html'],{cwd:artifacts});
   const artifactArchive = portableArtifactArchive(artifacts, {rebuildDependencies:true});
   const a = spawn(artifactArchive.command, artifactArchive.args, {stdio:['ignore','pipe','inherit']}), af = join(root,'artifacts.tar');
   await Promise.all([pipeline(a.stdout, createWriteStream(af)),new Promise((r,j)=>{a.on('error',j);a.on('close',c=>c===0?r():j(Error('artifact export failed')));})]);
   const names = (await exec('/usr/bin/tar',['-tf',af])).stdout;
   assert.ok(names.includes('./report.html')); assert.ok(names.includes('./notes/venv/plan.md'));
   assert.ok(!names.includes('./node_modules')); assert.ok(!names.includes('./runtime/venv'));
+  for (const path of ['Desktop.app','Desktop.dmg','Desktop.zip']) assert.ok(!names.includes('./'+path));
+  assert.ok(names.includes('./source.zip'),'source archives are not treated as compiled applications');
+  assert.equal(await readFile(join(artifacts,'Desktop.app/Contents/Info.plist'),'utf8'),'<plist/>');
   assert.equal(await readFile(join(artifacts,'runtime/venv/pyvenv.cfg'),'utf8'),'home = python');
   console.log('execution cold policy: retained originals, exact hot Git state, reports and local dependency placeholder passed');
 } finally { await rm(root, { recursive: true, force: true }); }

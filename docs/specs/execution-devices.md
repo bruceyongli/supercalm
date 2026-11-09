@@ -55,7 +55,10 @@ state digest for the retained hot files. Scoped dependency links become local em
 not pointers to Spark. The destination manifest records cold original paths. This choice can upgrade
 the same receiving operation and retain its Git receipts, but never change an imported operation.
 No cold path is deleted. Artifact directories use bounded parallel reads too. With this explicit
-choice, their `node_modules` and Python environments identified by `pyvenv.cfg` remain cold;
+choice, their `node_modules` and Python environments identified by `pyvenv.cfg` remain cold.
+Compiled `.app` bundles (with `Contents/Info.plist`), DMG images and ZIPs containing an app bundle
+also stay at source; ordinary source/report ZIPs are retained in the transfer. Policy v2 can upgrade
+an exact receiving v1 operation without replacing its Git/native receipts. Other
 reports, media and ordinary directories named `venv` are still copied. This policy and the original
 artifact root are recorded in the destination manifest. Retries reuse completed native-history
 and report receipts as well as Git receipts, rather than resending multi-gigabyte conversations.

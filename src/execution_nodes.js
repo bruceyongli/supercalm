@@ -184,8 +184,8 @@ async function performOperation(op) {
       await checkSource();
     }
     const parts = detail.parts || {};
-    if (detail.rebuildDependencies && !spec.artifactCopyPolicy) {
-      spec = { ...spec, artifactCopyPolicy: { version: 1, rebuildDependencies: true,
+    if (detail.rebuildDependencies && (!spec.artifactCopyPolicy || spec.artifactCopyPolicy.version === 1)) {
+      spec = { ...spec, artifactCopyPolicy: { version: 2, rebuildDependencies: true,
         source: spec.artifactsPath, originalsRetained: true } };
       delete parts.artifacts;
     }

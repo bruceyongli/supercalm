@@ -141,6 +141,8 @@ try {
   assert.ok(!upgrade.parts.tree,'an explicit cold-policy upgrade invalidates only the old staged tree');
   assert.ok(!upgrade.parts.artifacts,'an artifact policy upgrade invalidates its previous staged archive');
   assert.equal(upgrade.parts.git.sha256,reused.receipt.sha256,'already uploaded Git is reused');
+  await request(`/api/execution/import/${reuseOp}/prepare`,{...coldSpec,artifactCopyPolicy:{...coldSpec.artifactCopyPolicy,version:2}});
+  await assert.rejects(request(`/api/execution/import/${reuseOp}/prepare`,coldSpec),/Artifact copy policy conflict/);
   reuseParts.tree = await bundle.uploadExecutionPart(node,reuseOp,'tree',await portableWorkingArchive(source,sid,coldFiles));
   reuseParts.artifacts = await bundle.uploadExecutionPart(node,reuseOp,'artifacts',await portableWorkingArchive(source,sid,coldFiles));
   reuseParts['artifact-0'] = await bundle.uploadExecutionPart(node,reuseOp,'artifact-0',await portableWorkingArchive(source,sid));

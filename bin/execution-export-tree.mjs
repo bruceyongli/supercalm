@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 // tarfile preserves nested relative symlinks. Only the explicitly validated top
 // entries are materialized; broad tar --dereference would recurse through cycles.
-const script = `import os,sys,json,base64,tarfile,stat,io
+const script = `import os,sys,json,base64,tarfile,stat,io,zipfile
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 root=sys.argv[1]; plan=json.loads(base64.b64decode(sys.argv[2]))
@@ -17,9 +17,17 @@ def stable_open(path,st):
   stream.close(); raise RuntimeError('Source changed before transfer')
  return stream
 def walk(path,name):
- if plan.get('artifactDependencies') and not os.path.islink(path) and os.path.isdir(path):
+ if plan.get('artifactDependencies') and not os.path.islink(path):
   base=os.path.basename(path)
-  if base=='node_modules' or (base in ('venv','.venv') and os.path.isfile(os.path.join(path,'pyvenv.cfg'))): return
+  if os.path.isdir(path):
+   if base=='node_modules' or (base in ('venv','.venv') and os.path.isfile(os.path.join(path,'pyvenv.cfg'))): return
+   if base.endswith('.app') and os.path.isfile(os.path.join(path,'Contents','Info.plist')): return
+  elif base.lower().endswith('.dmg'): return
+  elif base.lower().endswith('.zip'):
+   try:
+    with zipfile.ZipFile(path) as archive:
+     if any('/Contents/Info.plist' in n and '.app/' in n for n in archive.namelist()): return
+   except zipfile.BadZipFile: pass
  if name.removeprefix('./') in excluded:
   saved=excluded[name.removeprefix('./')]; st=os.lstat(path)
   if st.st_ino!=saved['inode'] or st.st_dev!=saved['device']: raise RuntimeError('Cold source identity changed')
@@ -27,7 +35,7 @@ def walk(path,name):
  yield (path,name,None)
  if os.path.isdir(path) and not os.path.islink(path):
   for entry in sorted(os.scandir(path),key=lambda e:e.name):
-   if entry.is_dir(follow_symlinks=False) or (name+'/'+entry.name).removeprefix('./') in excluded: yield from walk(entry.path,name+'/'+entry.name)
+   if entry.is_dir(follow_symlinks=False) or (name+'/'+entry.name).removeprefix('./') in excluded or (plan.get('artifactDependencies') and entry.name.lower().endswith(('.dmg','.zip'))): yield from walk(entry.path,name+'/'+entry.name)
    else: yield (entry.path,name+'/'+entry.name,None)
 def entries():
  for name in sorted(os.listdir(root)):
