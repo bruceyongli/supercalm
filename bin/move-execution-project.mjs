@@ -76,7 +76,10 @@ async function move(session) {
 // Establish a real project checkout before parallel history-only imports can
 // choose its project path. Every later job follows its own durable operation.
 let next = 0;
-if (!sessions.some(s => s.execution_node === device)) await move(sessions[next++]);
+if (sessions.length && !sessions.some(s => s.execution_node === device)) {
+  const first = sessions[next++]; await move(first);
+  if (journal.sessions[first.id]?.phase !== 'complete') throw Error('First project handoff needs recovery before parallel imports');
+}
 await Promise.all(Array.from({ length: jobs }, async () => {
   for (;;) { const session = sessions[next++]; if (!session) return; await move(session); }
 }));
