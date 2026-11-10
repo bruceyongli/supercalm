@@ -36,6 +36,18 @@ is **additive**: `tailscale serve --bg --https=443 --set-path=/aios http://127.0
 - **Deploy (git-only):** `bin/deploy` → push to GitLab (`git@gitlab.com:your-org/aios.git`) → `git pull
   --ff-only` on host → restart. ⛔ Edit on the dev Mac, push, pull — never edit tracked files directly on
   host or the next `--ff-only` rejects.
+- **Surviving a reboot (three links, all required):**
+  1. *Login.* `ai.aios.server` and the storage watcher are per-user LaunchAgents: they start at **login**,
+     not at power-on. An unattended host needs automatic login (System Settings → Users & Groups →
+     "Automatically log in as"; requires FileVault off). Without it a reboot leaves everything down at
+     the login window. A system LaunchDaemon is not a substitute: the login Keychain (storage and CLI
+     credentials) is unavailable before login. `bin/install-service` warns when auto-login is off.
+  2. *Storage.* `bin/storage-mount-watch.mjs` reconnects the share and reattaches its image. After an
+     unclean shutdown the APFS consistency scan over the network takes many minutes; the attach may
+     run up to 45 minutes (`AIOS_STORAGE_ATTACH_TIMEOUT_MS`) and is never killed and restarted mid-scan.
+  3. *Server.* If `data/logs` is an alias into storage that is not mounted yet, the server waits
+     (`src/boot_storage_gate.js`, one log line a minute) and continues the moment it appears. It never
+     creates a local fallback and no longer crash-loops.
 - **Logs / data:** `~/aios/data/aios.log`; sqlite + per-session raw logs + vapid keys in `~/aios/data/`
   (gitignored).
 - **Health:** `curl 127.0.0.1:8793/healthz` and `/api/state`.

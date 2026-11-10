@@ -8,6 +8,7 @@ import { now } from './util.js';
 import { applyMigrations } from './migrations.js';
 import { CORE_MIGRATIONS } from './schema_migrations.js';
 import { remoteSession } from './execution_identity.js';
+import { waitForStorageAlias } from './boot_storage_gate.js';
 
 // Multi-session safety guard: a server booted from a LINKED git worktree (a scratch/dev instance) must
 // NOT open the canonical live database — two writers on one ~11GB WAL file is contention/corruption.
@@ -26,6 +27,8 @@ try {
   }
 } catch (e) { console.error('[aios] worktree DB guard skipped:', e?.message || e); }
 
+// A reboot starts this service before remote live storage is reattached; wait instead of crash-looping.
+waitForStorageAlias(LOG_DIR);
 mkdirSync(LOG_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);

@@ -67,4 +67,9 @@ launchctl bootstrap "gui/$UID_NUM" "$PLIST"
 launchctl enable    "gui/$UID_NUM/$LABEL"
 launchctl kickstart -k "gui/$UID_NUM/$LABEL"
 echo "installed $LABEL -> $PLIST"
+# A LaunchAgent starts at LOGIN, not at power-on: an unattended host needs automatic login.
+if ! defaults read /Library/Preferences/com.apple.loginwindow autoLoginUser >/dev/null 2>&1; then
+  echo "WARNING: automatic login is off — after a reboot nothing starts until someone logs in."
+  echo "  Enable it: System Settings → Users & Groups → Automatically log in as (needs FileVault off)."
+fi
 echo "logs: $DIR/data/aios.log"

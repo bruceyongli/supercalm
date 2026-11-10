@@ -10,7 +10,12 @@ const file = process.argv[2];
 if (!file) throw new Error('Usage: storage-mount-watch.mjs CONFIG [--once]');
 const initial = validateLiveStorage(JSON.parse(await readFile(file, 'utf8')));
 const statusFile = initial.statusFile || join(dirname(file), 'mount-status.json');
+const ATTACH_TIMEOUT_MS = Math.max(60000, Number(process.env.AIOS_STORAGE_ATTACH_TIMEOUT_MS) || 45 * 60000);
 let delay = 15000, last = '';
+async function publish(state) {
+  await writeFile(statusFile + '.tmp', JSON.stringify(state), { mode: 0o600 });
+  await rename(statusFile + '.tmp', statusFile);
+}
 async function check() {
   const config = validateLiveStorage(JSON.parse(await readFile(file, 'utf8')));
   const state = { checkedAt: Date.now(), id: config.id, mount: config.mount, available: false };
@@ -33,7 +38,12 @@ async function check() {
         const st = await lstat(config.mount);
         if (!st.isDirectory() || (st.mode & 0o222)) throw new Error('Unmounted data mountpoint must be non-writable');
         // Never force-detach, repair, erase or reformat an unavailable data volume.
-        await exec('/usr/bin/hdiutil', ['attach', '-nobrowse', '-owners', 'on', '-mountpoint', config.mount, config.image], { timeout: 60000 });
+        // After an unclean shutdown/reboot the APFS consistency scan reads the image over the
+        // network for many minutes. A short timeout killed hdiutil mid-scan; every retry then
+        // restarted the scan from zero (or hit the abandoned helper's lock), so the volume never
+        // came back and the server could not start. Let one attach run to completion.
+        await publish({ ...state, attaching: true });
+        await exec('/usr/bin/hdiutil', ['attach', '-nobrowse', '-owners', 'on', '-mountpoint', config.mount, config.image], { timeout: ATTACH_TIMEOUT_MS });
       }
       const info = (await exec('/usr/bin/hdiutil', ['info'], { timeout: 10000 })).stdout;
       const images = info.split(/^=+$/m);
@@ -52,8 +62,7 @@ async function check() {
     Object.assign(state, JSON.parse(probe.stdout));
     state.available = true; delay = 15000;
   } catch (error) { state.error = String(error.message).slice(0, 350); delay = Math.min(delay * 2, 300000); }
-  await writeFile(statusFile + '.tmp', JSON.stringify(state), { mode: 0o600 });
-  await rename(statusFile + '.tmp', statusFile);
+  await publish(state);
   const signature = JSON.stringify([state.available, state.error]);
   if (signature !== last) { console.log(JSON.stringify(state)); last = signature; }
   return state;
