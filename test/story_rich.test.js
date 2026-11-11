@@ -369,7 +369,7 @@ assert.ok(Number(svKey) >= 4, 'cache key bumped past v3 — cached notification 
 assert.ok(storyView.includes('data-story-prev') && !storyView.includes('data-story-earlier'), 'one accessible fallback control, no full-history download');
 assert.ok(storyView.includes('story?cursor=${encodeURIComponent(cursor)}'), 'earlier history uses a stable byte cursor');
 assert.ok(storyView.includes('feedTop < previous && feedTop < 100'), 'upward scrolling automatically loads one earlier conversation');
-assert.ok(/pendingAnchor/.test(storyView), 'load-earlier renders keep the viewport anchored (content prepends)');
+assert.ok(storyView.includes('captureFeedAnchor') && storyView.includes('anchoredFeedTop'), 'live refresh and load-earlier preserve the visible content anchor');
 assert.ok(/story-head[\s\S]{0,300}data-story-latest/.test(storyView)
     && /\.story-latest-btn\s*\{[^}]*position:\s*static/.test(css),
   'Latest lives in the story summary bar instead of covering story content or live status');

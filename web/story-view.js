@@ -18,7 +18,6 @@ let showFull = false; // instant load shows recent rounds; user can expand to th
 let rounds = 1; // how many operator rounds are loaded (‹ previous round increments; full ignores it)
 let storySource = null; // 'fallback' | 'transcript' — a switch REPLACES the feed (merging both duplicated the task card)
 let storyIdentity = null; // source + transcript file — a different same-source rollout also REPLACES
-let pendingAnchor = null; // feed.scrollHeight before a load-earlier render — keeps the viewport stable while content prepends
 let trimmed = false;
 let historyCursor = null;
 let historyLoading = false;
@@ -152,31 +151,89 @@ function evKey(e) {
 // hidden panels and session navigation; scrolling up opts out until the user returns to the bottom.
 let feedTop = 0;        // remembered .story-feed scrollTop for the current session
 let followLatest = true;
+let feedAnchor = null;  // stable event + visible paragraph, not an offset into a changing transcript
+let feedGeometry = null;
 let feedPersistT = 0;   // throttle timer for the per-session persist
 let feedResizeObserver = null;
 const SCROLL_KEY = (id) => `aios_story_scroll_${id}`;
 function persistScroll() {
   if (!sid) return;
-  try { sessionStorage.setItem(SCROLL_KEY(sid), JSON.stringify({ top: Math.round(feedTop), latest: followLatest })); } catch {}
+  try { sessionStorage.setItem(SCROLL_KEY(sid), JSON.stringify({ top: Math.round(feedTop), latest: followLatest, anchor: feedAnchor })); } catch {}
 }
 function restoreScrollPreference() {
-  feedTop = 0; followLatest = true;
+  feedTop = 0; followLatest = true; feedAnchor = null; feedGeometry = null;
   try {
     const saved = JSON.parse(sessionStorage.getItem(SCROLL_KEY(sid)));
     if (saved && typeof saved === 'object') {
       feedTop = Math.max(0, Number(saved.top) || 0); followLatest = saved.latest !== false;
+      if (!followLatest && Array.isArray(saved.anchor)) feedAnchor = saved.anchor.slice(0, 2).filter(a =>
+        typeof a?.key === 'string' && Number.isFinite(a.offset));
     } else if (typeof saved === 'number') {
       feedTop = Math.max(0, saved); followLatest = false; // legacy reading position
     }
   } catch {}
 }
 function visibleFeed(feed) { return feed?.isConnected && !panelEl?.hidden && feed.clientHeight > 0; }
+const READING_BLOCKS = '.story-body p, .story-body li, .story-body pre, .story-body h1, .story-body h2, .story-body h3, .story-body h4, .story-body tr, .story-body figure, .story-shot-wrap';
+const blockText = element => normText(element.textContent).slice(0, 160);
+function captureFeedAnchor(feed) {
+  const top = feed.getBoundingClientRect().top + feed.clientTop;
+  const anchors = [];
+  for (const row of feed.children) {
+    if (!row.dataset.storyKey) continue;
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom <= top || !rect.height) continue;
+    const blocks = [...row.querySelectorAll(READING_BLOCKS)];
+    const index = blocks.findIndex(el => { const r = el.getBoundingClientRect(); return r.height && r.bottom > top; });
+    const block = blocks[index];
+    anchors.push({ key: row.dataset.storyKey, offset: rect.top - top,
+      ...(block ? { block: { index, text: blockText(block), offset: block.getBoundingClientRect().top - top } } : {}) });
+    // A second row is a fallback if a transient question/tool row disappears. Never retain DOM nodes.
+    if (anchors.length === 2) break;
+  }
+  return anchors.length ? anchors : null;
+}
+function anchoredFeedTop(feed) {
+  const top = feed.getBoundingClientRect().top + feed.clientTop;
+  for (const anchor of feedAnchor || []) {
+    const row = [...feed.children].find(el => el.dataset.storyKey === anchor.key);
+    if (!row) continue;
+    if (anchor.block && Number.isFinite(anchor.block.offset)) {
+      const blocks = [...row.querySelectorAll(READING_BLOCKS)];
+      let block = blocks[anchor.block.index];
+      if (!block || blockText(block) !== anchor.block.text) block = blocks.find(el => blockText(el) === anchor.block.text);
+      if (block) return feed.scrollTop + block.getBoundingClientRect().top - top - anchor.block.offset;
+    }
+    return feed.scrollTop + row.getBoundingClientRect().top - top - anchor.offset;
+  }
+  return feedTop; // missing cached/source row is not permission to follow a different report
+}
+function sameFeedGeometry(feed) {
+  return feedGeometry?.height === feed.scrollHeight && feedGeometry?.viewport === feed.clientHeight;
+}
+function rememberFeedScroll(feed) {
+  const previous = feedTop;
+  feedTop = feed.scrollTop;
+  // Only moving DOWN to the bottom opts back in. A small upward gesture or layout clamping must
+  // not silently re-enable following and pull the reader into the next background progress message.
+  followLatest = feedTop > previous && nearBottom(feed);
+  feedAnchor = followLatest ? null : captureFeedAnchor(feed);
+  feedGeometry = { height: feed.scrollHeight, viewport: feed.clientHeight };
+  clearTimeout(feedPersistT); feedPersistT = setTimeout(persistScroll, 300);
+  updateLatestBtn(feed);
+  return previous;
+}
 function restoreFeedScroll() {
   const feed = panelEl?.querySelector('.story-feed');
   // display:none has zero geometry. Never replace a real reading position with that temporary zero.
   if (!visibleFeed(feed)) return;
-  feed.scrollTop = followLatest ? feed.scrollHeight : feedTop;
+  // A real scroll may precede its queued event/ResizeObserver callback. Respect it before restoring;
+  // changed geometry, in contrast, can clamp scrollTop without any operator gesture.
+  if (feed.scrollTop !== feedTop && sameFeedGeometry(feed)) rememberFeedScroll(feed);
+  feed.scrollTop = followLatest ? feed.scrollHeight : anchoredFeedTop(feed);
   feedTop = feed.scrollTop;
+  feedGeometry = { height: feed.scrollHeight, viewport: feed.clientHeight };
+  if (!followLatest && !feedAnchor) feedAnchor = captureFeedAnchor(feed);
   updateLatestBtn(feed);
 }
 function nearBottom(feed) { return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 8; }
@@ -185,7 +242,9 @@ function updateLatestBtn(feed) {
   if (btn && feed) btn.hidden = nearBottom(feed); // show it only when the user is NOT already at the newest
 }
 function storyToLatest() {
-  followLatest = true;
+  const feed = panelEl?.querySelector('.story-feed');
+  if (visibleFeed(feed)) feedTop = feed.scrollTop; // explicit Latest wins over a queued scroll event
+  followLatest = true; feedAnchor = null;
   restoreFeedScroll();
   persistScroll();
 }
@@ -590,6 +649,9 @@ function feedList() {
 
 function render() {
   if (!panelEl) return;
+  const currentFeed = panelEl.querySelector('.story-feed');
+  // Capture an unprocessed user scroll BEFORE mutating any rows, never after inserting history.
+  if (visibleFeed(currentFeed) && currentFeed.scrollTop !== feedTop && sameFeedGeometry(currentFeed)) rememberFeedScroll(currentFeed);
   captureStoryVideoState();
   const feedEvents = feedList();
   const latestReport = feedEvents.findLast((ev) => ev.kind === 'report' && !ev.indent);
@@ -607,14 +669,11 @@ function render() {
     feed = panelEl.querySelector('.story-feed');
     feed.addEventListener('scroll', () => {
       if (!visibleFeed(feed) || feed !== panelEl?.querySelector('.story-feed')) return;
-      const previous = feedTop;
       // Our own restoration generates a scroll event too. It must not change reading intent or page
       // history; in particular, a cached short feed can temporarily clamp a restored older position.
-      if (feed.scrollTop === previous) return;
-      feedTop = feed.scrollTop;
-      followLatest = nearBottom(feed);
-      clearTimeout(feedPersistT); feedPersistT = setTimeout(persistScroll, 300);
-      updateLatestBtn(feed);
+      if (feed.scrollTop === feedTop) return;
+      if (!sameFeedGeometry(feed)) { restoreFeedScroll(); return; }
+      const previous = rememberFeedScroll(feed);
       // Only an intentional upward scroll fetches history. Initial paint, a short feed or a timer
       // must not recursively pull the entire transcript. One gesture/request loads one exchange.
       if (feedTop < previous && feedTop < 100) void loadEarlierStory();
@@ -657,11 +716,8 @@ function render() {
   wire();
   restoreStoryVideoState();
   if (feed) {
-    // Disable native scroll anchoring in CSS: this explicit height delta anchors a prepended page once.
-    if (pendingAnchor != null) {
-      if (visibleFeed(feed) && !followLatest) feedTop = Math.max(0, feedTop + (feed.scrollHeight - pendingAnchor));
-      pendingAnchor = null;
-    }
+    // One content anchor covers live merges, gap catch-up, manual prepends and delayed media layout.
+    // A whole-feed height delta cannot distinguish changes above the reader from new content below.
     restoreFeedScroll();
     // Media/font loading and viewport changes can move the bottom after render. Track layout, not
     // timers, and never pull someone away from older messages they deliberately scrolled to read.
@@ -752,8 +808,6 @@ export async function loadEarlierStory() {
     if (sid !== mySid || generation !== storyGeneration || signal.aborted || identity !== storyIdentity) return;
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
-    const feed = panelEl.querySelector('.story-feed');
-    pendingAnchor = visibleFeed(feed) ? feed.scrollHeight : null;
     const byKey = new Map((r.events || []).map(e => [evKey(e), e]));
     for (const ev of events) byKey.set(evKey(ev), ev); // newest/live versions win over historical copies
     events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
@@ -793,8 +847,7 @@ function wire() {
   for (const button of panelEl.querySelectorAll('[data-story-async-send]')) button.onclick = () => { if (current()) void sendAsyncChoices(button.dataset.call); };
   const latest = panelEl.querySelector('[data-story-latest]');
   if (latest) latest.onclick = storyToLatest; // the only path that scrolls to the newest message
-  // Both load-earlier paths anchor the viewport: content PREPENDS, so the scroll position is adjusted
-  // by the height delta after the re-render (otherwise what you were reading jumps off-screen).
+  // Manual history uses the same visible-content anchor as live/gap updates.
   const prev = panelEl.querySelector('[data-story-prev]');
   if (prev) prev.onclick = loadEarlierStory;
   for (const t of panelEl.querySelectorAll('[data-story-steps-toggle]')) {
@@ -980,7 +1033,7 @@ async function refreshStoryNow({ quiet, flight }) {
     if (!catchup && lastSeen && firstIncoming?.ts > lastSeen && storyIdentity === identity && r.meta?.cursor) {
       catchup = { cursor: r.meta.cursor, until: lastSeen };
     }
-    if (storyIdentity && identity !== storyIdentity) { events = []; catchup = null; lastSig = ''; rounds = 1; historyCursor = null; }
+    if (storyIdentity && identity !== storyIdentity) { events = []; catchup = null; lastSig = ''; rounds = 1; historyCursor = null; feedAnchor = null; }
     storySource = src;
     storyIdentity = identity;
     if (!events.length) {
@@ -1085,7 +1138,7 @@ export function initStoryView({ sessionId, panel, live = false, signal }) {
   }
   // A new session is a fresh story — reset accumulated state so session A's atoms never bleed into B.
   // Switching also STOPS any playing voice report (session A's audio must not narrate session B).
-  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; working = false; liveStatus = null; trimmed = false; pendingQuestion = null; liveProviderIssue = null; continueAttempt = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; pendingAnchor = null; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
+  if (switching) { stopListen(); storyVideoState.clear(); sendEchoes = []; readMarks.clear(); events = []; working = false; liveStatus = null; trimmed = false; pendingQuestion = null; liveProviderIssue = null; continueAttempt = null; answeredAsks.clear(); openSteps.clear(); learnedEvidence.clear(); showFull = false; rounds = 1; storySource = null; storyIdentity = null; lastSig = ''; historyCursor = null; historyLoading = false; historyError = ''; catchup = null; panelEl.innerHTML = ''; }
   if (remounting) restoreScrollPreference();
   // Instant first paint from the cross-nav cache (hover-prefetched or last-visited), then refresh live.
   if (remounting && !showFull) {

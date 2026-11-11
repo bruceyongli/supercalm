@@ -703,6 +703,11 @@ Story persists both reading position and follow-Latest intent per session. Lates
 continues following across updates, view switches and session navigation; scrolling up opts out.
 Hidden panels have zero geometry: never save it as the user's position. Flush pending persistence
 before teardown and restore only after showing the panel; delayed media layout must respect intent.
+Anchor readers to the stable event and visible paragraph, not only pixel scrollTop or whole-feed
+height deltas. Live merges, reconnect gap pages and media/font changes above a report must preserve
+that paragraph's viewport position. Layout-clamped scroll events never opt back into following or
+fetch history; only scrolling downward to the bottom or explicit Latest does. Test real content
+coordinates in Chromium and WebKit, including delayed layout and hidden-view updates.
 Story downloads use `story-request.js`: separate header/idle deadlines, renewed on received bytes,
 plus an absolute bound. Never turn an aborted/truncated JSON body into an empty successful report.
 Transient failures retain the current feed/cache and return to the live controller's retry backoff;
