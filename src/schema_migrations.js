@@ -244,4 +244,9 @@ export const CORE_MIGRATIONS = [
     description: 'Distinguish migrated historical records from resumable native conversations',
     up(db) { ensureColumn(db, 'sessions', 'execution_history_only', 'INTEGER NOT NULL DEFAULT 0'); },
   },
+  {
+    id: '0012_input_delivery_state',
+    description: 'Keep accepted native queue receipts visible after browser refresh',
+    up(db) { ensureColumn(db, 'messages', 'delivery_state', 'TEXT'); },
+  },
 ];

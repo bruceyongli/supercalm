@@ -85,7 +85,7 @@ assert.deepEqual(spine.map((e) => e.text), ['start', 'next']);
 
 // ---- source locks: the wiring the pure module can't observe ----
 const storyApi = readFileSync(new URL('../src/story_api.js', import.meta.url), 'utf8');
-assert.ok(/spineFromMessages\(messagesFor\(sid, \d+\)\)/.test(storyApi), 'fallbackStory builds the spine from messagesFor');
+assert.ok(/spineFromMessages\(recentMessagesFor\(sid, \d+\)\)/.test(storyApi), 'fallbackStory builds the spine from the recent message window');
 assert.ok(!storyApi.includes("text isn't stored"), 'the placeholder wording is gone');
 
 const story = readFileSync(new URL('../src/story.js', import.meta.url), 'utf8');

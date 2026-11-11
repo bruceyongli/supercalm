@@ -70,6 +70,11 @@ export function createStoryUpdates({ resolve, bus, watchFile = watch, statFile =
     if (entry && (semantic.has(event.source) || event.previousStatus !== event.status)) schedule(entry, true);
   };
   bus?.on('session-status', onStatus);
+  const onEvent = event => {
+    const entry = entries.get(event?.session);
+    if (entry && event.type === 'input') schedule(entry, true);
+  };
+  bus?.on('event', onEvent);
   return {
     subscribe(sid, res) {
       let entry = entries.get(sid);
@@ -100,6 +105,7 @@ export function createStoryUpdates({ resolve, bus, watchFile = watch, statFile =
     },
     close() {
       bus?.off('session-status', onStatus);
+      bus?.off('event', onEvent);
       for (const entry of [...entries.values()]) {
         for (const res of entry.clients) res.end();
         dispose(entry);

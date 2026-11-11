@@ -648,6 +648,14 @@ Confirmed queue admission returns HTTP 200 and clears the web composer immediate
 consumption/interruption or resending. Actual unconfirmed drafts stay. Human `queued_command`
 attachments render once in Story/graph using original source identity/time; machine notifications do
 not become operator requests. Claude's paste dialect and notify protocols remain separate from Codex.
+Accepted Claude inputs are a durable Story floor, not just browser-local optimistic echoes. Retain
+Sent/Queued across refresh/devices, overlay the indexed input window outside the native file cache,
+and only a one-to-one complete native human-turn match may show Read. Queue admission alone is not
+Read, including in a transcript-sourced response. Keep stable receipt identities as native consumption
+arrives; repeated deliberate identical messages stay distinct. Compute bounded native consumption
+proofs before round trimming so older visible queues can become Read after a combined answer.
+Input receipts invalidate active Story
+viewers even if the native file/status has not changed; fallback uses recent, not first-ever, messages.
 Claude text sends use explicit bracketed paste so PTY chunk boundaries never split one request into
 a folded token plus trailing input. While folded, `paste again to expand` replaces the permission
 footer: recognize it as Claude composer evidence before pressing Enter. Claude may render ONE paste

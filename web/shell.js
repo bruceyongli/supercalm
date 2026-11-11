@@ -368,7 +368,7 @@ export function prefetchStory(id) {
     const storySource = r.meta?.source || 'transcript';
     const payload = JSON.stringify({ sessionId: id, events: r.events, cursor: r.meta?.cursor || null, trimmed: !!r.meta?.trimmed, working: r.status === 'working', liveStatus: r.liveStatus || null,
       storySource, storyIdentity: `${storySource}|${r.meta?.file || ''}` });
-    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story12_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v12)
+    if (payload.length <= 220_000) { try { sessionStorage.setItem(`aios_story13_${id}`, payload); } catch {} } // key must match story-view.js STORY_CACHE_KEY (v13)
   }).catch(() => _prefetched.delete(id));
 }
 

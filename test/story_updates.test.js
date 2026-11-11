@@ -42,6 +42,9 @@ try {
   assert.equal(a.messages.length, beforeStatus, 'sibling/terminal heartbeat events do not invalidate Story');
   bus.emit('session-status', { session: 's_own', source: 'reply', status: 'working', previousStatus: 'working' });
   await wait(() => a.messages.length > beforeStatus);
+  const beforeInput = a.messages.length;
+  bus.emit('event', { type: 'input', session: 's_own' });
+  await wait(() => a.messages.length > beforeInput && b.messages.length > beforeInput);
   for (const cause of ['codex-async-question', 'codex-question-answered']) {
     const beforeQuestion = a.messages.length;
     bus.emit('session-status', { session: 's_own', source: cause, status: 'working', previousStatus: 'working' });
@@ -66,4 +69,5 @@ try {
   close(); assert.equal(updates.size(), 0);
 } finally { updates.close(); await rm(root, { recursive: true, force: true }); }
 assert.equal(bus.listenerCount('session-status'), 0);
+assert.equal(bus.listenerCount('event'), 0);
 console.log('story_updates: shared native watcher, missed-event repair, isolation, rotation, backpressure and cleanup passed');

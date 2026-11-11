@@ -135,7 +135,7 @@ export function extractAttachments(raw) {
 
 // ---------- F2: injected-context stripping ----------
 const INJECT_BLOCKS = /<(project_context|relevant_lessons|user_instructions|environment_context|system-reminder|INSTRUCTIONS|collaboration_mode)>[\s\S]*?<\/\1>/g;
-function cleanUserText(raw) {
+export function cleanUserText(raw) {
   let t = String(raw || '').replace(INJECT_BLOCKS, '').trim();
   if (!t) return '';
   // Harness-injected background-task events (Monitor/Agent completions) arrive as user-ROLE turns:

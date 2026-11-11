@@ -105,6 +105,7 @@ onInput(data => {
         if (family === 'claude' && nativeFile) appendFileSync(nativeFile, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: nativeId, content: input }) + '\n');
         if (mode === 'claude-queued' && nativeFile) {
           last = input; input = 'busy redraw, not a new operator draft';
+          setTimeout(() => { input = ''; render(); appendFileSync(trace, JSON.stringify({ event: 'ready' }) + '\n'); }, 1200);
           render(); return;
         }
         last = input; input = '';

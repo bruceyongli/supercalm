@@ -3929,7 +3929,7 @@ const deferredInputRow = store.db.prepare("SELECT ts, payload FROM events WHERE 
 
 async function confirmDeferredReply(sid, clientMessageId, submission = null) {
   const accepted = store.inputReceipt(sid, clientMessageId);
-  if (accepted) return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
+  if (accepted) return { ok: true, duplicate: true, queued: accepted.delivery_state === 'queued', message: { id: accepted.id, ts: accepted.ts } };
   const row = deferredInputRow.get(sid, clientMessageId);
   if (!row) return null;
   const pending = parsePayload(row), s = store.getSession(sid);
@@ -3942,8 +3942,8 @@ async function confirmDeferredReply(sid, clientMessageId, submission = null) {
   if (!native) return { inputBlocked: true, reason: 'submit-unconfirmed' };
   // A concurrent poll/retry may have committed this same native acknowledgement while we read it.
   const existing = store.inputReceipt(sid, clientMessageId);
-  if (existing) return { ok: true, duplicate: true, message: { id: existing.id, ts: existing.ts } };
-  const message = store.addMessage(sid, 'in', pending.source, pending.text, { clientMessageId });
+  if (existing) return { ok: true, duplicate: true, queued: existing.delivery_state === 'queued', message: { id: existing.id, ts: existing.ts } };
+  const message = store.addMessage(sid, 'in', pending.source, pending.text, { clientMessageId, deliveryState: native.queued ? 'queued' : 'sent' });
   pendingSubmissionRetries.delete(`${sid}|${clientMessageId}`);
   store.addEvent(sid, 'input-delivery', { source: pending.source, accepted: true, verified: true,
     receipt: native.receipt, queued: !!native.queued, phase: 'accepted',
@@ -3951,6 +3951,7 @@ async function confirmDeferredReply(sid, clientMessageId, submission = null) {
   // Native polling already owns the current work/question state. A late acknowledgement must not
   // erase a newer question, bump an old session's activity, or send the user's request a second time.
   bus.emit('changed');
+  bus.emit('event', { type: 'input', session: sid, source: pending.source });
   return { ok: true, message, duplicate: true, queued: !!native.queued };
 }
 
@@ -3964,7 +3965,7 @@ export async function deliverReply(sid, text, options = {}) {
   const accepted = store.inputReceipt(sid, clientMessageId);
   if (accepted) {
     if (accepted.text !== text || accepted.source !== source) return { idempotencyConflict: true };
-    return { ok: true, duplicate: true, message: { id: accepted.id, ts: accepted.ts } };
+    return { ok: true, duplicate: true, queued: accepted.delivery_state === 'queued', message: { id: accepted.id, ts: accepted.ts } };
   }
   const deferred = deferredInputRow.get(sid, clientMessageId);
   if (deferred) {
@@ -4077,7 +4078,7 @@ async function deliverReplyNow(sid, text, { source = 'text', attachments = 0, se
     if (replacedDraft) store.addEvent(sid, 'composer-draft-archived', { text: replacedDraft, displaced_by: source });
   } catch {}
   let message = null;
-  try { message = store.addMessage(sid, 'in', source, text, { clientMessageId }); } catch {}
+  try { message = store.addMessage(sid, 'in', source, text, { clientMessageId, deliveryState: queued ? 'queued' : 'sent' }); } catch {}
   try { if (checkpoint) store.addEvent(sid, 'request-checkpoint', checkpoint); } catch {}
   try { store.answerPendingDecision(sid, { response: text, response_source: source }); } catch {} // link to the open ask, if any
   try { store.addEvent(sid, 'input', { source, len: text.length, attachments }); } catch {}
@@ -4091,7 +4092,7 @@ route('GET', '/api/session/:id/input-receipt/:clientId', async (req, res, { id: 
   if (!store.getSession(sid)) return json(res, 404, { error: 'no such session' });
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(clientId)) return json(res, 400, { error: 'invalid client message identity' });
   const result = await confirmDeferredReply(sid, clientId);
-  json(res, 200, { accepted: !!result?.ok, pending: !!result?.inputBlocked || pendingOperatorInputs.has(`${sid}|${clientId}`), message: result?.message || null });
+  json(res, 200, { accepted: !!result?.ok, queued: !!result?.queued, pending: !!result?.inputBlocked || pendingOperatorInputs.has(`${sid}|${clientId}`), message: result?.message || null });
 });
 
 route('POST', '/api/session/:id/input', async (req, res, { id: sid }) => {

@@ -41,7 +41,7 @@ db.prepare("INSERT INTO sessions (id,tool,tmux,status,started_at,last_activity) 
 db.prepare("INSERT INTO events (session_id,ts,type,payload) VALUES ('s_rebooted',4,'exit','{\"code\":null,\"reason\":\"tmux gone on restart\"}')").run();
 
 const first = applyMigrations(db, CORE_MIGRATIONS, { now: () => 1234 });
-assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes', '0007_operator_input_receipts', '0008_structured_async_questions', '0009_session_provider_issue', '0010_execution_devices', '0011_execution_history']);
+assert.deepEqual(first, ['0001_sessions_complete_shape', '0002_message_read_state', '0003_attention_dismissals', '0004_project_lifecycle', '0005_session_runtime_recovery', '0006_hot_ui_query_indexes', '0007_operator_input_receipts', '0008_structured_async_questions', '0009_session_provider_issue', '0010_execution_devices', '0011_execution_history', '0012_input_delivery_state']);
 assert(db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'execution_history_only'));
 assert(db.prepare('PRAGMA table_info(sessions)').all().some(c => c.name === 'execution_node'));
 assert(appliedMigrationIds(db).has('0001_sessions_complete_shape'));
@@ -79,6 +79,7 @@ assert(projectColumns.has('auto_delete_folder'));
 const messageColumns = new Set(db.prepare('PRAGMA table_info(messages)').all().map((row) => row.name));
 assert(messageColumns.has('read_at'));
 assert(messageColumns.has('client_message_id'));
+assert(messageColumns.has('delivery_state'));
 const receiptMessage = db.prepare("INSERT INTO messages (session_id,ts,direction,source,text,client_message_id) VALUES (?,1,'in','text','same words',?)");
 receiptMessage.run('s_live', 'send-first');
 assert.throws(() => receiptMessage.run('s_live', 'send-first'), /UNIQUE constraint/, 'one receipt per session and send identity');

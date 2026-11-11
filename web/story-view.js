@@ -80,7 +80,7 @@ function reconcileEchoes() {
         : n && n === normText(ev.body || ev.text)))
       .sort((a, b) => Math.abs(a.ts - sentAt) - Math.abs(b.ts - sentAt))[0];
     if (hit) {
-      if (storySource === 'transcript') { e.state = 'read'; readMarks.set(evKey(hit), true); changed = true; }
+      if (storySource === 'transcript' && (!hit.delivery || hit.delivery === 'read')) { e.state = 'read'; readMarks.set(evKey(hit), true); changed = true; }
       else e.matchedKey = evKey(hit);
     }
     if (e.matchedKey !== previousMatch) changed = true;
@@ -142,9 +142,19 @@ export function uncertainComposerSend(echo) {
 // per atom; the body slice disambiguates the rare ts=0 atoms. On refresh, incoming atoms OVERWRITE matching
 // keys (so answered/meta updates land) and add new ones; already-loaded atoms with no incoming match are KEPT.
 function evKey(e) {
+  if (e.inputMessageId) return `input|${e.inputMessageId}`;
   if (e.messageId) return `claude|${e.messageId}`;
   if (e.toolId) return `${e.kind}|${e.toolId}`;
   return e.kind === 'ask' && e.askId && e.questionId != null ? `ask|${e.askId}|${e.questionId}` : `${e.ts || 0}|${['note', 'report'].includes(e.kind) ? 'assistant' : e.kind}|${String(e.body || e.text || e.title || '').slice(0, 48)}`;
+}
+
+function mergeStoryEvents(older, newer) {
+  // A native turn can arrive just before its durable send receipt. Re-key that SAME UUID,
+  // not the message text (two deliberate identical sends must remain two separate bubbles).
+  const nativeIds = new Set(newer.filter(e => e.kind === 'you' && e.messageId).map(e => e.messageId));
+  const byKey = new Map(older.filter(e => e.kind !== 'you' || !e.messageId || !nativeIds.has(e.messageId)).map(e => [evKey(e), e]));
+  for (const e of newer) byKey.set(evKey(e), e);
+  return [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
 
 // Remember the user's reading intent, not just a pixel offset: following Latest survives new content,
@@ -265,7 +275,8 @@ function storyToLatest() {
 // v10: Claude mid-turn human messages and live background shell status.
 // v11: exact upload paths retained on native and fallback Story events.
 // v12: explicit owner checks; discard pre-isolation caches and raw Claude paste-wrapper bubbles.
-export const STORY_CACHE_KEY = (id) => `aios_story12_${id}`;
+// v13: durable accepted-input identities replace page-local queue echoes.
+export const STORY_CACHE_KEY = (id) => `aios_story13_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) {
   try { const cached = JSON.parse(sessionStorage.getItem(STORY_CACHE_KEY(id))); return cached?.sessionId === id ? cached : null; }
@@ -553,9 +564,9 @@ function eventHtml(ev, i, previewVideo = false) {
         ${ev.meta ? `<span class="story-meta${metaCls}">${esc(ev.meta)}</span>` : ''}
         <span class="story-ts">${fmtClock(ev.ts)}</span>
       </div>`;
-  // Delivery and native reading are separate. Historical bubbles (no local echo) stay chip-free.
-  const sendState = ev.kind !== 'you' ? null : (ev._echo ? (ev._delivery || 'pending') : (readMarks.has(evKey(ev)) ? 'read' : null));
-  const sendLabel = { pending: 'Sending…', checking: 'Checking delivery…', sent: '✓ sent · syncing report', queued: '✓ queued', read: '✓ read' };
+  // Delivery survives refresh and device changes; only a consumed native turn may claim Read.
+  const sendState = ev.kind !== 'you' ? null : (ev.delivery || (ev._echo ? (ev._delivery || 'pending') : (readMarks.has(evKey(ev)) ? 'read' : null)));
+  const sendLabel = { pending: 'Sending…', checking: 'Checking delivery…', sent: '✓ sent · awaiting agent', queued: '✓ queued · awaiting agent', read: '✓ read' };
   const stateChip = sendState
     ? `<span class="story-sendstate ${sendState}" data-story-sendstate="${sendState}">${sendLabel[sendState]}</span>`
     : '';
@@ -808,9 +819,7 @@ export async function loadEarlierStory() {
     if (sid !== mySid || generation !== storyGeneration || signal.aborted || identity !== storyIdentity) return;
     const responseIdentity = `${r.meta?.source || 'transcript'}|${r.meta?.file || ''}`;
     if (responseIdentity !== identity) return; // a resumed CLI's old page must not enter its new story
-    const byKey = new Map((r.events || []).map(e => [evKey(e), e]));
-    for (const ev of events) byKey.set(evKey(ev), ev); // newest/live versions win over historical copies
-    events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    events = mergeStoryEvents(r.events || [], events); // newest/live versions win over historical copies
     historyCursor = r.meta?.cursor || null;
     trimmed = !!historyCursor;
     rounds++;
@@ -990,9 +999,7 @@ async function catchUpStory(flight) {
     if (!currentFlight(flight) || catchup !== gap) return;
     if (`${r.meta?.source || 'transcript'}|${r.meta?.file || ''}` !== storyIdentity) { catchup = null; return; }
     const older = r.events || [];
-    const byKey = new Map(older.map(e => [evKey(e), e]));
-    for (const e of events) byKey.set(evKey(e), e);
-    events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    events = mergeStoryEvents(older, events);
     reconcileEchoes();
     const next = r.meta?.cursor;
     const reached = older.some(e => (e.ts || 0) <= gap.until) || !next || next === gap.cursor;
@@ -1042,11 +1049,13 @@ async function refreshStoryNow({ quiet, flight }) {
       // MERGE, don't replace: keep every already-loaded atom, let incoming overwrite matching keys (so
       // answered/meta updates land) and append genuinely new ones. A new send appends — the server's
       // 1-round window no longer clears the history the user already had loaded.
-      const byKey = new Map(events.map((e) => [evKey(e), e]));
-      for (const e of incoming) byKey.set(evKey(e), e);
-      events = [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
+      events = mergeStoryEvents(events, incoming);
     }
     if (rounds === 1) { historyCursor = r.meta?.cursor || null; trimmed = !!r.meta?.trimmed; }
+    if (r.meta?.readInputIds?.length) {
+      const read = new Set(r.meta.readInputIds);
+      events = events.map(event => read.has(event.inputMessageId) ? { ...event, delivery: 'read' } : event);
+    }
     working = r.status === 'working';
     liveStatus = r.liveStatus || null;
     pendingQuestion = r.pendingQuestion || null;

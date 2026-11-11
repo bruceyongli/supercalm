@@ -4,7 +4,8 @@
 // Cached by file mtime — a 200MB rollout is
 // only re-parsed when it actually grew. Parsing/large-file reads run in a bounded worker pool.
 import { route, json, send } from './server.js';
-import { getSession, getProject, db, messagesFor, otherClaudeTranscripts } from './store.js';
+import { getSession, getProject, db, recentMessagesFor, otherClaudeTranscripts, storyInputsFor, storyInputRevision } from './store.js';
+import { reconcileStoryInputs } from './story_inputs.js';
 import { findClaudeLog } from './claude_transcripts.js';
 import { readStoryPage, readStoryImage, statStoryFile as stat } from './story_reader.js';
 import { snapshot } from './sessions.js';
@@ -57,7 +58,7 @@ export function extractLiveStatus(snap) {
 }
 
 // #132 guaranteed story: when no native CLI transcript can be located, reconstruct the story from AIOS's
-// OWN captured data. The REAL message text lives in the `messages` table (messagesFor), attributed by
+// OWN captured data. The REAL message text lives in the `messages` table (recentMessagesFor), attributed by
 // `source` via story_spine.messageToEvent — so the operator's actual words show (not char-count
 // placeholders), detect terminal-snapshot noise is dropped, and agent/supervisor injections are labeled
 // instead of masquerading as operator bubbles. Session lifecycle markers come from the events table.
@@ -71,7 +72,7 @@ function fallbackStory(sid) {
     kind: 'sys',
     text: r.type === 'launch' ? 'Session launched.' : r.type === 'resume' ? 'Session resumed.' : 'Session exited.',
   }));
-  const msgs = spineFromMessages(messagesFor(sid, 400));
+  const msgs = spineFromMessages(recentMessagesFor(sid, 400));
   const events = [...life, ...msgs].sort((a, b) => (a.ts || 0) - (b.ts || 0));
   return events;
 }
@@ -152,7 +153,28 @@ function ownStory(sid) {
     note: events.length ? 'reconstructed from AIOS’s own message log (native CLI transcript not found)' : 'no messages recorded for this session yet' } };
 }
 
-export async function storyFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null, timings = {} } = {}) {
+export async function storyFor(sid, options = {}) {
+  const result = await nativeStoryFor(sid, options);
+  // Do not bake delivery receipts into the file-mtime cache: accepting an input can precede
+  // any native transcript append. Remote execution applies this overlay on its owning device.
+  if (!nodeForSession(sid) && getSession(sid)?.tool === 'claude' && result.meta?.source === 'transcript') {
+    const first = Math.min(...result.events.filter(event => event.ts > 0).map(event => event.ts));
+    const lower = result.meta.inputWindowStart ?? first;
+    const since = Number.isFinite(lower) ? Math.max(0, lower - 20000) : 0;
+    const { events, readInputIds } = reconcileStoryInputs(result.events, storyInputsFor(sid, since), {
+      historical: !!options.cursor, receipts: result.meta.inputReceipts, windowStart: lower,
+    });
+    const { inputReceipts, inputWindowStart, ...meta } = result.meta;
+    return { ...result, events, meta: { ...meta, readInputIds, count: events.length } };
+  }
+  if (result.meta?.inputReceipts) {
+    const { inputReceipts, inputWindowStart, ...meta } = result.meta;
+    return { ...result, meta };
+  }
+  return result;
+}
+
+async function nativeStoryFor(sid, { rounds = DEFAULT_ROUNDS, full = false, cursor = null, timings = {} } = {}) {
   if (nodeForSession(sid)) {
     const query = new URLSearchParams({ rounds: String(rounds), ...(full ? { full: '1' } : {}), ...(cursor ? { cursor } : {}) });
     return executionRequest(sid, '/story?' + query);
@@ -194,7 +216,8 @@ const storyUpdates = createStoryUpdates({ bus, statFile: stat, resolve: async si
   const source = await storySource(sid);
   if (!source) return null;
   const { s, file } = source;
-  return { file, state: [s.status, s.question, s.summary, s.provider_issue, file ? null : s.revision] };
+  return { file, state: [s.status, s.question, s.summary, s.provider_issue, file ? null : s.revision,
+    s.tool === 'claude' ? storyInputRevision(sid) : null] };
 } });
 route('GET', '/api/session/:id/story/image', async (req, res, { id: sid }, url) => {
   try {

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { chromium, webkit } from 'playwright';
 import { parseSessionLog } from '../src/story.js';
 import { messageToEvent } from '../src/story_spine.js';
+import { overlayStoryInputs } from '../src/story_inputs.js';
 
 // Real parser → HTTP → real Story module/DOM, without a production DB, terminal or coding agent.
 const assets = new Map(['story-view.js', 'story-request.js', 'common.js', 'session-indicator.js', 'provider-issue.js',
@@ -26,7 +27,7 @@ const server = createServer(async (req, res) => {
     const cursor = url.searchParams.get('cursor');
     const payload = JSON.parse(JSON.stringify({ sessionId: state.owner || id, events: cursor ? state.older || [] : state.events,
       status: 'waiting', meta: { source: state.source || 'transcript', file: state.source === 'fallback' ? null : `${id}.jsonl`,
-        trimmed: !cursor && !!state.cursor, cursor: cursor ? null : state.cursor || null } }));
+        trimmed: !cursor && !!state.cursor, cursor: cursor ? null : state.cursor || null, readInputIds: state.readInputIds } }));
     if (state.hold || cursor && state.holdOlder) {
       state.hold = false; state.holdOlder = false; held.push(() => json(res, payload)); return;
     }
@@ -180,6 +181,42 @@ try {
       await page.evaluate(() => story.refreshStory());
       assert.equal(await page.locator('[data-story-ask-opt]').count(), 1, 'another session’s answer cannot retire the current prompt');
       assert.deepEqual(inputs.map(input => input.id), ['s_a'], 'only the explicitly clicked session receives fixture input');
+      // Reproduce disappearing accepted queues, including another device with no optimistic echoes.
+      const q = { events: [{ kind: 'report', ts: Date.now() - 10000, body: 'Existing result' }] };
+      states.set('s_queue', q);
+      await page.evaluate(() => mount('s_queue'));
+      const queuedRows = [1, 2, 3].map(id => ({ id, ts: Date.now() + id, direction: 'in', source: 'text',
+        text: `Queued question ${id}`, client_message_id: `queued-${id}`, delivery_state: 'queued' }));
+      await page.evaluate(() => { window.queueEcho = story.noteComposerSend('Queued question 1', { clientMessageId: 'queued-1' }); });
+      const original = q.events;
+      q.events = overlayStoryInputs(original, queuedRows);
+      await page.evaluate(() => story.refreshStory());
+      assert.equal(await page.locator('[data-kind="you"]').count(), 3);
+      assert.equal(await page.locator('[data-story-sendstate="queued"]').count(), 3);
+      assert.equal(await page.locator('[data-story-sendstate="read"]').count(), 0, 'a native-source queue overlay is NOT read');
+      const second = await browser.newPage({ viewport: { width, height: 844 } });
+      await second.goto(base); await second.waitForFunction(() => !!window.mount);
+      await second.evaluate(() => mount('s_queue'));
+      assert.equal(await second.locator('[data-story-sendstate="queued"]').count(), 3, 'fresh browser/device retains all three queue receipts');
+      await second.reload(); await second.waitForFunction(() => !!window.mount);
+      await second.evaluate(() => mount('s_queue'));
+      assert.equal(await second.locator('[data-story-sendstate="queued"]').count(), 3, 'refresh cannot drop accepted inputs');
+      const consumed = native('read-queued-one', queuedRows[0].text).map(e => ({ ...e, ts: queuedRows[0].ts }));
+      q.events = overlayStoryInputs([...original, ...consumed], queuedRows);
+      for (const device of [page, second]) {
+        await device.evaluate(() => story.refreshStory());
+        assert.equal(await device.locator('[data-kind="you"]').count(), 3, 'native consumption replaces rather than duplicates the queued bubble');
+        assert.equal(await device.locator('[data-story-sendstate="read"]').count(), 1);
+        assert.equal(await device.locator('[data-story-sendstate="queued"]').count(), 2);
+      }
+      q.events = [{ ...q.events.find(e => e.inputMessageId === 3), delivery: 'read' },
+        { kind: 'report', ts: Date.now() + 100, body: 'Answered all three queued questions' }];
+      q.readInputIds = [1, 2, 3];
+      await page.evaluate(() => story.refreshStory());
+      assert.equal(await page.locator('[data-kind="you"]').count(), 3);
+      assert.equal(await page.locator('[data-story-sendstate="read"]').count(), 3, 'off-page native acknowledgements retire every displayed queue state');
+      assert.equal(await page.locator('[data-story-sendstate="queued"]').count(), 0);
+      await second.close();
       assert.deepEqual(errors, []);
       console.log(JSON.stringify({ engine: engine.name(), width, pasteBubbles: 1, pendingAfterNativeReceipt: 0,
         cases: 'exact read receipts, fallback not read, wrong owner/cache, late initializer/echo, A-B-A, history and answer races', pass: true }));

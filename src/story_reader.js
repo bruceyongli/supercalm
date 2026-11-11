@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { serialize } from 'node:v8';
 import { parseSessionLog, createSessionLogParser, completedRoundStarts } from './story.js';
 import { claudeQueuedUser } from './claude_lifecycle.js';
+import { nativeInputEvidence } from './story_inputs.js';
 
 const START_BYTES = 256 * 1024;
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -72,6 +73,7 @@ function parseAppend(entry, buffer, position) {
 
 function windowResult(entry, end, rounds, ioBytes, parsedRecords, mode) {
   let events = entry.parser.events(), offset = entry.start;
+  const inputEvidence = nativeInputEvidence(events);
   const completed = completedRoundStarts(events);
   if (completed.length >= rounds) {
     const first = completed[completed.length - rounds];
@@ -83,7 +85,7 @@ function windowResult(entry, end, rounds, ioBytes, parsedRecords, mode) {
     const event = events.find(e => !e.shotRef && ['check', 'edit', 'work'].includes(e.kind) && Math.abs((e.ts || 0) - shot.ts) < 180e3);
     if (event) event.shotRef = shot.ref;
   }
-  return { events, meta: { count: events.length, trimmed: offset > 0, full: offset === 0,
+  return { events, meta: { ...inputEvidence, count: events.length, trimmed: offset > 0, full: offset === 0,
     rounds, cursor: cursorFor(entry.identity, offset), scannedBytes: end - entry.start, ioBytes,
     totalBytes: end, parsedRecords, readMode: mode } };
 }
@@ -298,6 +300,7 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
         while (windowHints.size > 120) windowHints.delete(windowHints.keys().next().value);
         return result;
       }
+      const inputEvidence = nativeInputEvidence(events);
       let offset = start;
       // A single tool-result line can exceed the scan budget. If skipping its partial prefix reaches
       // the page end, still advance the cursor backward rather than offering the same empty page forever.
@@ -317,7 +320,7 @@ export async function readStoryWindow({ file, rounds = 1, full = false, cursor =
         windowHints.set(hintKey, { start: rangeStart, size: st.size });
         while (windowHints.size > 120) windowHints.delete(windowHints.keys().next().value);
       }
-      return { events, meta: { count: events.length, trimmed: offset > 0, full: full || offset === 0,
+      return { events, meta: { ...inputEvidence, count: events.length, trimmed: offset > 0, full: full || offset === 0,
         rounds, cursor: cursorFor(identity, offset), scannedBytes: end - start, ioBytes, totalBytes: st.size } };
     }
   } finally { await fh.close(); }

@@ -66,7 +66,7 @@ try {
       assert.match(rendered, /The final paragraph remains visible/);
       assert.equal(await page.locator('[data-kind="report"] table').count(), 1);
       assert.equal(await page.locator('img[data-story-shot]').count(), 4);
-      const cached = await page.evaluate(() => JSON.parse(sessionStorage.getItem('aios_story12_s_image')));
+      const cached = await page.evaluate(() => JSON.parse(sessionStorage.getItem('aios_story13_s_image')));
       assert.equal(cached.events.find(e => e.kind === 'report').body, report, 'fresh complete report fits the bounded mobile cache');
       assert.ok(JSON.stringify(cached).length < 220000);
       assert.ok(imageRequests > 0, 'image download is independent and still pending');

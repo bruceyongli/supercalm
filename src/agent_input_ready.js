@@ -198,6 +198,6 @@ export function operatorInputBlockMessage(reason) {
     case 'agent-loading':
       return 'The agent is loading its session. Your draft was kept; send again when its input box appears.';
     default:
-      return "The agent's input box could not be identified safely. Your draft was kept; open Terminal to inspect its current screen.";
+      return "The agent is not showing an active input box. Nothing new was sent; this draft is saved. Previously accepted messages remain in Story.";
   }
 }

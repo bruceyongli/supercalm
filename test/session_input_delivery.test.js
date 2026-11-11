@@ -319,6 +319,56 @@ try {
   assert.equal(queuedTrace().filter(r => r.event === 'accepted').length, 1);
   assert.equal((await send(queuedId, queuedMessage, { client_message_id: 'claude-queued-proof' })).body.duplicate, true);
   assert.equal(queuedTrace().filter(r => r.event === 'accepted').length, 1, 'queued receipt retry never pastes again');
+  assert.equal(store.inputReceipt(queuedId, 'claude-queued-proof').delivery_state, 'queued');
+  assert.equal((await send(queuedId, queuedMessage, { client_message_id: 'claude-queued-proof' })).body.queued, true);
+  const getQueuedStory = async () => (await (await fetch(`http://127.0.0.1:${port}/api/session/${queuedId}/story`)).json());
+  const fallbackId = 's_fallback_receipts';
+  store.createSession({ id: fallbackId, tool: 'claude', tmux: 'missing-fixture-pane' });
+  store.updateSession(fallbackId, { status: 'exited' });
+  for (let i = 0; i < 420; i++) store.addMessage(fallbackId, 'out', 'detect', 'Old terminal noise');
+  store.addMessage(fallbackId, 'in', 'text', 'Newest accepted request', { deliveryState: 'queued' });
+  const fallback = await (await fetch(`http://127.0.0.1:${port}/api/session/${fallbackId}/story`)).json();
+  assert.equal(fallback.meta.source, 'fallback');
+  assert.ok(fallback.events.some(e => e.kind === 'you' && e.text === 'Newest accepted request' && e.delivery === 'queued'),
+    'missing native file shows recent accepted messages rather than only the first 400 historical rows');
+  const initialQueue = await getQueuedStory();
+  assert.equal(initialQueue.meta.source, 'transcript');
+  assert.deepEqual(initialQueue.events.filter(e => e.kind === 'you').map(e => [e.body, e.delivery]), [[queuedMessage, 'queued']],
+    'accepted queue remains visible before Claude creates a consumed user turn');
+  for (const [i, text] of ['What changed in the wrapper?', 'Why is Python still needed?'].entries()) {
+    for (let n = 0; ; n++) {
+      assert.ok(n < 60, 'private fixture eventually finishes its delayed repaint');
+      const screen = (await exec(wrapper, ['capture-pane', '-p', '-t', queuedId])).stdout;
+      if (queuedTrace().filter(r => r.event === 'ready').length > i && !screen.includes('busy redraw')) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const sent = await send(queuedId, text, { client_message_id: `queued-followup-${i}` });
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+  }
+  for (const result of await Promise.all([getQueuedStory(), getQueuedStory(), getQueuedStory()])) {
+    assert.equal(result.events.filter(e => e.delivery === 'queued').length, 3, 'reload/concurrent cached requests retain all three sends exactly once');
+  }
+  const firstQueued = store.inputReceipt(queuedId, 'claude-queued-proof');
+  appendFileSync(queuedFile, JSON.stringify({ type: 'attachment', uuid: 'consumed-queued', sessionId: claudeUuid,
+    timestamp: new Date().toISOString(), attachment: { type: 'queued_command', origin: { kind: 'human' },
+      humanTurn: true, prompt: queuedMessage, timestamp: new Date(firstQueued.ts).toISOString(), source_uuid: 'consumed-first' } }) + '\n');
+  const consumed = await getQueuedStory();
+  assert.equal(consumed.events.filter(e => e.kind === 'you').length, 3, 'consumption updates one bubble instead of adding a duplicate');
+  assert.equal(consumed.events.find(e => e.inputMessageId === firstQueued.id).delivery, 'read');
+  assert.equal(consumed.events.filter(e => e.delivery === 'queued').length, 2);
+  const rest = store.storyInputsFor(queuedId).slice(1);
+  for (const row of rest) appendFileSync(queuedFile, JSON.stringify({ type: 'attachment', uuid: `consumed-${row.id}`, sessionId: claudeUuid,
+    timestamp: new Date(row.ts).toISOString(), attachment: { type: 'queued_command', origin: { kind: 'human' },
+      humanTurn: true, prompt: row.text, timestamp: new Date(row.ts).toISOString(), source_uuid: `queued-${row.id}` } }) + '\n');
+  appendFileSync(queuedFile, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(),
+    message: { id: 'answer-all-three', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Here are the answers to all three questions.' }] } }) + '\n');
+  const afterReport = await getQueuedStory();
+  assert.equal(afterReport.events.filter(e => e.kind === 'you').length, 1, 'one completed round remains one paged exchange');
+  assert.deepEqual(afterReport.meta.readInputIds.sort((a, b) => a - b), [firstQueued.id, ...rest.map(row => row.id)],
+    'all three already-visible bubbles can become Read despite default recent-round windowing');
+  assert.equal(afterReport.meta.inputReceipts, undefined, 'internal hashes stay out of browser payloads');
+  console.log(JSON.stringify({ handler: 'GET /api/session/:id/story', scenario: 'three accepted queued messages survive reload',
+    beforeConsumption: 3, afterConsumption: { read: 1, queued: 2 }, duplicates: 0 }));
   console.log(JSON.stringify({ family: 'claude', handler: 'POST /api/session/:id/input', native: 'queue-operation/enqueue',
     http: queuedResponse.status, queued: queuedResponse.body.queued, enters: 1, accepted: 1, receipt: 'claude-native-queue' }));
   const oldLongDraft = Array.from({ length: 33 }, (_, i) => `Old request line ${i}: 保留之前输入，不要拼进新问题。`).join('\n');

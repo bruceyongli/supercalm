@@ -57,6 +57,9 @@ export function messageToEvent(m) {
     const attachments = extractAttachments(text);
     const bare = text.replace(/\n+\s*Attached files? available locally to this coding CLI:[\s\S]*$/i, '').trim();
     const ev = { ts, kind: 'you', text: clip(bare || text, 800), clientMessageId: m.client_message_id || undefined };
+    if (['sent', 'queued'].includes(m.delivery_state)) Object.assign(ev, {
+      text: bare || text, inputMessageId: m.id, delivery: m.delivery_state,
+    });
     if (images.length) ev.images = images;
     if (attachments.length) ev.attachments = attachments;
     else if (!images.length && src.endsWith('+attachments')) ev.chips = ['attachments'];

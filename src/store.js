@@ -310,18 +310,26 @@ export function expireStaleAsks(ttlMs) {
 }
 
 // ---- messages ---------------------------------------------------------------
-const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text,client_message_id) VALUES (?,?,?,?,?,?)');
-const _inputReceipt = db.prepare("SELECT id, ts, source, text FROM messages WHERE session_id = ? AND client_message_id = ? AND direction = 'in'");
+const _insMessage = db.prepare('INSERT INTO messages (session_id,ts,direction,source,text,client_message_id,delivery_state) VALUES (?,?,?,?,?,?,?)');
+const _inputReceipt = db.prepare("SELECT id, ts, source, text, delivery_state FROM messages WHERE session_id = ? AND client_message_id = ? AND direction = 'in'");
 const _messagesFor = db.prepare('SELECT * FROM messages WHERE session_id = ? ORDER BY ts ASC LIMIT ?');
 const _recentMessagesFor = db.prepare('SELECT * FROM (SELECT * FROM messages WHERE session_id = ? ORDER BY ts DESC, id DESC LIMIT ?) ORDER BY ts ASC, id ASC');
-export function addMessage(session_id, direction, source, text, { clientMessageId = null } = {}) {
+export function addMessage(session_id, direction, source, text, { clientMessageId = null, deliveryState = null } = {}) {
   const ts = now();
-  const result = _insMessage.run(session_id, ts, direction, source ?? null, text, clientMessageId);
+  const result = _insMessage.run(session_id, ts, direction, source ?? null, text, clientMessageId,
+    ['sent', 'queued'].includes(deliveryState) ? deliveryState : null);
   return { id: Number(result.lastInsertRowid), ts };
 }
 export const inputReceipt = (sid, clientMessageId) => _inputReceipt.get(sid, clientMessageId);
 export const messagesFor = (id, limit = 200) => _messagesFor.all(id, limit);
 export const recentMessagesFor = (id, limit = 40) => _recentMessagesFor.all(id, limit);
+// An indexed, bounded input-only window: report/terminal chatter must not crowd out accepted sends.
+const _storyInputs = db.prepare(`SELECT * FROM messages WHERE session_id = ? AND direction = 'in' AND ts >= ?
+  AND source IN ('text','text+attachments','voice','operator','operator-correction','phone','phone+attachments')
+  ORDER BY ts DESC, id DESC LIMIT 200`);
+export const storyInputsFor = (sid, since = 0) => _storyInputs.all(sid, since).reverse();
+const _storyInputRevision = db.prepare("SELECT id FROM messages WHERE session_id = ? AND direction = 'in' ORDER BY ts DESC, id DESC LIMIT 1");
+export const storyInputRevision = sid => _storyInputRevision.get(sid)?.id || 0;
 
 // ---- decisions (ask -> response events; the training-grade history) -----------
 const _insDecision = db.prepare(
