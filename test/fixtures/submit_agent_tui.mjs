@@ -7,6 +7,7 @@ let stashed = '';
 let attempts = 0;
 let last = '';
 let pasteNumber = 0;
+let updateStage = mode === 'codex-update' ? 'prompt' : null;
 const folded = mode === 'claude-folded-paste' || mode === 'claude-image-paste';
 const foldedDisplay = () => mode === 'claude-image-paste'
   ? `[Image #${pasteNumber * 3 + 11}] [Image #${pasteNumber * 3 + 12}][Pasted text #${pasteNumber * 3 + 13} +4 lines]`
@@ -16,7 +17,10 @@ const hint = mode === 'claude-long-ghost' || mode === 'claude-ghost'
   ? '\x1b[2mkeep iterating, report iteration 15 when it\'s done\x1b[0m'
   : family === 'claude' ? '' : 'Ask Codex to do anything';
 const footer = family === 'claude' ? '⏵⏵ bypass permissions on (shift+tab to cycle)' : 'GPT-6-Astra xhigh · /tmp/delivery-test';
-const render = (display = input) => process.stdout.write(mode === 'question'
+const render = (display = input) => process.stdout.write(updateStage === 'prompt'
+  ? '\x1b[2J\x1b[1;1H  Update available · 0.164.0 → 0.167.0\r\n  Release notes: https://github.com/openai/codex/releases/latest\r\n\r\n› 1. Update now (runs `npm install -g @openai/codex`)\r\n  2. Skip\r\n  3. Skip until next version\r\n\r\n  enter continue · esc skip\r\n'
+  : updateStage === 'loading' ? '\x1b[2J\x1b[1;1HLoading session…\r\n'
+  : mode === 'question'
   ? '\x1b[2J\x1b[1;1HChoose a recovery path:\r\n❯ 1. Resume from summary\r\n  2. Resume full session as-is\r\nEnter to confirm\r\n'
   : folded && input
     ? `\x1b[2J\x1b[1;1H${'─'.repeat(60)}\r\n❯ ${foldedDisplay()}\r\n${'─'.repeat(60)}\r\n  paste again to expand\r\n`
@@ -34,6 +38,14 @@ process.stdin.setEncoding('utf8');
 function onInput(receive) {
   let pending = '', pasted = '', inPaste = false;
   process.stdin.on('data', data => {
+    if (updateStage === 'prompt' || updateStage === 'loading') {
+      appendFileSync(trace, JSON.stringify({ event: 'update-key', stage: updateStage, data }) + '\n');
+      if (updateStage === 'prompt' && data === '\x1b') {
+        updateStage = 'loading'; render();
+        setTimeout(() => { updateStage = 'ready'; render(); }, 450);
+      }
+      return;
+    }
     pending += data;
     while (pending) {
       const marker = inPaste ? '\x1b[201~' : '\x1b[200~';

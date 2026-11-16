@@ -21,6 +21,10 @@ await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
 const port = probe.address().port;
 await new Promise(resolve => probe.close(resolve));
 process.env.AIOS_DATA = join(scratch, 'data');
+process.env.AIOS_ENV_FILE = join(scratch, 'absent.env');
+// Background classification is unrelated to transport; never let private TUI fixtures call the fleet.
+process.env.AIOS_EXECUTION_MODEL_URL = 'http://127.0.0.1:1/model';
+process.env.AIOS_EXECUTION_CATALOG_URL = 'http://127.0.0.1:1/models';
 process.env.AIOS_TMUX = wrapper;
 process.env.AIOS_HOST = '127.0.0.1';
 process.env.AIOS_PORT = String(port);

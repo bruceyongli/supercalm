@@ -1,6 +1,7 @@
 import { stripAnsi } from './util.js';
 import { claudeTerminalFrame, claudeBackgroundWork, getClaudeLifecycle } from './claude_lifecycle.js';
 import { detectProviderIssue, providerIssueMessage, providerIssueFromError } from './provider_status.js';
+import { codexUpdatePrompt } from './codex_update_prompt.js';
 
 // PURE terminal-pattern classifier — no store/sessions/server imports, so it is unit-testable without
 // booting the service. The poll-loop wiring (setClassifier) lives in detect.js, which re-exports this.
@@ -172,6 +173,8 @@ export function trustConfirmKeys(text) {
 // live selector. The parser stays deliberately narrow: an uncertain screen falls back to a text reply,
 // never speculative keys.
 export function terminalQuestionPrompt(text) {
+  const update = codexUpdatePrompt(text);
+  if (update) return update;
   const trust = terminalTrustPrompt(text);
   if (trust) return trust;
 
@@ -328,6 +331,11 @@ export function classify({ session, snap, idleMs, authGraceUntil, claudeActivity
   const tailLines = meaningfulTail(frame?.body ?? text, 16);
   const tailStr = tailLines.join('\n');
   const autonomous = session.autonomy === 'auto' || session.autonomy === 'full';
+
+  // Optional native updates must be visible in Story even immediately after a device move. Do not
+  // auto-key from polling: only an explicit send skips this modal, under the input ownership fence.
+  const update = session.tool === 'codex' ? codexUpdatePrompt(text) : null;
+  if (update) return { status: 'waiting', question: update.question };
 
   // 1) known one-time gates (trust / bypass warning) — checked first, before the fuzzy
   //    "working" words, since these screens contain prose like "Working with untrusted…".

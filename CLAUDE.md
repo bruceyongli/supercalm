@@ -676,6 +676,13 @@ read at most 512KiB, never scan a session's full rollout. Persist uncertain send
 Enter/lost HTTP responses can reconcile through `/input-receipt/:clientId`, including after refresh.
 The receipt endpoint never types into a CLI. Clear only the acknowledged web draft and its attachments,
 preserve newer edits, and never treat old matching text or a working-status change as proof of delivery.
+Codex's optional startup update selector (`Update now / Skip / Skip until next version`) can appear
+after a device move/resume. Project its exact choices into Story. An explicit text send may skip that
+specific complete live modal with Escape, under the per-pane ownership fence, then wait for an actual
+composer before pasting. Never install an update, persist a skip preference, approve other gates, or
+send ambient keys from polling. Quoted menus, changed input and unknown selectors must stay untouched.
+Remote `/input` and `/input-receipt` requests both belong to the owning executor, including native
+acknowledgement cursors; test the controller-to-worker HTTP path, not just the local send helper.
 Browser sends bound BOTH response headers and JSON bodies to 15 seconds; a lost/incomplete reply is
 unknown, never automatic permission to POST again. Recover through a bounded read-only receipt GET
 using the same persisted client identity. Keep genuinely unsent drafts and newer edits. A successful

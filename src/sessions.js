@@ -52,6 +52,7 @@ import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { createClaudeInputReceipt } from './claude_input_receipt.js';
 import { createCodexInputReceipt } from './codex_input_receipt.js';
 import { codexPaste } from './codex_composer.js';
+import { skipCodexUpdate } from './codex_update_prompt.js';
 import { stashClaudeComposer, normalizeClaudeInputScreen, CLAUDE_COMPOSER_FOOTER, claudePaste, claudePasteReady } from './claude_composer.js';
 import { adaptClaudeLaunch } from './claude_launch.js';
 import { observeClaudeActivity, claudeAttentionKey } from './claude_activity.js';
@@ -996,11 +997,40 @@ async function sendTextUnlocked(name, text, { requireOperatorTarget = false, men
   const wantedChoice = String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const terminalChoice = terminalPrompt?.options?.find((option) => option.label.toLowerCase() === wantedChoice);
   if (requireOperatorTarget && terminalChoice?.keys?.length) {
+    if (terminalPrompt.kind === 'codex-update') {
+      const live = terminalQuestionPrompt(await readInputScreen());
+      if (!inputUnchanged() || live?.kind !== 'codex-update' || live.from !== terminalPrompt.from || live.to !== terminalPrompt.to) {
+        return { accepted: false, reason: 'input-changed' };
+      }
+      const choice = live.options.find(option => option.label.toLowerCase() === wantedChoice);
+      if (!choice) return { accepted: false, reason: 'input-changed' };
+      for (const key of choice.keys) {
+        if (!inputUnchanged()) return { accepted: false, reason: 'input-changed' };
+        await exec(TMUX, ['send-keys', '-t', name, KEYMAP[key] || key], X);
+        await sleep(280);
+      }
+      return { accepted: true, selectedChoice: choice.label };
+    }
     for (const key of terminalChoice.keys) {
       await sendKey(name, key);
       await sleep(280);
     }
     return { accepted: true, selectedChoice: terminalChoice.label };
+  }
+  if (codexComposer && terminalPrompt?.kind === 'codex-update') {
+    const prepared = await skipCodexUpdate({ screen, readScreen: readInputScreen, inputUnchanged,
+      pressEscape: () => exec(TMUX, ['send-keys', '-t', name, 'Escape'], X),
+      isReady: view => {
+        const target = operatorInputPlan(view, text, { allowActive, replacePendingDraft });
+        return target.ready || target.reason === 'pending-draft' || !!terminalQuestionPrompt(view);
+      },
+    });
+    screen = prepared.screen;
+    if (prepared.skipped) {
+      const sid = store.getSessionByTmux(name)?.id;
+      if (sid) store.addEvent(sid, 'codex-update-skipped', { from: prepared.prompt.from, to: prepared.prompt.to, source: 'operator-send' });
+    }
+    if (prepared.reason) return { accepted: false, reason: prepared.reason };
   }
   let inputTarget = null;
   if (requireOperatorTarget) {
