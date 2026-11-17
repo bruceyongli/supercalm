@@ -117,6 +117,9 @@ required names from its authorized source. Send `{root, projectId, values}` on p
 `bin/project-release-environment.mjs` on the device, never in argv or tool logs. The helper stores a
 0600 file in a 0700 `project-environments` directory outside code and preview artifacts. It refuses
 symlinks, changing an existing environment, shell/platform control variables, and lossy encoding.
+Literal `KEY=VALUE` output is preferred when it round-trips through both simple legacy loaders and
+dotenv. A prior quoted representation can be rewritten only when every key and decoded value is
+identical; this is not credential rotation or permission to overwrite a different configuration.
 Only the file path appears in that project's live release-context. Its reviewed release child receives
 `DEV_VARS` pointing there, superseding old-machine paths without changing the parent/server/other
 projects. This is explicit operator configuration, not automatic credential copying during migration.

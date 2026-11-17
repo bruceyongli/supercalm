@@ -11,6 +11,11 @@ await mkdir(root, { recursive: true });
 const values = { APP_USERS: '{"fixture":"value"}', EXAMPLE_KEY: 'synthetic # only', SERVICE_URL: 'https://example.invalid/' };
 try {
   assert.deepEqual({ ...parseEnv(projectEnvironmentText(values)) }, values);
+  const legacyParse = text => Object.fromEntries(text.trim().split('\n').map(line => {
+    const i = line.indexOf('='); return [line.slice(0, i).trim(), line.slice(i + 1).trim()];
+  }));
+  const legacyValues = { APP_USERS: values.APP_USERS, SERVICE_URL: values.SERVICE_URL, SAMPLE_TOKEN: 'synthetic=a+b/c==' };
+  assert.deepEqual(legacyParse(projectEnvironmentText(legacyValues)), legacyValues, 'literal build loaders must not receive quote characters as credentials');
   assert.equal(projectReleaseEnvironment('p_fixture', root), '');
   const result = await installProjectEnvironment({ root, home, projectId: 'p_fixture', values });
   assert.equal(result.valuesReturned, false);
@@ -21,11 +26,15 @@ try {
   assert.equal(projectReleaseEnvironment('p_other', root), '', 'never use another project’s credentials');
   const before = await readFile(result.path, 'utf8');
   await installProjectEnvironment({ root, home, projectId: 'p_fixture', values });
+  const olderEncoding = Object.entries(values).map(([key, value]) => key + "='" + value + "'").join('\n') + '\n';
+  await writeFile(result.path, olderEncoding);
+  assert.equal((await installProjectEnvironment({ root, home, projectId: 'p_fixture', values })).reencoded, true);
+  assert.equal(await readFile(result.path, 'utf8'), before, 'lossless encoding repair, with exactly the same values and names');
   await assert.rejects(installProjectEnvironment({ root, home, projectId: 'p_fixture', values: { ...values, EXAMPLE_KEY: 'different' } }), /retained unchanged/);
   assert.equal(await readFile(result.path, 'utf8'), before);
   for (const key of ['NODE_OPTIONS', 'AIOS_NO_DEPLOY', 'PATH', 'DEV_VARS', 'HOME']) assert.throws(() => projectEnvironmentText({ [key]: 'unused' }), /Invalid/);
   assert.throws(() => projectEnvironmentText({ EXAMPLE_KEY: 'first\nSECOND=bad' }), /Unsupported/);
-  assert.throws(() => projectEnvironmentText({ EXAMPLE_KEY: 'both\'"quotes' }), /encoding/);
+  assert.throws(() => projectEnvironmentText({ EXAMPLE_KEY: ' both\'"quotes' }), /encoding/);
   await chmod(result.path, 0o644);
   assert.throws(() => projectReleaseEnvironment('p_fixture', root), /private/);
   await chmod(result.path, 0o600);

@@ -1,6 +1,6 @@
 // Explicit, project-scoped build configuration. Values never enter HTTP responses, argv or logs.
 import { lstatSync, realpathSync } from 'node:fs';
-import { mkdir, lstat, readFile, writeFile, link, unlink, realpath } from 'node:fs/promises';
+import { mkdir, lstat, readFile, writeFile, link, unlink, realpath, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseEnv } from 'node:util';
 import { randomBytes } from 'node:crypto';
@@ -20,6 +20,10 @@ export function projectEnvironmentText(values) {
     if (!/^[A-Z_][A-Z0-9_]{0,99}$/.test(key) || /^(AIOS_|NODE_|LD_|DYLD_)/.test(key)
         || ['PATH', 'HOME', 'SHELL', 'DEV_VARS'].includes(key)) throw Error('Invalid project variable name');
     if (typeof value !== 'string' || value.length > 65536 || /[\x00-\x1f\x7f]/.test(value)) throw Error('Unsupported project variable format: ' + key);
+    // Many established build loaders split KEY=VALUE without removing quote delimiters. Prefer
+    // literal values when BOTH that loader and Node's dotenv parser preserve the exact bytes.
+    const literal = key + '=' + value;
+    if (value.trim() === value && parseEnv(literal + '\n')[key] === value) return literal;
     const quote = !value.includes("'") ? "'" : !value.includes('"') ? '"' : null;
     if (!quote) throw Error('Project variable needs explicit dotenv encoding: ' + key);
     return key + '=' + quote + value + quote;
@@ -54,15 +58,28 @@ export async function installProjectEnvironment({ root, home, projectId, values 
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const st = await lstat(dir);
   if (!st.isDirectory() || st.uid !== process.getuid() || st.mode & 0o077) throw Error('Project environment directory is not private');
+  let previous = null;
   try {
     const existing = await lstat(path);
     if (!privateFile(existing)) throw Error('Existing project environment is not a private owned regular file');
-    if (await readFile(path, 'utf8') !== text) throw Error('Existing project environment differs; retained unchanged');
+    previous = await readFile(path, 'utf8');
+    const parsed = parseEnv(previous), keys = Object.keys(values);
+    if (Object.keys(parsed).length !== keys.length || keys.some(key => parsed[key] !== values[key])) throw Error('Existing project environment differs; retained unchanged');
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+  }
+  if (previous !== text) {
     const temp = join(dir, '.install-' + randomBytes(10).toString('hex'));
     await writeFile(temp, text, { flag: 'wx', mode: 0o600 });
-    try { await link(temp, path); } finally { await unlink(temp); } // atomic no-clobber publication
+    try {
+      if (previous === null) await link(temp, path); // atomic no-clobber first publication
+      else {
+        // Only a lossless representation change is allowed; credentials/keys are never rotated.
+        if (!privateFile(await lstat(path)) || await readFile(path, 'utf8') !== previous) throw Error('Project environment changed during validation');
+        await rename(temp, path);
+      }
+    } finally { await unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; }); }
   }
-  return { projectId, path: projectReleaseEnvironment(projectId, root), keys: Object.keys(values).sort(), mode: '0600', valuesReturned: false };
+  return { projectId, path: projectReleaseEnvironment(projectId, root), keys: Object.keys(values).sort(), mode: '0600', valuesReturned: false,
+    reencoded: previous !== null && previous !== text };
 }
