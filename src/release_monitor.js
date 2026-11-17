@@ -21,6 +21,7 @@ import { route, json, readJson } from './server.js';
 import { assertCompleteReleaseSource } from './release_contract.js';
 import { EXECUTION_NODE, remoteSession } from './execution_identity.js';
 import { executionNode, nodeRequest } from './execution_transport.js';
+import { projectReleaseEnvironment } from './project_release_environment.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS release_targets (
@@ -217,6 +218,7 @@ route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
     self_deploy: sameSource(project.path, ROOT),
     auto_release: !!target?.auto_release,
     source_dir: target?.source_dir || '', source_branch: target?.source_branch || '',
+    environment_file: projectReleaseEnvironment(project.id),
     release_scripts: JSON.parse(target?.release_scripts || '[]'),
     lock_dir: join(DATA_DIR, 'project-release-locks'),
   } });

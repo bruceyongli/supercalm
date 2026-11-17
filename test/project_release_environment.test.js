@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, mkdir, readFile, writeFile, realpath, rm, symlink, stat, chmod } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parseEnv } from 'node:util';
+import { installProjectEnvironment, projectEnvironmentText, projectReleaseEnvironment } from '../src/project_release_environment.js';
+
+const home = await realpath(await mkdtemp(join(tmpdir(), 'aios-project-env-')));
+const root = join(home, '.local/share/executor');
+await mkdir(root, { recursive: true });
+const values = { APP_USERS: '{"fixture":"value"}', EXAMPLE_KEY: 'synthetic # only', SERVICE_URL: 'https://example.invalid/' };
+try {
+  assert.deepEqual({ ...parseEnv(projectEnvironmentText(values)) }, values);
+  assert.equal(projectReleaseEnvironment('p_fixture', root), '');
+  const result = await installProjectEnvironment({ root, home, projectId: 'p_fixture', values });
+  assert.equal(result.valuesReturned, false);
+  assert.equal(JSON.stringify(result).includes(values.EXAMPLE_KEY), false);
+  assert.equal((await stat(result.path)).mode & 0o777, 0o600);
+  assert.equal((await stat(join(root, 'project-environments'))).mode & 0o777, 0o700);
+  assert.equal(projectReleaseEnvironment('p_fixture', root), result.path);
+  assert.equal(projectReleaseEnvironment('p_other', root), '', 'never use another project’s credentials');
+  const before = await readFile(result.path, 'utf8');
+  await installProjectEnvironment({ root, home, projectId: 'p_fixture', values });
+  await assert.rejects(installProjectEnvironment({ root, home, projectId: 'p_fixture', values: { ...values, EXAMPLE_KEY: 'different' } }), /retained unchanged/);
+  assert.equal(await readFile(result.path, 'utf8'), before);
+  for (const key of ['NODE_OPTIONS', 'AIOS_NO_DEPLOY', 'PATH', 'DEV_VARS', 'HOME']) assert.throws(() => projectEnvironmentText({ [key]: 'unused' }), /Invalid/);
+  assert.throws(() => projectEnvironmentText({ EXAMPLE_KEY: 'first\nSECOND=bad' }), /Unsupported/);
+  assert.throws(() => projectEnvironmentText({ EXAMPLE_KEY: 'both\'"quotes' }), /encoding/);
+  await chmod(result.path, 0o644);
+  assert.throws(() => projectReleaseEnvironment('p_fixture', root), /private/);
+  await chmod(result.path, 0o600);
+  const victim = join(home, 'untouched'); await writeFile(victim, 'retained');
+  await symlink(victim, join(root, 'project-environments/p_link.env'));
+  await assert.rejects(installProjectEnvironment({ root, home, projectId: 'p_link', values }), /private/);
+  assert.equal(await readFile(victim, 'utf8'), 'retained');
+  await assert.rejects(installProjectEnvironment({ root, home, projectId: '../escape', values }), /identity/);
+  await assert.rejects(installProjectEnvironment({ root: home, home, projectId: 'p_escape', values }), /managed/);
+  const unsafeRoot = join(home, '.local/share/unsafe'); await mkdir(unsafeRoot);
+  await symlink(join(root, 'project-environments'), join(unsafeRoot, 'project-environments'));
+  await assert.rejects(installProjectEnvironment({ root: unsafeRoot, home, projectId: 'p_other', values }), /private/);
+  console.log('project_release_environment: selected values, private project scope, idempotence, no clobber/leak/injection, symlink checks passed');
+} finally { await rm(home, { recursive: true, force: true }); }

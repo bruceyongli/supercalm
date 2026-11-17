@@ -26,7 +26,7 @@ const server = createServer((req, res) => {
 await new Promise(ok => server.listen(0, '127.0.0.1', ok));
 const base = 'http://127.0.0.1:' + server.address().port;
 await writeFile(join(fakeBin, 'npm'), `#!/usr/bin/env node
-console.log(JSON.stringify({called:true,noDeploy:process.env.AIOS_NO_DEPLOY??null,sha:process.env.AIOS_RELEASE_CANDIDATE_SHA,args:process.argv.slice(2),copyRoot:process.env.AIOS_BUILD_COPY_ROOT??null,copyPreload:process.env.NODE_OPTIONS?.includes('build_asset_copy.js')||false}));
+console.log(JSON.stringify({called:true,noDeploy:process.env.AIOS_NO_DEPLOY??null,sha:process.env.AIOS_RELEASE_CANDIDATE_SHA,args:process.argv.slice(2),copyRoot:process.env.AIOS_BUILD_COPY_ROOT??null,copyPreload:process.env.NODE_OPTIONS?.includes('build_asset_copy.js')||false,devVars:process.env.DEV_VARS||null}));
 process.exit(Number(process.env.TEST_RELEASE_EXIT||0));
 `);
 await chmod(join(fakeBin, 'npm'), 0o755);
@@ -35,7 +35,7 @@ const guard = resolve('scripts/aios-command-guard.sh');
 const run = (args = options.args, extra = {}) => new Promise((ok, no) => {
   const child = spawn(guard, args, { cwd: options.cwd, env: { ...process.env, PATH: fakeBin + ':' + process.env.PATH,
     AIOS_SESSION_ID: context.session_id, AIOS_URL: base, AIOS_GUARDED_COMMAND: 'npm', AIOS_NO_DEPLOY: '1',
-    AIOS_DEPLOY_SOURCE_DIR: '/stale/launch/value', AIOS_DEPLOY_BRANCH: 'stale', AIOS_DEPLOY_CANDIDATE_SHA: sha, ...extra } });
+    AIOS_DEPLOY_SOURCE_DIR: '/stale/launch/value', AIOS_DEPLOY_BRANCH: 'stale', AIOS_DEPLOY_CANDIDATE_SHA: sha, DEV_VARS: '', ...extra } });
   let stdout = '', stderr = '';
   child.stdout.on('data', b => stdout += b); child.stderr.on('data', b => stderr += b);
   child.on('error', no); child.on('close', code => ok({ code, stdout, stderr }));
@@ -81,7 +81,7 @@ try {
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { called: true, noDeploy: null, sha, args: options.args,
     copyRoot: process.platform === 'darwin' ? await realpath(repo) : null,
-    copyPreload: process.platform === 'darwin' });
+    copyPreload: process.platform === 'darwin', devVars: null });
   assert.match(result.stderr, /Supercalm release: p_release/);
   assert.equal((await readFile(join(context.lock_dir, 'p_release.lock'))).length, 0, 'no stale owner/approval record');
   result = await run(options.args, { TEST_RELEASE_EXIT: '7' });
@@ -98,6 +98,15 @@ try {
   assert.equal((await run(['run', 'build'])).code, 0, 'ordinary commands unchanged');
   liveContext = context;
   assert.equal((await run()).code, 0, 'live permission restores only its reviewed command');
+  const privateEnvironment = join(fixture, 'project.env');
+  await writeFile(privateEnvironment, 'EXAMPLE_KEY=fixture-only\n', { mode: 0o600 });
+  liveContext = { ...context, environment_file: privateEnvironment };
+  result = await run(options.args, { DEV_VARS: '/old-device/nonexistent.env' });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).devVars, privateEnvironment, 'release uses the installed project config, not old-device paths');
+  assert.equal(result.stdout.includes('fixture-only'), false, 'no secret content in release metadata');
+  await assert.rejects(runProjectRelease(liveContext, { ...options, executable: '/should-never-run',
+    refreshContext: async () => ({ ...liveContext, environment_file: '' }) }), /permission changed/);
   console.log('project_release_guard.test: source, command, candidate, live permission, concurrency, failure cleanup passed');
 } finally {
   await new Promise(ok => server.close(ok));

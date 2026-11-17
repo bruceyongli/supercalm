@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,7 @@ import { createServer } from 'node:net';
 // Real controller -> worker HTTP -> private tmux -> native receipt. No live session, CLI, model,
 // project or SSH connection is used. The controller deliberately has no usable local tmux/history.
 const exec = promisify(execFile);
-const scratch = mkdtempSync(join(tmpdir(), 'aios-remote-input-'));
+const scratch = realpathSync(mkdtempSync(join(tmpdir(), 'aios-remote-input-')));
 const socket = `aios-remote-input-${process.pid}`;
 const realTmux = (await exec('which', ['tmux'])).stdout.trim();
 const quote = text => `'${String(text).replace(/'/g, "'\\''")}'`;
@@ -119,11 +119,16 @@ try {
   const releaseUrl = '/api/project/p_remote_release/release';
   const policy = { source_dir: join(root, 'approved-release'), source_branch: 'release-fixture',
     auto_release: true, release_scripts: [{ cwd: 'web', script: 'deploy' }] };
+  mkdirSync(join(root, 'project-environments'), { mode: 0o700 });
+  const environmentFile = join(root, 'project-environments/p_remote_release.env');
+  writeFileSync(environmentFile, 'EXAMPLE_KEY=synthetic-private-fixture\n', { mode: 0o600 });
   assert.equal((await request(releaseUrl, policy)).status, 200);
   const target = (await import('../src/release_monitor.js')).getTarget('p_remote_release');
   assert.equal(target.source_dir, policy.source_dir, 'controller mutation reaches the owning worker');
   const releaseContext = (await request(url + '/release-context')).body.context;
   assert.equal(releaseContext.source_dir, policy.source_dir);
+  assert.equal(releaseContext.environment_file, environmentFile);
+  assert.equal(JSON.stringify(releaseContext).includes('synthetic-private-fixture'), false, 'only the path is returned');
   assert.deepEqual(releaseContext.project_repository_paths, cases.map(c => join(root, c.id)).sort());
   assert.equal(releaseContext.project_path, join(root, 'first-clone'));
   assert.equal((await request(releaseUrl)).body.target.source_dir, policy.source_dir);

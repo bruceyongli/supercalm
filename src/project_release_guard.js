@@ -99,13 +99,16 @@ export async function runProjectRelease(context, { tool, executable, args, cwd, 
     const checked = await checkProjectRelease(context, { tool, args, cwd, expectedSha: env.AIOS_DEPLOY_CANDIDATE_SHA || '' });
     if (refreshContext) {
       const fresh = await refreshContext();
-      for (const key of ['session_id', 'project_id', 'project_path', 'project_repository_paths', 'source_dir', 'source_branch', 'auto_release', 'self_deploy', 'release_scripts', 'lock_dir']) {
+      for (const key of ['session_id', 'project_id', 'project_path', 'project_repository_paths', 'source_dir', 'source_branch', 'environment_file', 'auto_release', 'self_deploy', 'release_scripts', 'lock_dir']) {
         if (JSON.stringify(fresh[key]) !== JSON.stringify(context[key])) fail('Project release permission changed during validation; retry using the current contract.');
       }
     }
     // Only this child receives permission. Never change the caller, server, launch configuration or
     // another session's env. Repository-owned gates and public verification remain in the release script.
     const childEnv = buildCopyEnvironment(checked.source, { ...env, AIOS_DEPLOY_SOURCE_DIR: checked.source, AIOS_DEPLOY_BRANCH: checked.branch, AIOS_RELEASE_CANDIDATE_SHA: checked.sha });
+    // Device-local project configuration supersedes an inherited path from the old Mac. Only this
+    // reviewed release child receives the path; values stay in the project's own build loader.
+    if (context.environment_file) childEnv.DEV_VARS = context.environment_file;
     delete childEnv.AIOS_NO_DEPLOY;
     process.stderr.write(`Supercalm release: ${context.project_id} ${checked.sha.slice(0, 12)} — ${tool} ${args.join(' ')}\n`);
     return await new Promise((ok, no) => {

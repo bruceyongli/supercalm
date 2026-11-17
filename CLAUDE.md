@@ -224,6 +224,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   `bin/execution-connection.mjs` reuses an already-authorized, device-local key and verified known host,
   adds a managed SSH alias without replacing other configuration, and records a read-only probe.
   Never copy private keys/global env files, auto-accept host keys, or hardcode another Mac's home path.
+  Project build variables may be explicitly selected and installed with `bin/project-release-environment.mjs`
+  over private stdin transport. Only that project's reviewed release child receives the managed
+  `DEV_VARS` path from live release-context. Never expose values in HTTP/logs, copy unrelated variables,
+  overwrite a different installed environment, or inject them into the server/other sessions.
   See `docs/specs/execution-devices.md` and the opt-in disposable live-device verification script.
   Network-source moves traverse Git on disposable local SSD and include index-only objects.
   Registered archived worktrees/artifacts stream directly from SSH storage; retain originals and

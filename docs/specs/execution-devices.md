@@ -112,6 +112,15 @@ may belong to any such repository; identical remotes or commit IDs alone are not
 operator still declares the exact source directory, branch and reviewed package scripts. Cleanliness,
 candidate identity, live revocation and command-scoped permission remain enforced.
 
+If the standard build requires application environment variables, select only the reviewed project's
+required names from its authorized source. Send `{root, projectId, values}` on private stdin to
+`bin/project-release-environment.mjs` on the device, never in argv or tool logs. The helper stores a
+0600 file in a 0700 `project-environments` directory outside code and preview artifacts. It refuses
+symlinks, changing an existing environment, shell/platform control variables, and lossy encoding.
+Only the file path appears in that project's live release-context. Its reviewed release child receives
+`DEV_VARS` pointing there, superseding old-machine paths without changing the parent/server/other
+projects. This is explicit operator configuration, not automatic credential copying during migration.
+
 ## Acceptance
 
 - Device health and selector; local default, no arbitrary SSH/browser command injection.
