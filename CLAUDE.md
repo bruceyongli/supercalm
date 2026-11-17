@@ -30,6 +30,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   child release command loses `AIOS_NO_DEPLOY`; the caller/server/other sessions remain unchanged.
   Do not enable `auto_publish` for another project or globally unset isolation flags to unblock it.
   An approved release checkout may be a designated worktree; never silently choose an old main branch.
+  Login shells can reorder PATH and bypass best-effort package wrappers. The live contract exposes
+  `release_runner: {node, script}`: use `node script npm run reviewed-script` from the declared package
+  directory for the reliable checked entry, including automatic project environment injection.
   For remote projects, contract GET/POST/check routes run on the owning execution device; successful
   updates are mirrored on the controller. The guard accepts the project's primary repository or a
   server-registered same-project local execution clone (including its linked release worktree), never

@@ -124,6 +124,13 @@ Only the file path appears in that project's live release-context. Its reviewed 
 `DEV_VARS` pointing there, superseding old-machine paths without changing the parent/server/other
 projects. This is explicit operator configuration, not automatic credential copying during migration.
 
+Tool shells can reset PATH to the device's native package manager. Do not assume the best-effort
+guard-bin wrapper ran. Release-context exposes `release_runner: {node, script}` for an explicit entry:
+invoke that node and script with `npm run reviewed-script` from the declared package directory. This
+always checks the live contract and injects the project environment, regardless of shell PATH order;
+it finds the native package manager without recursively calling guard-bin. Older wrapper calls remain
+supported. Repository gates, clean source, command-scoped permission and locking are unchanged.
+
 ## Acceptance
 
 - Device health and selector; local default, no arbitrary SSH/browser command injection.

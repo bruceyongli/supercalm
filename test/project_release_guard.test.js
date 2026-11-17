@@ -32,8 +32,8 @@ process.exit(Number(process.env.TEST_RELEASE_EXIT||0));
 await chmod(join(fakeBin, 'npm'), 0o755);
 const options = { tool: 'npm', args: ['run', 'deploy:frontend'], cwd: join(repo, 'web') };
 const guard = resolve('scripts/aios-command-guard.sh');
-const run = (args = options.args, extra = {}) => new Promise((ok, no) => {
-  const child = spawn(guard, args, { cwd: options.cwd, env: { ...process.env, PATH: fakeBin + ':' + process.env.PATH,
+const run = (args = options.args, extra = {}, direct = false) => new Promise((ok, no) => {
+  const child = spawn(direct ? process.execPath : guard, direct ? [resolve('bin/project-release-guard.mjs'), 'npm', ...args] : args, { cwd: options.cwd, env: { ...process.env, PATH: fakeBin + ':' + process.env.PATH,
     AIOS_SESSION_ID: context.session_id, AIOS_URL: base, AIOS_GUARDED_COMMAND: 'npm', AIOS_NO_DEPLOY: '1',
     AIOS_DEPLOY_SOURCE_DIR: '/stale/launch/value', AIOS_DEPLOY_BRANCH: 'stale', AIOS_DEPLOY_CANDIDATE_SHA: sha, DEV_VARS: '', ...extra } });
   let stdout = '', stderr = '';
@@ -105,6 +105,14 @@ try {
   assert.equal(result.code, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).devVars, privateEnvironment, 'release uses the installed project config, not old-device paths');
   assert.equal(result.stdout.includes('fixture-only'), false, 'no secret content in release metadata');
+  result = await run(options.args, { DEV_VARS: '/old-device/nonexistent.env' }, true);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).devVars, privateEnvironment, 'explicit entry works without a PATH wrapper');
+  assert.equal(JSON.parse(result.stdout).noDeploy, null, 'only the reviewed child gets release permission');
+  assert.equal((await run(['run', 'deploy:unsafe'], {}, true)).code, 126, 'explicit entry still enforces the reviewed script');
+  liveContext = { ...liveContext, auto_release: false };
+  assert.equal((await run(options.args, {}, true)).code, 126, 'explicit entry enforces live revocation');
+  liveContext = { ...liveContext, auto_release: true };
   await assert.rejects(runProjectRelease(liveContext, { ...options, executable: '/should-never-run',
     refreshContext: async () => ({ ...liveContext, environment_file: '' }) }), /permission changed/);
   console.log('project_release_guard.test: source, command, candidate, live permission, concurrency, failure cleanup passed');

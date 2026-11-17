@@ -191,9 +191,12 @@ copies in the session temp root; use this job runner, and reuse one working copy
 
 For an operator-authorized project release, use that project's reviewed release workflow without
 asking again for routine confirmation. GET $AIOS_URL/api/session/$AIOS_SESSION_ID/release-context
-gives the current approved source directory, branch and package scripts. The normal package command
-checks this live contract and obtains command-only permission even when AIOS_NO_DEPLOY=1; never unset
-that flag globally or request a different session merely to evade it. Commit and verify the intended
+gives the current approved source directory, branch, package scripts, environment_file and release_runner.
+Use its explicit stable entry: <release_runner.node> <release_runner.script> npm run <reviewed-script>,
+from the declared package directory. This checks the live contract and supplies the project's DEV_VARS
+even if a login shell reordered PATH and bypassed the best-effort npm wrapper. It obtains command-only
+permission even when AIOS_NO_DEPLOY=1; never unset that flag globally or request a different session
+merely to evade it. Commit and verify the intended
 source first. Do not deploy from an old branch, bypass repository gates, or change the release contract
 without operator authority. /integrate is AIOS-self-only, not a generic project publisher.
 

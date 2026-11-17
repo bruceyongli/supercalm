@@ -219,6 +219,7 @@ route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
     auto_release: !!target?.auto_release,
     source_dir: target?.source_dir || '', source_branch: target?.source_branch || '',
     environment_file: projectReleaseEnvironment(project.id),
+    release_runner: { node: process.execPath, script: join(ROOT, 'bin', 'project-release-guard.mjs') },
     release_scripts: JSON.parse(target?.release_scripts || '[]'),
     lock_dir: join(DATA_DIR, 'project-release-locks'),
   } });

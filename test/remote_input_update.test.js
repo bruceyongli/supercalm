@@ -128,6 +128,8 @@ try {
   const releaseContext = (await request(url + '/release-context')).body.context;
   assert.equal(releaseContext.source_dir, policy.source_dir);
   assert.equal(releaseContext.environment_file, environmentFile);
+  assert.equal(releaseContext.release_runner.node, process.execPath);
+  assert.ok(releaseContext.release_runner.script.endsWith('/bin/project-release-guard.mjs'));
   assert.equal(JSON.stringify(releaseContext).includes('synthetic-private-fixture'), false, 'only the path is returned');
   assert.deepEqual(releaseContext.project_repository_paths, cases.map(c => join(root, c.id)).sort());
   assert.equal(releaseContext.project_path, join(root, 'first-clone'));
