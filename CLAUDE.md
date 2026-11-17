@@ -30,6 +30,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   child release command loses `AIOS_NO_DEPLOY`; the caller/server/other sessions remain unchanged.
   Do not enable `auto_publish` for another project or globally unset isolation flags to unblock it.
   An approved release checkout may be a designated worktree; never silently choose an old main branch.
+  For remote projects, contract GET/POST/check routes run on the owning execution device; successful
+  updates are mirrored on the controller. The guard accepts the project's primary repository or a
+  server-registered same-project local execution clone (including its linked release worktree), never
+  an arbitrary clone with a matching origin/HEAD. Registration does not grant a source or script.
 - After a later release covers an older AIOS candidate, queued entries become `SUPERSEDED`; mechanical
   HELDs are retired after live-SHA ancestry + sustained DB health verification. Keep the audit trail.
   Do not mark unverified work GREEN, bypass substantive holds, redeploy old queue entries or roll back
@@ -216,6 +220,10 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   not the lifetime of native processes. Run the same committed runtime on each registered device
   through `bin/deploy`; private worker auth is stored mode 0600, never in argv or browser state.
   Preserve release source contracts, do not turn a copied repository into an approved deploy source.
+  Deployment SSH connections are separate from session/model transport. Explicit operator setup via
+  `bin/execution-connection.mjs` reuses an already-authorized, device-local key and verified known host,
+  adds a managed SSH alias without replacing other configuration, and records a read-only probe.
+  Never copy private keys/global env files, auto-accept host keys, or hardcode another Mac's home path.
   See `docs/specs/execution-devices.md` and the opt-in disposable live-device verification script.
   Network-source moves traverse Git on disposable local SSD and include index-only objects.
   Registered archived worktrees/artifacts stream directly from SSH storage; retain originals and

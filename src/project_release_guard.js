@@ -39,8 +39,18 @@ export async function checkProjectRelease(context, { tool, args, cwd = process.c
   const root = await realpath(await git(dir, ['rev-parse', '--show-toplevel']));
   if (root !== source) fail('Release source must be the declared Git checkout root (nested repositories are not allowed).');
   const common = await realpath(await git(source, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-  const projectCommon = await realpath(await git(context.project_path, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
-  if (common !== projectCommon) fail('Release source belongs to a different project repository.');
+  {
+    // Execution-device checkouts are independent complete clones, not worktrees sharing the first
+    // project checkout's .git. Only server-registered, same-project local repositories may match;
+    // a matching origin URL or commit alone never authorizes an arbitrary copied repository.
+    let registered = false;
+    const paths = [context.project_path, ...(Array.isArray(context.project_repository_paths) ? context.project_repository_paths : [])];
+    for (const path of [...new Set(paths)].slice(0, 256)) {
+      if (typeof path !== 'string' || !isAbsolute(path)) continue;
+      try { if (common === await realpath(await git(path, ['rev-parse', '--path-format=absolute', '--git-common-dir']))) { registered = true; break; } } catch {}
+    }
+    if (!registered) fail('Release source belongs to a different project repository.');
+  }
   if (await git(source, ['branch', '--show-current']) !== context.source_branch) fail('Release source is on the wrong branch; expected ' + context.source_branch);
   const sha = await git(source, ['rev-parse', 'HEAD']);
   if (!/^[a-f0-9]{40,64}$/.test(sha) || expectedSha && sha !== expectedSha) fail('Release candidate changed; verify the exact committed candidate again.');
@@ -89,7 +99,7 @@ export async function runProjectRelease(context, { tool, executable, args, cwd, 
     const checked = await checkProjectRelease(context, { tool, args, cwd, expectedSha: env.AIOS_DEPLOY_CANDIDATE_SHA || '' });
     if (refreshContext) {
       const fresh = await refreshContext();
-      for (const key of ['session_id', 'project_id', 'project_path', 'source_dir', 'source_branch', 'auto_release', 'self_deploy', 'release_scripts', 'lock_dir']) {
+      for (const key of ['session_id', 'project_id', 'project_path', 'project_repository_paths', 'source_dir', 'source_branch', 'auto_release', 'self_deploy', 'release_scripts', 'lock_dir']) {
         if (JSON.stringify(fresh[key]) !== JSON.stringify(context[key])) fail('Project release permission changed during validation; retry using the current contract.');
       }
     }

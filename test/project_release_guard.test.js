@@ -57,6 +57,21 @@ try {
   const other = join(fixture, 'other'); await mkdir(other);
   execFileSync('git', ['-C', other, 'init', '-q']);
   await assert.rejects(checkProjectRelease({ ...context, project_path: other }, options), /different project/);
+  const clone = join(fixture, 'registered-device-clone');
+  execFileSync('git', ['clone', '--quiet', '--no-hardlinks', repo, clone]);
+  const cloneContext = { ...context, source_dir: clone };
+  const cloneOptions = { ...options, cwd: join(clone, 'web') };
+  await assert.rejects(checkProjectRelease(cloneContext, cloneOptions), /different project/, 'same origin/HEAD is not release authority');
+  const registeredContext = { ...cloneContext, project_repository_paths: [clone] };
+  assert.equal((await checkProjectRelease(registeredContext, cloneOptions)).sha, sha);
+  const linked = join(fixture, 'clean-release-worktree');
+  execFileSync('git', ['-C', clone, 'worktree', 'add', '-q', '-b', 'publish', linked]);
+  assert.equal((await checkProjectRelease({ ...registeredContext, source_dir: linked, source_branch: 'publish' },
+    { ...options, cwd: join(linked, 'web') })).sha, sha, 'clean release worktree of registered device clone');
+  await assert.rejects(runProjectRelease(registeredContext, { ...cloneOptions, executable: '/should-never-run',
+    refreshContext: async () => ({ ...registeredContext, project_repository_paths: [] }) }), /permission changed/);
+  await writeFile(join(clone, 'uncommitted'), 'must retain');
+  await assert.rejects(checkProjectRelease(registeredContext, cloneOptions), /dirty/, 'registration does not bypass clean candidate');
   assert.throws(() => releaseScripts([{ cwd: '../escape', script: 'deploy' }]), /relative/);
   assert.throws(() => releaseScripts([{ cwd: '.', script: 'deploy; rm' }]), /invalid/);
   await assert.rejects(fetchReleaseContext('s_release', 'https://example.com', () => { throw new Error('must not fetch'); }), /local AIOS/);

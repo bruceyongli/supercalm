@@ -19,6 +19,8 @@ import { applyMigrations, ensureColumn } from './migrations.js';
 import { releaseScripts } from './project_release_guard.js';
 import { route, json, readJson } from './server.js';
 import { assertCompleteReleaseSource } from './release_contract.js';
+import { EXECUTION_NODE, remoteSession } from './execution_identity.js';
+import { executionNode, nodeRequest } from './execution_transport.js';
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS release_targets (
@@ -188,6 +190,22 @@ async function tick() {
 // ---- routes ----------------------------------------------------------------
 const view = (t, proj) => t ? { project_id: t.project_id, enabled: !!t.enabled, live_url: t.live_url, expect: t.expect, forbid: t.forbid, source_dir: t.source_dir, source_branch: t.source_branch, auto_release: !!t.auto_release, release_scripts: JSON.parse(t.release_scripts || '[]'), interval_sec: t.interval_sec, last_status: t.last_status || 'unknown', last_detail: t.last_detail || '', last_value: t.last_value || '', last_checked: t.last_checked || 0, project: proj ? { id: proj.id, name: proj.name } : null } : null;
 
+const _repositories = db.prepare(`SELECT DISTINCT worktree_path FROM sessions WHERE project_id = ?
+  AND execution_node = ? AND execution_checkout = 1 AND execution_dormant = 0
+  AND execution_history_only = 0 AND worktree_path IS NOT NULL AND worktree_path != '' ORDER BY worktree_path`);
+
+// A migrated project is configured where it executes. Do not acknowledge an update to only the
+// controller's stale copy while its command guard keeps reading a different contract on the worker.
+async function remoteRelease(proj, res, { method = 'GET', body, suffix = '' } = {}) {
+  if (!remoteSession(proj)) return false;
+  try {
+    const result = await nodeRequest(executionNode(proj.execution_node), `/api/project/${encodeURIComponent(proj.id)}/release${suffix}`, { method, body });
+    if (method === 'POST' && !suffix && result.ok && result.target) setTarget(proj.id, result.target);
+    json(res, 200, result);
+  } catch (error) { json(res, error.status || 503, { error: error.message, code: error.code || 'execution-release-error' }); }
+  return true;
+}
+
 route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
   const session = store.getSession(id);
   const project = session?.project_id ? store.getProject(session.project_id) : null;
@@ -195,6 +213,7 @@ route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
   const target = getTarget(project.id);
   json(res, 200, { ok: true, context: {
     session_id: id, project_id: project.id, project_path: project.path,
+    project_repository_paths: _repositories.all(project.id, EXECUTION_NODE).map(row => row.worktree_path),
     self_deploy: sameSource(project.path, ROOT),
     auto_release: !!target?.auto_release,
     source_dir: target?.source_dir || '', source_branch: target?.source_branch || '',
@@ -203,9 +222,10 @@ route('GET', '/api/session/:id/release-context', (req, res, { id }) => {
   } });
 });
 
-route('GET', '/api/project/:id/release', (req, res, { id }) => {
+route('GET', '/api/project/:id/release', async (req, res, { id }) => {
   const proj = store.getProject(id);
   if (!proj) return json(res, 404, { error: 'no such project' });
+  if (await remoteRelease(proj, res)) return;
   json(res, 200, { ok: true, target: view(getTarget(id), proj) || { project_id: id, enabled: true, live_url: '', expect: '', forbid: '', source_dir: '', source_branch: '', interval_sec: 900, last_status: 'unknown', project: { id: proj.id, name: proj.name } } });
 });
 
@@ -213,6 +233,7 @@ route('POST', '/api/project/:id/release', async (req, res, { id }) => {
   const proj = store.getProject(id);
   if (!proj) return json(res, 404, { error: 'no such project' });
   const b = await readJson(req).catch(() => ({}));
+  if (await remoteRelease(proj, res, { method: 'POST', body: b })) return;
   try { const t = setTarget(id, b); json(res, 200, { ok: true, target: view(t, proj) }); }
   catch (e) { json(res, 400, { error: e.message }); }
 });
@@ -220,6 +241,7 @@ route('POST', '/api/project/:id/release', async (req, res, { id }) => {
 route('POST', '/api/project/:id/release/check', async (req, res, { id }) => {
   const proj = store.getProject(id);
   if (!proj) return json(res, 404, { error: 'no such project' });
+  if (await remoteRelease(proj, res, { method: 'POST', suffix: '/check' })) return;
   const r = await checkTarget(id, { force: true });
   if (!r) return json(res, 400, { error: 'no live_url configured for this project' });
   json(res, 200, { ok: true, result: r, target: view(getTarget(id), proj) });

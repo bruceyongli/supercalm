@@ -92,6 +92,26 @@ locations remain. It is not reported as a successfully recovered native conversa
 session belongs to a device, the project execution-device API can select that owner for new launches
 without changing its original release authorization/source contract.
 
+## Publishing from an execution device
+
+Session migration does not copy SSH keys or grant deployment authority. A project with a separate
+publishing host needs its own working connection on the new device. With explicit operator direction,
+run `bin/execution-connection.mjs` there with JSON on stdin: `root`, `alias`, `host`, `user`, optional
+`port`, and `identityFile`. The identity must already be private, device-local, and authorized by the
+destination, with a verified known-host entry. The helper performs a strict read-only SSH probe and
+installs an idempotent managed Include, preserving existing SSH configuration. It never generates,
+copies or registers keys, prompts for credentials, or changes the destination service. Project release
+scripts should use this SSH alias instead of embedding another machine's identity path.
+
+Project release GET/POST/check requests route to the owning device. Successful configuration mutations
+are mirrored centrally, but an offline worker returns an availability error rather than acknowledging
+a controller-only change. Session release-context includes only server-registered, same-project local
+execution repositories, excluding dormant/history-only/other-device sessions. Independent migrated
+clones need not share the first checkout's Git common directory. A designated clean release worktree
+may belong to any such repository; identical remotes or commit IDs alone are not sufficient. The
+operator still declares the exact source directory, branch and reviewed package scripts. Cleanliness,
+candidate identity, live revocation and command-scoped permission remain enforced.
+
 ## Acceptance
 
 - Device health and selector; local default, no arbitrary SSH/browser command injection.

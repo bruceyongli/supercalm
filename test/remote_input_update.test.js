@@ -51,6 +51,8 @@ process.once('SIGINT', () => { cleanup(); process.exit(130); });
 try {
   await (await import('../src/server.js')).featureReady;
   store = await import('../src/store.js');
+  store.createProject({ id: 'p_remote_release', name: 'Remote release fixture', path: join(root, 'first-clone') });
+  store.db.prepare('UPDATE projects SET execution_node=? WHERE id=?').run('input-worker', 'p_remote_release');
   const cases = [
     { id: 's_remote_update', uuid: '11111111-2222-4333-8444-555555555551' },
     { id: 's_remote_skip', uuid: '11111111-2222-4333-8444-555555555552' },
@@ -67,17 +69,32 @@ try {
       if ((await exec(wrapper, ['capture-pane', '-p', '-t', id])).stdout.includes('esc skip')) break;
       assert.ok(n < 60, 'private update modal ready'); await new Promise(resolve => setTimeout(resolve, 50));
     }
-    store.createSession({ id, tool: 'codex', tmux: id });
-    store.updateSession(id, { codex_uuid: uuid, status: 'waiting', execution_node: 'input-worker' });
+    store.createSession({ id, project_id: 'p_remote_release', tool: 'codex', tmux: id });
+    store.updateSession(id, { codex_uuid: uuid, status: 'waiting', execution_node: 'input-worker',
+      execution_checkout: 1, worktree_path: join(root, id) });
   }
+  // Only the worker's registered same-project active repository identities are trusted.
+  for (const [id, node, dormant, history] of [['s_remote_dormant', 'input-worker', 1, 0],
+    ['s_remote_history', 'input-worker', 0, 1], ['s_other_owner', 'elsewhere', 0, 0]]) {
+    store.createSession({ id, project_id: 'p_remote_release', tool: 'codex', tmux: id });
+    store.updateSession(id, { execution_node: node, execution_checkout: 1, execution_dormant: dormant, worktree_path: join(root, id) });
+    store.db.prepare('UPDATE sessions SET execution_history_only=? WHERE id=?').run(history, id);
+  }
+  store.createProject({ id: 'p_other_release', name: 'Other project', path: join(root, 'other-project') });
+  store.createSession({ id: 's_other_project', project_id: 'p_other_release', tool: 'codex', tmux: 'unused-other-project' });
+  store.updateSession('s_other_project', { execution_node: 'input-worker', execution_checkout: 1, worktree_path: join(root, 'other-project') });
   const nodesFile = join(control, 'nodes.json');
   writeFileSync(nodesFile, JSON.stringify({ version: 1, nodes: [{ id: 'input-worker', host: 'localhost',
     local: true, root, token, localPort: workerPort, remotePort: workerPort, callbackPort: controllerPort }] }));
   const bootstrap = `await (await import(${JSON.stringify(new URL('../src/server.js', import.meta.url).href)})).featureReady;
     const store = await import(${JSON.stringify(new URL('../src/store.js', import.meta.url).href)});
+    if (!store.getProject('p_remote_release')) store.createProject({id:'p_remote_release',name:'Remote release fixture',path:'/stale/controller/project'});
+    store.db.prepare('UPDATE projects SET execution_node=? WHERE id=?').run('input-worker','p_remote_release');
+    store.createProject({id:'p_offline_release',name:'Offline fixture',path:'/offline/project'});
+    store.db.prepare('UPDATE projects SET execution_node=? WHERE id=?').run('unconfigured-device','p_offline_release');
     for (const {id, uuid} of ${JSON.stringify(cases)}) {
-      if (!store.getSession(id)) store.createSession({id, tool:'codex', tmux:'not-on-controller'});
-      store.updateSession(id, {execution_node:'input-worker', codex_uuid:uuid, status:'waiting'});
+      if (!store.getSession(id)) store.createSession({id, project_id:'p_remote_release', tool:'codex', tmux:'not-on-controller'});
+      store.updateSession(id, {project_id:'p_remote_release', execution_node:'input-worker', codex_uuid:uuid, status:'waiting'});
     }`;
   child = spawn(process.execPath, ['--input-type=module', '-e', bootstrap], { env: { ...process.env,
     AIOS_DATA: join(control, 'data'), AIOS_PORT: String(controllerPort), AIOS_EXECUTION_NODE: 'local',
@@ -99,6 +116,24 @@ try {
     return { status: response.status, body: await response.json() };
   };
   const sid = cases[0].id, url = `/api/session/${sid}`;
+  const releaseUrl = '/api/project/p_remote_release/release';
+  const policy = { source_dir: join(root, 'approved-release'), source_branch: 'release-fixture',
+    auto_release: true, release_scripts: [{ cwd: 'web', script: 'deploy' }] };
+  assert.equal((await request(releaseUrl, policy)).status, 200);
+  const target = (await import('../src/release_monitor.js')).getTarget('p_remote_release');
+  assert.equal(target.source_dir, policy.source_dir, 'controller mutation reaches the owning worker');
+  const releaseContext = (await request(url + '/release-context')).body.context;
+  assert.equal(releaseContext.source_dir, policy.source_dir);
+  assert.deepEqual(releaseContext.project_repository_paths, cases.map(c => join(root, c.id)).sort());
+  assert.equal(releaseContext.project_path, join(root, 'first-clone'));
+  assert.equal((await request(releaseUrl)).body.target.source_dir, policy.source_dir);
+  assert.equal((await request(releaseUrl, { source_branch: '' })).status, 400);
+  assert.equal((await request(url + '/release-context')).body.context.source_branch, policy.source_branch);
+  assert.equal((await request(releaseUrl, { auto_release: false })).status, 200);
+  assert.equal((await request(url + '/release-context')).body.context.auto_release, false, 'revocation reaches worker without restarting agent');
+  assert.equal((await request(releaseUrl + '/check', {})).status, 400, 'check runs on owner, with no configured URL');
+  assert.equal((await request('/api/project/p_offline_release/release')).status, 503, 'no stale success when owner is unavailable');
+  assert.equal((await request('/api/project/p_offline_release/release', policy)).status, 503);
   const before = await request(url + '/story');
   assert.equal(before.status, 200);
   assert.match(before.body.pendingQuestion?.body || '', /^Codex update available/);
@@ -129,7 +164,8 @@ try {
   assert.equal(skipTrace.filter(e => e.event === 'paste' || e.event === 'accepted').length, 0, 'Story choice operates the menu, not a model message');
   console.log(JSON.stringify({ handler: 'controller /input -> worker /input -> deliverReply -> private tmux -> native history',
     storyChoices: 3, optionalUpdateEscapes: 1, requestCount: 3, accepted: 1, nativeId: cases[0].uuid,
-    receiptOnOwner: receipt.body.accepted, wrongDeviceTmuxCalls: 0, liveSessionsTouched: false }));
+    receiptOnOwner: receipt.body.accepted, releaseContractOnOwner: true, registeredRepositories: releaseContext.project_repository_paths.length,
+    wrongDeviceTmuxCalls: 0, liveSessionsTouched: false }));
   console.log('remote_input_update: passed');
 } catch (error) { console.error(logs); throw error; }
 finally {
