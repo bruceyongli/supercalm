@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -165,6 +165,30 @@ try {
   assert.equal(JSON.parse(event.payload).receipt, 'codex-native-history');
   assert.equal(store.eventsFor(sid, 20).filter(e => e.type === 'codex-update-skipped').length, 1);
   assert.equal((await request(url + '/story')).body.pendingQuestion, null);
+  // Native history acknowledges submission before the rollout records its user message. The
+  // controller must return the owner's durable receipt even with an otherwise native Story.
+  const nativeDir = join(process.env.AIOS_CODEX_SESSIONS_DIR, '2026', '11', '18');
+  mkdirSync(nativeDir, { recursive: true });
+  const nativeFile = join(nativeDir, `rollout-2026-11-18T08-00-00-${cases[0].uuid}.jsonl`);
+  const saved = receipt.body.message;
+  const record = (ts, payload, metadata) => JSON.stringify({ type: 'response_item', timestamp: new Date(ts).toISOString(), payload, metadata }) + '\n';
+  writeFileSync(nativeFile, record(saved.ts - 1000, { type: 'message', role: 'assistant', phase: 'commentary',
+    content: [{ type: 'output_text', text: 'Checking the earlier request.' }] })
+    + record(saved.ts + 1000, { type: 'message', role: 'assistant', phase: 'final_answer',
+      content: [{ type: 'output_text', text: 'Internal handoff, never an operator report.' }] }, { compaction_output: true }));
+  const pendingStory = await request(url + '/story');
+  assert.equal(pendingStory.body.meta.source, 'transcript');
+  assert.equal(pendingStory.body.meta.file, nativeFile, 'native Story belongs to the remote owner');
+  assert.equal(pendingStory.body.events.find(e => e.body === text)?.delivery, 'sent');
+  assert.equal(pendingStory.body.events.find(e => e.body === text)?.inputMessageId, saved.id);
+  assert.equal(pendingStory.body.events.filter(e => e.kind === 'report').length, 0, 'internal handoff is excluded by the real route');
+  appendFileSync(nativeFile, record(saved.ts + 2000, { type: 'message', role: 'user', id: 'consumed-mid-turn',
+    content: [{ type: 'input_text', text }] }));
+  const readStory = await request(url + '/story');
+  assert.equal(readStory.body.events.filter(e => e.body === text).length, 1);
+  assert.equal(readStory.body.events.find(e => e.body === text)?.delivery, 'read');
+  assert.equal(readStory.body.events.find(e => e.body === text)?.inputMessageId, saved.id);
+  assert.equal(readStory.body.events.find(e => e.body === text)?.messageId, 'consumed-mid-turn');
   assert.equal((await request('/api/session/s_remote_skip/input', { text: 'Skip', client_message_id: 'remote-explicit-skip' })).status, 200);
   const skipTrace = readFileSync(join(scratch, 's_remote_skip.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
   assert.deepEqual(skipTrace.filter(e => e.event === 'update-key').map(e => e.data), ['\x1b']);
@@ -172,6 +196,7 @@ try {
   console.log(JSON.stringify({ handler: 'controller /input -> worker /input -> deliverReply -> private tmux -> native history',
     storyChoices: 3, optionalUpdateEscapes: 1, requestCount: 3, accepted: 1, nativeId: cases[0].uuid,
     receiptOnOwner: receipt.body.accepted, releaseContractOnOwner: true, registeredRepositories: releaseContext.project_repository_paths.length,
+    durableStoryOnOwner: true, nativeConsumptionInStory: true, compactionReports: 0,
     wrongDeviceTmuxCalls: 0, liveSessionsTouched: false }));
   console.log('remote_input_update: passed');
 } catch (error) { console.error(logs); throw error; }

@@ -195,6 +195,8 @@ function codexAtomReader() {
   const atoms = [];
   const callCmd = new Map(); // call_id -> cmd (F4)
   const assistantIds = new Map();
+  const userIds = new Map();
+  let recentUsers = [];
   let asyncMirrors = [];
   let recentAssistant = [], turnId = null;
   // CLI versions mirror the same text in agent_message, item_completed/AgentMessage and
@@ -229,22 +231,44 @@ function codexAtomReader() {
     }
   };
   let sawTurnCtx = false;
-  const pushYou = (ts, raw) => {
+  const pushYou = (ts, raw, source, messageId, messageTurn = turnId) => {
     const images = extractAttachmentImages(raw);
     const attachments = extractAttachments(raw);
     const text = cleanUserText(raw);
     if (!text) return attachImagesToYou(atoms, ts, images, false, attachments);
-    // F9: dedupe against an event_msg/user_message twin
-    const dup = atoms.slice(-4).some((a) => a.kind === 'you' && Math.abs(a.ts - ts) < 5000 && a.text.slice(0, 120) === text.slice(0, 120));
-    if (!dup) {
-      atoms.push({ ts, kind: 'you', text, images: images.length ? images : undefined, attachments });
+    // Only native mirrors are duplicates. Two deliberate sends (even identical ones) and
+    // long requests sharing a prefix are distinct. Preserve IDs for receipt/DOM reconciliation.
+    let record = messageId && userIds.get(messageId);
+    record ||= recentUsers.findLast(entry => entry.atom.text === text
+      && (!messageId || !entry.atom.messageId || entry.atom.messageId === messageId)
+      && JSON.stringify(entry.atom.attachments || []) === JSON.stringify(attachments)
+      && (!messageTurn || !entry.turnId || messageTurn === entry.turnId)
+      && Math.abs(entry.atom.ts - ts) < 5000 && !entry.sources.has(source));
+    if (!record) {
+      record = { atom: { ts, kind: 'you', text, messageId, images: images.length ? images : undefined, attachments },
+        sources: new Set(), turnId: messageTurn };
+      atoms.push(record.atom);
+      recentUsers.push(record);
+      if (recentUsers.length > 12) recentUsers.shift();
       recentAssistant = [];
       asyncMirrors = [];
+    } else {
+      record.atom.images = [...new Set([...(record.atom.images || []), ...images])];
+      record.atom.attachments = [...new Map([...(record.atom.attachments || []), ...attachments].map(a => [a.path, a])).values()];
     }
-    else attachImagesToYou(atoms, ts, images, false, attachments);
+    record.sources.add(source);
+    if (messageId) {
+      record.atom.messageId = messageId;
+      userIds.set(messageId, record);
+      if (userIds.size > 4096) userIds.delete(userIds.keys().next().value);
+    }
   };
   const append = lines => { for (const l of lines) {
     let j; try { j = typeof l === 'string' ? JSON.parse(l) : l; } catch { continue; }
+    // Modern Codex writes internal handoffs as final_answer response items, explicitly tagged
+    // on the record (not the payload). They are neither reports nor completed-round boundaries.
+    // Use native provenance, never wording such as "summary" which can be a real user report.
+    if (j.metadata?.compaction_output === true) continue;
     const ts = Date.parse(j.timestamp) || 0;
     const p = j.payload || {};
     if (j.type === 'session_meta') {
@@ -256,7 +280,7 @@ function codexAtomReader() {
       }
     } else if (j.type === 'event_msg') {
       const t = p.type;
-      if (t === 'user_message') pushYou(ts, p.message);
+      if (t === 'user_message') pushYou(ts, p.message, 'event', p.id, p.turn_id || turnId);
       else if (t === 'task_started') { turnId = p.turn_id || null; recentAssistant = []; }
       else if (t === 'error' || t === 'stream_error') {
         const text = typeof p.message === 'string' ? p.message : p.error?.message || p.error || '';
@@ -275,7 +299,7 @@ function codexAtomReader() {
       if (t === 'message' && p.role === 'user') {
         // F1: real rollouts log user turns here (content: [{type:"input_text",text}])
         const raw = (p.content || []).filter((c) => c.type === 'input_text' || c.type === 'text').map((c) => c.text || '').join('\n');
-        pushYou(ts, raw);
+        pushYou(ts, raw, 'response', p.id, p.internal_chat_message_metadata_passthrough?.turn_id || turnId);
       } else if (t === 'message' && p.role === 'assistant') {
         const text = (p.content || []).filter((c) => ['output_text', 'text', 'Text'].includes(c.type)).map((c) => c.text || '').join('\n');
         pushAssistant(ts, text, p.phase, 'response', p.id, p.internal_chat_message_metadata_passthrough?.turn_id || turnId);
@@ -343,7 +367,7 @@ function codexAtomReader() {
     }
   }
   };
-  return { atoms, append, snapshot: () => ({ atoms, callCmd, assistantIds, asyncMirrors, recentAssistant, turnId, sawTurnCtx }) };
+  return { atoms, append, snapshot: () => ({ atoms, callCmd, assistantIds, userIds, recentUsers, asyncMirrors, recentAssistant, turnId, sawTurnCtx }) };
 }
 
 function atomsFromCodex(lines) { const reader = codexAtomReader(); reader.append(lines); return reader.atoms; }

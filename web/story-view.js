@@ -152,7 +152,12 @@ function mergeStoryEvents(older, newer) {
   // A native turn can arrive just before its durable send receipt. Re-key that SAME UUID,
   // not the message text (two deliberate identical sends must remain two separate bubbles).
   const nativeIds = new Set(newer.filter(e => e.kind === 'you' && e.messageId).map(e => e.messageId));
-  const byKey = new Map(older.filter(e => e.kind !== 'you' || !e.messageId || !nativeIds.has(e.messageId)).map(e => [evKey(e), e]));
+  // Legacy Codex user_message records have no UUID. A later mirror/receipt may re-key only the exact
+  // timestamp + complete content/uploads, not an older identical send or a shared text prefix.
+  const legacyKey = e => JSON.stringify([e.ts, e.body || e.text || '', e.images || [], e.attachments || []]);
+  const legacyIdentities = new Set(newer.filter(e => e.kind === 'you' && (e.messageId || e.inputMessageId)).map(legacyKey));
+  const byKey = new Map(older.filter(e => e.kind !== 'you' ||
+    (e.messageId ? !nativeIds.has(e.messageId) : e.inputMessageId || !legacyIdentities.has(legacyKey(e)))).map(e => [evKey(e), e]));
   for (const e of newer) byKey.set(evKey(e), e);
   return [...byKey.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
@@ -276,7 +281,8 @@ function storyToLatest() {
 // v11: exact upload paths retained on native and fallback Story events.
 // v12: explicit owner checks; discard pre-isolation caches and raw Claude paste-wrapper bubbles.
 // v13: durable accepted-input identities replace page-local queue echoes.
-export const STORY_CACHE_KEY = (id) => `aios_story13_${id}`;
+// v14: Codex input identities/floor and native compaction provenance; discard leaked handoffs.
+export const STORY_CACHE_KEY = (id) => `aios_story14_${id}`;
 const STORY_CACHE_MAX = 220_000; // ~200 KB serialized cap per entry
 function readStoryCache(id) {
   try { const cached = JSON.parse(sessionStorage.getItem(STORY_CACHE_KEY(id))); return cached?.sessionId === id ? cached : null; }

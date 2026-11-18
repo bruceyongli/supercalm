@@ -663,7 +663,7 @@ Confirmed queue admission returns HTTP 200 and clears the web composer immediate
 consumption/interruption or resending. Actual unconfirmed drafts stay. Human `queued_command`
 attachments render once in Story/graph using original source identity/time; machine notifications do
 not become operator requests. Claude's paste dialect and notify protocols remain separate from Codex.
-Accepted Claude inputs are a durable Story floor, not just browser-local optimistic echoes. Retain
+Accepted Claude and Codex inputs are a durable Story floor, not just browser-local optimistic echoes. Retain
 Sent/Queued across refresh/devices, overlay the indexed input window outside the native file cache,
 and only a one-to-one complete native human-turn match may show Read. Queue admission alone is not
 Read, including in a transcript-sourced response. Keep stable receipt identities as native consumption
@@ -754,6 +754,10 @@ against complete normalized text, never a short prefix/empty event or an already
 Fallback rows merge by client message id but remain unread until the native transcript acknowledges them.
 The weak-network Story browser regression runs Chromium and WebKit (`playwright install chromium webkit`).
 Native transcript screenshots are lazy, session-scoped image references, never base64 inside Story JSON.
+Codex records explicitly marked `metadata.compaction_output` are internal handoffs, not reports or
+completed-round boundaries. Do not identify them by prose or replay `compacted.replacement_history`.
+Keep native user message IDs; deduplicate only exact cross-format mirrors, never matching prefixes or
+two distinct deliberate sends. Input receipt overlays and invalidations run on the owning executor.
 Keep report text independent of image downloads and small enough for the recent-conversation cache.
 Image reads are bounded/off-thread and bind to transcript identity, record offset and hash; appends
 remain valid, while sibling transcripts, rotation and overwritten records cannot reuse a reference.

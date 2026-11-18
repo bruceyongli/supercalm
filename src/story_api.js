@@ -157,7 +157,7 @@ export async function storyFor(sid, options = {}) {
   const result = await nativeStoryFor(sid, options);
   // Do not bake delivery receipts into the file-mtime cache: accepting an input can precede
   // any native transcript append. Remote execution applies this overlay on its owning device.
-  if (!nodeForSession(sid) && getSession(sid)?.tool === 'claude' && result.meta?.source === 'transcript') {
+  if (!nodeForSession(sid) && ['claude', 'codex'].includes(getSession(sid)?.tool) && result.meta?.source === 'transcript') {
     const first = Math.min(...result.events.filter(event => event.ts > 0).map(event => event.ts));
     const lower = result.meta.inputWindowStart ?? first;
     const since = Number.isFinite(lower) ? Math.max(0, lower - 20000) : 0;
@@ -217,7 +217,7 @@ const storyUpdates = createStoryUpdates({ bus, statFile: stat, resolve: async si
   if (!source) return null;
   const { s, file } = source;
   return { file, state: [s.status, s.question, s.summary, s.provider_issue, file ? null : s.revision,
-    s.tool === 'claude' ? storyInputRevision(sid) : null] };
+    ['claude', 'codex'].includes(s.tool) ? storyInputRevision(sid) : null] };
 } });
 route('GET', '/api/session/:id/story/image', async (req, res, { id: sid }, url) => {
   try {

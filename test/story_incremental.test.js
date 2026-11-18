@@ -39,6 +39,9 @@ try {
     codex({ type: 'message', role: 'assistant', id: 'm2', phase: 'final_answer', content: [{ type: 'output_text', text: '## 修复完成\n\n[说明](plan.md)' }] }),
     event({ type: 'task_complete', last_agent_message: '## 修复完成\n\n[说明](plan.md)' }),
     event({ type: 'user_message', message: '下一步' }),
+    { ...codex({ type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'Internal compaction handoff' }] }),
+      metadata: { compaction_output: true } },
+    codex({ type: 'message', role: 'user', id: 'interjection', content: [{ type: 'input_text', text: '保留我中间补充的消息' }] }),
     event({ type: 'stream_error', message: 'Selected model is at capacity.', will_retry: false }),
     codex({ type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'Next complete' }] }),
   ]);
