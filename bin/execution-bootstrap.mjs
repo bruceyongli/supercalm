@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // User-scoped runtime installation. Does not replace Homebrew Node or other CLIs.
-import { mkdir, readFile, writeFile, rm, realpath, lstat } from 'node:fs/promises';
+import { mkdir, writeFile, rm, realpath, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir, arch, platform } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -34,9 +34,17 @@ catch (error) {
 const cli = join(runtime, 'cli');
 const env = { ...process.env, PATH: `${nodeRoot}/bin:/opt/homebrew/bin:/usr/bin:/bin`,
   npm_config_cache: join(runtime, 'npm-cache'), npm_config_update_notifier: 'false' };
-await exec(join(nodeRoot, 'bin/node'), [join(nodeRoot, 'lib/node_modules/npm/bin/npm-cli.js'),
-  'install', '--prefix', cli, '--no-audit', '--no-fund', '@openai/codex@0.164.0', '@anthropic-ai/claude-code@2.1.316'],
-{ env, timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+const install = (...args) => exec(join(nodeRoot, 'bin/node'), [join(nodeRoot, 'lib/node_modules/npm/bin/npm-cli.js'),
+  'install', '--no-audit', '--no-fund', ...args], { env, timeout: 10 * 60_000, maxBuffer: 1024 * 1024 });
+// Codex updates itself with npm install -g. Launch from that same private Node prefix,
+// including on devices whose older bootstrap installed a second copy under runtime/cli.
+const codexPackage = join(nodeRoot, 'lib/node_modules/@openai/codex');
+try { await realpath(join(nodeRoot, 'bin/codex')); }
+catch (error) {
+  if (error.code !== 'ENOENT') throw error;
+  await install('--global', '--prefix', nodeRoot, '@openai/codex@0.164.0');
+}
+await install('--prefix', cli, '--install-links=false', codexPackage, '@anthropic-ai/claude-code@2.1.316');
 const versions = {};
 for (const [name, path] of [['node', join(nodeRoot, 'bin/node')], ['codex', join(cli, 'node_modules/.bin/codex')],
   ['claude', join(cli, 'node_modules/.bin/claude')], ['tmux', '/opt/homebrew/bin/tmux']]) {
