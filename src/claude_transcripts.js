@@ -18,6 +18,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { continuationNativeEnv } from './storage_continuation.js';
 import { expectedStoragePath } from './live_storage.js';
 
 export function claudeSlug(cwd) { return String(cwd || '').replace(/[/.]/g, '-'); }
@@ -66,7 +67,7 @@ export function pickClaudeTranscript(cands, s, { claimed } = {}) {
   return pool.slice().sort((a, b) => b.size - a.size)[0]?.p || null;
 }
 
-export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), statFile = stat } = {}) {
+export async function findClaudeLog(cwd, s, { claimed, allowHeuristic = true, root = join(continuationNativeEnv(s?.id, 'claude').CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects'), statFile = stat } = {}) {
   const bound = s?.claude_transcript;
   if (bound) {
     try { if ((await statFile(bound)).isFile()) return bound; } catch {}

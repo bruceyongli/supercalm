@@ -503,6 +503,7 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   min-width: 0; padding: 2px 4px; color: var(--yellow);
   font-size: 12px; line-height: 1.35; overflow-wrap: anywhere;
 }
+#storage-recovery { margin: 0 0 6px; font-size: 13px; line-height: 1.45; }
 .composer-notice[hidden] { display: none; }
 .composer-options { flex: 0 1 auto; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; margin-left: auto; }

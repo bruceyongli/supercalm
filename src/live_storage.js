@@ -36,7 +36,7 @@ export function validateLiveStorage(config) {
   return config;
 }
 function unavailable(cause) {
-  return Object.assign(new Error('Spark storage is unavailable. Files are preserved; reconnect storage before continuing. Local fallback is disabled.', { cause }),
+  return Object.assign(new Error('Spark storage is unavailable. Reconnect the device in Settings → Storage to access the original files.', { cause }),
     { code: 'storage-unavailable', status: 503 });
 }
 export function liveStorageConfigFile() {
@@ -99,19 +99,31 @@ export async function isManagedStoragePath(path, { allowMissing = false, config 
     return isManagedStoragePath(dirname(resolve(path)), { allowMissing, config });
   }
 }
+// A stalled network read can outlive the HTTP deadline. Share its probe across
+// callers until the kernel returns, so repeated Resume clicks do not exhaust fs workers.
+const volumeProbes = new Map();
 export async function assertLiveStorage(path, config = liveStorageConfig()) {
   if (!config) return;
-  const expected = expectedStoragePath(path, config);
-  if (!inside(expected, config.mount)) return; // unmigrated or deliberately local runtime state
+  const paths = Array.isArray(path) ? path : [path];
+  const targets = paths.map(p => expectedStoragePath(p, config));
+  if (!targets.some(p => inside(p, config.mount))) return;
+  let timer;
   try {
     if (config.statusFile && !liveStorageStatus(config).available) throw new Error('Storage watcher has not confirmed a healthy connection');
-    const [mount, parent, marker] = await Promise.all([
-      stat(config.mount), stat(dirname(config.mount)), readFile(join(config.mount, '.aios-storage-id'), 'utf8'),
-    ]);
-    if (mount.dev === parent.dev || marker.trim() !== config.id) throw new Error('Storage volume identity mismatch');
+    const key = JSON.stringify([config.id, config.mount]);
+    if (!volumeProbes.has(key)) {
+      const probe = Promise.all([stat(config.mount), stat(dirname(config.mount)), readFile(join(config.mount, '.aios-storage-id'), 'utf8')])
+        .then(([mount, parent, marker]) => {
+          if (mount.dev === parent.dev || marker.trim() !== config.id) throw new Error('Storage volume identity mismatch');
+        }).finally(() => volumeProbes.delete(key));
+      volumeProbes.set(key, probe);
+    }
+    await Promise.race([volumeProbes.get(key), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error('Storage identity check timed out')), 3000);
+    })]);
   } catch (cause) {
     throw unavailable(cause);
-  }
+  } finally { clearTimeout(timer); }
 }
 
 // Health reads the small local watcher record, never blocking HTTP on a lost network filesystem.

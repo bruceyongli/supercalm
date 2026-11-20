@@ -195,7 +195,8 @@ function composer(sessionId) {
       });
       if (r.status === 409) {
         if (confirm('This session has stopped. Resume it now? (then Send again in a few seconds)')) {
-          await api(`api/session/${sessionId}/resume`, { method: 'POST' });
+          const resumed = await api(`api/session/${sessionId}/resume`, { method: 'POST' });
+          if (resumed.id !== sessionId) location.href = 'session?id=' + encodeURIComponent(resumed.id);
         }
       } else if (!r.ok) {
         const j = await r.json().catch(() => ({}));
@@ -235,8 +236,8 @@ function sessionRow(s) {
       rb.disabled = true;
       rb.textContent = '…';
       try {
-        await api(`api/session/${s.id}/resume`, { method: 'POST' });
-        location.href = new URL('session?id=' + s.id, document.baseURI).href;
+        const resumed = await api(`api/session/${s.id}/resume`, { method: 'POST' });
+        location.href = new URL('session?id=' + encodeURIComponent(resumed.id), document.baseURI).href;
       } catch (err) {
         alert('Resume failed: ' + err.message);
         rb.disabled = false;

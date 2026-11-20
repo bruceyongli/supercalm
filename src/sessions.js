@@ -7,7 +7,9 @@ import { nodeForSession, executionRequest, assertExecutionAvailable } from './ex
 import { assertLocalCheckout } from './execution_bundle.js';
 import { defaultExecutionNode } from './execution_transport.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate, storageBranchCheckpointAllows, storageBranchEvidenceValid } from './storage_maintenance.js';
-import { sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
+import { reconnectForResume } from './storage_reconnect.js';
+import { isContinuation, continuationId, continuationRoot, prepareContinuation, sessionLogFile, sessionArtifactRoot, continuationNativeEnv, continuationCodexSessions } from './storage_continuation.js';
+import { assertLiveStorage, liveStorageConfig, sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
@@ -17,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { parkVerdict } from './park.js';
 import { writeManifest, readManifest, verifyResume } from './launch_contract.js';
 import { detectSessionError, classifyErrorType } from './agents/supervisor/session_errors.js';
-import { TMUX, TOOL_PATH, LOG_DIR, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT, BOOT_ID } from './config.js';
+import { TMUX, TOOL_PATH, DATA_DIR, TOOLS, SELF_URL, DEFAULT_AUTONOMY, AUTONOMY_LEVELS, ROOT, BOOT_ID } from './config.js';
 import { effortsForModel, defaultEffortForModel } from './model_efforts.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
@@ -370,7 +372,7 @@ async function sessionTranscriptFiles(s) {
   const transcripts = [];
   if (s?.codex_uuid) {
     try {
-      const rollout = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
+      const rollout = pickRolloutByUuid(await codexRolloutFiles(continuationCodexSessions(s.id)), s.codex_uuid);
       if (rollout) transcripts.push(rollout);
     } catch {}
   }
@@ -1147,7 +1149,7 @@ function register(s) {
   const entry = {
     id: s.id,
     tmux: s.tmux,
-    logFile: join(LOG_DIR, s.id + '.log'),
+    logFile: sessionLogFile(s.id),
     offset: 0,
     subscribers: new Set(),
     lastHash: null,
@@ -1192,7 +1194,7 @@ async function captureCodexUuid(sid, beforeSet) {
       await sleep(1000);
       const current = store.getSession(sid);
       if (!current || current.codex_uuid) return;
-      if (await bindCodexLaunchTranscript(sid, { files: await codexRolloutFiles(), beforeSet })) return;
+      if (await bindCodexLaunchTranscript(sid, { files: await codexRolloutFiles(continuationCodexSessions(sid)), beforeSet })) return;
     }
   } catch {}
 }
@@ -1218,7 +1220,7 @@ async function findCodexSession(cwd) {
 async function startPane({ sid, project, tool, task, effort, autonomy, model, fastMode, resume, resumeId, orchestration, viaProxy, cwd, paneName = null }) {
   // Execution devices never copy subscription credentials. Every Codex launch,
   // including native child sessions and resumes, uses the controller gateway.
-  if (EXECUTION_NODE !== 'local' && tool === 'codex') {
+  if ((EXECUTION_NODE !== 'local' || isContinuation(sid)) && tool === 'codex') {
     viaProxy = true;
     if (!store.getSession(sid)?.codex_via_proxy) store.updateSession(sid, { codex_via_proxy: 1 });
   }
@@ -1228,7 +1230,8 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   if (!existsSync(dir)) throw new Error('path does not exist on host: ' + dir);
   const isolated = !!store.getSession(sid)?.execution_checkout || !!cwd && cwd !== project?.path;
   const name = paneName || `aios-${slug(project?.name || 'adhoc')}-${tool}-${id().slice(0, 4)}`;
-  const logFile = join(LOG_DIR, sid + '.log');
+  const logFile = sessionLogFile(sid);
+  await assertLiveStorage(logFile);
   await prepareSessionStorage(sid);
   if (!resume) await writeFile(logFile, ''); // resume keeps appending to the same record
   resizeApplied.delete(sid); // fresh/resumed pane: forget the old window size so the next /resize re-applies
@@ -1301,7 +1304,7 @@ async function startPane({ sid, project, tool, task, effort, autonomy, model, fa
   // ~/.claude login — so it works on machines with or without the proxy fleet, no config.
   const baseEnv = tool === 'claude' ? (await resolveClaudeEnv({ model })).env : TOOLS[tool].env || {};
   const envMap = typeof baseEnv === 'function' ? baseEnv({ model, effort, autonomy, fastMode, resume, viaProxy }) : baseEnv;
-  const toolEnv = Object.entries(envMap).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
+  const toolEnv = Object.entries({ ...envMap, ...continuationNativeEnv(sid, tool) }).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   const storageEnv = Object.entries(sessionStorageEnv(sid)).map(([k, v]) => `${k}=${shquote(String(v))}`).join(' ');
   // Isolated (worktree) sessions get AIOS_NO_DEPLOY=1 so `bin/deploy` refuses (it must run only from the
   // canonical main checkout). This — not a filesystem sandbox — is the isolation interlock: full-autonomy
@@ -1443,7 +1446,7 @@ async function completeLaunch(spec) {
   // rollout codex creates — recording its UUID (store.codex_uuid) makes the transcript/resume findable
   // even when the rollout's cwd differs from the project path (the operator's cwd-mismatch failure).
   const rolloutStarted = performance.now();
-  const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles().catch(() => [])) : null;
+  const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles(continuationCodexSessions(sid)).catch(() => [])) : null;
   if (tool === 'codex') timings['rollout-scan'] = Math.round(performance.now() - rolloutStarted);
   // Per-session worktree isolation (opt-in per project, #isolation helper). Once enabled this is a
   // safety contract: fail CLOSED if the path is not itself a repo or worktree setup fails. An operator
@@ -1544,7 +1547,7 @@ export function queueLaunch(args) {
 
 // Authenticated device import has already reserved the immutable session ID and a
 // complete local checkout. Reuse the ordinary launch implementation and input hooks.
-export async function launchPreparedSession(sid) {
+export async function launchPreparedSession(sid, { waitForLaunch = false } = {}) {
   const s = store.getSession(sid);
   if (!s?.execution_checkout || remoteSession(s) || s.execution_dormant || s.status_reason !== 'execution-staged') throw new Error('Prepared session is not ready');
   await assertLocalCheckout(s.worktree_path);
@@ -1556,6 +1559,10 @@ export async function launchPreparedSession(sid) {
     model: s.model, activeFastMode: !!s.fast_mode, orchestration: s.orchestration, paneName: s.tmux,
     preparedWorktree: { path: s.worktree_path, branch: s.branch, reused: true } };
   pendingLaunches.set(sid, ticket);
+  if (waitForLaunch) {
+    try { return await completeLaunch(spec); }
+    catch (error) { await failLaunch(spec, error); throw error; }
+  }
   setImmediate(() => completeLaunch(spec).catch(error => failLaunch(spec, error)));
   return session;
 }
@@ -1596,6 +1603,15 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
       if (!attached) throw sessionHealthError();
       return waitForInput ? { ...attached, input_ready: await waitForAgentInput(s.tmux) } : attached;
     }
+  }
+  // Check registered dependencies before scanning native history, reading Git or changing durable intent.
+  const storageConfig = liveStorageConfig();
+  if (storageConfig && !isContinuation(sid)) {
+    const paths = sessionStoragePaths(sid);
+    const native = s.tool === 'codex' ? process.env.AIOS_CODEX_SESSIONS_DIR || join(homedir(), '.codex/sessions')
+      : s.tool === 'claude' ? s.claude_transcript || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects') : null;
+    await assertLiveStorage([sessionLogFile(sid), paths.root, paths.artifacts, s.worktree_path,
+      store.getProject(s.project_id)?.path, native].filter(Boolean), storageConfig);
   }
   assertDiskHeadroom(store.getProject(s.project_id)?.path);
   if (s.execution_checkout && s.tool === 'codex' && !s.codex_uuid) {
@@ -2763,7 +2779,7 @@ function cleanTerminalLog(s) {
 async function terminalLogTail(sid, maxBytes = TERMINAL_LOG_MAX_BYTES) {
   const s = store.getSession(sid);
   if (!s) return null;
-  const logFile = join(LOG_DIR, sid + '.log');
+  const logFile = sessionLogFile(sid);
   const limit = Math.max(4096, Math.min(4 * 1024 * 1024, Number(maxBytes) || TERMINAL_LOG_MAX_BYTES));
   const st = await stat(logFile);
   const start = Math.max(0, st.size - limit);
@@ -2782,7 +2798,9 @@ async function tailOnce() {
 // ---------------------------------------------------------------------------
 function decorate(s) {
   const project = s.project_id ? store.getProject(s.project_id) : null;
-  return projectSession(s, { project });
+  const result = projectSession(s, { project });
+  if (isContinuation(s.id) && s.parent_session_id) result.storage_recovery = { original_id: s.parent_session_id, notes: join(sessionArtifactRoot(s.id), 'RECOVERY.md') };
+  return result;
 }
 
 function emitSessionStatus(s, { previousStatus = null, source = 'status', extra = {} } = {}) {
@@ -4530,11 +4548,82 @@ route('POST', '/api/session/:id/kill', async (req, res, { id: sid }) => {
   json(res, 200, { ok: true, session: decorate(killed) });
 });
 
+const operatorResumes = new Map();
+async function resumeOrContinue(sid) {
+  const source = store.getSession(sid);
+  try { return await resume(sid); }
+  catch (error) {
+    if (error.code !== 'storage-unavailable' || remoteSession(source) || isContinuation(sid)) throw error;
+  }
+  const reconnected = await reconnectForResume().catch(() => false);
+  const current = store.getSession(sid);
+  if (!current || current.tmux !== source.tmux || current.revision !== source.revision && /^operator-/.test(current.status_reason || '')) {
+    throw Object.assign(Error('Session changed during storage recovery. Open it again.'), { status: 409 });
+  }
+  if (reconnected) {
+    try { return await resume(sid); }
+    catch (error) { if (error.code !== 'storage-unavailable') throw error; }
+  }
+  return withSessionArchiveLock(sid, () => openLocalContinuation(source));
+}
+
+async function openLocalContinuation(source) {
+  const sid = source.id;
+  assertExecutionAvailable(sid);
+  assertStorageSessionAvailable(sid);
+  assertSessionNotCleaning(sid);
+  assertStorageLaunchAvailable();
+  assertDiskHeadroom(DATA_DIR);
+  const id = continuationId(sid);
+  let child = store.getSession(id);
+  if (child && (child.parent_session_id !== sid || child.worktree_path !== join(continuationRoot(id), 'workspace'))) {
+    throw Error('Local continuation identity conflict');
+  }
+  if (!child) {
+    const sourceProject = store.getProject(source.project_id);
+    const { cwd, notes } = await prepareContinuation(source, sourceProject, store.recentMessagesFor(sid, 24));
+    const latest = store.getSession(sid);
+    if (!latest || latest.tmux !== source.tmux || remoteSession(latest) || latest.revision !== source.revision && /^operator-/.test(latest.status_reason || '')) {
+      throw Object.assign(Error('Session changed while preparing its local continuation.'), { status: 409 });
+    }
+    const projectId = 'p_' + id.slice(2);
+    store.db.exec('BEGIN IMMEDIATE');
+    try {
+      const project = store.getProject(projectId) || store.createProject({ id: projectId, name: (source.title || sourceProject?.name || sid) + ' · local recovery', path: cwd });
+      if (project.path !== cwd) throw Error('Local recovery project path conflict');
+      store.createSession({ ...source, id, project_id: projectId, parent_session_id: sid, tmux: 'aios-' + id, title: (source.title || sid) + ' · local',
+        status: 'exited', desired_status: 'exited', runtime_status: 'exited', status_reason: 'execution-staged' });
+      store.updateSession(id, { worktree_path: cwd, execution_checkout: 1, codex_via_proxy: source.tool === 'codex' ? 1 : 0 });
+      store.addMessage(id, 'in', 'task', 'The local recovery notes in ' + notes + ' contain historical messages and the workspace baseline. Treat them as reference and wait for my next request.');
+      store.addEvent(id, 'launch-queued', { source: 'storage-recovery', original_id: sid });
+      store.addEvent(sid, 'local-continuation', { session_id: id });
+      store.db.exec('COMMIT');
+    } catch (error) { store.db.exec('ROLLBACK'); throw error; }
+    child = store.getSession(id);
+  }
+  if (child.status !== 'starting' && (child.status_reason === 'execution-staged' || child.status_reason === 'launch-failed')) {
+    store.updateSession(id, { status_reason: 'execution-staged' });
+    child = await launchPreparedSession(id, { waitForLaunch: true });
+  } else if (child.status !== 'starting') child = await resume(id);
+  const original = store.getSession(sid);
+  // Earlier releases could leave a stopped original marked for boot recovery after a failed Resume.
+  if (original?.tmux === source.tmux && ['exited', 'error'].includes(original.status)
+      && (original.desired_status !== 'exited' || original.runtime_status !== 'exited')) {
+    store.updateSession(sid, { desired_status: 'exited', runtime_status: 'exited', status_reason: 'local-continuation' });
+  }
+  return child;
+}
+
+export function resumeForOperator(sid) {
+  if (!operatorResumes.has(sid)) operatorResumes.set(sid, resumeOrContinue(sid).finally(() => operatorResumes.delete(sid)));
+  return operatorResumes.get(sid);
+}
+
 route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   try {
-    json(res, 200, decorate(await resume(sid)));
+    json(res, 200, decorate(await resumeForOperator(sid)));
   } catch (e) {
     json(res, e.status || 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
   }

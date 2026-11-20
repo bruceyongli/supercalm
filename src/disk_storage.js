@@ -1,5 +1,6 @@
 // On-demand, single-flight inventory. Native du runs off the HTTP/event loop, with bounded
 // concurrency/timeouts; polling Health never rescans the filesystem every 30 seconds.
+import { continuationRoot, sessionLogFile } from './storage_continuation.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -48,14 +49,15 @@ export function databaseStorage() {
 export function storageComponents(session, project) {
   if (!SID.test(session.id)) return [];
   const paths = sessionStoragePaths(session.id);
+  const local = continuationRoot(session.id);
   const base = session.worktree_path || project?.path || ROOT;
   return [
-    { kind: 'logs', label: 'Terminal log', path: join(LOG_DIR, `${session.id}.log`), base: LOG_DIR },
-    { kind: 'scratch', label: 'Temporary files', path: paths.root, base: join(DATA_DIR, 'session-storage') },
+    { kind: 'logs', label: 'Terminal log', path: sessionLogFile(session.id), base: local || LOG_DIR },
+    { kind: 'scratch', label: 'Temporary files', path: paths.root, base: local || join(DATA_DIR, 'session-storage') },
     { kind: 'browser-cache', label: 'Supervisor browser cache', path: join(DATA_DIR, 'supervisor', session.id, 'profile'), base: join(DATA_DIR, 'supervisor', session.id) },
     { kind: 'screenshots', label: 'Saved review screenshots', path: join(DATA_DIR, 'supervisor', session.id), base: join(DATA_DIR, 'supervisor') },
     { kind: 'launch', label: 'Launch script', path: join(DATA_DIR, 'launch', `${session.id}.sh`), base: join(DATA_DIR, 'launch') },
-    { kind: 'artifacts', label: 'Saved outputs', path: paths.artifacts, base: join(DATA_DIR, 'session-artifacts') },
+    { kind: 'artifacts', label: 'Saved outputs', path: paths.artifacts, base: local || join(DATA_DIR, 'session-artifacts') },
     { kind: 'attachments', label: 'Uploads', path: join(base, '.aios', 'attachments', session.id), base, attachment: true },
     ...(session.worktree_path ? [{ kind: 'worktree', label: 'Git worktree', path: session.worktree_path, base: worktreeRoot() }] : []),
     ...(session.claude_transcript ? [{ kind: 'native', label: 'Native CLI history (retained)', path: session.claude_transcript, retained: true }] : []),

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, symlinkSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -95,7 +95,7 @@ process.env.MOCK_TMUX_REPAINT = repaintFile;
 
 const store = await import('../src/store.js');
 const { BOOT_ID } = await import('../src/config.js');
-const { queueLaunch, killSession, discover, resume, noteReply } = await import('../src/sessions.js');
+const { queueLaunch, killSession, discover, resume, resumeForOperator, noteReply } = await import('../src/sessions.js');
 const { createAttentionReport, dismissAttention, getAttentionDismissal } = await import('../src/attention_store.js');
 const project = store.createProject({ id: 'p_launch', name: 'Launch lifecycle', path: projectPath });
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -232,6 +232,44 @@ assert.equal(store.getSession(switching.id).status, 'working', 'stale pre-relaun
 assert.ok(names().includes(store.getSession(switching.id).tmux), 'replacement pane remains alive');
 const latestLifecycle = store.eventsFor(switching.id, 10).filter((event) => event.type === 'resume' || event.type === 'exit');
 assert.equal(latestLifecycle[0]?.type, 'resume', 'no exit event may follow the successful resume');
+
+// A failed watcher check must open one independently writable session, including
+// across duplicate clicks. The original checkout, native identity and messages stay addressable.
+writeFileSync(modeFile, 'ok');
+const remoteWorktree = join(root, 'offline-worktree');
+const mount = join(root, 'mounts', 'remote-volume');
+const target = join(mount, 'worktree'), statusFile = join(data, 'mount-status.json');
+const cfg = join(data, 'live-storage.json');
+symlinkSync(target, remoteWorktree);
+const original = store.createSession({ id: 's_legacy', title: 'Original conversation', tool: 'codex',
+  tmux: 'gone-legacy', project_id: project.id, status: 'exited' });
+store.updateSession(original.id, { codex_uuid: '11111111-2222-4333-8444-555555555555', worktree_path: remoteWorktree });
+store.addMessage(original.id, 'in', 'text', 'A locally saved message');
+writeFileSync(cfg, JSON.stringify({ version: 1, id: 'fixture', mount, statusFile, mappings: [{ source: remoteWorktree, target, active: true }] }));
+const check = setInterval(() => {
+  if (existsSync(statusFile + '.reconnect')) writeFileSync(statusFile, JSON.stringify({ id: 'fixture', checkedAt: Date.now(), available: false }));
+}, 50);
+const [first, second] = await Promise.all([resumeForOperator(original.id), resumeForOperator(original.id)]);
+assert.equal(first.id, second.id);
+assert.equal(first.parent_session_id, original.id);
+assert.equal(first.status, 'working');
+assert.notEqual(first.codex_uuid, store.getSession(original.id).codex_uuid);
+assert.equal(readlinkSync(remoteWorktree), target);
+assert.equal(existsSync(target), false);
+assert.equal(store.getSession(original.id).status, 'exited');
+const notes = join(data, 'local-continuations', first.id, 'artifacts', 'RECOVERY.md');
+assert.match(readFileSync(notes, 'utf8'), /A locally saved message/);
+const launchScript = readFileSync(join(data, 'launch', first.id + '.sh'), 'utf8');
+assert.ok(launchScript.includes('CODEX_HOME=') && launchScript.includes('AIOS_NO_DEPLOY=1'));
+assert.ok(!launchScript.includes(store.getSession(original.id).codex_uuid));
+assert.equal((await resumeForOperator(original.id)).id, first.id);
+clearInterval(check);
+
+// The next successful original resume does not redirect or remove the local workspace.
+rmSync(cfg);
+store.updateSession(original.id, { worktree_path: null });
+assert.equal((await resumeForOperator(original.id)).id, original.id);
+assert.ok(existsSync(notes));
 
 console.log('session_launch_lifecycle.test ok');
 process.exit(0);

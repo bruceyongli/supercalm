@@ -1,5 +1,6 @@
 // Finite builds run on a local disposable snapshot. Source/history stay where
 // they are; only explicit outputs and bounded diagnostics are published back.
+import { sessionArtifactRoot } from './storage_continuation.js';
 import { mkdir, readFile, writeFile, readdir, realpath, lstat, stat, statfs, rename, rm, rmdir, unlink, open, mkdtemp } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { homedir } from 'node:os';
@@ -64,7 +65,7 @@ async function prepareLocalRoot() {
 }
 function validateJob(job) {
   if (job?.version !== 1 || !SID.test(job.sessionId || '') || !ID.test(job.id || '')
-      || job.path !== location(job.id) || job.artifacts !== join(DATA_DIR, 'session-artifacts', job.sessionId, 'builds', job.id)
+      || job.path !== location(job.id) || job.artifacts !== join(sessionArtifactRoot(job.sessionId), 'builds', job.id)
       || typeof job.nonce !== 'string' || !Array.isArray(job.outputs)) throw Error('Invalid local build ownership');
   job.outputs.forEach(buildRelativePath);
   return job;
@@ -128,7 +129,7 @@ async function publish(job) {
     if (receipt.id !== job.id || receipt.nonce !== job.nonce || receipt.complete !== true) throw Error('Build artifact destination is not this completed job');
     return;
   }
-  const parent = join(DATA_DIR, 'session-artifacts', job.sessionId, 'builds');
+  const parent = join(sessionArtifactRoot(job.sessionId), 'builds');
   await mkdir(parent, { recursive: true, mode: 0o700 });
   // Each attempt has an exclusive destination. A partial transfer is never an
   // acknowledgement, nor does retry overwrite the operator's published files.
@@ -288,7 +289,7 @@ export async function runLocalBuildJob(sessionId, command, args = [], { source =
       job = { version: 1, id, path, sessionId, source: sourcePath, outputs,
         nonce: randomUUID(), ownerPid: process.pid, ownerStamp: await processStamp(process.pid), pid: null, startedAt: Date.now(),
         phase: 'staging', device: info.dev, inode: info.ino,
-        artifacts: join(DATA_DIR, 'session-artifacts', sessionId, 'builds', id) };
+        artifacts: join(sessionArtifactRoot(sessionId), 'builds', id) };
       try { await save(job); }
       catch (e) {
         // No worker or snapshot exists yet; reclaim only this new empty owned directory.

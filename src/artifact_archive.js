@@ -1,4 +1,5 @@
 // Small local location records, not a second copy/cache of archived data. Originals keep their URLs.
+import { sessionArtifactRoot } from './storage_continuation.js';
 import { readFile, readdir, mkdir, writeFile, rename, lstat } from 'node:fs/promises';
 import { join, relative, resolve, isAbsolute, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -62,7 +63,7 @@ export async function archivedFile(sessionId, target) {
     try { if ((await lstat(parent)).isSymbolicLink()) return null; }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  const base = record.kind === 'worktree' ? resolve(worktreeRoot()) : join(DATA_DIR, 'session-artifacts', sessionId);
+  const base = record.kind === 'worktree' ? resolve(worktreeRoot()) : sessionArtifactRoot(sessionId);
   if (!await isManagedStoragePath(base, { allowMissing: true })) return null;
   if (record.kind === 'worktree' && !await isManagedStoragePath(dirname(record.sourceRoot))) return null;
   return { ...record, path: relative(record.sourceRoot, target) };

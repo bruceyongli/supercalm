@@ -9,6 +9,7 @@ import { reconcileStoryInputs } from './story_inputs.js';
 import { findClaudeLog } from './claude_transcripts.js';
 import { readStoryPage, readStoryImage, statStoryFile as stat } from './story_reader.js';
 import { snapshot } from './sessions.js';
+import { continuationCodexSessions } from './storage_continuation.js';
 import { pickRolloutByUuid, codexRolloutFiles } from './codex_rollouts.js';
 import { bindCodexLaunchTranscript } from './codex_transcript_binding.js';
 import { spineFromMessages } from './story_spine.js';
@@ -109,11 +110,13 @@ async function findCodexLog(s) {
   if (bound) {
     try { await stat(bound); return bound; } catch { rolloutPaths.delete(s.codex_uuid); }
   }
-  let files = await rolloutFiles();
+  const local = continuationCodexSessions(s.id);
+  const inventory = local ? () => codexRolloutFiles(local) : rolloutFiles;
+  let files = await inventory();
   // 1) captured UUID — authoritative, cwd-independent. The UUID is the full trailing filename component.
   if (s?.codex_uuid) {
     let hit = pickRolloutByUuid(files, s.codex_uuid);
-    if (!hit) { files = await rolloutFiles(true); hit = pickRolloutByUuid(files, s.codex_uuid); }
+    if (!hit) { files = await inventory(true); hit = pickRolloutByUuid(files, s.codex_uuid); }
     if (hit) { rolloutPaths.set(s.codex_uuid, hit); return hit; }
     return null; // an authoritative but missing UUID must never fall through to a sibling
   }
@@ -122,7 +125,7 @@ async function findCodexLog(s) {
     // A file can appear just after the previous Story request. Refresh the shared inventory at
     // most once per second for unresolved launches, rather than hiding it behind a 30s cache miss.
     if (!recovered && Date.now() - inventoryAt >= 1000) {
-      recovered = await bindCodexLaunchTranscript(s.id, { files: await rolloutFiles(true) });
+      recovered = await bindCodexLaunchTranscript(s.id, { files: await inventory(true) });
     }
     return recovered;
   }

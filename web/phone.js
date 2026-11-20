@@ -359,7 +359,13 @@ async function sendReply(text) {
         toast(j.error || 'The agent did not accept the message — your reply was kept');
         return;
       }
-      await api(`api/session/${S.sid}/resume`, { method: 'POST' }).catch(() => {});
+      const sourceId = S.sid;
+      const resumed = await api(`api/session/${sourceId}/resume`, { method: 'POST' });
+      if (S.sid !== sourceId) return;
+      if (resumed.id !== sourceId) {
+        location.href = 'session?id=' + encodeURIComponent(resumed.id) + '&from=phone';
+        return;
+      }
       toast('Resuming — send again in a moment');
       return;
     }

@@ -1233,7 +1233,8 @@ function wireResult() {
       const r = await fetch(`api/session/${P.sessionId}/input`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, source: 'supervisor' }) });
       if (r.status === 409) {
         if (confirm('This session has stopped. Resume it now?')) {
-          await P.api(`api/session/${P.sessionId}/resume`, { method: 'POST' });
+          const resumed = await P.api(`api/session/${P.sessionId}/resume`, { method: 'POST' });
+          if (resumed.id !== P.sessionId) { location.href = 'session?id=' + encodeURIComponent(resumed.id); return; }
           setTimeout(() => location.reload(), 900);
         }
       } else if (!r.ok) {

@@ -5,6 +5,8 @@ import { sessionHasProtectedJobs } from './scratch_jobs.js';
 import { assertLiveStorage, liveStorageConfig, storageMigrationProtected } from './live_storage.js';
 import { cleanupProvisionedSessionRoot, provisionLiveStorageRoot } from './storage_provision.js';
 
+import { continuationRoot, prepareContinuationStorage, sessionArtifactRoot } from './storage_continuation.js';
+
 const STORAGE_ROOT = join(DATA_DIR, 'session-storage');
 const ARTIFACT_ROOT = join(DATA_DIR, 'session-artifacts');
 const SESSION_ID_RX = /^s_[a-zA-Z0-9_-]+$/;
@@ -17,16 +19,21 @@ function checkedSessionId(sessionId) {
 
 export function sessionStoragePaths(sessionId) {
   const id = checkedSessionId(sessionId);
-  const root = join(STORAGE_ROOT, id);
+  const local = continuationRoot(id);
+  const root = local ? join(local, 'scratch') : join(STORAGE_ROOT, id);
   return {
     root,
     tmp: join(root, 'tmp'),
-    artifacts: join(ARTIFACT_ROOT, id),
+    artifacts: sessionArtifactRoot(id),
   };
 }
 
 export async function prepareSessionStorage(sessionId) {
   const paths = sessionStoragePaths(sessionId);
+  if (continuationRoot(sessionId)) {
+    await prepareContinuationStorage(sessionId);
+    return paths;
+  }
   // Only absent per-session roots follow the selected storage default. Existing
   // directories and whole-root migration aliases keep their registered location.
   // Check before even creating the parents: a missing whole-root migration alias

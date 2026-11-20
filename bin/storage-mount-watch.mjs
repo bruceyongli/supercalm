@@ -2,8 +2,9 @@
 // Local launchd watcher. The Keychain helper is local, so it can reconnect a missing data volume.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFile, writeFile, rename, mkdir, lstat } from 'node:fs/promises';
+import { readFile, mkdir, lstat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { assertUnused, durableJson } from '../src/storage_migration.js';
 import { validateLiveStorage } from '../src/live_storage.js';
 const exec = promisify(execFile);
 const file = process.argv[2];
@@ -13,10 +14,9 @@ const statusFile = initial.statusFile || join(dirname(file), 'mount-status.json'
 const ATTACH_TIMEOUT_MS = Math.max(60000, Number(process.env.AIOS_STORAGE_ATTACH_TIMEOUT_MS) || 45 * 60000);
 let delay = 15000, last = '';
 async function publish(state) {
-  await writeFile(statusFile + '.tmp', JSON.stringify(state), { mode: 0o600 });
-  await rename(statusFile + '.tmp', statusFile);
+  await durableJson(statusFile, state);
 }
-async function check() {
+async function check(reconnect = false) {
   const config = validateLiveStorage(JSON.parse(await readFile(file, 'utf8')));
   const state = { checkedAt: Date.now(), id: config.id, mount: config.mount, available: false };
   try {
@@ -55,20 +55,37 @@ async function check() {
     // A wedged network mount cannot block the watcher/event loop indefinitely.
     const script = `const fs=require('node:fs');const p=process.argv[1];const c=JSON.parse(fs.readFileSync(p));
       const a=fs.statSync(c.mount),b=fs.statSync(require('node:path').dirname(c.mount));
-      if(a.dev===b.dev||fs.readFileSync(c.mount+'/.aios-storage-id','utf8').trim()!==c.id)process.exit(1);
+      if(a.dev===b.dev)process.exit(1);
+      try {if(fs.readFileSync(c.mount+'/.aios-storage-id','utf8').trim()!==c.id)process.exit(1);}
+      catch(e){if(e.code==='EIO')process.exit(74);throw e;}
       function capacity(p){const s=fs.statfsSync(p);return {total_bytes:s.blocks*s.bsize,available_bytes:s.bavail*s.bsize,used_bytes:(s.blocks-s.bfree)*s.bsize};}
       console.log(JSON.stringify({volume:capacity(c.mount),backing:capacity(c.shareMount||c.mount)}));`;
-    const probe = await exec(process.execPath, ['-e', script, file], { timeout: 10000, killSignal: 'SIGKILL' });
+    let probe;
+    try { probe = await exec(process.execPath, ['-e', script, file], { timeout: 10000, killSignal: 'SIGKILL' }); }
+    catch (error) {
+      if (error.code !== 74) throw error;
+      if (!reconnect || !config.image) throw Error('I/O error reading storage identity');
+      await assertUnused([config.mount]);
+      // The image identity was verified above. The OS can still refuse if a new reader arrived.
+      await exec('/usr/bin/hdiutil', ['detach', config.mount], { timeout: 30000, cwd: '/' });
+      return check();
+    }
     Object.assign(state, JSON.parse(probe.stdout));
     state.available = true; delay = 15000;
   } catch (error) { state.error = String(error.message).slice(0, 350); delay = Math.min(delay * 2, 300000); }
+  state.checkedAt = Date.now();
   await publish(state);
   const signature = JSON.stringify([state.available, state.error]);
   if (signature !== last) { console.log(JSON.stringify(state)); last = signature; }
   return state;
 }
 do {
-  const result = await check();
+  const requested = await unlink(statusFile + '.reconnect').then(() => true, e => { if (e.code !== 'ENOENT') throw e; return false; });
+  const result = await check(requested);
   if (process.argv.includes('--once')) { process.exitCode = result.available ? 0 : 1; break; }
-  await new Promise(resolve => setTimeout(resolve, delay));
+  const until = Date.now() + delay;
+  do {
+    await new Promise(resolve => setTimeout(resolve, Math.min(1000, until - Date.now())));
+    if (await lstat(statusFile + '.reconnect').then(() => true, () => false)) break;
+  } while (Date.now() < until);
 } while (true);

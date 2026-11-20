@@ -1,3 +1,4 @@
+import { continuationNativeEnv } from './storage_continuation.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json, readJson } from './server.js';
@@ -80,9 +81,11 @@ function handle(tool, b, res) {
       // Bind the exact transcript identity: claude pipes transcript_path in every hook payload, and the
       // story view targets THIS file instead of guessing by cwd+size (which bled the biggest transcript
       // into every concurrent same-cwd session's story). Self-heals on every event (resume may move it).
+      const localHome = continuationNativeEnv(sid, tool).CLAUDE_CONFIG_DIR;
+      const projectsRoot = localHome ? join(localHome, 'projects') + '/' : CLAUDE_PROJECTS_ROOT;
       const tp = String(b.transcript || b.transcript_path || '');
       if (tool === 'claude' && tp && tp !== s.claude_transcript && tp.length < 512
-          && tp.endsWith('.jsonl') && tp.startsWith(CLAUDE_PROJECTS_ROOT) && !tp.includes('..')) {
+          && tp.endsWith('.jsonl') && tp.startsWith(projectsRoot) && !tp.includes('..')) {
         store.updateSession(sid, { claude_transcript: tp });
         store.addEvent(sid, 'transcript-bind', { path: tp });
       }

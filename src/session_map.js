@@ -1,8 +1,7 @@
+import { sessionLogFile } from './storage_continuation.js';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { LOG_DIR } from './config.js';
 import { db, eventsFor, getProject, messagesFor } from './store.js';
 import { now, stripAnsi } from './util.js';
 import { usageForSession } from './usage_store.js';
@@ -170,7 +169,7 @@ function cleanText(s, max = 20000) {
 }
 
 async function terminalTail(session_id, fallback = '') {
-  const file = join(LOG_DIR, session_id + '.log');
+  const file = sessionLogFile(session_id);
   try {
     const text = await readFile(file, 'utf8');
     return cleanText(text, 32000);

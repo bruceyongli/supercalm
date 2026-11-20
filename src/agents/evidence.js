@@ -1,3 +1,4 @@
+import { sessionLogFile } from '../storage_continuation.js';
 import net from 'node:net';
 import { spawn } from 'node:child_process';
 import { execFile } from 'node:child_process';
@@ -5,7 +6,7 @@ import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFile, writeFile, mkdir, readdir, stat, unlink, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import { LOG_DIR, DATA_DIR } from '../config.js';
+import { DATA_DIR } from '../config.js';
 import { getProject, messagesFor } from '../store.js';
 import { stripAnsi } from '../util.js';
 import { projectGraphBrief } from '../project_graph_core.js';
@@ -41,7 +42,7 @@ export async function terminalTail(session_id, max = 16000) {
   // Read only the tail of the (potentially huge, multi-MB) session log, not the whole file — this
   // runs on every supervisor tick. Pull ~4x the char budget in raw bytes (ANSI-stripping shrinks it)
   // with a 64KB floor, then clean + slice to `max`.
-  const path = join(LOG_DIR, session_id + '.log');
+  const path = sessionLogFile(session_id);
   try {
     const fh = await open(path, 'r');
     try {

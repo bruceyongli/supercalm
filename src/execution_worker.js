@@ -1,5 +1,6 @@
 // Worker half of the handoff protocol. All files are staged on its LOCAL SSD.
 // Import is dormant until the controller has durably committed the owner.
+import { continuationNativeEnv, sessionLogFile, sessionArtifactRoot } from './storage_continuation.js';
 import { open, mkdir, mkdtemp, readFile, writeFile, rename, copyFile, lstat, realpath, rm, statfs } from 'node:fs/promises';
 import { join, dirname, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -238,7 +239,7 @@ export function finalizeWorkerImport(op, expected) {
 async function finalizeImport(op, expected) {
   if ([...receiving].some(key => key.startsWith(op + ':'))) throw migrationError('Transfer is still receiving files');
   let row = await record(op);
-  const locations = { artifactTarget: join(DATA_DIR, 'session-artifacts', row.spec.session.id), attachmentTarget: join(row.cwd, '.aios/attachments', row.spec.session.id) };
+  const locations = { artifactTarget: sessionArtifactRoot(row.spec.session.id), attachmentTarget: join(row.cwd, '.aios/attachments', row.spec.session.id) };
   if (['imported','active'].includes(row.phase)) return { cwd: row.cwd, mapping: row.mapping, phase: row.phase, ...locations };
   if (!['receiving','unpacking','files-ready'].includes(row.phase)) throw migrationError('Incomplete handoff needs recovery; originals are retained');
   for (const [part, receipt] of Object.entries(expected.parts || {})) {
@@ -307,19 +308,20 @@ async function finalizeImport(op, expected) {
     const date = String(spec.native.name || '').match(/^rollout-(\d{4})-(\d{2})-(\d{2})T/);
     if (spec.session.tool === 'codex' && (!date || !spec.native.name.endsWith(`-${spec.native.uuid}.jsonl`) || basename(spec.native.name) !== spec.native.name)) throw migrationError('Invalid Codex rollout identity');
     await assertNativeIdentity(join(importDir(op), 'native'), spec.session.tool, spec.native.uuid);
-    const base = spec.session.tool === 'claude' ? join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects', claudeSlug(cwd))
-      : join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions', ...date.slice(1));
+    const local = continuationNativeEnv(spec.session.id, spec.session.tool);
+    const base = spec.session.tool === 'claude' ? join(local.CLAUDE_CONFIG_DIR || process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects', claudeSlug(cwd))
+      : join(local.CODEX_HOME || process.env.CODEX_HOME || join(homedir(), '.codex'), 'sessions', ...date.slice(1));
     await mkdir(base, { recursive: true, mode: 0o700 });
     transcript = join(base, spec.session.tool === 'claude' ? spec.native.uuid + '.jsonl' : spec.native.name);
     await copyIdentical(join(importDir(op), 'native'), transcript);
     if (row.parts['native-extra']) await unpack(op, 'native-extra', join(base, spec.native.uuid));
   }
-  if (row.parts.artifacts) await unpack(op, 'artifacts', join(DATA_DIR, 'session-artifacts', spec.session.id));
+  if (row.parts.artifacts) await unpack(op, 'artifacts', sessionArtifactRoot(spec.session.id));
   for (const [index, archive] of (spec.artifactArchives || []).entries()) {
-    await unpack(op, `artifact-${index}`, join(DATA_DIR, 'session-artifacts', spec.session.id, archive.name));
+    await unpack(op, `artifact-${index}`, join(sessionArtifactRoot(spec.session.id), archive.name));
   }
   if (row.parts.attachments) await unpack(op, 'attachments', join(cwd, '.aios/attachments', spec.session.id));
-  if (row.parts.log) await copyIdentical(join(importDir(op), 'log'), join(DATA_DIR, 'logs', spec.session.id + '.log'));
+  if (row.parts.log) await copyIdentical(join(importDir(op), 'log'), sessionLogFile(spec.session.id));
   row.phase = 'files-ready'; row.transcript = transcript; await save(op, row);
   }
   const projectPath = store.getProject(spec.project.id)?.path || cwd;
@@ -334,7 +336,7 @@ async function finalizeImport(op, expected) {
     cold_artifacts: spec.artifactCopyPolicy || null,
     dependency_rebuild: row.dependencyRebuild || null,
     previous_locations: [{ project: spec.project.path, worktree: spec.session.worktree_path, artifacts: spec.artifactsPath,
-      target: cwd, artifactTarget: join(DATA_DIR, 'session-artifacts', spec.session.id) }] });
+      target: cwd, artifactTarget: sessionArtifactRoot(spec.session.id) }] });
   row = { ...row, phase: 'imported', mapping, importedAt: Date.now() };
   await save(op, row);
   return { cwd, mapping, phase: 'imported', ...locations };

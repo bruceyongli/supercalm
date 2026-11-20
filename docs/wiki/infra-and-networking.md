@@ -45,9 +45,11 @@ is **additive**: `tailscale serve --bg --https=443 --set-path=/aios http://127.0
   2. *Storage.* `bin/storage-mount-watch.mjs` reconnects the share and reattaches its image. After an
      unclean shutdown the APFS consistency scan over the network takes many minutes; the attach may
      run up to 45 minutes (`AIOS_STORAGE_ATTACH_TIMEOUT_MS`) and is never killed and restarted mid-scan.
-  3. *Server.* If `data/logs` is an alias into storage that is not mounted yet, the server waits
-     (`src/boot_storage_gate.js`, one log line a minute) and continues the moment it appears. It never
-     creates a local fallback and no longer crash-loops.
+  3. *Server.* The local database and UI stay available while a registered log volume is offline.
+     Resume requests a reconnect and retries the original session when storage verifies. If the
+     volume remains unavailable, Resume opens a separate local workspace with recovery notes,
+     recent stored messages, and the exact local branch snapshot when available. Reconnect the
+     device in Settings → Storage and resume the original to recover uncommitted remote edits.
 - **Logs / data:** `~/aios/data/aios.log`; sqlite + per-session raw logs + vapid keys in `~/aios/data/`
   (gitignored).
 - **Health:** `curl 127.0.0.1:8793/healthz` and `/api/state`.

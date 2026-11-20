@@ -1,3 +1,4 @@
+import { continuationCodexSessions, sessionArtifactRoot, sessionLogFile } from './storage_continuation.js';
 import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -5,7 +6,7 @@ import { lstat, realpath, readFile } from 'node:fs/promises';
 import { join, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { route, json, readJson, setExecutionRouter } from './server.js';
-import { DATA_DIR, LOG_DIR, TMUX, VERSION, COMMIT_SHA } from './config.js';
+import { DATA_DIR, TMUX, VERSION, COMMIT_SHA } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { withSessionArchiveLock } from './archive_lock.js';
@@ -106,7 +107,7 @@ async function assertStoppedForMove(s, options = {}) {
 async function nativeSource(s) {
   if (s.tool === 'codex') {
     if (!s.codex_uuid) throw migrationError('This session has no bound Codex conversation ID', 'execution-native-missing');
-    let path = pickRolloutByUuid(await codexRolloutFiles(), s.codex_uuid);
+    let path = pickRolloutByUuid(await codexRolloutFiles(continuationCodexSessions(s.id)), s.codex_uuid);
     if (!path) for (const root of await retainedNativeRoots(join(homedir(), '.codex/sessions'))) {
       path = pickRolloutByUuid(await codexRolloutFiles(root), s.codex_uuid); if (path) break;
     }
@@ -157,7 +158,7 @@ async function performOperation(op) {
       const gitSeedSession = store.db.prepare('SELECT id FROM sessions WHERE project_id=? AND execution_node=? AND execution_checkout=1 AND id!=? ORDER BY last_activity DESC LIMIT 1').get(s.project_id, node.id, s.id)?.id;
       spec = { ...exportExecutionState(s.id), kind: 'move', migrationVersion: 1, native, git, gitSeedSession, coldFiles,
         workingStatusHash: coldFiles ? git.statusHash : null, archive: source.archive || null, historyOnly: !native,
-        artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: join(DATA_DIR, 'session-artifacts', s.id), sourcePath: source.path };
+        artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: sessionArtifactRoot(s.id), sourcePath: source.path };
     } else if (!spec) {
       const project = store.getProject(s.project_id);
       const sourcePath = await realpath(project.path);
@@ -170,7 +171,7 @@ async function performOperation(op) {
       }
       git.branch = branchFor(project, s.id);
       spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: exportExecutionProjectState(project.id),
-        kind: 'launch', git, sourcePath, artifactsPath: join(DATA_DIR, 'session-artifacts', s.id) };
+        kind: 'launch', git, sourcePath, artifactsPath: sessionArtifactRoot(s.id) };
     }
     // An older failed operation may predate the first successful project import.
     // Keep its exact snapshot, but allow it to use the now-available local seed.
@@ -245,7 +246,7 @@ async function performOperation(op) {
         updateOperation(op, 'copying', { parts });
       }
       if (!uploaded('attachments')) await optionalUpload(node, op, 'attachments', join(spec.project.path, '.aios/attachments', s.id), true, parts, spec.artifactCopyPolicy);
-      if (!uploaded('log')) await optionalUpload(node, op, 'log', join(LOG_DIR, s.id + '.log'), false, parts);
+      if (!uploaded('log')) await optionalUpload(node, op, 'log', sessionLogFile(s.id), false, parts);
       await assertStoppedForMove(store.getSession(s.id), moveOptions);
       await checkSource();
     }

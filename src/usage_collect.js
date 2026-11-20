@@ -1,3 +1,4 @@
+import { sessionLogFile } from './storage_continuation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { open, readdir, stat } from 'node:fs/promises';
@@ -529,7 +530,7 @@ function looksLikeLimitCodeSnippet(msg, before = '') {
 
 async function scanTerminalLogs(counts) {
   for (const s of store.listLocalSessions()) {
-    const path = join(LOG_DIR, s.id + '.log');
+    const path = sessionLogFile(s.id);
     let st;
     try {
       st = await stat(path);

@@ -116,6 +116,7 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           </div>
         </div>
         <div class="message-box footer-composer" id="message-box" aria-label="Message composer">
+          <aside id="storage-recovery" role="status" hidden></aside>
           <div class="attachment-list" id="attachments" hidden></div>
           <textarea id="reply" rows="1" placeholder="Ask anything, paste or attach files/images…"></textarea>
           <div class="composer-notice" id="composer-notice" role="status" aria-live="polite" hidden></div>
@@ -1871,6 +1872,12 @@ function titleActionButton(id, html, label, extra = '') {
 function renderHeaderTitle(s) {
   if (!s) return;
   latestSessionInfo = s;
+  const recovery = $('#storage-recovery');
+  if (recovery) {
+    const original = s.storage_recovery?.original_id;
+    recovery.hidden = !original;
+    if (original) recovery.innerHTML = `<b>Local continuation.</b> Read the <a href="api/session/${encodeURIComponent(s.id)}/file?raw=1&amp;path=${encodeURIComponent(s.storage_recovery.notes)}" target="_blank" rel="noopener">recovery notes</a> for the saved messages and workspace details. To recover remote files, reconnect the device in <a href="settings#st-storage">Settings → Storage</a>, then <a href="session?id=${encodeURIComponent(original)}">open the original session</a> and choose Resume. Compare any local edits before copying them back.`;
+  }
   const el = $('#s-title');
   if (!el || titleEditing) return;
   el.innerHTML = `
@@ -2836,8 +2843,9 @@ function showResumeBar() {
     const requestToken = requestScope.capture();
     bar.querySelector('#resume-bar-go').disabled = true;
     try {
-      await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
+      const resumed = await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
       requestScope.guard(requestToken);
+      if (resumed.id !== requestToken.id) return navigate('session?id=' + encodeURIComponent(resumed.id));
       bar.querySelector('span').textContent = 'Resuming — reloading…';
       setTimeout(() => {
         if (requestScope.isCurrent(requestToken)) location.reload();
@@ -3515,8 +3523,9 @@ $('#b-resume').onclick = async () => {
   const button = $('#b-resume');
   button.disabled = true;
   try {
-    await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
+    const resumed = await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
     requestScope.guard(requestToken);
+    if (resumed.id !== requestToken.id) return navigate('session?id=' + encodeURIComponent(resumed.id));
     setTimeout(() => {
       if (requestScope.isCurrent(requestToken)) location.reload();
     }, 900);
