@@ -225,12 +225,13 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   Controller shadows never enter local recovery, cleanup or supervisor loops. SSH is transport,
   not the lifetime of native processes. Run the same committed runtime on each registered device
   through `bin/deploy`; private worker auth is stored mode 0600, never in argv or browser state.
-  Add a Mac via Settings → Execution devices → Add device. The controller-only
-  `bin/deploy --pair-device ID SSH_HOST` command prepares one explicitly trusted SSH target at
-  the **already running, tagged release**. The browser registers it with the resulting 15-minute
-  single-use code; it cannot submit SSH commands or hosts. Pairing does not change the default,
-  publish a release, move sessions, or restart existing devices. If setup is interrupted or the
-  code expires, repeat the command with the same ID and host.
+  Add a Mac via Settings → Execution devices → Add device → Connect device. The verified
+  operator can submit only an ID and one SSH target with an existing trusted host key.
+  The controller runs the fixed `bin/deploy --pair-device` installer for the **already
+  running, tagged release**, checks the OS before any remote writes, and consumes its proof
+  privately. Never expose arbitrary commands, worker credentials, stdout or SSH options.
+  Terminal/code pairing remains an optional fallback. Pairing does not change the default,
+  publish a release, migrate sessions, or restart existing devices.
   Preserve release source contracts, do not turn a copied repository into an approved deploy source.
   Deployment SSH connections are separate from session/model transport. Explicit operator setup via
   `bin/execution-connection.mjs` reuses an already-authorized, device-local key and verified known host,

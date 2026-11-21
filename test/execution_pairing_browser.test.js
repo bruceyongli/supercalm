@@ -48,18 +48,22 @@ try {
   assert.equal(await page.evaluate(()=>scrollY),0,'late settings must not take scroll back from the reader');
   await btn.click();
   const form=page.locator('#st-device-pair');
-  const id=form.getByLabel('Device ID'), host=form.getByLabel('SSH address'), proof=form.getByLabel(/Enter the pairing code/);
-  await id.fill('work-mac'); await host.fill('test box');
-  assert.equal(await form.getByRole('button',{name:'Copy setup command'}).isDisabled(),true);
-  await host.fill('operator@work-mac.local');
-  assert.equal(await form.locator('textarea').inputValue(),'cd ~/aios && bin/deploy --pair-device work-mac operator@work-mac.local');
-  await proof.fill('not-a-code');
-  await page.evaluate(()=>window.refreshDevices());
-  assert.equal(await proof.inputValue(),'not-a-code');assert.equal(await proof.evaluate(el=>el===document.activeElement),true);
+  const id=form.getByLabel('Device ID'), host=form.getByLabel('SSH address'), proof=form.getByLabel('Pairing code');
+  assert.equal(await form.locator('textarea').count(),0);
   const connect=form.getByRole('button',{name:'Connect device'});
-  await connect.click(); await form.getByText(/code is invalid/).waitFor();
+  await host.fill('test box');await connect.click();await form.getByText(/Enter a remote SSH alias/).waitFor();
+  await host.fill('linux-fixture.invalid');
+  assert.equal(await id.inputValue(),'linux-fixture');
+  await page.evaluate(()=>window.refreshDevices());
+  assert.equal(await host.inputValue(),'linux-fixture.invalid');
+  await connect.click();await form.getByText(/SSH connected to Linux/).waitFor();assert.ok(await form.getByText('Open storage settings').isVisible());
+  await form.locator('[data-manual] summary').click();await proof.fill('not-a-code');
+  await form.getByRole('button',{name:'Use pairing code'}).click();await form.getByText(/code is invalid/).waitFor();
   assert.equal((await json('/api/execution/devices')).devices.length,1);
-  await proof.fill(code);await connect.click();await form.waitFor({state:'hidden'});
+  await host.fill('pair-fixture.invalid');await id.fill('work-mac');
+  await connect.click();await page.waitForFunction(()=>/^[a-f0-9]{40}$/.test(sessionStorage.getItem('aios-device-setup-job')||''));
+  await page.reload(); // an interrupted UI follows the operation instead of starting a second install
+  await page.locator('.st-device-note').getByText(/added|connected/).waitFor();
   const row=page.locator('[data-execution-device="work-mac"]');await row.waitFor();
   for(let i=0;i<50 && !(await row.innerText()).includes('Connected');i++){await delay(200);await page.evaluate(()=>window.refreshDevices());}
   assert.match(await row.innerText(),/Connected/);assert.equal(await proof.inputValue(),'');
@@ -72,7 +76,7 @@ try {
   await page.setViewportSize({width:1440,height:900});await btn.click();await id.fill('another');
   await id.press('Escape');assert.ok(await form.isHidden());assert.equal(await btn.evaluate(el=>el===document.activeElement),true);
   await btn.click();assert.equal(await id.inputValue(),'');
-  await form.getByRole('button',{name:'Cancel'}).click();
+  await form.getByRole('button',{name:'Close'}).click();
   await page.locator('#dk-sess-plus').click();
   await page.locator('#nl-device').waitFor();
   assert.equal(await page.locator('#nl-device option[value="work-mac"]').isEnabled(),true);

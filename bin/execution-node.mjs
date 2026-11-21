@@ -8,14 +8,15 @@ import { pipeline } from 'node:stream/promises';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { loadExecutionNodes, saveExecutionNode, executionNodes, executionNode } from '../src/execution_transport.js';
+import { loadExecutionNodes, saveExecutionNode, executionNodes, executionNode, assertNewDevice } from '../src/execution_transport.js';
 import { shquote as quote } from '../src/util.js';
-import { preparePairing } from '../src/execution_pairing.js';
+import { checkPairingTarget, preparePairing } from '../src/execution_pairing.js';
+import { inspectPairPlatform, pairError, pairingErrors, setupSshOptions, sshFailure } from '../src/execution_pair_checks.js';
 import { COMMIT_SHA, PORT, VERSION, ROOT } from '../src/config.js';
 
 const exec = promisify(execFile), root = dirname(dirname(fileURLToPath(import.meta.url)));
 const ssh = (node, command, options = {}) => node.local ? spawn('/bin/sh', ['-c', command], options)
-  : spawn('/usr/bin/ssh', ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', node.host, command], options);
+  : spawn('/usr/bin/ssh', [...setupSshOptions, node.host, command], options);
 function completed(child) {
   return new Promise((resolve, reject) => { child.once('error', reject); child.once('close', code => code === 0 ? resolve() : reject(Error(`Device command exited ${code}`))); });
 }
@@ -25,7 +26,7 @@ async function deploy(node, expectedSha) {
   const dirty = (await exec('/usr/bin/git', ['-C', root, 'status', '--porcelain'])).stdout;
   if (dirty.trim()) throw Error('Commit the runtime before publishing an execution device');
   const runtime = JSON.parse(node.local ? await import('node:fs/promises').then(fs=>fs.readFile(join(node.root,'runtime.json'),'utf8'))
-    : (await exec('/usr/bin/ssh', ['-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'ConnectTimeout=10', node.host,
+    : (await exec('/usr/bin/ssh', [...setupSshOptions, node.host,
       `/bin/cat ${quote(join(node.root, 'runtime.json'))}`], { timeout: 15000 })).stdout);
   if (!runtime.node?.startsWith(node.root + '/runtime/') || !runtime.path) throw Error('Run execution-bootstrap.mjs on this device first');
   const bundle = join(node.root, 'releases', `${sha}-${randomBytes(4).toString('hex')}.bundle`);
@@ -43,26 +44,24 @@ async function deploy(node, expectedSha) {
   console.log(`Execution device ${node.label}: ${sha}`);
 }
 
-// No host or SSH operation is supplied by an HTTP request. Use only the exact
-// published release that the controller is serving; the installer authenticates
-// worker ID + SHA before we issue a one-time browser code.
+// The controller and manual fallback use this same fixed installer. The proof
+// is either consumed privately by the controller or shown to the local operator.
 async function pair(id, host) {
+  checkPairingTarget(id,host);
+  assertNewDevice(await loadExecutionNodes(),{id,host});
   const live = await fetch('http://127.0.0.1:' + PORT + '/api/version', {signal:AbortSignal.timeout(5000)}).then(r => r.json());
   const tag = (await exec('/usr/bin/git', ['-C', ROOT, 'rev-parse', 'refs/tags/v' + VERSION + '^{commit}'])).stdout.trim();
-  if (live.commit !== COMMIT_SHA || live.version !== VERSION || tag !== COMMIT_SHA) throw Error('Pair from the controller checkout of the currently running release');
+  if (live.commit !== COMMIT_SHA || live.version !== VERSION || tag !== COMMIT_SHA) throw pairError('setup-release');
   const run = async (input, timeout, command = '/opt/homebrew/bin/node --input-type=module') => {
-    const p = exec('/usr/bin/ssh', ['-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=10',host,
+    const p = exec('/usr/bin/ssh', [...setupSshOptions,host,
       command], {timeout, maxBuffer:1024*1024});
     p.child.stdin.on('error', () => {}); p.child.stdin.end(input);
     try { return (await p).stdout; }
-    catch (error) {
-      const lines = String(error.stderr || '').split('\n');
-      const reason = lines.find(l => /^Error: /.test(l)) || lines.find(l => /denied|verification failed|not found|refused|timed out|resolve hostname/i.test(l));
-      throw Error('Device setup failed: ' + (reason?.trim().slice(0,220) || 'check verified key-based SSH, Homebrew Node/tmux and the signed-in Mac account.'));
-    }
+    catch (error) { throw sshFailure(error); }
   };
+  console.log('Checking the target over SSH…');
+  await inspectPairPlatform(run); // before creating a pairing record, reserving a worker or downloading anything
   const code = await preparePairing({id, host, commit: COMMIT_SHA}, async node => {
-    console.log('Checking the target Mac over SSH…');
     const preflight = await readFile(join(ROOT, 'bin/execution-pair-target.mjs'), 'utf8');
     const reserve = preflight + '\nlet credential=""; for await(const c of process.stdin) credential+=c; console.log(JSON.stringify(await reserveWorker(credential)));';
     const {root} = JSON.parse(await run(node.token, 30000, '/opt/homebrew/bin/node --input-type=module -e ' + quote(reserve)));
@@ -84,7 +83,11 @@ if (action === 'register') {
     token: old?.token || randomBytes(32).toString('hex'), local: host === 'localhost', default: process.argv.includes('--default') || !!old?.default });
   console.log(`Registered ${node.id}. The next bin/deploy publishes its local runtime.`);
 } else if (action === 'pair') {
-  try { await pair(id, host); } catch (error) { console.error(error.message); process.exitCode = 1; }
+  try { await pair(id, host); } catch (error) {
+    const code=Object.hasOwn(pairingErrors,error.code) ? error.code : 'setup-failed';
+    console.error('AIOS_PAIR_ERROR ' + code);
+    console.error(pairingErrors[code]); process.exitCode = 1;
+  }
 } else if (action === 'deploy-all') {
   for (const node of executionNodes()) await deploy(node);
 } else if (action === 'deploy') await deploy(executionNode(id));

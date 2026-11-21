@@ -1,5 +1,6 @@
-// Only the controller's local CLI can prepare a target. The web tier can consume
-// a short-lived proof, never submit SSH hosts, credentials, commands or paths.
+// Only the controller's gated, fixed release installer prepares a target.
+// The same proof is privately consumed for automatic setup or explicitly pasted
+// for manual pairing; credentials, shell commands and paths are not web inputs.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';

@@ -21,7 +21,9 @@ if(process.argv[2]!=='--fixture-mac'){
 }else{
   const command=process.argv[3], home=await realpath(process.env.AIOS_PAIR_FIXTURE_HOME), root=join(home,'.local/share/supercalm-executor');
   const input=async()=>{let result='';for await(const c of process.stdin)result+=c;return result;};
-  if(command.startsWith('/opt/homebrew/bin/node --input-type=module -e ')){
+  if(command==='uname -sm'){console.log(process.env.AIOS_PAIR_FIXTURE_OS||'Darwin arm64');}
+  else if(command.startsWith('if [ ! -x /opt/homebrew/bin/node ];')){console.log('ready');}
+  else if(command.startsWith('/opt/homebrew/bin/node --input-type=module -e ')){
     assert.ok(command.includes('reserveWorker(credential)'));
     const token=await input();assert.ok(!command.includes(token));
     const {reserveWorker}=await import('../../bin/execution-pair-target.mjs');

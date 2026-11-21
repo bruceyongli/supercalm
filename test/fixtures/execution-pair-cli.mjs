@@ -18,6 +18,11 @@ export async function exercisePairingCLI(dir){
   const server=createServer((req,res)=>{assert.equal(req.url,'/api/version');res.end(JSON.stringify({version,commit:sha}));});
   await new Promise(r=>server.listen(0,'127.0.0.1',r));
   try{
+    const linux=join(dir,'linux-data');
+    await assert.rejects(exec(process.execPath,['--import',new URL('./execution-pair-ssh.mjs',import.meta.url).href,'bin/execution-node.mjs','pair','test-linux','pair-fixture.invalid'],{
+      cwd:repo,env:{...process.env,AIOS_DATA:linux,AIOS_EXECUTION_NODES_FILE:join(linux,'registry.json'),AIOS_PORT:String(server.address().port),
+        AIOS_PAIR_FIXTURE_HOME:home,AIOS_PAIR_FIXTURE_OS:'Linux aarch64'},timeout:15000}),e=>e.stderr.includes('AIOS_PAIR_ERROR linux-host'));
+    await assert.rejects(readFile(join(home,'.local/share/supercalm-executor/control-token')),{code:'ENOENT'});
     const result=await exec(process.execPath,['--import',new URL('./execution-pair-ssh.mjs',import.meta.url).href,'bin/execution-node.mjs','pair','test-mac','pair-fixture.invalid'],{
       cwd:repo,env:{...process.env,AIOS_DATA:data,AIOS_EXECUTION_NODES_FILE:join(data,'registry.json'),AIOS_PORT:String(server.address().port),AIOS_PAIR_FIXTURE_HOME:home},timeout:30000});
     assert.ok(/test-mac\.[a-f0-9]{32}/.test(result.stdout));

@@ -77,13 +77,19 @@ your devices over Tailscale Serve or an authenticated reverse proxy (never the p
 
 ### Add another execution Mac
 
-Open **Settings → Execution devices → Add device** on the controller. Enter a short device ID
-and the SSH address of a signed-in Apple Silicon Mac. The controller must already trust its SSH
-host key and be able to sign in with a key; the Mac needs Remote Login, Git, and Homebrew Node
-and tmux. Run the generated command in Terminal on the **controller**, then paste its 15-minute
-code back into Settings and select **Connect device**. If the code expires, repeat the same
-command. Once the row says **Connected**, select the Mac under **New session → Run on**.
+Open **Settings → Execution devices → Add device**, enter the SSH address of a signed-in Apple
+Silicon Mac, and select **Connect device**. You can edit the suggested ID. The controller checks
+SSH and the OS, installs the already-published worker and registers it; you do not need Terminal
+or a pairing code. The controller must already trust the host key and be able to sign in using a
+key. The new Mac needs Remote Login, Git, and Homebrew Node and tmux. Linux storage hosts are
+not macOS execution workers. Once the row says **Connected**, select it under **New session → Run on**.
 Pairing does not move sessions or change the default device.
+
+Automatic setup is an operator action: use a local controller browser or its private Tailscale
+Serve URL. On an organization tailnet with a tagged controller, set `AIOS_PAIRING_OPERATOR_LOGIN`
+in the controller's private configuration to the exact permitted user. Public Funnel and worker
+callbacks cannot start setup. The controller-terminal `bin/deploy --pair-device ID SSH_HOST`
+and the optional **Already have a pairing code?** field remain available as a fallback.
 
 ## Updating
 

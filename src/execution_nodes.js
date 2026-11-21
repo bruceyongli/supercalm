@@ -15,6 +15,8 @@ import { EXECUTION_NODE, remoteSession, migrationError } from './execution_ident
 import { loadExecutionNodes, executionNodes, executionNode, nodeRequest, connectExecutionNode, proxyNodeRequest } from './execution_transport.js';
 import { nodeForSession, executionDeviceList, assertExecutionAvailable } from './execution_routing.js';
 import { claimPairing } from './execution_pairing.js';
+import { authorizeDeviceSetup } from './execution_pair_authority.js';
+import { createPairJobs } from './execution_pair_jobs.js';
 import { mirrorExecutionSnapshot, exportExecutionState, exportExecutionProjectState } from './execution_state.js';
 import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus, reuseWorkerGit } from './execution_worker.js';
 import { gitEvidence, gitBundle, workingArchive, committedArchive, committedLaunchGit, committedLaunchBundle, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
@@ -363,6 +365,23 @@ const workerOnly = fn => handle(async (req, params, url) => {
 });
 route('GET', '/api/execution/devices', handle(() => ({ canPair: EXECUTION_NODE === 'local', devices: executionDeviceList(),
   operations: store.db.prepare('SELECT * FROM execution_operations ORDER BY created_at DESC LIMIT 30').all().map(publicOperation) })));
+const pairJobs=createPairJobs();
+let pairingChecks=0;
+route('POST','/api/execution/devices/setup',handle(async req=>{
+  if(EXECUTION_NODE!=='local')throw migrationError('Add devices on the controller.','controller-only',403);
+  if(pairingChecks>=3)throw migrationError('Device setup is busy. Retry in a moment.','pairing-busy',429);
+  pairingChecks++;
+  try{await authorizeDeviceSetup(req);}finally{pairingChecks--;}
+  let input;
+  try {input=JSON.parse((await readBody(req,1024)).toString('utf8'));}catch{}
+  if(!input || Object.keys(input).length!==2 || typeof input.id!=='string' || typeof input.host!=='string')
+    throw migrationError('Enter only the device ID and SSH address.','invalid-device-host',400);
+  return pairJobs.start(input.id,input.host);
+}));
+route('GET','/api/execution/devices/setup/:job',handle((_req,{job})=>{
+  if(EXECUTION_NODE!=='local')throw migrationError('Use the controller.','controller-only',403);
+  return pairJobs.status(job);
+}));
 route('POST', '/api/execution/devices/pair', handle(async req => {
   if (EXECUTION_NODE !== 'local') throw migrationError('Add devices on the controller.', 'controller-only', 403);
   if (req.headers['x-aios-pairing'] !== '1' || !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')

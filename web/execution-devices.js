@@ -8,57 +8,78 @@ const phaseLabel = phase => ({ queued: 'Preparing', copying: 'Copying to local S
 export function mountExecutionSettings(host) {
   const add = host.parentNode.querySelector('#st-add-device');
   host.innerHTML = `<form class="ob-card st-device-pair" id="st-device-pair" hidden aria-label="Pair an execution device">
-      <h3>Pair a Mac</h3><p>Generate a setup command for the new Mac. Already have a code? Go straight to step 2.</p>
-      <details><summary>What the new Mac needs</summary><p>Use a signed-in Apple Silicon Mac with Remote Login, Git, and Homebrew Node and tmux. Verify that the controller can SSH to its account using a key. No passwords go into Settings.</p></details>
-      <div class="st-device-fields"><label>Device ID<input name="deviceId" placeholder="work-mac" autocapitalize="none" spellcheck="false" maxlength="40"></label>
-      <label>SSH address<input name="sshHost" placeholder="user@work-mac.local" autocapitalize="none" spellcheck="false" maxlength="200"></label></div>
-      <label>1. Run on the controller Mac in Terminal<textarea name="command" rows="2" readonly placeholder="Enter a device ID and SSH address to generate the command."></textarea></label>
-      <div class="st-device-actions"><button class="dk-reply-btn" type="button" data-copy disabled>Copy setup command</button><small data-command-hint></small></div>
-      <label>2. Enter the pairing code from Terminal<input name="code" placeholder="Device ID and one-time code" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="80"></label>
-      <div class="st-device-actions"><button class="dk-new" type="submit">Connect device</button><button class="dk-reply-btn" type="button" data-cancel>Cancel</button></div>
-      <p role="status"></p></form><p class="st-device-note" role="status"></p><div data-device-list>Loading devices…</div>`;
-  const form = host.querySelector('form'), f = form.elements, list = host.querySelector('[data-device-list]');
-  const note = host.querySelector('.st-device-note'), status = form.querySelector('[role=status]'), copy = form.querySelector('[data-copy]');
-  let stopped = false, busy = false, refreshId = 0, deviceSignature;
-  function toggle(show) {
-    form.hidden = !show;
-    add.setAttribute('aria-expanded', String(show));
-    if (show) { note.textContent = ''; delete note.dataset.device; f.deviceId.focus(); }
-    else { form.reset(); command(); status.textContent = ''; add.focus(); }
+      <h3>Connect an execution device</h3><p>Enter its SSH address. The controller checks the device, installs the worker, and connects it.</p>
+      <div class="st-device-fields"><label>SSH address<input name="sshHost" placeholder="user@work-mac.local" autocapitalize="none" spellcheck="false" maxlength="200"></label>
+      <label>Device ID<input name="deviceId" placeholder="work-mac" autocapitalize="none" spellcheck="false" maxlength="40"></label></div>
+      <div class="st-device-actions"><button class="dk-new" type="submit">Connect device</button><button class="dk-reply-btn" type="button" data-cancel>Close</button></div>
+      <p role="status"></p><a href="#st-storage" data-storage-link hidden>Open storage settings</a>
+      <details><summary>Device requirements</summary><p>Use a signed-in Apple Silicon Mac with Remote Login, Git, Homebrew Node and tmux. The controller must already trust the host and have key-based SSH access. No passwords or keys go into Settings.</p></details>
+      <details data-manual><summary>Already have a pairing code?</summary><label>Pairing code<input name="code" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="80"></label>
+      <button class="dk-reply-btn" type="button" data-claim>Use pairing code</button></details></form>
+      <p class="st-device-note" role="status"></p><div data-device-list>Loading devices…</div>`;
+  const form=host.querySelector('form'), f=form.elements, list=host.querySelector('[data-device-list]');
+  const note=host.querySelector('.st-device-note'), status=form.querySelector('[role=status]'), storageLink=form.querySelector('[data-storage-link]');
+  const submit=form.querySelector('[type=submit]'), claim=form.querySelector('[data-claim]'), receiptKey='aios-device-setup-job';
+  const headers={'content-type':'application/json','x-aios-pairing':'1'};
+  let stopped=false,busy=false,refreshId=0,deviceSignature,pollTimer,job='',idEdited=false;
+  const say=text=>{status.textContent=text;note.textContent=form.hidden?text:'';};
+  function remember(value){job=value;try{if(value)sessionStorage.setItem(receiptKey,value);else sessionStorage.removeItem(receiptKey);}catch{}}
+  function setBusy(value){busy=value;for(const el of [submit,claim,f.code,f.deviceId,f.sshHost])el.disabled=value;add.textContent=value?'View setup':'Add device';}
+  function toggle(show){
+    form.hidden=!show;add.setAttribute('aria-expanded',String(show));
+    if(show){note.textContent='';delete note.dataset.device;if(!busy)f.sshHost.focus();}
+    else{if(busy)note.textContent=status.textContent;else{form.reset();form.querySelector('[data-manual]').open=false;status.textContent='';storageLink.hidden=true;idEdited=false;}add.focus();}
   }
-  function command() {
-    const id = f.deviceId.value.trim(), ssh = f.sshHost.value.trim();
-    const validId = id !== 'local' && /^[a-z][a-z0-9_-]{0,39}$/.test(id);
-    const validSsh = /^(?:[a-zA-Z0-9][a-zA-Z0-9._-]*@)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(ssh) && !/^(localhost(?:\.|$)|127\.|0\.0\.0\.0$)/i.test(ssh.split('@').at(-1));
-    f.command.value = validId && validSsh ? 'cd ~/aios && bin/deploy --pair-device ' + id + ' ' + ssh : '';
-    copy.disabled = !f.command.value;
-    form.querySelector('[data-command-hint]').textContent = id && !validId ? 'Use a lowercase ID starting with a letter (not “local”).' : ssh && !validSsh ? 'Use a remote SSH alias or user@hostname.' : '';
+  function added(id){
+    remember('');setBusy(false);if(!form.hidden)toggle(false);
+    note.dataset.device=id;note.textContent=id+' added. Checking its connection…';
+    window.dispatchEvent(new Event('execution-devices-changed'));void refresh();
   }
-  add.onclick = () => { if (!busy) toggle(form.hidden); };
-  f.deviceId.oninput = f.sshHost.oninput = command;
-  copy.onclick = async () => {
-    try { await navigator.clipboard.writeText(f.command.value); status.textContent = 'Setup command copied.'; }
-    catch { f.command.focus(); f.command.select(); status.textContent = 'Command selected. Copy it to run on the controller.'; }
+  function fail(message,code){
+    remember('');setBusy(false);say(message);storageLink.hidden=code!=='linux-host';
+  }
+  function follow(state){
+    if(stopped)return;
+    if(state.stage==='failed'){fail(state.error,state.code);return;}
+    if(state.stage==='added'){added(state.id);return;}
+    remember(state.job);setBusy(true);
+    say(({checking:'Checking SSH and device requirements…',installing:'Installing and verifying the worker…',registering:'Registering the verified device…'})[state.stage]||'Checking setup…');
+    pollTimer=setTimeout(poll,1000);
+  }
+  async function poll(){
+    if(stopped || !job)return;
+    try{follow(await api('api/execution/devices/setup/'+job,{signal:AbortSignal.timeout(10000)}));}
+    catch(e){if(stopped)return;if(e.status===404){fail(e.message);void refresh();}else{say('Reconnecting to setup status…');pollTimer=setTimeout(poll,2500);}}
+  }
+  f.deviceId.oninput=()=>{idEdited=!!f.deviceId.value;};
+  f.sshHost.oninput=()=>{
+    if(idEdited)return;
+    let id=f.sshHost.value.trim().split('@').at(-1).split('.')[0].toLowerCase().replace(/[^a-z0-9_-]/g,'');
+    if(id && (!/^[a-z]/.test(id)||id==='local'))id='device-'+id;
+    f.deviceId.value=id.slice(0,40);
   };
-  form.querySelector('[data-cancel]').onclick = () => { if (!busy) toggle(false); };
-  form.onkeydown = e => { if (e.key === 'Escape' && !busy) { e.preventDefault(); toggle(false); } };
-  form.onsubmit = async e => {
-    e.preventDefault();
-    if (busy) return;
-    const code = f.code.value.trim();
-    if (!code) { status.textContent = 'Paste the code printed by the setup command.'; f.code.focus(); return; }
-    if (/^[a-z][a-z0-9_-]*\.[a-f0-9]{32}$/.test(code) && f.deviceId.value.trim() && f.deviceId.value.trim() !== code.split('.')[0]) {
-      status.textContent = 'The code is for a different device ID. Check the code or the ID above.'; f.code.focus(); return;
+  add.onclick=()=>toggle(form.hidden);form.querySelector('[data-cancel]').onclick=()=>toggle(false);
+  form.onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();toggle(false);}else if(e.key==='Enter'&&e.target===f.code){e.preventDefault();claim.click();}};
+  form.onsubmit=async e=>{
+    e.preventDefault();if(busy)return;
+    const id=f.deviceId.value.trim(),host=f.sshHost.value.trim();
+    if(!/^(?:[a-zA-Z0-9][a-zA-Z0-9._-]*@)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(host)||/^(localhost(?:\.|$)|127\.|0\.0\.0\.0$)/i.test(host.split('@').at(-1))){say('Enter a remote SSH alias or user@hostname.');f.sshHost.focus();return;}
+    if(id==='local'||!/^[a-z][a-z0-9_-]{0,39}$/.test(id)){say('Use a lowercase device ID starting with a letter (not “local”).');f.deviceId.focus();return;}
+    setBusy(true);storageLink.hidden=true;say('Starting device setup…');
+    try{follow(await api('api/execution/devices/setup',{method:'POST',headers,body:JSON.stringify({id,host}),signal:AbortSignal.timeout(15000)}));}
+    catch(e){if(!stopped)fail(e.message);}
+  };
+  claim.onclick=async()=>{
+    if(busy)return;const code=f.code.value.trim();
+    if(!code){say('Enter your existing pairing code.');f.code.focus();return;}
+    if(/^[a-z][a-z0-9_-]*\.[a-f0-9]{32}$/.test(code) && f.deviceId.value.trim() && f.deviceId.value.trim()!==code.split('.')[0]){
+      say('This code is for a different device ID. Check the code or the ID above.');return;
     }
-    const submit = form.querySelector('[type=submit]'), cancel = form.querySelector('[data-cancel]');
-    busy = add.disabled = submit.disabled = cancel.disabled = true; status.textContent = 'Checking pairing code…';
-    try {
-      const result = await api('api/execution/devices/pair', { method:'POST', headers:{'content-type':'application/json','x-aios-pairing':'1'}, body:JSON.stringify({code}), signal:AbortSignal.timeout(15000) });
-      window.dispatchEvent(new Event('execution-devices-changed'));
-      if (!stopped) { add.disabled = false; toggle(false); note.dataset.device = result.id; note.textContent = result.label + ' added. Checking its connection…'; await refresh(); }
-    } catch (e) { if (!stopped) status.textContent = e.message; }
-    finally { busy = add.disabled = submit.disabled = cancel.disabled = false; }
+    setBusy(true);storageLink.hidden=true;say('Checking pairing code…');
+    try{const result=await api('api/execution/devices/pair',{method:'POST',headers,body:JSON.stringify({code}),signal:AbortSignal.timeout(15000)});if(!stopped)added(result.id);}
+    catch(e){if(!stopped)fail(e.message,e.code);}
   };
+  try{const saved=sessionStorage.getItem(receiptKey);if(/^[a-f0-9]{40}$/.test(saved||'')){job=saved;setBusy(true);void poll();}}catch{}
   async function refresh() {
     const ticket = ++refreshId;
     try {
@@ -81,7 +102,7 @@ export function mountExecutionSettings(host) {
     } catch (e) { if (!stopped && ticket === refreshId) list.textContent = 'Device list unavailable: ' + e.message; }
   }
   refresh(); const timer = setInterval(refresh, 15000);
-  return () => { stopped = true; clearInterval(timer); add.onclick = null; form.reset(); };
+  return () => { stopped=true;clearInterval(timer);clearTimeout(pollTimer);add.onclick=null;form.reset(); };
 }
 
 export async function openExecutionMove(session) {
