@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 import { chromium, webkit } from 'playwright';
 import { textWithAttachmentBlock } from '../src/upload_names.js';
+import { nativeDrop } from './fixtures/native-drop.js';
+import { verifySessionHandoff } from './fixtures/session-handoff.js';
 
 // Real SPA, upload/preview endpoints, receipt DB and Story parser; the only intercepted
 // delivery is the final /input so no tmux pane, real account or coding agent is needed.
@@ -46,6 +48,7 @@ try {
       await r.fulfill({json:{ok:true,message:msg}});
     });
     await page.goto(base + '/session?id=' + sid + '&noresize&desktop=1');
+    await verifySessionHandoff(page,base,sid);
     const reply = page.locator('#reply'), cards = page.locator('#attachments .attachment-chip');
     await reply.waitFor(); await reply.fill('Review the attached files.');
     await page.evaluate(({pngName,png64,textName,contents}) => {
@@ -91,6 +94,7 @@ try {
     await page.waitForFunction(name => Array.from(document.querySelectorAll('.story-imgs img')).some(i => i.alt === name && i.naturalWidth === 1),pngName);
     const links = await page.locator('.story-chips a').evaluateAll(els => els.map(a => [a.textContent, new URL(a.href).searchParams.get('path')]));
     for (const a of [first,second]) assert.ok(links.some(([name,path]) => name === a.name && path === a.path));
+    await nativeDrop({page,root,sid,base,uploads:() => uploads});
     // Picker/paste share the previewer. Unsupported formats and empty files must never open a blank pane.
     const wav = Buffer.alloc(44 + 1600);
     wav.write('RIFF'); wav.writeUInt32LE(wav.length - 8,4); wav.write('WAVEfmt ',8); wav.writeUInt32LE(16,16);

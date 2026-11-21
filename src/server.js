@@ -16,6 +16,7 @@ import { prepareProjectDirectory } from './project_init.js';
 import { removeProject } from './project_cleanup.js';
 import { createWebAssets } from './web_assets.js';
 import { executionDeviceList } from './execution_routing.js';
+import { sessionLinkBase } from './session_link_base.js';
 
 // A request failure is caught at the request boundary below. An error that escapes that boundary means
 // process invariants are unknown; continuing can corrupt lifecycle state. Exit and let the service
@@ -311,6 +312,7 @@ route('GET', '/api/performance', (req, res) => json(res, 200, {
   time: now(),
 }));
 route('GET', '/api/state', (req, res) => json(res, 200, buildState()));
+route('GET', '/api/session-link-base', async (req, res) => json(res, 200, {base:await sessionLinkBase(PORT)}));
 // The launcher needs projects + model choices, not the complete session/queue snapshot. Keeping this
 // projection small lets the shell prefetch it without putting /api/state on the click path.
 route('GET', '/api/launch-options', (req, res) => json(res, 200, {

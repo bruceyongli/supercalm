@@ -107,7 +107,8 @@ try {
       holdAll = true;
       await send('Accepted while report downloads are stalled.');
       await page.waitForFunction(() => document.querySelector('[data-story-sendstate="sent"]'), null, { timeout: 5000 });
-      assert.match(await page.locator('[data-story-sendstate="sent"]').innerText(), /sent.*syncing report/);
+      // An accepted input awaits the agent; a delayed report alone must not claim it was read.
+      assert.match(await page.locator('[data-story-sendstate="sent"]').innerText(), /sent.*awaiting agent/);
       assert.equal(await page.locator('#reply').inputValue(), '');
       holdAll = false; release();
       await page.waitForFunction(() => !document.querySelector('[data-story-sendstate="sent"]'));

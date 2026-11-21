@@ -287,6 +287,11 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   the newest upload; worktree sessions may preview only their own canonical-project upload folder.
   Keep original Unicode attachment names separate from unique disk keys. Composer previews use
   the dropped bytes before upload completes; a text/URL-only drag never authorizes fetching a file.
+  A native drag filename and nonzero size are not proof of readable bytes. Capture the same item's
+  file grants inside the drop, use the same byte snapshot for preview and upload, and do not silently
+  omit an unreadable attachment from a send. Never read a source app's private directory.
+  Handoff links identify the controller session, not a worker or transient UI action. Copy only
+  the ID query; use the operator's public base or the verified controller Serve mount for loopback.
 - Feature modules (`sessions/detect/spark/push/hooks`) self-register routes via `route()` and are
   loaded fire-and-forget at the bottom of `server.js` **after** `routes[]` exists (do not convert
   these to top-level `await import` — see gotcha #1).

@@ -694,6 +694,10 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .session-actions-menu button span { color: var(--dim); font-size: 10.5px; }
 .session-actions-menu button.danger b { color: var(--red); }
 .session-actions-menu button[hidden] { display: none; }
+.session-actions-menu [data-copy-session] code { color: var(--muted); font-size: 12px; user-select: all; }
+.session-menu-divider { display: block; margin: 3px 5px; border-top: 1px solid var(--line); }
+.session-copy-result:not(:empty) { display: block; padding: 4px 10px; color: var(--muted); font-size: 12px; }
+.session-copy-manual { max-width: 100%; width: 100%; font: inherit; }
 @media (min-width: 1195px) {
   .session-shell > header .brand > a { display: none; }
 }

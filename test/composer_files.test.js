@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { attachmentName, storageName } from '../src/upload_names.js';
-import { transferredFiles, previewDescriptor } from '../web/composer-files.js';
+import { captureTransferredFiles, previewDescriptor } from '../web/composer-files.js';
 import { extractAttachments, extractAttachmentImages } from '../src/story.js';
 
 const original = '第  2 版 [复核] 🌱.png';
@@ -14,6 +14,7 @@ assert.equal(attachmentName(long), long);
 const file = (name, text = 'test', type = '') => new File([text], name, {type});
 const item = (f, entry = null) => ({kind:'file', getAsFile:() => f, webkitGetAsEntry:() => entry});
 const drop = (files, items, strings = {}) => ({files, items, getData:key => strings[key] || ''});
+const transferredFiles = dt => Promise.all(captureTransferredFiles(dt).map(source => source.read()));
 const img = file(original, 'bytes', 'image/png'), generic = file('image.png', 'bytes', 'image/png');
 const second = file(original, 'other', 'image/png');
 assert.equal((await transferredFiles(drop([generic], [item(img)])))[0].name, original);

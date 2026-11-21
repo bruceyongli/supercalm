@@ -11,7 +11,8 @@ import { terminalFileReferences, installTerminalLinkTaps } from './terminal-file
 import { fitTerminalGrid } from './terminal-layout.js';
 import { installTerminalScrolling, terminalScrollMode, terminalHasNativeLatest, terminalLatestVisible } from './terminal-scroll.js';
 import { mountFilePreview } from './file-preview.js';
-import { transferredFiles, previewDescriptor } from './composer-files.js';
+import { captureTransferredFiles, COMPOSER_FILE_LIMIT, missingMediaBytes, previewDescriptor } from './composer-files.js';
+import { installSessionHandoff } from './session-handoff.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 import { sessionIndicator } from './session-indicator.js';
@@ -51,6 +52,11 @@ export const SESSION_MARKUP = `<div class="session-shell" id="session-shell">
           <span class="session-actions">
             <button class="btn ghost sm session-more" id="session-more" type="button" title="Session actions" aria-label="Session actions" aria-expanded="false">•••</button>
             <span class="session-actions-menu" id="session-actions-menu" role="menu" hidden>
+              <button type="button" data-copy-session="link" role="menuitem"><b>Copy session link</b></button>
+              <button type="button" data-copy-session="id" role="menuitem"><b>Copy session ID</b><code></code></button>
+              <span class="session-copy-result" data-copy-result role="status"></span>
+              <input type="text" class="session-copy-manual" aria-label="Session reference to copy" data-copy-manual readonly hidden>
+              <span role="separator" class="session-menu-divider"></span>
               <button type="button" id="b-stop" role="menuitem"><b>Stop &amp; park</b><span>Frees the pane and stays resumable</span></button>
               <button type="button" id="b-move" role="menuitem" hidden><b>Move to device</b><span>Continue this conversation on another Mac</span></button>
               <button type="button" id="b-kill" class="danger" role="menuitem"><b>Kill session</b><span>Ends the agent process</span></button>
@@ -291,12 +297,14 @@ if ('ResizeObserver' in window) {
   headerObserver.observe(document.querySelector('header'));
 }
 
+const openHandoff = installSessionHandoff($('#session-actions-menu'), id, _sig);
 function setSessionActionsOpen(open) {
   const trigger = $('#session-more');
   const menu = $('#session-actions-menu');
   if (!trigger || !menu) return;
   trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
   menu.hidden = !open;
+  if (open) openHandoff();
   // The global header uses backdrop-filter, which creates a stacking context. Raise that whole
   // context while the overflow menu is open; raising only the absolutely-positioned menu cannot
   // put it above later grid siblings such as the terminal and Tools rail.
@@ -2888,9 +2896,8 @@ const fileInput = $('#file-input');
 const messageBox = $('#message-box');
 const attachmentBox = $('#attachments');
 const MAX_ATTACHMENTS = 20;
-const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 let attachments = [];
-let readingTransfers = 0;
+let explicitlySkippedFiles = null;
 let attachmentSeq = 0;
 let sendInFlight = false;
 const SEND_ID_KEY = `aios_pending_send_${id}`;
@@ -2945,8 +2952,11 @@ function consumeComposerSend(clientMessageId, text, paths, clearText) {
   pushHistory(text);
   if (clearText) reply.value = '';
   const sentPaths = new Set(paths);
-  attachments.filter(asset => sentPaths.has(asset.path)).forEach(cleanupAttachment);
-  attachments = attachments.filter(asset => !sentPaths.has(asset.path));
+  const skipped = explicitlySkippedFiles?.id === clientMessageId ? explicitlySkippedFiles.ids : null;
+  if (skipped) explicitlySkippedFiles = null;
+  const consumed = asset => sentPaths.has(asset.path) || skipped?.has(asset.localId);
+  attachments.filter(consumed).forEach(cleanupAttachment);
+  attachments = attachments.filter(asset => !consumed(asset));
   renderAttachments();
   persistDraft();
   showComposerNotice('');
@@ -3027,7 +3037,7 @@ function readyAttachments() {
 }
 
 function uploadsPending() {
-  return readingTransfers > 0 || attachments.some((a) => a.status === 'uploading');
+  return attachments.some((a) => a.status === 'uploading');
 }
 
 function updateSendState() {
@@ -3062,6 +3072,7 @@ function syncReplyPlaceholder() {
 }
 
 function cleanupAttachment(a) {
+  a?.reader?.abort();
   a?.closeDetail?.();
   if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
 }
@@ -3074,20 +3085,21 @@ function renderAttachments() {
       a.status === 'uploading'
         ? 'Uploading'
         : a.status === 'error'
-          ? 'Failed'
+          ? 'Not attached'
           : `${escapeHtml(a.format)} · ${formatBytes(a.size)}`;
     const title = a.name || 'attachment';
     const thumbnail = a.kind === 'image' && a.previewUrl && !a.previewFailed;
-    const visual = thumbnail
+    const failure = a.status === 'error' ? (a.errorCode === 'source-unreadable' ? 'Not attached · choose file' : 'Upload failed · see details') : '';
+    const visual = failure ? `<div class="asset-card-text">${escapeHtml(failure)}</div>` : thumbnail
       ? `<img class="asset-card-image" src="${escapeHtml(a.previewUrl || '')}" alt="${escapeHtml(title)}" />`
-      : `<div class="asset-card-text">${escapeHtml(a.previewText || (a.previewFailed ? 'Preview unavailable' : ({audio:'Listen to audio', video:'Play video', pdf:'Preview PDF', text:a.detailText === '' ? 'Empty file' : 'Reading text…', file:a.format || 'File'}[a.kind] || 'Reading file…')))}</div>`;
+      : `<div class="asset-card-text">${escapeHtml(a.previewText || (a.previewFailed ? (a.status === 'ready' ? 'Attached · no preview' : 'No preview') : ({audio:'Listen to audio', video:'Play video', pdf:'Preview PDF', text:a.detailText === '' ? 'Empty file' : 'Reading text…', file:a.format || 'File'}[a.kind] || 'Reading file…')))}</div>`;
     return `
       <div class="asset-card attachment-chip ${a.status}" data-attachment-id="${a.localId}">
         <button class="asset-card-open" type="button" data-attachment-open="${a.localId}" title="${escapeHtml(title)}" aria-label="Open ${escapeHtml(title)} details">
           <div class="asset-card-preview ${thumbnail ? 'image' : 'text'}">${visual}</div>
           <div class="asset-card-badge">${escapeHtml(assetBadge(a))}</div>
           <div class="asset-card-name">${escapeHtml(a.name)}</div>
-          <div class="asset-card-meta">${status}${a.error ? ` · ${escapeHtml(a.error)}` : ''}</div>
+          <div class="asset-card-meta" title="${escapeHtml(a.error || '')}">${status}</div>
         </button>
         <div class="asset-card-actions">
           <button class="attachment-remove btn ghost sm" type="button" title="Remove attachment" aria-label="Remove ${escapeHtml(a.name)}">×</button>
@@ -3130,22 +3142,42 @@ function openComposerAttachmentDetail(a) {
       <h3>${escapeHtml(a.sourceLabel === 'pasted' ? 'Pasted content' : (a.name || 'Attachment'))}</h3>
       <div class="asset-detail-sub"></div>
       <div class="asset-detail-body"></div>
+      <button type="button" data-replace-attachment class="btn" hidden>Choose original file…</button>
+      <input type="file" data-replacement-file hidden>
       <a data-save-attachment hidden>Save file</a>
     </div>`;
   const body = overlay.querySelector('.asset-detail-body'), save = overlay.querySelector('[data-save-attachment]');
+  const choose = overlay.querySelector('[data-replace-attachment]'), picker = overlay.querySelector('[data-replacement-file]');
+  choose.onclick = () => picker.click();
+  const replaceWith = selected => {
+    if (!selected || !attachments.includes(a)) return;
+    cleanupAttachment(a);
+    attachments = attachments.filter(item => item !== a);
+    addFiles([selected]);
+  };
+  picker.onchange = () => replaceWith(picker.files?.[0]);
+  overlay.addEventListener('paste', e => {
+    if (a.status !== 'error' || !hasFilePayload(e)) return;
+    e.preventDefault(); e.stopPropagation();
+    const files = captureTransferredFiles(e.clipboardData);
+    if (files.length === 1) replaceWith(files[0]);
+    else showComposerNotice('Paste one file to replace this attachment.');
+  });
   const note = message => { const p = document.createElement('p'); p.className = 'asset-detail-text'; p.textContent = message; body.replaceChildren(p); };
   let shown;
   a.refreshDetail = () => {
     overlay.querySelector('h3').textContent = a.sourceLabel === 'pasted' ? 'Pasted content' : a.name;
     overlay.querySelector('.asset-detail-sub').textContent = [a.format, formatBytes(a.size), a.status === 'error' ? a.error : a.status].filter(Boolean).join(' · ');
+    choose.hidden = a.status !== 'error';
     if (a.previewUrl) { save.href = a.previewUrl; save.download = a.name; save.hidden = false; }
     // Updating an upload receipt must not replace a playing video/audio element.
-    const state = a.previewFailed || (!a.previewUrl && a.error) || (a.kind === 'text' ? a.detailText : a.previewUrl);
+    const state = a.error || a.previewFailed || (a.kind === 'text' ? a.detailText : a.previewUrl);
     if (shown === state && body.firstChild) return;
     shown = state;
     const src = escapeHtml(a.previewUrl || ''), label = escapeHtml(a.name);
+    if (a.errorCode === 'source-unreadable') return note('Not attached. Copy the image in the source app and paste it into this dialog, or save it to Finder / Files and choose the original.');
     if (!src) return note(a.error || 'Reading file…');
-    if (a.previewFailed) return note('This browser cannot preview this file. You can still save or send it.');
+    if (a.previewFailed) return note(a.status === 'ready' ? 'The original is attached, but this browser cannot show a preview.' : 'This browser cannot show a preview.');
     if (a.kind === 'text') {
       const pre = document.createElement('pre'); pre.className = 'asset-detail-text';
       pre.textContent = a.detailText ?? 'Reading text…'; if (pre.textContent === '') pre.textContent = 'Empty file';
@@ -3171,6 +3203,7 @@ function openComposerAttachmentDetail(a) {
   overlay.querySelector('.asset-detail-close').onclick = close;
   document.body.appendChild(overlay);
   a.refreshDetail();
+  if (a.status === 'error') choose.focus();
 }
 
 // --- click a file path in the terminal to see what the agent wrote -------------------------------
@@ -3306,17 +3339,20 @@ function fileToDataBase64(file) {
   });
 }
 
-async function uploadAttachment(item, file) {
+async function uploadAttachment(item, source) {
   const requestToken = requestScope.capture();
   try {
+    const file = source.read ? await source.read({signal:item.reader.signal}) : source;
+    if (missingMediaBytes(file)) throw Object.assign(new Error('The original file contains no media bytes.'), {code:'source-unreadable'});
     const {name, type, kind, blob} = await previewDescriptor(file);
     requestScope.guard(requestToken);
     if (!attachments.includes(item)) return;
     Object.assign(item, { name, type, kind, format:fileFormat(name, type), previewUrl:URL.createObjectURL(blob) });
     if (kind === 'text') void fillTextPreview(item, file);
     renderAttachments(); // local bytes are previewable even while the network is slow or offline
-    if (file.size > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`max ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB`);
+    item.size = file.size;
+    if (file.size > COMPOSER_FILE_LIMIT) {
+      throw new Error(`max ${Math.round(COMPOSER_FILE_LIMIT / 1024 / 1024)}MB`);
     }
     const dataBase64 = await fileToDataBase64(file);
     requestScope.guard(requestToken);
@@ -3338,6 +3374,7 @@ async function uploadAttachment(item, file) {
   } catch (e) {
     if (isSessionAbort(e)) return;
     item.status = 'error';
+    item.errorCode = typeof e.code === 'string' ? e.code : (['NotFoundError','NotReadableError','NotAllowedError','SecurityError'].includes(e.name) ? 'source-unreadable' : '');
     item.error = e.message || 'upload failed';
   } finally {
     if (requestScope.isCurrent(requestToken)) renderAttachments();
@@ -3368,6 +3405,7 @@ function addFiles(fileList, opts = {}) {
       break;
     }
     const item = {
+      reader: new AbortController(),
       localId: `local-${++attachmentSeq}`,
       name: file.name || 'Attachment',
       type: file.type || '',
@@ -3400,23 +3438,16 @@ function hasFilePayload(e) {
   return Array.from(dt?.types || []).includes('Files') || Array.from(dt?.items || []).some(item => item.kind === 'file') || !!dt?.files?.length;
 }
 
-async function addTransfer(dt) {
-  const token = requestScope.capture();
+function addTransfer(dt) {
   const expected = Math.max(dt.files?.length || 0, Array.from(dt.items || []).filter(i => i.kind === 'file').length);
-  readingTransfers++;
-  updateSendState();
   try {
-    const files = await transferredFiles(dt);
-    if (!requestScope.isCurrent(token)) return;
+    const files = captureTransferredFiles(dt);
     if (files.length) {
       addFiles(files);
       if (files.length < expected) showComposerNotice('Some files were not shared by the source app. Use + to choose the missing files.');
     } else showComposerNotice('No readable file was shared. Use + to choose the original file.');
   } catch {
-    if (requestScope.isCurrent(token)) showComposerNotice('Could not read this drop. Use + to choose the original file.');
-  } finally {
-    readingTransfers--;
-    if (requestScope.isCurrent(token)) updateSendState();
+    showComposerNotice('Could not read this drop. Use + to choose the original file.');
   }
 }
 
@@ -3505,10 +3536,13 @@ async function sendInput() {
   const uploaded = readyAttachments();
   if (!text && !uploaded.length) return;
   if (uploadsPending()) return alert('Wait for attachments to finish uploading first.');
+  const missing = attachments.filter(a => a.status === 'error');
+  if (missing.length && !confirm('Not attached: ' + missing.map(a => a.name).join(', ') + '.\n\nSend this message without ' + (missing.length === 1 ? 'that file' : 'those files') + '?')) return;
   const requestToken = requestScope.capture();
   // An accepted message can outlive a lost HTTP response. Retain its identity until acknowledged,
   // including through refresh, so retrying the kept draft queries the receipt instead of sending twice.
   const clientMessageId = composerSendIdentity(text, uploaded);
+  if (missing.length) explicitlySkippedFiles = {id:clientMessageId,ids:new Set(missing.map(a => a.localId))};
   sendInFlight = true;
   updateSendState();
   // Instant story echo AT the click (not after the POST round-trip): the message appears in the

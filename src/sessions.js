@@ -3945,6 +3945,8 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
   const type = String(b.type || '').slice(0, 120);
   const data = String(b.data_base64 || b.data || '').replace(/^data:[^,]+,/, '');
   const emptyFile = b.size === 0 && b.data_base64 === '';
+  if (emptyFile && [type,ATTACHMENT_CONTENT_TYPES[extname(name).toLowerCase()]].some(t => /^(?:image\/|audio\/|video\/|application\/pdf\b)/i.test(t)))
+    return json(res, 422, { error:'No media bytes received. Choose the original file.', code:'empty-media' });
   if (!data && !emptyFile) return json(res, 400, { error: 'data_base64 required' });
   const estimatedBytes = Math.floor((data.length * 3) / 4);
   if (estimatedBytes > ATTACHMENT_MAX_BYTES + 4) {
