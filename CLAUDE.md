@@ -217,6 +217,9 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   workspaces, dependencies/builds, live native histories and worker SQLite. Spark is cold storage,
   not a dependency of a new execution checkout. Existing Spark originals remain untouched until an
   explicit paused-session move; never move active user work or delete originals implicitly.
+  A project's `launch_node` places **future** launches on an enrolled local bare repository.
+  It is independent of project/session ownership and release authorization. Fork isolated local
+  worktrees without visiting the controller source; a failed launch retries its saved ID and commit.
   `execution_nodes.js` / `execution_worker.js` implement one-owner, durable, dormant-then-activate
   handoffs; preserve exact native IDs and staged/unstaged/untracked files. Offline is NOT exited.
   Controller shadows never enter local recovery, cleanup or supervisor loops. SSH is transport,

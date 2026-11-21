@@ -1,6 +1,7 @@
 // Shared by desktop, phone/PWA, session header and browser identity. The CLI can remain alive while
 // its provider is blocked; don't project that as a dead session or a question waiting for an answer.
 import { providerIssueInfo } from './provider-issue.js';
+export const failedLaunch = s => s?.status === 'error' && s.status_reason === 'execution-launch-failed';
 export function sessionIndicator(session = {}) {
   const issue = session.provider_issue;
   const info = providerIssueInfo(issue);
@@ -11,7 +12,8 @@ export function sessionIndicator(session = {}) {
       detail: info.message, dot: 'warn pulse', color: '#d29922', blocked: false };
   }
   const state = session.status || 'starting';
-  const label = { working: 'Working', waiting: 'Waiting', starting: 'Starting', exited: 'Stopped', error: 'Failed' }[state] || state;
+  const label = failedLaunch(session) ? 'Launch failed' : state === 'starting' && session.status_reason === 'execution-copying' ? 'Preparing workspace'
+    : { working: 'Working', waiting: 'Waiting', starting: 'Starting', exited: 'Stopped', error: 'Failed' }[state] || state;
   return { state, label, detail: state === 'waiting' ? 'Waiting for your reply or review' : label,
     dot: state === 'working' ? 'ok pulse' : state === 'waiting' ? 'warn' : state === 'error' ? 'error' : '',
     color: { working: '#3fb950', waiting: '#d29922', starting: '#58a6ff', error: '#f85149' }[state] || '#8b949e', blocked: false };

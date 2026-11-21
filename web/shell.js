@@ -521,7 +521,7 @@ export async function openLaunch(opts = {}) {
   const syncNewProj = () => {
     q('#nl-newproj').hidden = q('#nl-project').value !== '__new';
     const project = projects.find(p => p.id === q('#nl-project').value);
-    if (project?.execution_node) q('#nl-device').value = project.execution_node;
+    if (project?.launch_node || project?.execution_node) q('#nl-device').value = project.launch_node || project.execution_node;
   };
   q('#nl-project').onchange = syncNewProj;
   if (opts.projectId && projects.some((p) => p.id === opts.projectId)) q('#nl-project').value = opts.projectId;

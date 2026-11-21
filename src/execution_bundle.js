@@ -14,6 +14,27 @@ import { executionGit } from './execution_git.js';
 import { coldPathspec } from './execution_cold.js';
 
 const exec = promisify(execFile);
+// Fresh sessions fork a commit, not the operator's index or dirty working tree.
+// Keep migration evidence (below) strictly for existing sessions.
+export async function committedLaunchGit(path) {
+  const root = (await executionGit(path, ['rev-parse','--show-toplevel'])).trim();
+  if (await realpath(root) !== await realpath(path)) throw migrationError('Select the complete repository root');
+  const head = await executionGit(path, ['rev-parse','--verify','--quiet','HEAD^{commit}']).then(s=>s.trim(), e=>{
+    if (e.exitCode === 1) return null; throw e;
+  });
+  if (!head) {
+    const ref = (await executionGit(path,['symbolic-ref','HEAD'])).trim();
+    const exists = await executionGit(path,['show-ref','--verify','--quiet',ref]).then(()=>true,e=>{if(e.exitCode===1)return false;throw e;});
+    if (exists) throw migrationError('Cannot resolve the project commit; original checkout retained');
+  }
+  const read = key => executionGit(path,['config','--get',key]).then(s=>s.trim(), e=>{if(e.exitCode===1)return '';throw e;});
+  const [origin,name,email] = await Promise.all(['remote.origin.url','user.name','user.email'].map(read));
+  if (/^https?:\/\/[^/]*@/i.test(origin)) throw migrationError('Remove credentials embedded in the Git remote URL before copying');
+  return {head, origin:origin || null, identity:{name,email}};
+}
+export function committedLaunchBundle(path) {
+  return { command:'/usr/bin/git', args:['-C',path,'-c','core.hooksPath=/dev/null','bundle','create','-','--branches','--tags','--remotes','HEAD'] };
+}
 export async function gitEvidence(path, options = {}) {
   const { excludedPaths = [], ...gitOptions } = options;
   const run = (args, extra = {}) => executionGit(path, args, { ...gitOptions, ...extra });

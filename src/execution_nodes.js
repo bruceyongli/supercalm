@@ -16,7 +16,8 @@ import { loadExecutionNodes, executionNodes, executionNode, nodeRequest, connect
 import { nodeForSession, executionDeviceList, assertExecutionAvailable } from './execution_routing.js';
 import { mirrorExecutionSnapshot, exportExecutionState, exportExecutionProjectState } from './execution_state.js';
 import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus, reuseWorkerGit } from './execution_worker.js';
-import { gitEvidence, gitBundle, workingArchive, committedArchive, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
+import { gitEvidence, gitBundle, workingArchive, committedArchive, committedLaunchGit, committedLaunchBundle, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
+import { inspectLaunchHome } from './execution_launch_home.js';
 import { codexRolloutFiles, pickRolloutByUuid } from './codex_rollouts.js';
 import { findClaudeLog, claudeResumeId } from './claude_transcripts.js';
 import { sampleHostResources } from './resource_usage.js';
@@ -139,6 +140,25 @@ async function performOperation(op) {
   }
   await withSessionArchiveLock(row.session_id, async () => {
     let s = store.getSession(row.session_id), spec = detail.spec;
+    const project = store.getProject(s.project_id);
+    // An old failed launch can adopt its new home only BEFORE import and at
+    // exactly its already captured commit. No new session, prompt, or move.
+    if (row.kind === 'launch' && project.launch_node === node.id && !spec?.localLaunch) {
+      const remote = spec ? await nodeRequest(node, `/api/execution/import/${op}`) : {phase:'absent'};
+      if (['absent','receiving'].includes(remote.phase)) {
+        if (spec && !spec.git?.head) throw migrationError('The previously captured uncommitted project cannot be replaced with a local commit');
+        const projectTables = spec?.projectTables || exportExecutionProjectState(project.id);
+        const params = new URLSearchParams();
+        if (spec?.git?.head) params.set('commit',spec.git.head);
+        else if (projectTables.release_targets?.[0]?.source_branch) params.set('branch',projectTables.release_targets[0].source_branch);
+        const home = await nodeRequest(node, '/api/execution/launch-home/'+project.id+'?'+params);
+        const branch = spec?.git?.branch || branchFor(project,s.id);
+        spec = { session:{ ...(spec?.session || s), branch }, project, projectTables,
+          tables:spec?.tables || {messages:store.messagesFor(s.id,1000)}, kind:'launch', localLaunch:1,
+          git:{head:home.head,branch}, sourcePath:spec?.sourcePath || null, artifactsPath:spec?.artifactsPath || sessionArtifactRoot(s.id) };
+        detail.parts = {};
+      }
+    }
     const resumingCopy = !!spec;
     const moveOptions = { history: !!detail.preserveHistory };
     if (row.kind === 'move') await assertStoppedForMove(s, moveOptions);
@@ -160,18 +180,11 @@ async function performOperation(op) {
         workingStatusHash: coldFiles ? git.statusHash : null, archive: source.archive || null, historyOnly: !native,
         artifactArchives: await executionArtifactArchives(s.id), manifest: await readManifest(s.id), artifactsPath: sessionArtifactRoot(s.id), sourcePath: source.path };
     } else if (!spec) {
-      const project = store.getProject(s.project_id);
       const sourcePath = await realpath(project.path);
-      let git;
-      try { git = await gitEvidence(sourcePath); }
-      catch (error) {
-        const head = await exec('/usr/bin/git', ['-C', sourcePath, 'rev-parse', '--verify', 'HEAD'], { timeout: 10000 }).then(() => true, e => e.code === 128 ? false : Promise.reject(e));
-        if (head) throw error;
-        git = { head: null, branch: 'main', origin: null };
-      }
+      const git = await committedLaunchGit(sourcePath);
       git.branch = branchFor(project, s.id);
       spec = { session: { ...s, branch: git.branch }, project, tables: { messages: store.messagesFor(s.id, 1000) }, projectTables: exportExecutionProjectState(project.id),
-        kind: 'launch', git, sourcePath, artifactsPath: sessionArtifactRoot(s.id) };
+        kind: 'launch', committedLaunch: !!git.head, git, sourcePath, artifactsPath: sessionArtifactRoot(s.id) };
     }
     // An older failed operation may predate the first successful project import.
     // Keep its exact snapshot, but allow it to use the now-available local seed.
@@ -220,20 +233,20 @@ async function performOperation(op) {
     let status = await nodeRequest(node, `/api/execution/import/${op}`);
     if (['absent', 'receiving', 'unpacking'].includes(status.phase)) status = await nodeRequest(node, `/api/execution/import/${op}/prepare`, { method: 'POST', body: spec, timeout: 30000 });
     if (status.phase === 'active') throw migrationError('Destination is already active but ownership is not committed');
-    if (status.phase === 'receiving') {
+    if (status.phase === 'receiving' && !spec.localLaunch) {
     const uploaded = part => parts[part] && status.parts?.[part]?.sha256 === parts[part].sha256;
     if (spec.git?.index && !uploaded('index')) await optionalUpload(node, op, 'index', spec.git.index, false, parts);
     if (spec.gitSeedSession && spec.git?.head && !uploaded('git')) {
       const reused = await nodeRequest(node, `/api/execution/import/${op}/git-seed`, { method: 'POST', body: {}, timeout: 10 * 60_000 });
       if (reused.receipt) { parts.git = reused.receipt; status.parts ||= {}; status.parts.git = reused.receipt; }
     }
-    if (spec.git?.head && !uploaded('git')) parts.git = await uploadExecutionPart(node, op, 'git', gitBundle(spec.sourcePath, spec.git));
+    if (spec.git?.head && !uploaded('git')) parts.git = await uploadExecutionPart(node, op, 'git', spec.committedLaunch ? committedLaunchBundle(spec.sourcePath) : gitBundle(spec.sourcePath, spec.git));
     updateOperation(op, 'copying', { parts });
     const tree = spec.archive ? archivedWorkingArchive(spec.archive)
       : !spec.sourcePath ? { command: '/usr/bin/tar', args: ['-cf', '-', '-T', '/dev/null'] }
       : row.kind === 'launch' && spec.git?.head ? committedArchive(spec.sourcePath, spec.git.head) : portableTree || await portableWorkingArchive(spec.sourcePath, s.id);
     if (tree.links?.length) { moveOptions.extraRoots = tree.links.map(l => l.path); await assertStoppedForMove(s, moveOptions); }
-    if (!uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', tree);
+    if (!spec.committedLaunch && !uploaded('tree')) parts.tree = await uploadExecutionPart(node, op, 'tree', tree);
     updateOperation(op, 'copying', { parts });
     if (row.kind === 'move') {
       if (spec.native && !uploaded('native')) parts.native = await uploadExecutionPart(node, op, 'native', spec.native.path);
@@ -277,18 +290,30 @@ function runOperation(op) {
     // Ownership-committed failures remain retryable at this exact operation, never restored locally.
     const phase = row.phase === 'activating' ? 'activating' : 'failed';
     updateOperation(op, phase, {}, String(error.message || error).slice(0, 800));
-    if (row.kind === 'launch' && phase === 'failed') store.updateSession(row.session_id, {
-      status: 'error', desired_status: 'exited', runtime_status: 'exited', status_reason: 'execution-launch-failed', summary: String(error.message || error).slice(0, 500) });
+    if (row.kind === 'launch' && phase === 'failed') {
+      const session = store.updateSession(row.session_id, {status:'error',desired_status:'exited',runtime_status:'exited',
+        status_reason:'execution-launch-failed',summary:String(error.message || error).slice(0,500)});
+      bus.emit('session-status',sessionStatusPayload(session,{previousStatus:'starting',source:'launch-failed'}));
+    }
     console.error('[aios] execution handoff', op, phase, error.code || 'failed');
   }).finally(() => flights.delete(op));
   flights.set(op, promise); return promise;
+}
+function queueFailedOperation(row,patch = {}) {
+  updateOperation(row.id,'queued',patch,null);
+  if (row.kind === 'launch') {
+    const session = store.updateSession(row.session_id,{status:'starting',desired_status:'starting',runtime_status:'starting',status_reason:'execution-copying'});
+    bus.emit('session-status',sessionStatusPayload(session,{previousStatus:'error',source:'launch-retry'}));
+  }
+  runOperation(row.id);
 }
 export async function queueExecutionLaunch(nodeId, args) {
   const node = executionNode(nodeId);
   if (!['codex','claude'].includes(args.tool)) throw migrationError('This device supports Codex and Claude Code', 'execution-tool', 400);
   const ready = await nodeRequest(node, '/api/execution/health');
   if (ready.node !== node.id || ready.protocol !== 1) throw migrationError('Execution device identity mismatch');
-  if (args.project.execution_node && args.project.execution_node !== EXECUTION_NODE) {
+  if (args.project.launch_node && args.project.launch_node !== node.id) throw migrationError('Choose the device that owns this project’s local launch repository');
+  if (!args.project.launch_node && args.project.execution_node && args.project.execution_node !== EXECUTION_NODE) {
     if (args.project.execution_node !== node.id) throw migrationError('Choose this project’s owning execution device');
     const result = await nodeRequest(node, '/api/session', { method: 'POST', body: {
       project_id: args.project.id, tool: args.tool, task: args.task, model: args.model, effort: args.effort,
@@ -337,6 +362,19 @@ const workerOnly = fn => handle(async (req, params, url) => {
 });
 route('GET', '/api/execution/devices', handle(() => ({ devices: executionDeviceList(),
   operations: store.db.prepare('SELECT * FROM execution_operations ORDER BY created_at DESC LIMIT 30').all().map(publicOperation) })));
+route('GET','/api/execution/launch-home/:id',workerOnly((_req,{id},url)=>inspectLaunchHome(id,url.searchParams.get('commit'),url.searchParams.get('branch'))));
+route('POST','/api/project/:id/launch-home',handle(async(req,{id})=>{
+  if (EXECUTION_NODE !== 'local') throw migrationError('Set launch placement on the controller');
+  const project = store.getProject(id), {device,commit} = await readJson(req);
+  if (!project || project.lifecycle !== 'persistent') throw migrationError('Choose a registered permanent project');
+  const node = executionNode(device);
+  if (project.execution_node && project.execution_node !== node.id) throw migrationError('This project already belongs to another execution device');
+  const home = await nodeRequest(node,'/api/execution/launch-home/'+id);
+  if (!commit || home.head !== commit || home.projectId !== id) throw migrationError('Local project does not match the selected commit');
+  store.db.prepare('UPDATE projects SET launch_node=? WHERE id=?').run(node.id,id);
+  bus.emit('changed');
+  return {projectId:id,launchNode:node.id,head:home.head,path:home.path};
+}));
 route('POST', '/api/project/:id/execution-device', handle(async (req, { id }) => {
   const body = await readJson(req), node = executionNode(body.device), project = store.getProject(id);
   if (!project) throw migrationError('No such project', 'project-missing', 404);
@@ -346,7 +384,7 @@ route('POST', '/api/project/:id/execution-device', handle(async (req, { id }) =>
   if (!destination) throw migrationError('The project has no local checkout on that device');
   // Retain the original path/release contract as provenance; new launches resolve
   // the same project ID on its owner rather than rereading Spark on the controller.
-  store.db.prepare('UPDATE projects SET execution_node=? WHERE id=?').run(node.id, id);
+  store.db.prepare('UPDATE projects SET execution_node=?, launch_node=CASE WHEN launch_node=? THEN launch_node END WHERE id=?').run(node.id,node.id,id);
   bus.emit('changed');
   return { project: store.getProject(id), destination: destination.path };
 }));
@@ -379,8 +417,9 @@ route('POST', '/api/execution/operations/:id/retry', handle(async (req, { id }) 
     if (row.kind !== 'move' || !['absent','receiving'].includes(current.phase)) throw migrationError('This handoff has already imported files; its copy policy cannot change');
     patch.retainHistoricalArtifacts = true;
   }
-  if (row.phase === 'failed') updateOperation(id, 'queued', patch, null);
-  runOperation(id); return { operation: publicOperation(row) };
+  if (row.phase === 'failed') queueFailedOperation(row,patch);
+  else runOperation(id);
+  return { operation: publicOperation(operation(id)) };
 }));
 route('GET', '/api/execution/health', workerOnly(async () => ({ protocol: 1, node: EXECUTION_NODE, version: VERSION,
   commit: COMMIT_SHA, disk: currentDiskCapacity(), host: await sampleHostResources() })));
@@ -428,6 +467,15 @@ setExecutionRouter(async (req, res, url) => {
   // Story, terminal, files and actions stay on the owning device.
   if (!match || match[2] === 'move' || !match[2] && req.method === 'GET') return false;
   const sid = decodeURIComponent(match[1]);
+  // A failed pre-launch has no coding process to resume on the worker. Retry
+  // its original durable envelope instead of forwarding Resume to a missing session.
+  if (req.method === 'POST' && match[2] === 'resume' && store.getSession(sid)?.status_reason === 'execution-launch-failed') {
+    const latest = store.db.prepare('SELECT * FROM execution_operations WHERE session_id=? ORDER BY created_at DESC LIMIT 1').get(sid);
+    if (latest?.kind === 'launch' && latest.phase === 'failed') {
+      queueFailedOperation(latest);
+      json(res,202,store.getSession(sid)); return true;
+    }
+  }
   const transfer = store.db.prepare("SELECT * FROM execution_operations WHERE session_id=? AND phase NOT IN ('complete','failed','cancelled') ORDER BY created_at DESC LIMIT 1").get(sid);
   // Stop always wins before ownership commits. The receiving copy may finish its
   // current stream, but the cancellation fence prevents import/activation.

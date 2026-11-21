@@ -17,6 +17,25 @@ New sessions choose an execution device. An existing project is materialized as 
 local repository before launch, not a linked checkout whose Git objects remain on Spark.
 Remote sessions use the central model gateway; subscription credentials are not copied.
 
+### A device-local home for new sessions
+
+For a controller-registered project, place **new launches** separately from ownership of older
+sessions. On the selected worker, run `node bin/prepare-execution-launch-home.mjs PROJECT_ID SOURCE_CHECKOUT EXACT_COMMIT [--try-origin]`.
+This reads committed code only and publishes an independent bare repository under the worker's
+local `projects/PROJECT_ID.git`. An optional origin supplies objects only at the selected SHA;
+its latest branch is never substituted. No source file, remote ref or release contract is changed.
+Then POST `{device,commit}` to the controller's `/api/project/PROJECT_ID/launch-home`.
+Registration checks the device's current HEAD. It does not require or move historical sessions.
+
+Each launch uses its own local branch/index/working files and the same local Git objects. New work
+forks the launch home's current HEAD (or the configured release branch); advance that local branch
+through the project's normal reviewed Git integration. There is no background merge from Spark.
+If the home is missing, fail visibly, retain the task and never substitute an older network checkout.
+Retry launch reuses the same session, request and handoff; a previously captured commit stays pinned.
+Reports, live native histories and the worker database remain on that Mac; Spark backups and
+historical previews are independent of the launch path. For unconfigured projects, a first committed
+import transfers Git, not the source index, dirty files or a duplicate working-tree archive.
+
 ## Paused-session handoff
 
 Only explicitly stopped, non-writing sessions are eligible. Bind the AIOS ID, native UUID,

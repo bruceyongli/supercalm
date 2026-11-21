@@ -4,7 +4,7 @@ import { stat, open, writeFile, readdir, mkdir, readFile, realpath } from 'node:
 import { withSessionArchiveLock } from './archive_lock.js';
 import { remoteSession, EXECUTION_NODE } from './execution_identity.js';
 import { nodeForSession, executionRequest, assertExecutionAvailable } from './execution_routing.js';
-import { assertLocalCheckout } from './execution_bundle.js';
+import { assertExecutionSessionCheckout } from './execution_launch_home.js';
 import { defaultExecutionNode } from './execution_transport.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate, storageBranchCheckpointAllows, storageBranchEvidenceValid } from './storage_maintenance.js';
 import { reconnectForResume } from './storage_reconnect.js';
@@ -1559,11 +1559,11 @@ export function queueLaunch(args) {
 export async function launchPreparedSession(sid, { waitForLaunch = false } = {}) {
   const s = store.getSession(sid);
   if (!s?.execution_checkout || remoteSession(s) || s.execution_dormant || s.status_reason !== 'execution-staged') throw new Error('Prepared session is not ready');
-  await assertLocalCheckout(s.worktree_path);
+  await assertExecutionSessionCheckout(s);
   const project = store.getProject(s.project_id);
   const task = store.messagesFor(sid, 100000).filter(m => m.direction === 'in').sort((a, b) => a.id - b.id)[0]?.text || null;
   const ticket = { sid, cancelled: false, startedAt: now() };
-  const session = store.updateSession(sid, { status: 'starting', desired_status: 'working', runtime_status: 'starting' });
+  const session = store.updateSession(sid, { status: 'starting', desired_status: 'working', runtime_status: 'starting', status_reason:'launching-cli' });
   const spec = { sid, ticket, session, project, tool: s.tool, task, effort: s.effort, autonomy: s.autonomy,
     model: s.model, activeFastMode: !!s.fast_mode, orchestration: s.orchestration, paneName: s.tmux,
     preparedWorktree: { path: s.worktree_path, branch: s.branch, reused: true } };
@@ -1664,7 +1664,7 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
   // cwd wins over project.path for the pane AND the codex rollout lookup.
   let cwd = undefined;
   if (s.execution_checkout) {
-    cwd = await assertLocalCheckout(s.worktree_path);
+    cwd = await assertExecutionSessionCheckout(s);
   } else if (s.worktree_path && project?.path) {
     try {
       const wt = await ensureWorktree({ repoPath: project.path, sid, project, desiredPath: s.worktree_path, desiredBranch: s.branch });
@@ -3497,7 +3497,8 @@ route('POST', '/api/session', async (req, res) => {
   }
   const settings = launchSettings(b, tool);
   try {
-    const device = (!b.device || b.device === EXECUTION_NODE) ? (defaultExecutionNode()?.id || EXECUTION_NODE) : b.device;
+    const owner = project.execution_node !== EXECUTION_NODE && project.execution_node;
+    const device = (!b.device || b.device === EXECUTION_NODE) ? (project.launch_node || owner || defaultExecutionNode()?.id || EXECUTION_NODE) : b.device;
     if (device !== EXECUTION_NODE) {
       const { queueExecutionLaunch } = await import('./execution_nodes.js');
       const s = await queueExecutionLaunch(device, { project, tool, task: b.task ? String(b.task) : null,

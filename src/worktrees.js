@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { gitOut } from './git.js';
 import { assertLiveStorage, sameStoragePath } from './live_storage.js';
 import { provisionLiveStorageRoot } from './storage_provision.js';
+import { homePath, inspectLaunchHome } from './execution_launch_home.js';
 
 // ---- pure path/name helpers -------------------------------------------------------------------
 // A git-ref- and filesystem-safe component: only [A-Za-z0-9._-], no '..', no leading/trailing '.'/'-',
@@ -60,12 +61,21 @@ export async function isGitRepo(repoPath, { runGit = gitOut } = {}) {
   return !r.error && r.text.trim() === 'true';
 }
 
+// Internal child-session launches on an execution device may use a registered
+// bare project home. Never treat arbitrary bare repos or aggregate folders as projects.
+async function isProjectRepo(path,project,options) {
+  if (process.env.AIOS_EXECUTION_NODE && process.env.AIOS_EXECUTION_NODE !== 'local' && /^p_[\w-]+$/.test(project?.id || '') && path === homePath(project.id)) {
+    await inspectLaunchHome(project.id); return true;
+  }
+  return isGitRepo(path,options);
+}
+
 // Isolation is an operator-selected safety contract, not an optimization. If it is enabled,
 // silently falling back to the shared checkout defeats the setting and lets concurrent agents
 // overwrite or deploy one another's work. Keep shared-directory behavior available by turning
 // isolation off explicitly; while it is on, fail closed with an actionable launch error.
 export async function isolatedWorktreeForLaunch({ repoPath, sid, project, baseBranch = '' }) {
-  if (!(await isGitRepo(repoPath))) {
+  if (!(await isProjectRepo(repoPath,project))) {
     const e = new Error(`multi-session isolation requires the project path itself to be a Git checkout: ${repoPath}. Register the repository root as its own project, or explicitly disable isolation for this aggregate directory`);
     e.code = 'isolation-project-not-git';
     throw e;
@@ -213,7 +223,7 @@ function serialize(key, fn) {
 export async function ensureWorktree({ repoPath, sid, project, desiredPath = '', desiredBranch = '', baseBranch = '' }, { runGit = gitOut } = {}) {
   return serialize(resolve(repoPath), async () => {
     await assertLiveStorage(repoPath);
-    if (!(await isGitRepo(repoPath, { runGit }))) throw new Error('Git could not confirm the project checkout; files were retained: ' + repoPath);
+    if (!(await isProjectRepo(repoPath, project,{ runGit }))) throw new Error('Git could not confirm the project checkout; files were retained: ' + repoPath);
     const path = assertUnderRoot(desiredPath || worktreePathFor(project, sid));
     await provisionLiveStorageRoot(dirname(path), 'worktree');
     await assertLiveStorage(path);

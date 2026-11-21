@@ -19,6 +19,7 @@ const fixtures = [
   {id:'s_fresh_child',parent_session_id:'s_old_parent',title:'Report layout',project:'Morph',tool:'codex',status:'working',last_activity:now},
   ...Array.from({length:12},(_,i)=>({id:`s_history_${i}`,title:`Historical task ${i}`,project:'Fixture',tool:'codex',status:'exited',last_activity:old})),
 ];
+Object.assign(fixtures.find(s=>s.id==='s_history_0'),{status:'error',status_reason:'execution-launch-failed',started_at:now,last_activity:now});
 const resourceIds = [], sends = [], dismissals = [];
 const mime = {'.js':'text/javascript','.css':'text/css','.html':'text/html','.svg':'image/svg+xml','.webmanifest':'application/manifest+json'};
 const json = (res, body) => {res.writeHead(200, {'content-type':'application/json'});res.end(JSON.stringify(body));};
@@ -66,6 +67,8 @@ try {
       resourceIds.length=0;
       await page.goto(base+'?desktop=1');
       const rail=page.locator('#dk-sessions');
+      await rail.locator('a[href*="s_history_0"]').waitFor({state:'attached'});
+      assert.equal(await rail.locator('a[href*="s_history_1"]').count(),0,'ordinary stopped history does not fill the rail');
       const group=rail.locator('[data-agent-family="s_main"]');
       await group.waitFor({state:'attached'});
       if(width<721)await page.locator('#dk-menu-btn').click();

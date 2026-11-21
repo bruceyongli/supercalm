@@ -1,7 +1,7 @@
 import { escapeHtml as esc } from './common.js';
 import { sessionFamilies, isLiveSession, needsSessionAttention } from './session-family.js';
-import { splitSessionRecency } from './session-recency.js';
-import { sessionIndicator } from './session-indicator.js';
+import { splitSessionRecency, SESSION_RECENCY_WINDOW_MS } from './session-recency.js';
+import { sessionIndicator, failedLaunch } from './session-indicator.js';
 
 const EXPANSION_KEY = 'aios.session-groups.v1';
 let expansions = {};
@@ -131,6 +131,12 @@ export function renderGroupedSessionList(container, sessions, {
     },
     slots: [['[data-older-rows]', older.map(familySpec)]],
   });
+  if (mode === 'rail') {
+    // A new task that never reached its agent is not an intentionally stopped session.
+    // Keep its retry reachable without counting it as running or duplicating it in Needs You.
+    const failed = stopped.flatMap(f=>f.members).filter(s=>failedLaunch(s) && s.started_at >= Date.now()-SESSION_RECENCY_WINDOW_MS);
+    if (failed.length) specs.push({key:'failed-launch:header',html:'<div class="dk-sec-row dk-sec-row-sub">Launch failed</div>'}, ...failed.map(row));
+  }
   if (mode !== 'rail' && stopped.length) {
     specs.push({ key: 'stopped:header', html: `<div class="dk-sec-row dk-sec-row-sub">STOPPED · ${stopped.reduce((n, f) => n + f.members.length, 0)}</div>` });
     specs.push(...(stoppedExpanded ? stopped : stopped.slice(0, 10)).map(familySpec));

@@ -18,9 +18,12 @@ import { writeManifest } from './launch_contract.js';
 import { claudeSlug } from './claude_transcripts.js';
 import { validateDependencyRebuildPolicy } from './execution_dependency_policy.js';
 import { prepareDependencyWorkingArchive } from './execution_dependency_archive.js';
+import { workerRoot, materializeLocalLaunch, assertExecutionSessionCheckout, homePath, commitId } from './execution_launch_home.js';
+import { branchFor } from './worktrees.js';
+import { executionGit, assertSelfContainedCommit } from './execution_git.js';
 
 const exec = promisify(execFile);
-export const workerRoot = () => process.env.AIOS_EXECUTION_ROOT || join(homedir(), '.local/share/supercalm-executor');
+export { workerRoot };
 const parts = new Set(['git', 'tree', 'index', 'native', 'native-extra', 'artifacts', 'attachments', 'log']);
 const artifactNumber = part => /^artifact-\d+$/.test(part) ? Number(part.slice(9)) : -1;
 const validPart = (row, part) => parts.has(part) || !!row.spec.artifactArchives?.[artifactNumber(part)];
@@ -67,6 +70,8 @@ async function prepareImport(op, spec) {
   if (!/^s_[a-zA-Z0-9_-]+$/.test(spec.session?.id || '') || !/^p_[a-zA-Z0-9_-]+$/.test(spec.project?.id || '')
     || !(spec.historyOnly === true && spec.kind === 'move' || ['claude', 'codex'].includes(spec.session?.tool)) || !['launch','move'].includes(spec.kind)) throw migrationError('Invalid session import');
   if (spec.historyOnly && spec.native) throw migrationError('A historical import cannot discard a native conversation');
+  if ((spec.localLaunch || spec.committedLaunch) && (spec.kind !== 'launch' || spec.historyOnly || spec.native || !commitId(spec.git?.head)
+    || spec.session.project_id !== spec.project.id || spec.git.branch !== branchFor(spec.project,spec.session.id))) throw migrationError('Invalid committed launch identity');
   if (spec.dependencyRebuildPolicy) {
     if (spec.kind !== 'move' || spec.artifactCopyPolicy?.rebuildDependencies !== true) throw migrationError('Dependency rebuilding requires the explicit move policy');
     validateDependencyRebuildPolicy(spec.dependencyRebuildPolicy);
@@ -79,10 +84,18 @@ async function prepareImport(op, spec) {
   if (capacity.bavail * capacity.bsize < 10 * 1024 ** 3) throw migrationError('The device has less than 10 GiB free', 'disk-space-critical', 507);
   const existing = await record(op).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
   if (existing) {
+    if (spec.localLaunch && !existing.spec.localLaunch) {
+      const old = existing.spec;
+      if (existing.phase !== 'receiving' || store.getSession(spec.session.id) || old.kind !== 'launch' ||
+        old.session.id !== spec.session.id || old.session.tool !== spec.session.tool || old.project.id !== spec.project.id ||
+        old.git?.head !== spec.git.head || old.git?.branch !== spec.git.branch || old.native) throw migrationError('Existing launch cannot change workspace');
+      existing.spec = spec; await save(op,existing);
+    }
+    if (!!spec.localLaunch !== !!existing.spec.localLaunch || !!spec.committedLaunch !== !!existing.spec.committedLaunch) throw migrationError('Launch method conflict');
     const identity = value => JSON.stringify([value.session.id, value.project.id, value.session.tool, value.kind,
       value.native?.uuid || null, value.sourcePath || null, value.git?.head || null, value.git?.statusHash || null, !!value.historyOnly]);
     if (identity(existing.spec) !== identity(spec)) throw migrationError('Handoff identity conflict');
-    if (['receiving','unpacking'].includes(existing.phase) && existing.spec.git?.head && existing.parts.git) {
+    if (!spec.localLaunch && ['receiving','unpacking'].includes(existing.phase) && existing.spec.git?.head && existing.parts.git) {
       try { await assertGitBundleHeader(join(importDir(op), 'git'), existing.parts.git); }
       catch (error) {
         if (error.code !== 'execution-git-bundle-invalid' || store.getSession(existing.spec.session.id)) throw error;
@@ -183,7 +196,7 @@ async function generateOrReuseGit(op) {
   if (row.phase !== 'receiving' || !sid || !row.spec.git?.head) return { receipt: null };
   const seed = store.getSession(sid);
   if (!seed || seed.project_id !== row.spec.session.project_id || seed.execution_node !== EXECUTION_NODE || seed.execution_dormant || !seed.execution_checkout) return { receipt: null };
-  const cwd = await assertLocalCheckout(seed.worktree_path);
+  const cwd = await assertExecutionSessionCheckout(seed);
   // A receiver receipt proves byte transport only, not successful completion of
   // the upstream producer. Only our completed local generator owns this marker;
   // even a plausible uploaded bundle must regenerate when the controller has
@@ -246,14 +259,19 @@ async function finalizeImport(op, expected) {
     if (!row.parts[part] || row.parts[part].size !== receipt.size || row.parts[part].sha256 !== receipt.sha256) throw migrationError('Transfer receipt mismatch');
   }
   const spec = row.spec;
-  if (!row.parts.tree || spec.git?.head && !row.parts.git || spec.kind === 'move' && !spec.historyOnly && !row.parts.native) throw migrationError('Handoff is missing required files');
+  if (!spec.localLaunch && ((!spec.committedLaunch && !row.parts.tree) || spec.git?.head && !row.parts.git || spec.kind === 'move' && !spec.historyOnly && !row.parts.native)) throw migrationError('Handoff is missing required files');
   if ((spec.artifactArchives || []).some((a, i) => !row.parts[`artifact-${i}`])) throw migrationError('Handoff is missing archived artifacts');
   if (spec.git?.indexReceipt && (row.parts.index?.sha256 !== spec.git.indexReceipt.sha256 || row.parts.index.size !== spec.git.indexReceipt.size)) throw migrationError('The archived index differs from its source receipt');
-  if (spec.git?.head) await assertGitBundleHeader(join(importDir(op), 'git'), row.parts.git);
+  if (!spec.localLaunch && spec.git?.head) await assertGitBundleHeader(join(importDir(op), 'git'), row.parts.git);
   const cwd = row.cwd;
   const filesReady = row.phase === 'files-ready';
   let transcript = row.transcript || null;
-  if (!filesReady) {
+  if (!filesReady && spec.localLaunch) {
+    row.phase = 'unpacking'; await save(op,row);
+    await materializeLocalLaunch(spec,cwd);
+    row.phase = 'files-ready'; await save(op,row);
+  }
+  if (!filesReady && !spec.localLaunch) {
   row.phase = 'unpacking'; await save(op, row);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   const git = async args => exec('/usr/bin/git', ['-C', cwd, '-c', 'core.hooksPath=/dev/null', ...args], {
@@ -265,7 +283,7 @@ async function finalizeImport(op, expected) {
     // detached HEAD objects as well as refs before restoring the copied index.
     await git(['fetch', '--update-head-ok', '--no-write-fetch-head', join(importDir(op), 'git'), 'HEAD', '+refs/*:refs/*']);
     await git(['update-ref', 'HEAD', spec.git.head]);
-    await git(['read-tree', spec.git.head]);
+    if (!spec.committedLaunch) await git(['read-tree', spec.git.head]);
   }
   if (spec.git?.origin) await git(['remote', 'add', 'origin', spec.git.origin]).catch(() => git(['remote', 'set-url', 'origin', spec.git.origin]));
   // Copy author identity only, never credential helpers, hooks or global config.
@@ -286,6 +304,9 @@ async function finalizeImport(op, expected) {
         sourceReceipt: row.parts.tree, originalsRetained: true };
       await save(op, row);
     } finally { await rm(temporary, { recursive: true, force: true }); }
+  } else if (spec.committedLaunch) {
+    await assertSelfContainedCommit(cwd,spec.git.head);
+    await executionGit(cwd,['read-tree','--reset','-u',spec.git.head],{capacityDir:cwd,label:'local checkout'});
   } else await unpack(op, 'tree', cwd);
   if (row.dependencyRebuild?.links.length) {
     await writeFile(join(cwd, '.git/info/exclude'), '\n/.aios/execution-rebuilt-dependencies/\n', { flag: 'a' });
@@ -297,7 +318,7 @@ async function finalizeImport(op, expected) {
   }
   if (row.parts.index) await copyFile(join(importDir(op), 'index'), join(cwd, '.git/index'));
   if (!spec.historyOnly || spec.git?.head) await assertLocalCheckout(cwd);
-  if (spec.git?.head) {
+  if (spec.git?.head && !spec.committedLaunch) {
     const observed = await gitEvidence(cwd);
     if (observed.head !== spec.git.head || spec.kind === 'move' && !spec.archive && observed.statusHash !== (spec.workingStatusHash || spec.git.statusHash)) {
       throw migrationError('The destination Git state differs; the source is still authoritative');
@@ -324,7 +345,7 @@ async function finalizeImport(op, expected) {
   if (row.parts.log) await copyIdentical(join(importDir(op), 'log'), sessionLogFile(spec.session.id));
   row.phase = 'files-ready'; row.transcript = transcript; await save(op, row);
   }
-  const projectPath = store.getProject(spec.project.id)?.path || cwd;
+  const projectPath = store.getProject(spec.project.id)?.path || (spec.localLaunch ? homePath(spec.project.id) : cwd);
   const mapping = importExecutionState(spec, { cwd, projectPath, transcript: spec.session.tool === 'claude' ? transcript : null, operation: op, kind: spec.kind });
   // Native AIOS child sessions, when explicitly requested, remain isolated on this Mac.
   const { setHelpers } = await import('./project_helpers.js');

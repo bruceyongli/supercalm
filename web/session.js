@@ -1926,6 +1926,9 @@ function applySessionInfo(s) {
     $('#s-badge').innerHTML = `<span class="badge" style="border-color:${merged.toolColor}99;color:${merged.toolColor}">${merged.toolLabel}</span>${merged.execution_node && merged.execution_node !== 'local' ? ` <small title="Execution device">${escapeHtml(merged.execution_node)}</small>` : ''}`;
   }
   renderHeaderTitle(merged);
+  if (merged.status === 'starting' && merged.status_reason === 'execution-copying') {
+    $('#term').dataset.prepareNote = 'Preparing the workspace. Your request is saved; terminal output will appear when the agent starts.';
+  } else delete $('#term').dataset.prepareNote;
   const st = $('#s-status');
   if (st && merged.status) {
     const indicator = sessionIndicator(merged);
@@ -1936,6 +1939,7 @@ function applySessionInfo(s) {
   const resume = $('#b-resume');
   if (resume && merged.status) {
     resume.hidden = !['exited', 'error'].includes(merged.status);
+    resume.textContent = merged.status_reason === 'execution-launch-failed' ? 'Retry launch' : 'Resume';
     resume.disabled = resumePending || !!merged.execution_history_only;
     resume.title = merged.execution_history_only ? 'Historical session: original native conversation unavailable; messages and files retained' : '';
   }
@@ -2876,7 +2880,7 @@ async function resumeSession(allowLocalCopy) {
       navigate('session?id=' + encodeURIComponent(session.id));
       return;
     }
-    status.textContent = 'Session resumed.';
+    status.textContent = session.status === 'starting' ? 'Starting with your saved request.' : 'Session resumed.';
     setTimeout(() => { if (requestScope.isCurrent(request)) location.reload(); }, 900);
   } catch (error) {
     if (!requestScope.isCurrent(request)) return;

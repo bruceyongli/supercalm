@@ -45,7 +45,7 @@ export function importExecutionState(data, { cwd, projectPath, transcript, opera
   const mapping = [];
   db.exec('BEGIN IMMEDIATE');
   try {
-    if (!getProject(data.project.id)) insertKnownRow('projects', { ...data.project, path: projectPath, execution_node: EXECUTION_NODE });
+    if (!getProject(data.project.id)) insertKnownRow('projects', { ...data.project, path: projectPath, execution_node: EXECUTION_NODE, launch_node:null });
     insertKnownRow('sessions', { ...data.session, execution_node: EXECUTION_NODE, execution_checkout: !data.historyOnly || data.git?.head ? 1 : 0,
       execution_history_only: data.historyOnly ? 1 : 0,
       execution_dormant: 1, execution_transfer: operation, execution_revision: null, worktree_path: cwd,

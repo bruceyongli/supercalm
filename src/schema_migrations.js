@@ -249,4 +249,9 @@ export const CORE_MIGRATIONS = [
     description: 'Keep accepted native queue receipts visible after browser refresh',
     up(db) { ensureColumn(db, 'messages', 'delivery_state', 'TEXT'); },
   },
+  {
+    id: '0013_project_launch_node',
+    description: 'Place new sessions locally without moving historical sessions or release authority',
+    up(db) { ensureColumn(db, 'projects', 'launch_node', 'TEXT'); },
+  },
 ];
