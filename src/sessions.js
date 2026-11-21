@@ -820,6 +820,7 @@ async function tmuxOk(...args) {
 const sessionLiveness = createSessionLiveness({ run: tmux,
   onError: evidence => console.error('[aios] session health unavailable; retaining lifecycle state', JSON.stringify(evidence)) });
 let discoveryDeferred = false;
+let retryStorageRecoveryAt = 0;
 
 // Keep a persistent, hidden keepalive session so the tmux server stays up with
 // DETACHED, IGNORED stdio. Critical: a tmux server with no sessions exits, so if we
@@ -1946,11 +1947,13 @@ async function recoverMissingSession(s) {
     const current = store.getSession(s.id);
     if (error?.code === 'recovery-cancelled' || !current || !['working', 'waiting'].includes(current.desired_status)
         || /^operator-/.test(current.status_reason || '')) return { skipped: true };
-    if (error?.code === 'session-health-unavailable') {
-      // An observation outage is not a failed agent restart and must not exhaust its retry budget.
+    if (error?.code === 'session-health-unavailable' || error?.code === 'storage-unavailable') {
+      // Mounts can arrive after login. Keep intent and the restart budget until
+      // the watcher has verified the volume, just as we do for unknown tmux state.
       store.updateSession(s.id, { runtime_status: s.runtime_status, status_reason: s.status_reason,
         recovery_attempts: s.recovery_attempts });
-      discoveryDeferred = true;
+      if (error.code === 'storage-unavailable') retryStorageRecoveryAt = Date.now() + 15000;
+      else discoveryDeferred = true;
       return { deferred: true };
     }
     const message = String(error?.message || error || 'unknown recovery failure').slice(0, 500);
@@ -2188,6 +2191,13 @@ async function enforceUsageLimit(s, entry) {
 const CODEX_USAGE_LIMIT_RX = /you'?ve hit your usage limit|upgrade to (plus|pro) to continue using codex|usage limit[^\n]*try again/i;
 
 async function pollOnce() {
+  if (retryStorageRecoveryAt && Date.now() >= retryStorageRecoveryAt) {
+    retryStorageRecoveryAt = Date.now() + 15000;
+    if (liveStorageStatus()?.available !== false) {
+      retryStorageRecoveryAt = 0;
+      discoveryDeferred = true;
+    }
+  }
   if (discoveryDeferred) await discover();
   // Snapshot registry ownership before awaiting the inventory; newly launched/replaced entries
   // must not be tested against an older observation. One inventory replaces N has-session forks.

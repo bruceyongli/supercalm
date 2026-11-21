@@ -252,6 +252,12 @@ const check = setInterval(() => {
 const unavailable = e => e.status === 503 && e.code === 'storage-unavailable' && e.localCopyAvailable === true;
 await assert.rejects(resumeForOperator(original.id), unavailable);
 assert.ok(!store.getSession('s_local_legacy'));
+const delayed = store.createSession({ id: 's_delayed_storage', tool: 'codex', tmux: 'gone-delayed',
+  project_id: project.id, status: 'waiting', desired_status: 'waiting' });
+store.updateSession(delayed.id, { worktree_path: remoteWorktree });
+await discover();
+assert.equal(store.getSession(delayed.id).recovery_attempts, 0, 'waiting for storage preserves the boot recovery budget');
+assert.equal(store.getSession(delayed.id).desired_status, 'waiting');
 const copy = () => resumeForOperator(original.id, { allowLocalCopy: true });
 const [first, second] = await Promise.all([copy(), copy(), assert.rejects(resumeForOperator(original.id), unavailable)]);
 assert.equal(first.id, second.id);
@@ -272,9 +278,12 @@ clearInterval(check);
 
 // The next successful original resume does not redirect or remove the local workspace.
 rmSync(cfg);
+store.updateSession(delayed.id, { worktree_path: null });
 store.updateSession(original.id, { worktree_path: null });
 assert.equal((await resumeForOperator(original.id)).id, original.id);
 assert.ok(existsSync(notes));
+await waitFor(() => names().includes(store.getSession(delayed.id).tmux), 'automatic recovery after storage reconnects', 30000);
+assert.equal(store.getSession(delayed.id).desired_status, 'waiting');
 
 console.log('session_launch_lifecycle.test ok');
 process.exit(0);
