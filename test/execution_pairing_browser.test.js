@@ -40,6 +40,12 @@ try {
   await page.goto(base+'/settings#st-devices');
   const btn=page.getByRole('button',{name:'Add device',exact:true});
   await page.waitForFunction(()=>{const r=document.querySelector('#st-add-device')?.getBoundingClientRect();return r && r.bottom>0 && r.top<innerHeight;});
+  // Real installations have much taller provider/storage inventories than an empty fixture.
+  await page.evaluate(()=>{const extra=document.createElement('div');extra.id='test-late-settings';extra.style.height='2500px';document.querySelector('#st-storagecard').before(extra);});
+  await page.waitForFunction(()=>{const r=document.querySelector('#st-add-device').getBoundingClientRect();return r.top>=0 && r.bottom<=innerHeight;});
+  await page.evaluate(()=>{window.dispatchEvent(new WheelEvent('wheel'));window.scrollTo(0,0);document.querySelector('#test-late-settings').style.height='3000px';});
+  await page.evaluate(()=>new Promise(ok=>requestAnimationFrame(()=>requestAnimationFrame(ok))));
+  assert.equal(await page.evaluate(()=>scrollY),0,'late settings must not take scroll back from the reader');
   await btn.click();
   const form=page.locator('#st-device-pair');
   const id=form.getByLabel('Device ID'), host=form.getByLabel('SSH address'), proof=form.getByLabel(/Enter the pairing code/);

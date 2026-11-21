@@ -9,6 +9,31 @@ import { api, escapeHtml as esc } from '../common.js';
 import { mountStorageSettings } from '../settings-storage.js';
 import { mountExecutionSettings } from '../execution-devices.js';
 let teardownExecution = null;
+let stopDeviceLink = null;
+
+// Settings above Devices arrive independently. Honor the initial fragment while
+// they fill in, but hand control to the reader at the first click, key or scroll.
+function revealDeviceLink(section) {
+  if (location.hash !== '#st-devices') return null;
+  const button = section.querySelector('#st-add-device'), listeners = new AbortController();
+  let frame = 0, first = true;
+  const observer = new ResizeObserver(() => {
+    if (frame) return;
+    frame = requestAnimationFrame(() => {
+      frame = 0;
+      if (!section.isConnected || location.hash !== '#st-devices') return stop();
+      const r = button.getBoundingClientRect();
+      if (!button.hidden && (first || r.top < 0 || r.bottom > innerHeight)) section.scrollIntoView({block:'start',behavior:'instant'});
+      first = false;
+    });
+  });
+  const timer = setTimeout(stop, 20000);
+  function stop() { observer.disconnect(); listeners.abort(); clearTimeout(timer); cancelAnimationFrame(frame); }
+  for (const event of ['wheel','touchstart','pointerdown','keydown','hashchange'])
+    window.addEventListener(event, stop, {signal:listeners.signal,capture:true,passive:true});
+  observer.observe(section.parentElement);
+  return stop;
+}
 
 const SETTINGS_CSS = `
     .st-device-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
@@ -716,13 +741,12 @@ export function init(el) {
   teardownStorage = mountStorageSettings(host.querySelector('#st-storagecard'));
   teardownExecution?.();
   teardownExecution = mountExecutionSettings(host.querySelector('#st-devicecard'));
-  if (location.hash === '#st-devices') {
-    const section = host.querySelector('#st-devices');
-    requestAnimationFrame(() => { if (section.isConnected && location.hash === '#st-devices') section.scrollIntoView({block:'start'}); });
-  }
+  stopDeviceLink?.();
+  stopDeviceLink = revealDeviceLink(host.querySelector('#st-devices'));
 }
 
 export function teardown() {
+  stopDeviceLink?.(); stopDeviceLink = null;
   teardownExecution?.(); teardownExecution = null;
   teardownStorage?.();
   teardownStorage = null;
