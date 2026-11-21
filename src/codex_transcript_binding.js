@@ -1,6 +1,7 @@
 // Shared launch-time / Story-time recovery of an exact Codex transcript. This never changes agent
 // lifecycle or attention state and never guesses from a same-project file's size or recency.
 import * as store from './store.js';
+import { continuationCodexSessions } from './storage_continuation.js';
 import { bus } from './bus.js';
 import { sessionStatusPayload } from './session_projection.js';
 import { findCodexLaunchRollout, rolloutUuidFromName } from './codex_rollouts.js';
@@ -25,7 +26,7 @@ async function recover(sid, files, beforeSet) {
   try { payload = JSON.parse(launch.payload); } catch { return null; }
   const claimed = new Set(owners.all().filter(row => row.id !== sid).map(row => row.codex_uuid));
   const file = await findCodexLaunchRollout(beforeSet ? files.filter(f => !beforeSet.has(f)) : files, {
-    cwd: payload.dir, startedAt: launch.ts, task: payload.task, claimed, allowEmptyTask: !!beforeSet,
+    cwd: payload.dir, startedAt: launch.ts, task: payload.task, claimed, privateSessionsDir: continuationCodexSessions(sid), allowEmptyTask: !!beforeSet,
   });
   if (!file) return null;
   const uuid = rolloutUuidFromName(file);

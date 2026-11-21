@@ -7,7 +7,7 @@
 // cwd — which is why matching by UUID fixes the operator's case where a session's workspace path (a
 // sandboxed dir) differs from its AIOS project path, so cwd-matching found nothing.
 import { readdir, open } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { sameStoragePath } from './live_storage.js';
 
@@ -29,7 +29,7 @@ export function pickRolloutByUuid(files, uuid) {
 // All three pieces of persisted launch evidence must agree: cwd, native start time and the actual
 // user request (after any AIOS context preamble). Helpers/exec threads and already-owned files are
 // excluded. More than one match is ambiguous, so leave the session's private fallback intact.
-export async function findCodexLaunchRollout(files, { cwd, startedAt, task, claimed = new Set(), allowEmptyTask = false } = {}) {
+export async function findCodexLaunchRollout(files, { cwd, startedAt, task, claimed = new Set(), allowEmptyTask = false, privateSessionsDir } = {}) {
   const request = String(task || '').trim();
   if (!cwd || !Number.isFinite(startedAt) || startedAt <= 0 || (!request && !allowEmptyTask)) return null;
   const matches = [];
@@ -38,8 +38,11 @@ export async function findCodexLaunchRollout(files, { cwd, startedAt, task, clai
     if (!uuid || claimed.has(uuid)) continue;
     // CLI filenames use local time, while session_meta uses UTC. This is only an IO prefilter;
     // the authoritative timestamp below must be inside the much tighter launch window.
+    // A continuation owns its native directory. Its first user turn may be hours
+    // after a trust/update prompt. Still require its stored request and unique CLI identity.
+    const privateLaunch = !!privateSessionsDir && !!request && resolve(file).startsWith(privateSessionsDir + sep);
     const dated = String(file).match(/rollout-(\d{4}-\d{2}-\d{2})T/);
-    if (dated && Math.abs(Date.parse(dated[1]) - startedAt) > 48 * 3600_000) continue;
+    if (!privateLaunch && dated && Math.abs(Date.parse(dated[1]) - startedAt) > 48 * 3600_000) continue;
     let fh;
     try {
       fh = await open(file, 'r');
@@ -50,7 +53,7 @@ export async function findCodexLaunchRollout(files, { cwd, startedAt, task, clai
       const meta = head.payload || head;
       const time = Date.parse(meta.timestamp || head.timestamp);
       if (head.type !== 'session_meta' || (meta.id || meta.session_id) !== uuid || !sameStoragePath(meta.cwd, cwd)
-          || !Number.isFinite(time) || time < startedAt - 5000 || time > startedAt + 600_000
+          || !Number.isFinite(time) || time < startedAt - 5000 || time > (privateLaunch ? Date.now() : startedAt + 600_000)
           || (meta.source && meta.source !== 'cli')
           || (meta.thread_source && meta.thread_source !== 'user')
           || (meta.originator && !['codex-tui', 'codex_cli_rs'].includes(meta.originator))) continue;

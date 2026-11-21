@@ -7,6 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DATA_DIR, ROOT } from './config.js';
 import { liveStorageConfig, liveStorageConfigFile, liveStorageStatus, validateLiveStorage } from './live_storage.js';
+import { reconnectForResume } from './storage_reconnect.js';
 import { durableJson } from './storage_migration.js';
 import { withStorageConfigLock } from './storage_provision.js';
 import { worktreeRoot } from './worktrees.js';
@@ -213,7 +214,10 @@ async function saveStorageCredential(config, password) {
 }
 const xml = value => String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 async function connectStorageDevice(config, file, { existing, sizeGiB }) {
-  if (existing) { await run(process.execPath, [join(ROOT, 'bin/storage-mount-watch.mjs'), file, '--once'], 90000); return; }
+  if (existing) {
+    if (!await reconnectForResume(config)) throw problem('The storage watcher has not confirmed the volume yet. Check its status before retrying.', 503);
+    return;
+  }
   const mounted = async (path, type) => (await run('/sbin/mount', [], 5000)).stdout.split('\n').some(line => line.includes(` on ${path} (${type},`));
   for (const path of [config.shareMount, config.mount]) {
     await mkdir(path, { mode: 0o500 }).catch(error => { if (error.code !== 'EEXIST') throw error; });

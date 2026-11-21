@@ -214,6 +214,7 @@ export function mountSession(hostEl, { id: startId = '', embedded = true } = {})
   // Initialize session identity state before setMainView() can synchronously enter the persisted
   // Terminal view. ensureTerminalData() reads this state, so declaring it with the header helpers
   // below left Terminal-preferring mounts in the temporal dead zone and aborted the entire view.
+  let resumePending = false;
   let latestSessionInfo = null;
   let sessionInfoRequest = null;
 
@@ -1925,8 +1926,8 @@ function applySessionInfo(s) {
   }
   const resume = $('#b-resume');
   if (resume && merged.status) {
-    resume.hidden = merged.status !== 'exited';
-    resume.disabled = !!merged.execution_history_only;
+    resume.hidden = !['exited', 'error'].includes(merged.status);
+    resume.disabled = resumePending || !!merged.execution_history_only;
     resume.title = merged.execution_history_only ? 'Historical session: original native conversation unavailable; messages and files retained' : '';
   }
   const stop = $('#b-stop');
@@ -2829,33 +2830,53 @@ loadSettings();
 // ---- reply composer ---------------------------------------------------------
 // Stopped-session send: an inline bar over the composer offers Resume (no native confirm dialog).
 function showResumeBar() {
-  if (document.getElementById('resume-bar')) return;
+  const existing = $('#resume-bar');
+  if (existing) return existing;
   const bar = document.createElement('div');
   bar.id = 'resume-bar';
   bar.className = 'pm-boundary resume-bar';
-  bar.innerHTML = `<span>This session has stopped — resume it, then send again once it reloads.</span>
-    <button class="btn sm" id="resume-bar-go">Resume</button>
-    <button class="btn ghost sm" id="resume-bar-x">Dismiss</button>`;
+  bar.innerHTML = `<span role="status">Resume this session to send your message.</span>
+    <button class="btn sm" id="resume-bar-go" type="button">Resume</button>
+    <button class="btn ghost sm" id="resume-bar-copy" type="button" hidden>Use a separate local recovery copy</button>
+    <a href="settings#st-storage" hidden>Storage settings</a>
+    <button class="btn ghost sm" id="resume-bar-x" type="button">Dismiss</button>`;
   const anchorEl = reply.closest('form') || reply.parentElement;
   anchorEl.parentElement.insertBefore(bar, anchorEl);
   bar.querySelector('#resume-bar-x').onclick = () => bar.remove();
-  bar.querySelector('#resume-bar-go').onclick = async () => {
-    const requestToken = requestScope.capture();
-    bar.querySelector('#resume-bar-go').disabled = true;
-    try {
-      const resumed = await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
-      requestScope.guard(requestToken);
-      if (resumed.id !== requestToken.id) return navigate('session?id=' + encodeURIComponent(resumed.id));
-      bar.querySelector('span').textContent = 'Resuming — reloading…';
-      setTimeout(() => {
-        if (requestScope.isCurrent(requestToken)) location.reload();
-      }, 900);
-    } catch (e) {
-      if (isSessionAbort(e)) return;
-      bar.querySelector('span').textContent = 'Resume failed: ' + (e.message || e);
-      bar.querySelector('#resume-bar-go').disabled = false;
+  bar.querySelector('#resume-bar-go').onclick = () => resumeSession(false);
+  bar.querySelector('#resume-bar-copy').onclick = () => resumeSession(true);
+  return bar;
+}
+
+async function resumeSession(allowLocalCopy) {
+  if (resumePending) return;
+  const request = requestScope.capture();
+  const bar = showResumeBar();
+  const status = bar.querySelector('[role="status"]');
+  const copy = bar.querySelector('#resume-bar-copy');
+  const buttons = [$('#b-resume'), ...bar.querySelectorAll('button')];
+  resumePending = true;
+  buttons.forEach(button => { button.disabled = true; });
+  status.textContent = 'Reopening the session…';
+  try {
+    const suffix = allowLocalCopy ? '?fallback=local-copy' : '';
+    const session = await api(`api/session/${request.id}/resume${suffix}`, { method: 'POST', signal: request.signal });
+    requestScope.guard(request);
+    if (session.id !== request.id) {
+      if (!allowLocalCopy || session.parent_session_id !== request.id) throw Error('The server returned a different session. Reopen the original after checking storage.');
+      navigate('session?id=' + encodeURIComponent(session.id));
+      return;
     }
-  };
+    status.textContent = 'Session resumed.';
+    setTimeout(() => { if (requestScope.isCurrent(request)) location.reload(); }, 900);
+  } catch (error) {
+    if (!requestScope.isCurrent(request)) return;
+    status.textContent = error.message;
+    copy.hidden = !error.localCopyAvailable && !allowLocalCopy;
+    bar.querySelector('a').hidden = error.code !== 'storage-unavailable';
+    buttons.forEach(button => { button.disabled = false; });
+    resumePending = false;
+  }
 }
 const reply = $('#reply');
 const replyFullPlaceholder = reply.getAttribute('placeholder') || '';
@@ -3353,7 +3374,8 @@ function clearAttachments() {
 
 function hasFilePayload(e) {
   const dt = e.clipboardData || e.dataTransfer;
-  return [...(dt?.items || [])].some((item) => item.kind === 'file') || (dt?.files?.length || 0) > 0;
+  // Finder/Safari can advertise only the Files type until the actual drop.
+  return Array.from(dt?.types || []).includes('Files') || Array.from(dt?.items || []).some(item => item.kind === 'file') || !!dt?.files?.length;
 }
 
 function filesFromTransfer(dt) {
@@ -3409,7 +3431,7 @@ function installFileTarget(target) {
     messageBox.classList.add('dragover');
   });
   target.addEventListener('dragleave', (e) => {
-    if (!messageBox.contains(e.relatedTarget)) messageBox.classList.remove('dragover');
+    if (!(e.relatedTarget instanceof Node) || !target.contains(e.relatedTarget)) messageBox.classList.remove('dragover');
   });
   target.addEventListener('drop', (e) => {
     if (e.defaultPrevented) return;
@@ -3518,23 +3540,7 @@ async function sendInput() {
     }
   }
 }
-$('#b-resume').onclick = async () => {
-  const requestToken = requestScope.capture();
-  const button = $('#b-resume');
-  button.disabled = true;
-  try {
-    const resumed = await api(`api/session/${requestToken.id}/resume`, { method: 'POST', signal: requestToken.signal });
-    requestScope.guard(requestToken);
-    if (resumed.id !== requestToken.id) return navigate('session?id=' + encodeURIComponent(resumed.id));
-    setTimeout(() => {
-      if (requestScope.isCurrent(requestToken)) location.reload();
-    }, 900);
-  } catch (e) {
-    if (isSessionAbort(e)) return;
-    alert('Resume failed: ' + e.message);
-    button.disabled = false;
-  }
-};
+$('#b-resume').onclick = () => resumeSession(false);
 sendBtn.onclick = sendInput;
 // ---- "/" command palette (composer) -----------------------------------------
 // Type "/" at the start of the message box to open a small menu (like Claude Code / Codex desktop).

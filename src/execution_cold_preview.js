@@ -84,7 +84,12 @@ export async function routeColdExecutionPreview(req, url, sessionOrId) {
     if (!context.uploads || !name || name !== basename(name) || name === '.' || name === '..' || /[\\\0]/.test(name)) return false;
     const source = join(context.uploads, name);
     try { await lstat(source); }
-    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+    catch (error) {
+      // This basename also serves new uploads on the owning worker. An offline
+      // historical volume cannot establish that the attachment belongs here.
+      if (['ENOENT', 'EIO', 'ESTALE', 'ENXIO', 'ETIMEDOUT', 'ENOTCONN'].includes(error.code)) return false;
+      throw error;
+    }
     // The legacy attachment route reads directly. Use the normal file resolver
     // for cold uploads so an old filename cannot authorize an escaping symlink.
     url.pathname = `/api/session/${encodeURIComponent(sid)}/file`;

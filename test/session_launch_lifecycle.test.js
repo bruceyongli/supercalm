@@ -233,7 +233,7 @@ assert.ok(names().includes(store.getSession(switching.id).tmux), 'replacement pa
 const latestLifecycle = store.eventsFor(switching.id, 10).filter((event) => event.type === 'resume' || event.type === 'exit');
 assert.equal(latestLifecycle[0]?.type, 'resume', 'no exit event may follow the successful resume');
 
-// A failed watcher check must open one independently writable session, including
+// Only an explicit local-copy request may open an independently writable session, including
 // across duplicate clicks. The original checkout, native identity and messages stay addressable.
 writeFileSync(modeFile, 'ok');
 const remoteWorktree = join(root, 'offline-worktree');
@@ -249,7 +249,11 @@ writeFileSync(cfg, JSON.stringify({ version: 1, id: 'fixture', mount, statusFile
 const check = setInterval(() => {
   if (existsSync(statusFile + '.reconnect')) writeFileSync(statusFile, JSON.stringify({ id: 'fixture', checkedAt: Date.now(), available: false }));
 }, 50);
-const [first, second] = await Promise.all([resumeForOperator(original.id), resumeForOperator(original.id)]);
+const unavailable = e => e.status === 503 && e.code === 'storage-unavailable' && e.localCopyAvailable === true;
+await assert.rejects(resumeForOperator(original.id), unavailable);
+assert.ok(!store.getSession('s_local_legacy'));
+const copy = () => resumeForOperator(original.id, { allowLocalCopy: true });
+const [first, second] = await Promise.all([copy(), copy(), assert.rejects(resumeForOperator(original.id), unavailable)]);
 assert.equal(first.id, second.id);
 assert.equal(first.parent_session_id, original.id);
 assert.equal(first.status, 'working');
@@ -262,7 +266,8 @@ assert.match(readFileSync(notes, 'utf8'), /A locally saved message/);
 const launchScript = readFileSync(join(data, 'launch', first.id + '.sh'), 'utf8');
 assert.ok(launchScript.includes('CODEX_HOME=') && launchScript.includes('AIOS_NO_DEPLOY=1'));
 assert.ok(!launchScript.includes(store.getSession(original.id).codex_uuid));
-assert.equal((await resumeForOperator(original.id)).id, first.id);
+await assert.rejects(resumeForOperator(original.id), unavailable);
+assert.equal((await copy()).id, first.id);
 clearInterval(check);
 
 // The next successful original resume does not redirect or remove the local workspace.

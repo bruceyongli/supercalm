@@ -85,6 +85,10 @@ for (const extra of [{ offset: -6000 }, { offset: 601000 }, { source: { subagent
   assert.equal(await findCodexLaunchRollout([recovery], evidence), null, `reject unrelated rollout ${JSON.stringify(extra)}`);
 }
 writeRecovery(recovery, UUID_B);
+writeRecovery(recovery, UUID_B, { offset: 74 * 60000 });
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, privateSessionsDir: base }), recovery);
+assert.equal(await findCodexLaunchRollout([recovery], { ...evidence, privateSessionsDir: join(base, 'other') }), null);
+writeRecovery(recovery, UUID_B);
 const duplicate = join(base, `rollout-2026-07-11T11-07-03-${UUID_A}.jsonl`);
 writeRecovery(duplicate, UUID_A);
 assert.equal(await findCodexLaunchRollout([recovery, duplicate], evidence), null, 'ambiguous launch evidence never guesses');
@@ -101,7 +105,7 @@ assert.ok(!storyApi.includes('cm[1] === cwd'), 'Story has no ownership-by-cwd fa
 assert.ok(iPick < storyApi.indexOf('await bindCodexLaunchTranscript(s.id'), 'native UUID precedes evidence-checked launch recovery');
 
 const sessions = readFileSync(new URL('../src/sessions.js', import.meta.url), 'utf8');
-assert.ok(/const codexBefore = tool === 'codex' \? new Set\(await codexRolloutFiles\(\)/.test(sessions), 'launch snapshots the rollout set for codex');
+assert.ok(sessions.includes("const codexBefore = tool === 'codex' ? new Set(await codexRolloutFiles(continuationCodexSessions(sid))"), 'launch snapshots the rollout set for codex');
 assert.ok(/if \(codexBefore\) captureCodexUuid\(sid, codexBefore\)/.test(sessions), 'launch fires evidence-checked captureCodexUuid (fire-and-forget)');
 const binding = readFileSync(new URL('../src/codex_transcript_binding.js', import.meta.url), 'utf8');
 assert.ok(sessions.includes('bindCodexLaunchTranscript(sid,'), 'launch uses the shared evidence-checked binder');

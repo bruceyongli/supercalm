@@ -96,8 +96,21 @@ export function proxyNodeRequest(node, req, res, path) {
       incoming.pipe(res);
       incoming.once('end', resolve);
     });
-    const timeout = setTimeout(() => upstream.destroy(new Error('Worker response deadline exceeded')), 15000);
-    upstream.once('response', () => clearTimeout(timeout));
+    const expire = () => upstream.destroy(new Error('Worker response deadline exceeded'));
+    const uploading = req.method === 'POST' && /^\/api\/session\/[^/]+\/upload(?:\?|$)/.test(path);
+    // Budget a file transfer by inactivity until the body is sent, then apply the
+    // normal response-header deadline. All other requests retain their original deadline.
+    let timeout;
+    if (uploading) {
+      upstream.setTimeout(30000, expire);
+      upstream.once('finish', () => {
+        if (!upstream.destroyed && !res.headersSent) timeout = setTimeout(expire, 15000);
+      });
+    } else timeout = setTimeout(expire, 15000);
+    upstream.once('response', () => {
+      clearTimeout(timeout);
+      if (uploading) upstream.setTimeout(0);
+    });
     upstream.on('error', () => {
       clearTimeout(timeout);
       if (!res.headersSent) {

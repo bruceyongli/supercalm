@@ -9,7 +9,7 @@ import { defaultExecutionNode } from './execution_transport.js';
 import { storageMaintenanceFor, assertStorageSessionAvailable, assertStorageLaunchAvailable, storageRecoveryGate, storageBranchCheckpointAllows, storageBranchEvidenceValid } from './storage_maintenance.js';
 import { reconnectForResume } from './storage_reconnect.js';
 import { isContinuation, continuationId, continuationRoot, prepareContinuation, sessionLogFile, sessionArtifactRoot, continuationNativeEnv, continuationCodexSessions } from './storage_continuation.js';
-import { assertLiveStorage, liveStorageConfig, sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
+import { assertLiveStorage, liveStorageConfig, liveStorageStatus, sameStoragePath, expectedStoragePath, logicalStoragePath } from './live_storage.js';
 import { restoreArchivedWorktree } from './archive_transfer.js';
 import { existsSync, statSync, realpathSync, createReadStream } from 'node:fs';
 import { extname, join, basename, dirname, normalize, isAbsolute, sep, relative } from 'node:path';
@@ -1614,6 +1614,10 @@ async function resumeNow(sid, { force = false, waitForInput = false, preserveSta
       store.getProject(s.project_id)?.path, native].filter(Boolean), storageConfig);
   }
   assertDiskHeadroom(store.getProject(s.project_id)?.path);
+  if (isContinuation(sid) && s.tool === 'codex' && !s.codex_uuid) {
+    await bindCodexLaunchTranscript(sid, { files: await codexRolloutFiles(continuationCodexSessions(sid)) });
+    s.codex_uuid = store.getSession(sid)?.codex_uuid;
+  }
   if (s.execution_checkout && s.tool === 'codex' && !s.codex_uuid) {
     throw Object.assign(new Error('This device session has no proven native conversation yet. The original request is retained; no other conversation was resumed.'), { code: 'codex-transcript-missing' });
   }
@@ -4549,7 +4553,7 @@ route('POST', '/api/session/:id/kill', async (req, res, { id: sid }) => {
 });
 
 const operatorResumes = new Map();
-async function resumeOrContinue(sid) {
+async function resumeOrContinue(sid, allowLocalCopy) {
   const source = store.getSession(sid);
   try { return await resume(sid); }
   catch (error) {
@@ -4564,11 +4568,22 @@ async function resumeOrContinue(sid) {
     try { return await resume(sid); }
     catch (error) { if (error.code !== 'storage-unavailable') throw error; }
   }
+  if (!allowLocalCopy) {
+    const detail = liveStorageStatus()?.error || '';
+    const message = detail.startsWith('Storage still has open handles')
+      ? 'Spark could not remount the session volume because applications still have files open. Close them during a maintenance window, then reconnect Spark in Settings → Storage.'
+      : 'The original session is waiting for its Spark volume. Check the connection in Settings → Storage, then retry Resume.';
+    throw Object.assign(Error(message), { code: 'storage-unavailable', status: 503, localCopyAvailable: true });
+  }
   return withSessionArchiveLock(sid, () => openLocalContinuation(source));
 }
 
 async function openLocalContinuation(source) {
   const sid = source.id;
+  const current = store.getSession(sid);
+  if (!current || remoteSession(current) || current.tmux !== source.tmux || current.revision !== source.revision && /^operator-/.test(current.status_reason || '')) {
+    throw Object.assign(Error('Session changed during storage recovery. Open it again.'), { status: 409 });
+  }
   assertExecutionAvailable(sid);
   assertStorageSessionAvailable(sid);
   assertSessionNotCleaning(sid);
@@ -4614,18 +4629,20 @@ async function openLocalContinuation(source) {
   return child;
 }
 
-export function resumeForOperator(sid) {
-  if (!operatorResumes.has(sid)) operatorResumes.set(sid, resumeOrContinue(sid).finally(() => operatorResumes.delete(sid)));
-  return operatorResumes.get(sid);
+export function resumeForOperator(sid, { allowLocalCopy = false } = {}) {
+  // Requests for the original must never join a flight that can return another identity.
+  const key = sid + (allowLocalCopy ? '/local-copy' : '/original');
+  if (!operatorResumes.has(key)) operatorResumes.set(key, resumeOrContinue(sid, allowLocalCopy).finally(() => operatorResumes.delete(key)));
+  return operatorResumes.get(key);
 }
 
-route('POST', '/api/session/:id/resume', async (req, res, { id: sid }) => {
+route('POST', '/api/session/:id/resume', async (req, res, { id: sid }, url) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   try {
-    json(res, 200, decorate(await resumeForOperator(sid)));
+    json(res, 200, decorate(await resumeForOperator(sid, { allowLocalCopy: url.searchParams.get('fallback') === 'local-copy' })));
   } catch (e) {
-    json(res, e.status || 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}) });
+    json(res, e.status || 400, { error: String(e.message || e), ...(e.code ? { code: e.code } : {}), ...(e.localCopyAvailable ? { localCopyAvailable: true } : {}) });
   }
 });
 
