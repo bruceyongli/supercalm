@@ -285,6 +285,8 @@ argument. (Your own broken tooling you fix directly — that IS system improveme
   File anchors must have a session-scoped `/file?path=…&open=1` destination so copying/opening a link
   works without its click handler. Repeated upload names stay bound to their own message, never to
   the newest upload; worktree sessions may preview only their own canonical-project upload folder.
+  Keep original Unicode attachment names separate from unique disk keys. Composer previews use
+  the dropped bytes before upload completes; a text/URL-only drag never authorizes fetching a file.
 - Feature modules (`sessions/detect/spark/push/hooks`) self-register routes via `route()` and are
   loaded fire-and-forget at the bottom of `server.js` **after** `routes[]` exists (do not convert
   these to top-level `await import` — see gotcha #1).

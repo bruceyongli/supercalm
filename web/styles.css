@@ -395,6 +395,13 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
 .asset-card-meta {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
+.attachment-chip .asset-card-name {
+  left: 0; right: 0; bottom: 0; width: auto; height: auto; clip-path: none;
+  padding: 4px 7px; background: var(--panel); color: var(--ink); font-size: 12px;
+  line-height: 1.4; text-overflow: ellipsis;
+}
+.attachment-chip .asset-card-badge { bottom: 30px; }
+.attachment-pdf { display: block; width: 100%; height: min(65dvh, 720px); border: 0; }
 .asset-card-actions {
   position: absolute; top: 6px; right: 6px; display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end;
   max-width: calc(100% - 12px); padding: 3px; border-radius: 6px; background: rgba(13, 17, 23, 0.93);
@@ -405,6 +412,8 @@ main { padding: 14px 16px 60px; max-width: 1200px; margin: 0 auto; }
   opacity: 1; pointer-events: auto; transform: translateY(0);
 }
 .asset-card-actions .btn.sm { min-height: 24px; padding: 2px 7px; font-size: 11px; }
+.attachment-chip .asset-card-actions { padding: 0; }
+.attachment-chip .attachment-remove { min-width: 26px; font-size: 16px; }
 .asset-detail-backdrop {
   position: fixed; inset: 0; z-index: 130; display: grid; place-items: center; padding: 24px;
   background: rgba(1, 4, 9, 0.78); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);

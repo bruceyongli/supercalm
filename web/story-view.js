@@ -540,7 +540,10 @@ function eventHtml(ev, i, previewVideo = false) {
   // image "should be previewed in the story view with the user request"). Basenames come from the
   // parser; the attachment route serves only this session's own upload dir.
   const imgsHtml = (ev.images || []).length
-    ? `<div class="story-imgs">${ev.images.map((f) => `<img class="story-shot" data-story-shot loading="lazy" src="api/session/${sid}/attachment/${encodeURIComponent(f)}" alt="${esc(f)}" title="${esc(f)}" />`).join('')}</div>`
+    ? `<div class="story-imgs">${ev.images.map(f => {
+      const label = (ev.attachments || []).find(a => a.path.split('/').at(-1) === f)?.name || f.replace(/^\d+-u_[a-f0-9]+-/, '');
+      return `<img class="story-shot" data-story-shot loading="lazy" src="api/session/${sid}/attachment/${encodeURIComponent(f)}" alt="${esc(label)}" title="${esc(label)}" />`;
+    }).join('')}</div>`
     : '';
   const linkedUploads = new Set();
   const fileHref = path => `api/session/${encodeURIComponent(sid)}/file?path=${encodeURIComponent(path)}&open=1`;

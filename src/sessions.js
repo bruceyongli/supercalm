@@ -24,6 +24,7 @@ import { effortsForModel, defaultEffortForModel } from './model_efforts.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
 import { id, slug, now, shquote, stripAnsi, fileDisposition } from './util.js';
+import { attachmentName, storageName, textWithAttachmentBlock } from './upload_names.js';
 import { route, json, readJson } from './server.js';
 import { markTyping } from './operator_presence.js';
 import { CLAUDE_SURVEY_RX, askSubmitStepPending, terminalQuestionPrompt, clearHookState } from './detect_classify.js';
@@ -252,6 +253,13 @@ const ATTACHMENT_CONTENT_TYPES = {
   '.png': 'image/png',
   '.gif': 'image/gif',
   '.webp': 'image/webp',
+  '.avif': 'image/avif',
+  '.bmp': 'image/bmp',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
+  '.ico': 'image/x-icon',
+  '.tif': 'image/tiff',
+  '.tiff': 'image/tiff',
   '.svg': 'image/svg+xml',
   '.pdf': 'application/pdf',
   '.json': 'application/json; charset=utf-8',
@@ -2841,12 +2849,6 @@ async function suggestSessionTitle(s) {
   }
 }
 
-function safeAttachmentName(name) {
-  const raw = basename(String(name || 'attachment')).replace(/\0/g, '').trim() || 'attachment';
-  const cleaned = raw.replace(/[^A-Za-z0-9._ -]+/g, '_').replace(/\s+/g, ' ').slice(0, 160).trim();
-  return cleaned && cleaned !== '.' && cleaned !== '..' ? cleaned : 'attachment';
-}
-
 function attachmentFormat(name, type = '') {
   const ext = extname(name || '').replace('.', '').toUpperCase();
   if (ext) return ext.slice(0, 12);
@@ -2865,7 +2867,7 @@ function attachmentDirForSession(s) {
 function normalizeAttachmentMeta(items = []) {
   return (Array.isArray(items) ? items : [])
     .map((a) => {
-      const name = safeAttachmentName(a?.name);
+      const name = attachmentName(a?.name);
       const type = String(a?.type || '').slice(0, 120);
       const path = String(a?.path || '').trim();
       if (!path) return null;
@@ -2881,18 +2883,6 @@ function normalizeAttachmentMeta(items = []) {
     })
     .filter(Boolean)
     .slice(0, 20);
-}
-
-function textWithAttachmentBlock(text, attachments) {
-  const base = String(text || '').trim();
-  if (!attachments.length) return base;
-  const lines = attachments.map((a, i) => {
-    const kind = a.isImage ? 'image' : 'file';
-    const bits = [a.format, a.type || kind].filter(Boolean).join(', ');
-    return `${i + 1}. ${a.name}${bits ? ` (${bits})` : ''}: ${a.path}`;
-  });
-  const lead = base || 'Please review the attached files/images.';
-  return `${lead}\n\nAttached files available locally to this coding CLI:\n${lines.join('\n')}\n\nOpen these paths directly when you need the uploaded content.`;
 }
 
 function parsePayload(row) {
@@ -2920,7 +2910,7 @@ function attachmentDownloadUrl(sid, filePath) {
 }
 
 function attachmentFromPath(sid, { name, type, size, path, format, isImage } = {}) {
-  const displayName = String(name || basename(String(path || '')) || 'attachment').slice(0, 180);
+  const displayName = attachmentName(name || basename(String(path || '')));
   const mime = String(type || '').slice(0, 120);
   const fmt = String(format || attachmentFormat(displayName, mime)).slice(0, 16);
   const image = Boolean(isImage || mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(displayName));
@@ -3694,8 +3684,12 @@ route('GET', '/api/session/:id/attachment/:file', async (req, res, { id: sid, fi
   try {
     const ext = extname(target).toLowerCase();
     const type = ATTACHMENT_CONTENT_TYPES[ext] || 'application/octet-stream';
+    // The URL identifies the bytes, not the download's suggested filename. Consult the
+    // upload receipt on explicit download (also preserves names too long for the disk key).
+    const original = download && store.db.prepare("SELECT json_extract(payload,'$.name') AS name FROM events WHERE session_id=? AND type='attachment-upload' AND json_extract(payload,'$.path')=? ORDER BY id DESC LIMIT 1").get(sid, target)?.name;
+    const displayName = attachmentName(original || name.replace(/^\d+-u_[a-f0-9]+-/, ''));
     if (FILE_AUDIO_RX.test(ext) || FILE_VIDEO_RX.test(ext)) {
-      streamMediaFile(req, res, target, await stat(target), type, { download });
+      streamMediaFile(req, res, target, await stat(target), type, { download, displayName });
       return;
     }
     const data = await readFile(target);
@@ -3703,7 +3697,9 @@ route('GET', '/api/session/:id/attachment/:file', async (req, res, { id: sid, fi
     res.writeHead(200, {
       'content-type': type,
       'cache-control': 'private, max-age=3600',
-      'content-disposition': fileDisposition(name, { download: !inline }),
+      'content-disposition': fileDisposition(displayName, { download: !inline }),
+      'x-content-type-options': 'nosniff',
+      ...(type === 'image/svg+xml' ? { 'content-security-policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" } : {}),
     });
     res.end(data);
   } catch {
@@ -3810,7 +3806,7 @@ function mediaByteRange(header, size) {
   return { start, end };
 }
 
-function streamMediaFile(req, res, target, st, type, { download = false, file = null } = {}) {
+function streamMediaFile(req, res, target, st, type, { download = false, file = null, displayName = basename(target) } = {}) {
   const range = mediaByteRange(req.headers.range, st.size);
   if (range?.invalid) {
     res.writeHead(416, {
@@ -3829,7 +3825,7 @@ function streamMediaFile(req, res, target, st, type, { download = false, file = 
     'content-length': st.size ? end - start + 1 : 0,
     'accept-ranges': 'bytes',
     'cache-control': 'private, max-age=15',
-    'content-disposition': fileDisposition(basename(target), { download }),
+    'content-disposition': fileDisposition(displayName, { download }),
   };
   if (partial) headers['content-range'] = `bytes ${start}-${end}/${st.size}`;
   res.writeHead(partial ? 206 : 200, headers);
@@ -3944,24 +3940,27 @@ route('POST', '/api/session/:id/upload', async (req, res, { id: sid }) => {
   const s = store.getSession(sid);
   if (!s) return json(res, 404, { error: 'no such session' });
   const b = await readJson(req);
-  const name = safeAttachmentName(b.name);
+  const name = attachmentName(b.name);
+  if (Buffer.byteLength(name) > 4096) return json(res, 400, { error: 'attachment name too long' });
   const type = String(b.type || '').slice(0, 120);
   const data = String(b.data_base64 || b.data || '').replace(/^data:[^,]+,/, '');
-  if (!data) return json(res, 400, { error: 'data_base64 required' });
+  const emptyFile = b.size === 0 && b.data_base64 === '';
+  if (!data && !emptyFile) return json(res, 400, { error: 'data_base64 required' });
   const estimatedBytes = Math.floor((data.length * 3) / 4);
   if (estimatedBytes > ATTACHMENT_MAX_BYTES + 4) {
     return json(res, 413, { error: `attachment too large; max ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB` });
   }
   const buf = Buffer.from(data, 'base64');
-  if (!buf.length) return json(res, 400, { error: 'empty attachment' });
+  if (!buf.length && !emptyFile) return json(res, 400, { error: 'invalid attachment data' });
   if (buf.length > ATTACHMENT_MAX_BYTES) {
     return json(res, 413, { error: `attachment too large; max ${Math.round(ATTACHMENT_MAX_BYTES / 1024 / 1024)}MB` });
   }
   const dir = attachmentDirForSession(s);
   await mkdir(dir, { recursive: true });
-  const fileName = `${Date.now()}-${id('u')}-${name}`;
+  const suffix = !extname(name) && Object.keys(ATTACHMENT_CONTENT_TYPES).find(ext => ATTACHMENT_CONTENT_TYPES[ext].split(';')[0] === type);
+  const fileName = storageName(`${Date.now()}-${id('u')}-`, name + (suffix || ''));
   const path = join(dir, fileName);
-  await writeFile(path, buf, { mode: 0o600 });
+  await writeFile(path, buf, { mode: 0o600, flag: 'wx' });
   const attachment = {
     id: id('a'),
     name,

@@ -110,10 +110,10 @@ function normalizePlanItems(items) {
 // on-disk path under <project>/.aios/attachments/<sid>/. Extract the image BASENAMES so the story can
 // preview the operator's screenshots INSIDE their bubble (operator: "the image should be previewed in
 // the story view with the user request") — the client builds api/session/:id/attachment/:file, which
-// serves only the session's own attachment dir. Filenames may contain spaces; stop at newline or `]`.
+// serves only the session's own attachment dir. A bracket / earlier extension can be PART of a name.
 export function extractAttachmentImages(raw) {
   const out = [];
-  const rx = /\/[^\n\]]*?\/attachments\/[^/\n\]]+\/([^/\n\]]+?\.(?:png|jpe?g|gif|webp|svg))/gi;
+  const rx = /\/attachments\/[^/\r\n]+\/([^/\r\n]+?\.(?:png|jpe?g|gif|webp|svg|avif|bmp|heic|heif|tiff?|ico))(?=\](?:[ \t]*(?:$|\[Image:))|[ \t]*\r?$)/gim;
   let m;
   while ((m = rx.exec(String(raw || ''))) && out.length < 8) if (!out.includes(m[1])) out.push(m[1]);
   return out;

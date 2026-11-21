@@ -11,6 +11,7 @@ import { terminalFileReferences, installTerminalLinkTaps } from './terminal-file
 import { fitTerminalGrid } from './terminal-layout.js';
 import { installTerminalScrolling, terminalScrollMode, terminalHasNativeLatest, terminalLatestVisible } from './terminal-scroll.js';
 import { mountFilePreview } from './file-preview.js';
+import { transferredFiles, previewDescriptor } from './composer-files.js';
 import { groupedModelOptions, modelOptionLabel } from './model-select.js';
 import { installSessionViewportSync } from './session-viewport.js';
 import { sessionIndicator } from './session-indicator.js';
@@ -2889,6 +2890,7 @@ const attachmentBox = $('#attachments');
 const MAX_ATTACHMENTS = 20;
 const MAX_ATTACHMENT_BYTES = 24 * 1024 * 1024;
 let attachments = [];
+let readingTransfers = 0;
 let attachmentSeq = 0;
 let sendInFlight = false;
 const SEND_ID_KEY = `aios_pending_send_${id}`;
@@ -3011,15 +3013,6 @@ function fileFormat(name, type = '') {
   return mime.split('/')[1]?.toUpperCase().slice(0, 12) || 'FILE';
 }
 
-function isImageFile(file) {
-  return String(file.type || '').startsWith('image/') || /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name || '');
-}
-
-function isTextFile(file) {
-  const type = String(file.type || '').split(';')[0].toLowerCase();
-  return type.startsWith('text/') || type === 'application/json' || /\.(txt|md|markdown|json|csv|log|yaml|yml)$/i.test(file.name || '');
-}
-
 function compactPreviewText(text, max = 360) {
   return String(text || '').replace(/\r/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
@@ -3034,7 +3027,7 @@ function readyAttachments() {
 }
 
 function uploadsPending() {
-  return attachments.some((a) => a.status === 'uploading');
+  return readingTransfers > 0 || attachments.some((a) => a.status === 'uploading');
 }
 
 function updateSendState() {
@@ -3069,8 +3062,10 @@ function syncReplyPlaceholder() {
 }
 
 function cleanupAttachment(a) {
+  a?.closeDetail?.();
   if (a?.previewUrl) URL.revokeObjectURL(a.previewUrl);
 }
+_sig.addEventListener('abort', () => attachments.forEach(cleanupAttachment), { once: true });
 
 function renderAttachments() {
   attachmentBox.hidden = !attachments.length;
@@ -3082,23 +3077,28 @@ function renderAttachments() {
           ? 'Failed'
           : `${escapeHtml(a.format)} · ${formatBytes(a.size)}`;
     const title = a.name || 'attachment';
-    const visual = a.isImage
+    const thumbnail = a.kind === 'image' && a.previewUrl && !a.previewFailed;
+    const visual = thumbnail
       ? `<img class="asset-card-image" src="${escapeHtml(a.previewUrl || '')}" alt="${escapeHtml(title)}" />`
-      : `<div class="asset-card-text">${escapeHtml(a.previewText || title)}</div>`;
+      : `<div class="asset-card-text">${escapeHtml(a.previewText || (a.previewFailed ? 'Preview unavailable' : ({audio:'Listen to audio', video:'Play video', pdf:'Preview PDF', text:a.detailText === '' ? 'Empty file' : 'Reading text…', file:a.format || 'File'}[a.kind] || 'Reading file…')))}</div>`;
     return `
       <div class="asset-card attachment-chip ${a.status}" data-attachment-id="${a.localId}">
-        <button class="asset-card-open" type="button" data-attachment-open="${a.localId}" aria-label="Open ${escapeHtml(title)} details">
-          <div class="asset-card-preview ${a.isImage ? 'image' : 'text'}">${visual}</div>
+        <button class="asset-card-open" type="button" data-attachment-open="${a.localId}" title="${escapeHtml(title)}" aria-label="Open ${escapeHtml(title)} details">
+          <div class="asset-card-preview ${thumbnail ? 'image' : 'text'}">${visual}</div>
           <div class="asset-card-badge">${escapeHtml(assetBadge(a))}</div>
           <div class="asset-card-name">${escapeHtml(a.name)}</div>
           <div class="asset-card-meta">${status}${a.error ? ` · ${escapeHtml(a.error)}` : ''}</div>
         </button>
         <div class="asset-card-actions">
-          <button class="btn ghost sm" type="button" data-attachment-open="${a.localId}">Details</button>
-          <button class="attachment-remove btn ghost sm" type="button" aria-label="Remove ${escapeHtml(a.name)}">Remove</button>
+          <button class="attachment-remove btn ghost sm" type="button" title="Remove attachment" aria-label="Remove ${escapeHtml(a.name)}">×</button>
         </div>
       </div>`;
   }).join('');
+  for (const img of attachmentBox.querySelectorAll('img')) img.onerror = () => {
+    const a = attachments.find(x => x.localId === img.closest('[data-attachment-id]')?.dataset.attachmentId);
+    if (a && !a.previewFailed && img.isConnected) { a.previewFailed = true; renderAttachments(); }
+  };
+  for (const a of attachments) a.refreshDetail?.();
   attachmentBox.querySelectorAll('[data-attachment-open]').forEach((btn) => {
     btn.onclick = () => {
       const localId = btn.dataset.attachmentOpen;
@@ -3119,43 +3119,58 @@ function renderAttachments() {
   autoExpandReply();
 }
 
-function metaRows(rows) {
-  return rows.filter(([, v]) => v != null && String(v) !== '').map(([k, v]) => `<div><span>${escapeHtml(k)}</span><code>${escapeHtml(v)}</code></div>`).join('');
-}
-
 function openComposerAttachmentDetail(a) {
   if (!a) return;
-  const body = a.isImage && a.previewUrl
-    ? `<img class="asset-detail-image" src="${escapeHtml(a.previewUrl)}" alt="${escapeHtml(a.name || 'attachment')}" />`
-    : (String(a.type || '').startsWith('audio/') || /\.(?:wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(a.name || '')) && a.previewUrl
-      ? `<audio class="asset-detail-audio" controls preload="metadata" src="${escapeHtml(a.previewUrl)}" aria-label="${escapeHtml(a.name || 'Audio attachment')}"></audio>`
-    : `<pre class="asset-detail-text">${escapeHtml(a.detailText || a.previewText || '')}</pre>`;
+  a.closeDetail?.();
   const overlay = document.createElement('div');
   overlay.className = 'asset-detail-backdrop';
   overlay.innerHTML = `
     <div class="asset-detail" role="dialog" aria-modal="true" aria-label="${escapeHtml(a.name || 'Attachment')}">
       <button class="asset-detail-close" type="button" aria-label="Close">×</button>
       <h3>${escapeHtml(a.sourceLabel === 'pasted' ? 'Pasted content' : (a.name || 'Attachment'))}</h3>
-      <div class="asset-detail-sub">${escapeHtml([formatBytes(a.size), a.lineCount ? `${a.lineCount} lines` : '', a.status].filter(Boolean).join(' · '))}</div>
-      <div class="asset-detail-body">${body}</div>
-      <div class="asset-detail-meta">${metaRows([
-        ['local id', a.localId],
-        ['name', a.name],
-        ['type', a.type],
-        ['format', a.format],
-        ['size', formatBytes(a.size)],
-        ['lines', a.lineCount || ''],
-        ['status', a.status],
-        ['stored path', a.path],
-        ['source', a.sourceLabel],
-        ['error', a.error],
-      ])}</div>
+      <div class="asset-detail-sub"></div>
+      <div class="asset-detail-body"></div>
+      <a data-save-attachment hidden>Save file</a>
     </div>`;
-  const close = () => { overlay.querySelectorAll('audio, video').forEach(media => media.pause()); overlay.remove(); };
+  const body = overlay.querySelector('.asset-detail-body'), save = overlay.querySelector('[data-save-attachment]');
+  const note = message => { const p = document.createElement('p'); p.className = 'asset-detail-text'; p.textContent = message; body.replaceChildren(p); };
+  let shown;
+  a.refreshDetail = () => {
+    overlay.querySelector('h3').textContent = a.sourceLabel === 'pasted' ? 'Pasted content' : a.name;
+    overlay.querySelector('.asset-detail-sub').textContent = [a.format, formatBytes(a.size), a.status === 'error' ? a.error : a.status].filter(Boolean).join(' · ');
+    if (a.previewUrl) { save.href = a.previewUrl; save.download = a.name; save.hidden = false; }
+    // Updating an upload receipt must not replace a playing video/audio element.
+    const state = a.previewFailed || (!a.previewUrl && a.error) || (a.kind === 'text' ? a.detailText : a.previewUrl);
+    if (shown === state && body.firstChild) return;
+    shown = state;
+    const src = escapeHtml(a.previewUrl || ''), label = escapeHtml(a.name);
+    if (!src) return note(a.error || 'Reading file…');
+    if (a.previewFailed) return note('This browser cannot preview this file. You can still save or send it.');
+    if (a.kind === 'text') {
+      const pre = document.createElement('pre'); pre.className = 'asset-detail-text';
+      pre.textContent = a.detailText ?? 'Reading text…'; if (pre.textContent === '') pre.textContent = 'Empty file';
+      body.replaceChildren(pre); return;
+    }
+    if (a.kind === 'image') body.innerHTML = `<img class="asset-detail-image" src="${src}" alt="${label}">`;
+    else if (a.kind === 'audio' || a.kind === 'video') body.innerHTML = `<${a.kind} class="asset-detail-${a.kind}" controls playsinline preload="metadata" src="${src}" aria-label="${label}"></${a.kind}>`;
+    else if (a.kind === 'pdf' && navigator.pdfViewerEnabled !== false) body.innerHTML = `<object class="attachment-pdf" type="application/pdf" data="${src}" aria-label="${label}"><p class="asset-detail-text">Save the PDF to view it on this device.</p></object>`;
+    else return note('No inline preview for this file type. You can still save or send it.');
+    const media = body.querySelector('img, audio, video');
+    if (media) media.onerror = () => { if (media.isConnected) { a.previewFailed = true; renderAttachments(); } };
+  };
+  const close = () => {
+    overlay.querySelectorAll('audio, video').forEach(media => media.pause()); overlay.remove();
+    document.removeEventListener('keydown', onKey); _sig.removeEventListener('abort', close);
+    delete a.refreshDetail; delete a.closeDetail;
+  };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  a.closeDetail = close;
+  document.addEventListener('keydown', onKey);
   _sig.addEventListener('abort', close, { once: true });
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   overlay.querySelector('.asset-detail-close').onclick = close;
   document.body.appendChild(overlay);
+  a.refreshDetail();
 }
 
 // --- click a file path in the terminal to see what the agent wrote -------------------------------
@@ -3294,23 +3309,32 @@ function fileToDataBase64(file) {
 async function uploadAttachment(item, file) {
   const requestToken = requestScope.capture();
   try {
+    const {name, type, kind, blob} = await previewDescriptor(file);
+    requestScope.guard(requestToken);
+    if (!attachments.includes(item)) return;
+    Object.assign(item, { name, type, kind, format:fileFormat(name, type), previewUrl:URL.createObjectURL(blob) });
+    if (kind === 'text') void fillTextPreview(item, file);
+    renderAttachments(); // local bytes are previewable even while the network is slow or offline
     if (file.size > MAX_ATTACHMENT_BYTES) {
       throw new Error(`max ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)}MB`);
     }
     const dataBase64 = await fileToDataBase64(file);
+    requestScope.guard(requestToken);
+    if (!attachments.includes(item)) return;
     const r = await api(`api/session/${requestToken.id}/upload`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        name: file.name || item.name,
-        type: file.type || item.type,
+        name,
+        type,
         size: file.size,
         data_base64: dataBase64,
       }),
       signal: requestToken.signal,
     });
     requestScope.guard(requestToken);
-    Object.assign(item, r.attachment || {}, { status: 'ready', error: '' });
+    if (!r.attachment?.path) throw new Error('Upload returned no file path');
+    Object.assign(item, { path:r.attachment.path, id:r.attachment.id, isImage:r.attachment.isImage ?? kind === 'image', status:'ready', error:'' });
   } catch (e) {
     if (isSessionAbort(e)) return;
     item.status = 'error';
@@ -3321,17 +3345,17 @@ async function uploadAttachment(item, file) {
 }
 
 async function fillTextPreview(item, file) {
-  if (!isTextFile(file)) return;
   const requestToken = requestScope.capture();
   try {
-    const text = await file.text();
+    const limit = 600000;
+    const text = await file.slice(0, limit).text();
     requestScope.guard(requestToken);
+    if (!attachments.includes(item)) return;
     item.previewText = compactPreviewText(text);
-    item.detailText = text.length > 600000 ? text.slice(0, 600000) + '\n\n[truncated for preview]' : text;
-    item.lineCount = text ? text.split(/\r\n|\r|\n/).length : 0;
+    item.detailText = file.size > limit ? text + '\n\n[truncated for preview]' : text;
     renderAttachments();
   } catch (error) {
-    // Preview generation is optional; upload state remains authoritative if a local File reader fails.
+    if (requestScope.isCurrent(requestToken) && attachments.includes(item)) { item.previewFailed = true; renderAttachments(); }
   }
 }
 
@@ -3345,22 +3369,20 @@ function addFiles(fileList, opts = {}) {
     }
     const item = {
       localId: `local-${++attachmentSeq}`,
-      name: file.name || `pasted-image-${attachmentSeq}.png`,
+      name: file.name || 'Attachment',
       type: file.type || '',
       size: file.size || 0,
       format: fileFormat(file.name, file.type),
-      isImage: isImageFile(file),
-      previewUrl: isImageFile(file) || String(file.type || '').startsWith('audio/') || /\.(?:wav|wave|mp3|m4a|aac|ogg|oga|opus|flac|aif|aiff)$/i.test(file.name || '') ? URL.createObjectURL(file) : '',
+      kind: '',
+      previewUrl: '',
       previewText: '',
-      detailText: '',
-      lineCount: 0,
+      detailText: null,
       sourceLabel: opts.source === 'paste' ? 'pasted' : '',
       status: 'uploading',
       path: '',
       error: '',
     };
     attachments.push(item);
-    fillTextPreview(item, file);
     uploadAttachment(item, file);
   }
   renderAttachments();
@@ -3378,12 +3400,24 @@ function hasFilePayload(e) {
   return Array.from(dt?.types || []).includes('Files') || Array.from(dt?.items || []).some(item => item.kind === 'file') || !!dt?.files?.length;
 }
 
-function filesFromTransfer(dt) {
-  const itemFiles = [...(dt?.items || [])]
-    .filter((item) => item.kind === 'file')
-    .map((item) => item.getAsFile())
-    .filter(Boolean);
-  return itemFiles.length ? itemFiles : [...(dt?.files || [])];
+async function addTransfer(dt) {
+  const token = requestScope.capture();
+  const expected = Math.max(dt.files?.length || 0, Array.from(dt.items || []).filter(i => i.kind === 'file').length);
+  readingTransfers++;
+  updateSendState();
+  try {
+    const files = await transferredFiles(dt);
+    if (!requestScope.isCurrent(token)) return;
+    if (files.length) {
+      addFiles(files);
+      if (files.length < expected) showComposerNotice('Some files were not shared by the source app. Use + to choose the missing files.');
+    } else showComposerNotice('No readable file was shared. Use + to choose the original file.');
+  } catch {
+    if (requestScope.isCurrent(token)) showComposerNotice('Could not read this drop. Use + to choose the original file.');
+  } finally {
+    readingTransfers--;
+    if (requestScope.isCurrent(token)) updateSendState();
+  }
 }
 
 function hasReferencePayload(e) {
@@ -3421,11 +3455,11 @@ function installFileTarget(target) {
     if (e.defaultPrevented) return;
     if (!hasFilePayload(e)) return;
     e.preventDefault();
-    addFiles(filesFromTransfer(e.clipboardData));
+    void addTransfer(e.clipboardData);
   });
   target.addEventListener('dragover', (e) => {
     if (e.defaultPrevented) return;
-    if (!hasFilePayload(e) && !hasReferencePayload(e)) return;
+    if (!hasFilePayload(e) && !hasReferencePayload(e) && !Array.from(e.dataTransfer?.types || []).some(t => t === 'text/uri-list' || t === 'DownloadURL')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     messageBox.classList.add('dragover');
@@ -3441,10 +3475,18 @@ function installFileTarget(target) {
       insertComposerReference(referenceFromTransfer(e.dataTransfer));
       return;
     }
-    if (!hasFilePayload(e)) return;
+    if (!hasFilePayload(e)) {
+      const link = e.dataTransfer.getData('text/uri-list').split(/\r?\n/).find(s => s && !s.startsWith('#'));
+      messageBox.classList.remove('dragover');
+      if (!link && !e.dataTransfer.getData('DownloadURL')) return;
+      e.preventDefault();
+      if (/^https?:\/\//i.test(link)) insertComposerReference(link);
+      showComposerNotice('Only a link was shared, not the file. Use + to attach the original.');
+      return;
+    }
     e.preventDefault();
     messageBox.classList.remove('dragover');
-    addFiles(filesFromTransfer(e.dataTransfer));
+    void addTransfer(e.dataTransfer);
     reply.focus();
   });
 }
@@ -3485,7 +3527,8 @@ async function sendInput() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         text,
-        attachments: uploaded,
+        // Only send durable metadata. Device-local preview URLs and text excerpts are never part of a message.
+        attachments: uploaded.map(({ id, name, path, type, size, format, isImage }) => ({ id, name, path, type, size, format, isImage })),
         source: uploaded.length ? 'text+attachments' : 'text',
         client_message_id: clientMessageId,
         replace_pending: replacePending,
@@ -3709,7 +3752,7 @@ if (hintEl)
 // Big paste -> file chip: the agent gets a clean file and the composer stays readable. Clipboard FILES are
 // handled by installFileTarget; here we only intercept LARGE plain text (small pastes still go inline).
 reply.addEventListener('paste', (e) => {
-  if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length) return; // a real file paste
+  if (hasFilePayload(e)) return; // a real file paste may only expose an item or promised file
   const text = e.clipboardData ? e.clipboardData.getData('text') : '';
   if (!text) return;
   if (text.length <= PASTE_FILE_CHARS && text.split('\n').length <= PASTE_FILE_LINES) return; // small -> inline
