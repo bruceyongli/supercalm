@@ -2,12 +2,16 @@
 // launchd + the worker's local tmux/database own execution, not an SSH process lifetime.
 import http from 'node:http';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile, mkdir, rename, writeFile } from 'node:fs/promises';
 import { join, isAbsolute } from 'node:path';
+import { createServer } from 'node:net';
+import { withFileLease } from './archive_lock.js';
 import { DATA_DIR, PORT } from './config.js';
 import { executionId, migrationError } from './execution_identity.js';
 
-const configFile = process.env.AIOS_EXECUTION_NODES_FILE || join(DATA_DIR, 'execution-nodes.json');
+export const executionRegistryFile = process.env.AIOS_EXECUTION_NODES_FILE || join(DATA_DIR, 'execution-nodes.json');
+const configFile = executionRegistryFile;
 let configured = [];
 const connections = new Map();
 export function validateExecutionNode(node) {
@@ -31,14 +35,41 @@ export async function loadExecutionNodes() {
   } catch (error) { if (error.code !== 'ENOENT') throw error; configured = []; }
   return configured;
 }
-export async function saveExecutionNode(node) {
-  await loadExecutionNodes();
+const hostName = n => n.host.split('@').at(-1).toLowerCase().replace(/\.$/, '');
+export function assertNewDevice(nodes, node) {
+  if (nodes.some(n => n.id === node.id || hostName(n) === hostName(node))) {
+    throw migrationError('This device ID or SSH host is already registered. Existing devices were not changed.', 'execution-device-exists');
+  }
+}
+async function availableForwardPort(nodes) {
+  for (let port = 18893; port < 19093; port++) {
+    if (nodes.some(n => n.localPort === port)) continue;
+    const available = await new Promise((resolve, reject) => {
+      const server = createServer();
+      server.once('error', e => e.code === 'EADDRINUSE' ? resolve(false) : reject(e));
+      server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
+    });
+    if (available) return port;
+  }
+  throw migrationError('No free execution-device tunnel port is available.');
+}
+export function saveExecutionNode(node, { addOnly = false } = {}) {
+  return withFileLease(configFile + '.lock', () => migrationError('Device registration is busy. Please retry.'), async () => {
+    const nodes = await loadExecutionNodes();
+    if (addOnly) {
+      assertNewDevice(nodes, node);
+      node = { ...node, localPort: await availableForwardPort(nodes), default: false };
+    }
+    return writeExecutionNode(node);
+  });
+}
+async function writeExecutionNode(node) {
   const checked = validateExecutionNode(node);
   const nodes = [...configured.filter(n => n.id !== checked.id), checked];
   if (new Set(nodes.map(n => n.localPort)).size !== nodes.length) throw Error('Worker port is already registered');
   await mkdir(join(configFile, '..'), { recursive: true, mode: 0o700 });
-  const tmp = configFile + '.tmp-' + process.pid;
-  await writeFile(tmp, JSON.stringify({ version: 1, nodes }, null, 2) + '\n', { mode: 0o600 });
+  const tmp = configFile + '.tmp-' + randomUUID();
+  await writeFile(tmp, JSON.stringify({ version: 1, nodes }, null, 2) + '\n', { flag:'wx', mode: 0o600 });
   await rename(tmp, configFile);
   configured = nodes;
   return checked;

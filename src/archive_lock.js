@@ -3,7 +3,7 @@
 import { mkdir, open } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { DATA_DIR } from './config.js';
 
 function location(id) {
@@ -19,8 +19,10 @@ try: fcntl.flock(3, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except BlockingIOError: sys.exit(75)
 `;
 export async function withSessionArchiveLock(id, operation) {
-  const path = location(id);
-  await mkdir(join(DATA_DIR, 'session-archive-locks'), { recursive: true, mode: 0o700 });
+  return withFileLease(location(id), busy, operation);
+}
+export async function withFileLease(path, onBusy, operation) {
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const file = await open(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
     await new Promise((resolve, reject) => {
@@ -33,7 +35,7 @@ export async function withSessionArchiveLock(id, operation) {
       child.on('close', code => {
         clearTimeout(timer);
         if (code === 0) resolve();
-        else reject(code === 75 ? busy() : new Error('Cannot verify storage lease: ' + (detail || 'lock helper unavailable')));
+        else reject(code === 75 ? onBusy() : new Error('Cannot verify file lease: ' + (detail || 'lock helper unavailable')));
       });
     });
     await file.truncate(0);

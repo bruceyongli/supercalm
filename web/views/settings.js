@@ -11,6 +11,20 @@ import { mountExecutionSettings } from '../execution-devices.js';
 let teardownExecution = null;
 
 const SETTINGS_CSS = `
+    .st-device-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
+    .st-sec .st-device-heading h2 {margin:0}
+    .st-device-heading button {flex:none}
+    .st-device-pair {display:grid;gap:12px;margin-bottom:12px;min-width:0}
+    .st-device-pair[hidden] {display:none}
+    .st-device-pair p,.st-device-pair h3 {margin:0}
+    .st-device-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px}
+    .st-device-pair label {display:grid;gap:5px}
+    .st-device-pair input,.st-device-pair textarea {min-width:0;width:100%;box-sizing:border-box;background:#0c1017;color:#e9eef5;border:1px solid #34404e;border-radius:8px;padding:9px 10px;font:inherit}
+    .st-device-pair textarea {font-family:monospace;resize:vertical;overflow-wrap:anywhere}
+    .st-device-pair summary {cursor:pointer;color:#9baaba}
+    .st-device-pair details p {margin:6px 0 0}
+    .st-device-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .st-device-pair [role=status]:empty,.st-device-note:empty {display:none}
     /* Design: sub-nav is a VERTICAL column on the left, content on the right (2-col grid). */
     .st-wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 32px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 30px; align-items: start; }
     .st-head { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 390px); gap: 18px; align-items: end; }
@@ -33,6 +47,8 @@ const SETTINGS_CSS = `
     .st-body { min-width: 0; }
     /* Phone: stack the sub-nav over the content (full-width, readable) + clear the shell's ☰ menu button. */
     @media (max-width: 720px) {
+      .st-device-pair input,.st-device-pair textarea {font-size:16px}
+      .st-device-heading button,.st-device-actions button {min-height:44px}
       .st-wrap { grid-template-columns: 1fr; padding: 52px 14px 90px; gap: 14px; }
       .st-head { grid-template-columns: 1fr; align-items: stretch; }
       .st-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
@@ -661,8 +677,8 @@ export function init(el) {
         <h2>Preferences</h2>
         <div class="ob-card" id="st-prefscard"></div>
       </section>
-      <section class="st-sec" id="st-devices" data-search="bb1 bb2 execution devices ssh local SSD sessions migration">
-        <h2>Execution devices</h2><div id="st-devicecard"></div>
+      <section class="st-sec" id="st-devices" data-search="add pair connect mac bb1 bb2 execution devices ssh local SSD sessions migration">
+        <div class="st-device-heading"><h2>Execution devices</h2><button class="dk-new" type="button" id="st-add-device" aria-expanded="false" aria-controls="st-device-pair">Add device</button></div><div id="st-devicecard"></div>
       </section>
       <div class="st-search-empty" data-st-empty hidden>No settings match that search.</div>
       </div>
@@ -700,6 +716,10 @@ export function init(el) {
   teardownStorage = mountStorageSettings(host.querySelector('#st-storagecard'));
   teardownExecution?.();
   teardownExecution = mountExecutionSettings(host.querySelector('#st-devicecard'));
+  if (location.hash === '#st-devices') {
+    const section = host.querySelector('#st-devices');
+    requestAnimationFrame(() => { if (section.isConnected && location.hash === '#st-devices') section.scrollIntoView({block:'start'}); });
+  }
 }
 
 export function teardown() {

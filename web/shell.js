@@ -433,11 +433,14 @@ function closePalette() { if ($('#dk-palette')) $('#dk-palette').hidden = true; 
 let stateCache = null;
 let launchOptionsAt = 0;
 let launchOptionsPromise = null;
+let deviceRevision = 0;
+window.addEventListener('execution-devices-changed', () => { deviceRevision++; launchOptionsAt = 0; });
 getLaunchOptions(); // prewarm without competing with another modal/settings caller
 export function getLaunchOptions() {
   if (stateCache && Date.now() - launchOptionsAt < 30000) return Promise.resolve(stateCache);
   if (launchOptionsPromise) return launchOptionsPromise;
-  launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = Date.now(); return r; })
+  const revision = deviceRevision;
+  launchOptionsPromise = api('api/launch-options').then((r) => { stateCache = r; launchOptionsAt = revision === deviceRevision ? Date.now() : 0; return r; })
     .catch(() => stateCache).finally(() => { launchOptionsPromise = null; });
   return launchOptionsPromise;
 }

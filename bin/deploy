@@ -93,6 +93,16 @@ else
   echo "==> deploy lock file unavailable — proceeding without it (fail-open)"
 fi
 
+# Pair only ONE new device to the already published release. No bump, push,
+# controller restart, session movement or deploy-all in this mode.
+if [ "$LEVEL" = "--pair-device" ]; then
+  if [ "$ON_HOST" != "1" ] || [ "$BR" != "main" ] || [ "$#" != 3 ]; then
+    echo "Run on the controller: cd ~/aios && bin/deploy --pair-device DEVICE_ID SSH_HOST" >&2
+    exit 1
+  fi
+  exec node bin/execution-node.mjs pair "$2" "$3"
+fi
+
 # Security checkpoint (operator doctrine: before any push to the PUBLIC repo, scan for credentials, personal
 # data, or sensitive config). Run it EXPLICITLY here — independent of the git pre-commit hook (core.hooksPath),
 # which requires `bin/install-hooks` and can be bypassed — so a release can never ship a secret even from a

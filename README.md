@@ -75,6 +75,16 @@ your devices over Tailscale Serve or an authenticated reverse proxy (never the p
 - **Configuring for your setup?** See **[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)** — external model
   proxy (+ token), voice STT/TTS, binaries, and agent auth.
 
+### Add another execution Mac
+
+Open **Settings → Execution devices → Add device** on the controller. Enter a short device ID
+and the SSH address of a signed-in Apple Silicon Mac. The controller must already trust its SSH
+host key and be able to sign in with a key; the Mac needs Remote Login, Git, and Homebrew Node
+and tmux. Run the generated command in Terminal on the **controller**, then paste its 15-minute
+code back into Settings and select **Connect device**. If the code expires, repeat the same
+command. Once the row says **Connected**, select the Mac under **New session → Run on**.
+Pairing does not move sessions or change the default device.
+
 ## Updating
 
 **One click:** when a new release is out, every open Supercalm page shows an **"Update available

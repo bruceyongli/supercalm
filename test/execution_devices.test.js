@@ -72,6 +72,9 @@ try {
   for(let i=0;i<300;i++) { if(child.exitCode != null) throw Error(logs); try { if((await fetch(base+'/readyz')).ok) { ready=true;break; } } catch {} await new Promise(r=>setTimeout(r,100)); }
   assert.ok(ready,logs);
   assert.equal((await fetch(base+'/api/execution/health')).status,403);
+  assert.equal((await (await fetch(base+'/api/execution/devices')).json()).canPair,false);
+  assert.equal((await fetch(base+'/api/execution/devices/pair',{method:'POST',headers:{'content-type':'application/json','x-aios-pairing':'1'},
+    body:JSON.stringify({code:'not-a-code'})})).status,403,'pairing is only available on the controller');
   const request = (path, body) => transport.nodeRequest(node,path, body === undefined ? {} : {method:'POST',body,timeout:30000});
   assert.equal((await request('/api/execution/health')).node,'fixture');
   store = await import('../src/store.js');

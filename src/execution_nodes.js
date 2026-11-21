@@ -5,7 +5,7 @@ import { promisify } from 'node:util';
 import { lstat, realpath, readFile } from 'node:fs/promises';
 import { join, basename, resolve } from 'node:path';
 import { homedir } from 'node:os';
-import { route, json, readJson, setExecutionRouter } from './server.js';
+import { route, json, readJson, readBody, setExecutionRouter } from './server.js';
 import { DATA_DIR, TMUX, VERSION, COMMIT_SHA } from './config.js';
 import * as store from './store.js';
 import { bus } from './bus.js';
@@ -14,6 +14,7 @@ import { readManifest } from './launch_contract.js';
 import { EXECUTION_NODE, remoteSession, migrationError } from './execution_identity.js';
 import { loadExecutionNodes, executionNodes, executionNode, nodeRequest, connectExecutionNode, proxyNodeRequest } from './execution_transport.js';
 import { nodeForSession, executionDeviceList, assertExecutionAvailable } from './execution_routing.js';
+import { claimPairing } from './execution_pairing.js';
 import { mirrorExecutionSnapshot, exportExecutionState, exportExecutionProjectState } from './execution_state.js';
 import { workerAuthorized, prepareWorkerImport, receiveWorkerPart, finalizeWorkerImport, activateWorkerImport, workerImportStatus, reuseWorkerGit } from './execution_worker.js';
 import { gitEvidence, gitBundle, workingArchive, committedArchive, committedLaunchGit, committedLaunchBundle, uploadExecutionPart, assertNativeIdentity } from './execution_bundle.js';
@@ -360,8 +361,19 @@ const workerOnly = fn => handle(async (req, params, url) => {
   if (!await workerAuthorized(req)) throw migrationError('Worker control authentication required', 'execution-auth', 403);
   return fn(req, params, url);
 });
-route('GET', '/api/execution/devices', handle(() => ({ devices: executionDeviceList(),
+route('GET', '/api/execution/devices', handle(() => ({ canPair: EXECUTION_NODE === 'local', devices: executionDeviceList(),
   operations: store.db.prepare('SELECT * FROM execution_operations ORDER BY created_at DESC LIMIT 30').all().map(publicOperation) })));
+route('POST', '/api/execution/devices/pair', handle(async req => {
+  if (EXECUTION_NODE !== 'local') throw migrationError('Add devices on the controller.', 'controller-only', 403);
+  if (req.headers['x-aios-pairing'] !== '1' || !/^application\/json(?:\s*;|$)/i.test(req.headers['content-type'] || '')
+      || ['same-site','cross-site'].includes(req.headers['sec-fetch-site'])) throw migrationError('Open Add device in Settings.', 'pairing-origin', 403);
+  let input;
+  try { input = JSON.parse((await readBody(req, 1024)).toString('utf8')); } catch { throw migrationError('Enter a pairing code.', 'invalid-pairing-code', 400); }
+  if (!input || Object.keys(input).length !== 1 || typeof input.code !== 'string') throw migrationError('Only a pairing code is accepted.', 'invalid-pairing-code', 400);
+  const result = await claimPairing(input.code.trim(), COMMIT_SHA);
+  connectExecutionNode(executionNode(result.id)); // regular authenticated sync determines Online
+  return result;
+}));
 route('GET','/api/execution/launch-home/:id',workerOnly((_req,{id},url)=>inspectLaunchHome(id,url.searchParams.get('commit'),url.searchParams.get('branch'))));
 route('POST','/api/project/:id/launch-home',handle(async(req,{id})=>{
   if (EXECUTION_NODE !== 'local') throw migrationError('Set launch placement on the controller');
